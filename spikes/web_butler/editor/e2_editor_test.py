@@ -302,6 +302,29 @@ async def main() -> int:
         s = await state()
         check("T20b next backspace strikes before the run", s["md"] == "keep~~ gone~~", s)
 
+        # T21 undo after completion never unlocks the done span or removes its text
+        await reset()
+        await p.type("ship the fix")
+        await asyncio.sleep(0.6)
+        await p.js("butler.markSeen(view); butler.markDone(view, 0, 12, 't21', 'Shipped.'); true")
+        for _ in range(3):
+            await p.key("z", modifiers=4, commands=["undo"])
+        await p.js("view.dispatch({selection:{anchor:6}}); true")
+        await p.type("ZZ")
+        await p.key("Backspace")
+        s = await state()
+        locked = await p.js("document.querySelectorAll('[data-task=t21]').length > 0")
+        check("T21 undo keeps done text locked", s["text"] == "ship the fix" and locked, {"state": s, "locked": locked})
+
+        # T22 the owner's undo removes the owner's typing but never the coordinator's text
+        await reset("idea\n")
+        await p.type("more")
+        await asyncio.sleep(0.6)
+        await p.js("butler.insertAgentText(view, 5, 'Which project?\\n', 'q9'); true")
+        await p.key("z", modifiers=4, commands=["undo"])
+        s = await state()
+        check("T22 undo keeps coordinator text", s["md"] == "idea\n<!--coordinator-->Which project?\n<!--/coordinator-->", s)
+
         # T14 Option+Down (move line) is not bound: it would strike the line and copy it elsewhere
         await reset("first\nsecond")
         await p.js("view.dispatch({selection:{anchor:2}}); true")

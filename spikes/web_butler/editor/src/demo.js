@@ -34,6 +34,7 @@ const layout = EditorView.updateListener.of((u) => {
     u.changes.iterChangedRanges((_fa, _ta, fb, tb) => dirty.push({ from: fb, to: tb }));
     scheduleSettle();
   }
+  if (u.docChanged) withdrawEmptied();
   if (u.docChanged || edited) save();
   if (u.selectionSet && !edited && dirty.length) {
     const line = u.state.doc.lineAt(u.state.selection.main.head);
@@ -125,6 +126,16 @@ function readLine(line) {
     const component = componentOf(project, text);
     if (!component) { ask(line, f, to, text, "component", project); continue; }
     dispatch(f, to, text, component);
+  }
+}
+
+// Undo can remove text the coordinator already acted on; its task is withdrawn with it.
+function withdrawEmptied() {
+  for (const a of B.anchors(view)) {
+    const t = tasks[a.id];
+    if (!t || a.to > a.from || (t.state !== "queued" && t.state !== "running")) continue;
+    t.note = "Text withdrawn";
+    setTimeout(() => setState(a.id, "stopped"), 0); // not inside the update cycle
   }
 }
 

@@ -306,6 +306,14 @@ Findings:
   CodeMirror widgets ignore events by default; the widget must opt in to editor event
   handling. Fixed and re-verified in the spike (icon and text clicks both open the result).
 - Undo/redo is exempt from strike conversion — owner decision, §8.
+- **F12 Undo could remove text the owner did not write, and text already done.** Found by E2
+  T21/T22.
+  - **Cause 1:** system edits (document load, coordinator insertions) were recorded in the
+    owner's undo history, so undo could delete a coordinator question.
+  - **Cause 2:** CodeMirror dispatches undo/redo with `filter: false`, bypassing the done lock,
+    so undo could erase text already marked done.
+  - **Fix in the spike:** system edits are kept out of history. Undo/redo (keys and the
+    browser's Edit menu) is built first and dropped if it would touch a done span.
 
 Still unverified: T9 only covered typing and strikethrough **before** an anchor. A cut in
 this editor strikes the source and leaves its characters in place. A later paste creates
@@ -533,6 +541,47 @@ Captures: [desktop](assets/web-task-butler-preview.png),
 4. Owner review of the interactive demo (§9.7). Needs the owner.
 5. Freeze: acceptance checks for §6.1, evaluation cases for §6.2, implementation plan for the
    §9.8 change list, the local web service, the ledger and the coordinator's command set.
+
+### 9.10 Freeze coverage (2026-09-29)
+
+Freeze requires an acceptance check for every §6.1 guarantee and an evaluation case for every
+§6.2 judgement.
+- **Covered:** checked in a spike today.
+- **Product:** can only be checked once the real service exists; it gets an acceptance test
+  in the implementation plan.
+- **Gap:** needs a new spike check or scenario before freeze.
+
+| §6.1 guarantee | Status | Evidence |
+|---|---|---|
+| Anchors follow typing, strikes, cut/paste, undo/redo | Covered | E2 T9, E5 |
+| Identical text removed and re-inserted in one settle window is reported as a move | Gap | — |
+| Undo changes text only; never undoes a dispatch or unlocks done text | Covered | E2 T6, T18, T21, T22 (F12 fixed) |
+| Seen text struck, unseen text deleted, mixed selections split | Covered | E2 T1–T5, T15–T20 |
+| Completion marking verifies the quote; falls back to the stored anchor | Partly | Boundary checks the quote (`contract.py`); fallback is Product |
+| A span shared by several tasks turns green only when all are done | Product | — |
+| Project highlight: whole words, short names case-sensitive, "not a project" | Partly | E2 T12; "not a project" is Product |
+| Typing always wins; coordinator never inserts inside the block being edited | Partly | E2 T10 (inserts while typing); the insertion policy is Product |
+| Never lose the draft; single editing tab | Product | Demo keeps the document in the browser only |
+| Restart: ledger persisted and reconciled with live sessions, nothing replayed twice | Partly | E6 restart of the coordinator from the ledger; session reconciliation is Product |
+| Confirmed delivery to workers | Partly | E1 confirmed delivery from each assistant's history; the product check is Product |
+| Phone push for open questions | Product | Existing Corral push path |
+| Result card contents and "open session in Corral" | Partly | E2 T13, demo; "open session" is Product |
+| Worker sessions listed in Corral, grouped | Product | — |
+
+| §6.2 judgement | Scenarios |
+|---|---|
+| One sentence → several tasks | S1 |
+| Scattered sentences → one task | Gap |
+| Later text amends an earlier idea | S7; E6 |
+| Repeated idea, including one already done | S8 (follow-up); plain duplicate is a Gap |
+| Struck text: typo fix vs. withdrawal | S5, S6; E6 |
+| Edit to dispatched text: steer vs. stop and restart | S7 (steer); reversal needing stop + new task is a Gap |
+| Which project; ambiguous; new project; answer in text | S3, S9, S12, S16 |
+| Project aliases; several projects per idea | S1 (several); alias is a Gap |
+| Dependencies, including one discovered after start | S2; discovered later is a Gap |
+| Failures, retries, quota, switching assistants | S11, S15; a worker that failed (not quota) is a Gap |
+| Accepting a finished turn as done | S13, S14 |
+| Whether writing answers a question; whether to ask at all | S4, S12, S16 |
 
 ## 10. References
 

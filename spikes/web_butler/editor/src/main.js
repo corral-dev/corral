@@ -2,9 +2,9 @@
 // locked done spans with a check widget, task anchors, and project-name hints.
 // The document text never loses characters; strike/agent/done/anchor are range sets
 // kept beside the text and serialized to Markdown only at save time.
-import { EditorState, StateField, StateEffect, Annotation, RangeSet, RangeValue, ChangeSet, Transaction } from "@codemirror/state";
+import { EditorState, StateField, StateEffect, Annotation, RangeSet, RangeValue, ChangeSet, Transaction, Prec } from "@codemirror/state";
 import { EditorView, Decoration, WidgetType, MatchDecorator, ViewPlugin, keymap } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, invertedEffects } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, invertedEffects, undo, redo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
@@ -278,6 +278,38 @@ const strikeUndo = invertedEffects.of((tr) => {
   return out;
 });
 
+// Undo/redo skip change filters (CodeMirror dispatches them with filter: false), so the
+// done lock is enforced here: build the undo first, and drop it if it would touch done text.
+function guarded(command) {
+  return (view) => {
+    let pending = null;
+    command({ state: view.state, dispatch: (tr) => { pending = tr; } });
+    if (!pending) return false;
+    const done = pending.startState.field(doneField);
+    let touches = false;
+    pending.changes.iterChanges((fromA, toA) => {
+      done.between(fromA, toA, (f, t) => { if (t > fromA && f < toA) touches = true; });
+    });
+    if (!touches) view.dispatch(pending);
+    return true;
+  };
+}
+const guardedUndo = guarded(undo), guardedRedo = guarded(redo);
+const guardedHistory = Prec.high([
+  keymap.of([
+    { key: "Mod-z", run: guardedUndo, preventDefault: true },
+    { key: "Mod-y", mac: "Mod-Shift-z", run: guardedRedo, preventDefault: true },
+    { linux: "Ctrl-Shift-z", run: guardedRedo, preventDefault: true },
+  ]),
+  EditorView.domEventHandlers({
+    beforeinput(e, view) {
+      if (e.inputType === "historyUndo") { e.preventDefault(); return guardedUndo(view); }
+      if (e.inputType === "historyRedo") { e.preventDefault(); return guardedRedo(view); }
+      return false;
+    },
+  }),
+]);
+
 // done spans reject any change inside them
 const lockDone = EditorState.changeFilter.of((tr) => {
   if (tr.annotation(system)) return true;
@@ -365,7 +397,7 @@ function create(parent, projects, initial = "", options = {}) {
     state: EditorState.create({
       doc: "",
       extensions: [
-        history(), keymap.of([...editorKeys, ...historyKeymap]), markdown(), markdownLook, EditorView.lineWrapping,
+        history(), guardedHistory, keymap.of([...editorKeys, ...historyKeymap]), markdown(), markdownLook, EditorView.lineWrapping,
         composeRange, seenField, strikeField, agentField, doneField, anchorField, taskMarks, ...(options.extensions || []),
         strikeInsteadOfDelete, strikeUndo, lockDone, pasteMove, projectHighlighter(projects),
         EditorView.updateListener.of((u) => { for (const tr of u.transactions) if (tr.docChanged) log.push({ t: performance.now(), ev: tr.annotation(Transaction.userEvent) || (tr.annotation(system) ? "system" : "") }); }),
@@ -420,12 +452,12 @@ function create(parent, projects, initial = "", options = {}) {
 const results = {};
 function load(view, md, seen = null) {
   const { text, strikes, agents } = fromMarkdown(md);
-  view.dispatch({ effects: resetAll.of(null), annotations: system.of(true) });
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: system.of(true) });
+  view.dispatch({ effects: resetAll.of(null), annotations: [system.of(true), Transaction.addToHistory.of(false)] });
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: [system.of(true), Transaction.addToHistory.of(false)] });
   view.dispatch({
     effects: [...strikes.map(([f, t]) => addStrike.of({ from: f, to: t })), ...agents.map(([f, t], i) => addAgent.of({ from: f, to: t, id: `q${i + 1}` })),
       ...(seen || [[0, text.length]]).map(([f, t]) => markSeen.of({ from: f, to: t }))],
-    annotations: system.of(true),
+    annotations: [system.of(true), Transaction.addToHistory.of(false)],
   });
 }
 
@@ -437,7 +469,7 @@ window.butler = {
     view.dispatch({
       changes: { from: pos, insert: text },
       effects: [addAgent.of({ from: pos, to: pos + text.length, id }), markSeen.of({ from: pos, to: pos + text.length })],
-      annotations: system.of(true),
+      annotations: [system.of(true), Transaction.addToHistory.of(false)],
     });
   },
   agentTexts(view) {
@@ -448,16 +480,16 @@ window.butler = {
     return o;
   },
   markSeen(view, from = 0, to = view.state.doc.length) {
-    view.dispatch({ effects: markSeen.of({ from, to }), annotations: system.of(true) });
+    view.dispatch({ effects: markSeen.of({ from, to }), annotations: [system.of(true), Transaction.addToHistory.of(false)] });
   },
   seen: (view) => view.state.field(seenField).map((r) => [...r]),
-  setTaskState(view, id, state) { view.dispatch({ effects: setTaskState.of({ id, state }), annotations: system.of(true) }); },
+  setTaskState(view, id, state) { view.dispatch({ effects: setTaskState.of({ id, state }), annotations: [system.of(true), Transaction.addToHistory.of(false)] }); },
   result: (id) => results[id],
   markDone(view, from, to, id, result) {
     results[id] = result;
-    view.dispatch({ effects: [addDone.of({ from, to, id }), setTaskState.of({ id, state: "done" })], annotations: system.of(true) });
+    view.dispatch({ effects: [addDone.of({ from, to, id }), setTaskState.of({ id, state: "done" })], annotations: [system.of(true), Transaction.addToHistory.of(false)] });
   },
-  addAnchor(view, id, from, to, state = "queued") { view.dispatch({ effects: addAnchor.of({ id, from, to, state }), annotations: system.of(true) }); },
+  addAnchor(view, id, from, to, state = "queued") { view.dispatch({ effects: addAnchor.of({ id, from, to, state }), annotations: [system.of(true), Transaction.addToHistory.of(false)] }); },
   anchors(view) { const o = []; view.state.field(anchorField).between(0, view.state.doc.length, (f, t, v) => { o.push({ id: v.id, state: v.state, from: f, to: t, text: view.state.sliceDoc(f, t) }); }); return o; },
   struckIn(view, from, to) { return covered(view.state.field(strikeField), from, to); },
 };
