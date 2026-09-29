@@ -384,6 +384,15 @@ actionable, so asking for the symptom is a blocking fact):
 - After the role rename (coordinator prompt now opens with identity, duties and limits;
   worker prompt added): **15/16**. S14 passes; S16 failed again (3 of 5 full runs since
   the rule-1 fix). S16 is the open judgement weakness.
+- **S16 diagnosis and fix** (same day). The failing runs' notes show the coordinator treating
+  "the project is now known" as "the request is now actionable"; the project and the symptom
+  are two separate missing facts.
+  - **Change:** rule 1 now adds that naming the project does not state what happens, so the
+    symptom must still be asked.
+  - **Measured:** S16 5/6 and S12 3/3. The alternative wording on rule 11 reached 4/6 and was
+    dropped.
+  - **Pending:** a full 16-scenario regression run is scheduled for after the model's usage
+    limit resets.
 
 Long-running coordinator (E6, `long_run.py`, 2026-09-29, Claude Haiku):
 - **Setup:** one persistent session over a 26-round scripted timeline. The owner adds ideas,

@@ -60,7 +60,9 @@ Return `{"actions": []}` when nothing should happen.
    existence. If a change is visibly an unfinished phrase, return no actions, including no
    question; the owner is still expressing the idea. Ask only for a concrete missing fact
    that blocks an otherwise actionable request. A bug report that does not state what
-   actually happens is not actionable, so asking for the symptom is such a blocking fact.
+   actually happens is not actionable, so asking for the symptom is such a blocking fact;
+   naming the project it belongs to does not state what happens, so a symptom still has to
+   be asked even after the project is known.
 2. Split and merge by meaning, not by sentences: one sentence may be several tasks; scattered
    sentences may be one task; a later sentence may amend an earlier idea.
 3. Parallel by default. Add `depends_on` only when one task truly needs another's result.
