@@ -63,7 +63,13 @@ Key delivery guards: the picker footer (`Enter to select` / `Ready to submit you
 
 **Phone.** One compact form above the composer; each question folds after a single choice and opens the next unanswered one; typed answer per question; one Submit, enabled only when every question is answered. Host `session.prompts` is authoritative once it has answered — message-derived prompts are only the offline/old-host fallback, otherwise every incoming message would reset drafts and flash a multi-question form down to its first question.
 
-Acceptance still requires a real pending question per runtime answered from the phone over the encrypted path. Restart the user's active remote service after parser changes.
+**Acceptance status (2026-09-29, v0.24.227).** Claude and OpenCode passed over the encrypted relay: `session.new` → `input.text` prompt → `session.prompts` → `input.question` → `delivered`, prompts empty, assistant continued, no extra user message. Codex passed on the real 0.158 TUI through `questions.answer` (typed-only, choice + note, digits) but not yet over the relay (account quota exhausted). The iOS 1.0.60 form has not been inspected on the phone yet. Restart the user's active remote service after parser changes.
+
+**How to verify without guessing:**
+
+- **Phone-path probe needs full access.** The saved `scripts/phone_remote_acceptance.py` identity is paired read-only (`验收探针`), so `input.*`/`input.question` are rejected. Pair a temporary full probe with its own key file (`corral remote pair --json` → `pair` RPC with that code), drive `session.new` / `input.text` / `session.prompts` / `input.question` / `session.stop`, then `corral remote unpair <id>`. Improvement item: add a question case and a `--key-file` option to that script so this does not need a throwaway harness.
+- **Codex picker without quota.** `request_user_input` only exists in Plan mode (`/plan`). Point a TUI at a local Responses-API stub: `codex -c 'model_providers.fake={name="fake",base_url="http://127.0.0.1:<port>/v1",env_key="FAKE_KEY",wire_api="responses"}' -c model_provider=fake -m fake`, where the stub streams `response.created` → `response.output_item.done` (a `function_call` named `request_user_input` with the questions JSON) → `response.completed`, and replies with a text message when the last input item is a `function_call_output`. The real overlay, rollout record and answer output are then exercised. Do not use the shared gateway for this: `openrouter-chat` costs ~125k input tokens per Codex turn and returned no tool-call item.
+- **Claude transcript check.** Launch the TUI with and without the `--settings` hook and confirm the pending `tool_use` is (or is not) in the JSONL before answering; the file's own `timestamp` field is the call time, not the write time.
 
 ## 命令入口
 

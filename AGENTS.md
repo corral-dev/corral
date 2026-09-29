@@ -21,6 +21,7 @@
 - [cli/docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md](/Users/geraltgraham/Codes/Corral/cli/docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md)：设计、开发、评审或排查 Pi / Codex 托管会话身份、pane 错绑、claim 协议、插件自动安装、旧隔离目录迁移前**必读**。不读会继续沿用已废弃的每会话小房间、让子代理抢主画面、破坏 Pi 原生恢复列表，或在身份不确定时误绑会话。
 - [cli/docs/design/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md](/Users/geraltgraham/Codes/Corral/cli/docs/design/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md)：设计、开发、评审或排查 Agent 完成/中断的手机系统通知、设置页通知开关、SessKit `completion_id` 触发口径、推送去重与投递前**必读**。不读会用进程退出或裸 DONE 当触发、把额度耗尽当成干完了推，或开关只做手机本地导致开发机仍在浪费配额推送。
 - [`docs/2026-08-16-多助手会话专项汇报.md`](/Users/geraltgraham/Codes/Corral/docs/2026-08-16-多助手会话专项汇报.md)：查阅 2026-08-16 多助手会话专项历史汇报时可读；属单日归档，**日常开发 / 评审 / 排障可跳过**，不以本文为现行行为权威。
+- [`docs/design/IOS_UI_CHANGE_REQUEST_DESIGN.md`](docs/design/IOS_UI_CHANGE_REQUEST_DESIGN.md)：iOS UI 标注需求是独立组件（权威设计在 workspace 标准），Corral 仅为可选适配端；不要在此加核心需求。
 
 ## 组件一览
 
@@ -32,7 +33,7 @@
 
 ## 领域地图（doc-init）
 
-<!-- 覆盖度复核基线：2026-09-12 · 源码指纹 扫描 585 文件 / Python 162 · Swift 67 · Go 23 / 2 子模块 -->
+<!-- 覆盖度复核基线：2026-09-29 · 源码指纹 扫描 673 文件 / Python 190 · Swift 86 · Go 23 / 3 子模块 -->
 
 | 领域 | 入口锚点 |
 |------|---------|
@@ -70,7 +71,7 @@
 
 # corral 项目规范
 
-- [Network UX implementation review](docs/reviews/NETWORK_UX_REVIEW_2026-09-10.md): **must read** before correcting, validating, or releasing the September 10 command-receipt and relay-lane changes; the four recorded findings were corrected in source (see that doc’s Corrections applied). Skipping it can reintroduce false delivery, duplicate execution, or shared disconnections.
+- [Network UX implementation review](docs/reviews/NETWORK_UX_2026-09-10-review.md): **must read** before correcting, validating, or releasing the September 10 command-receipt and relay-lane changes; the four recorded findings were corrected in source (see that doc’s Corrections applied). Skipping it can reintroduce false delivery, duplicate execution, or shared disconnections.
 
 ## 文档导航
 
@@ -95,6 +96,7 @@
 - `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、**标题语言（跟用户提问主语言，不跟界面语言、不默认中文；排查「英文会话却出中文标题 / 标题跟系统语言走」「侧栏莫名出现 cli 生成 s0 / 为什么还用 Claude 生成标题 / 空壳为什么有标题」）**、会话关注状态与 Cursor 观察器、会话保活（含**手机任务已投递却中断 / 自动清理误杀执行中的 Agent**、**排查「Cursor 进程过多 / 活动监视器一堆 agent」**、**改/查看托管软上限「最大进程数限制是多少 / 上限改成 N 个 / 进程实际有没有超限」**）、直启、Agent 只读接口、**启动 Pi 每次都打出「Warning: No project session found with id …」（进「Pi 扫描与启动」节；无害，禁止为消警告拆掉 `--session-id`）**、**排查「看不到历史 Pi 会话 / 只能看到最近的 Pi / 钉过的旧 Pi 从列表消失 / 旧会话搬家挡发版 / 搬家之后会话去哪了」也进该节**、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、**收尾核对 `releases/latest` 匿名 403 / JSON 解析失败但 Release 已建好（改用 `gh api`，禁止再开第二轮收尾）**、**本机 universal2 构建失败 / Homebrew rustc 缺 x86_64、版本四文件不同号、`verify_clean_install` ensurepip 崩**、要不要上 PyPI）、**CI 工作流（改 / 优化 / 评审 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端 / ci-test 跑很久像卡住 / 发版检查跑三遍 / 不要每次都跑这么重 / 想并行或异步加速检查」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）；**排查「还能执行 pickup / 敲 corral command not found / 新名无法启动 / No module named pickup.bootstrap」进「内嵌面板」节改名后未重装入口那条**（禁止加回 `pickup` console script，跑 `scripts/dev-install.sh`）、**排查「绕过 shim / command codex / corral shim uninstall」「打开 Codex 白屏 / Missing optional dependency codex-darwin-arm64」（进「命令拦截」「Codex 扫描」）**、**多 Agent 发版卫生**（公开仓库提交历史不得含私有项目名、推送门禁扫描整个工作区时的处理）
 - `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `corral remote`、手机配对、**开源默认中继 / 不要把维护者服务器写进 GitHub / 别人要用自己搭中继 / 禁止捆绑共享多租户**、**审查手机互联网连接 / 中继 / 配对安全线**、**远程服务是 on/off 开关（后台，配对走 pair）**、**重启后远程没了 / 开关记忆与开机自启**、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]`、**换网不可用 / 同 WiFi 却走中继 / 局域网探测无效 / 配对没有 l= / Bonjour mDNS / 出门蜂窝无感切换 / 中继默认与 `--no-relay` 禁区、任意网络可达、守护进程还叫旧名 pickup / 连中继 404 / 手机 App 突然连不上 / 会话列表或打开历史极慢 / 进列表仍先转圈 / 转圈后开发机响应超时 / 打开大历史第一次仍像卡死 / 详情把通道堵住 / Cursor 用户气泡出现整段系统上下文 / Codex 详情第一句是系统说明 / Pi 会话在手机上是空聊天 / 两台开发机点进去会话一模一样 / 发了消息对话不更新 / 看不到助手回复 / 新开会话发了在吗 / 刚开的会话只有自己那句 / 终端里有字聊天没有 / 手机开的会话半分钟才出现在电脑 TUI / 先预览再变可交互 / This session is no longer in the list / 对话在刷但选择题还卡在底上 / 两道题合成一排选项 / Claude、Codex、OpenCode 原生提问与自填回答 / 换网后对话整段重拉 / 重连后聊天闪空 / 手机中途发消息却是 follow up 不是 steering / 要等助手跑完才接**、**规划/实现「会话结束系统通知 / 干完了推送 / 异常结束也要通知」**前**必读**（文首「开源中继硬规则」；结束通知须基于 SessKit 已完成/已中断，见产品边界；验收必须走中继上的整表订阅+**每个助手一条详情**，禁止用 5 条摘要、单条 Codex 或本机 unittest 冒充）；客户端工程见 `../ios/AGENTS.md`；个人多租户公网实例运维只在私有 agentsync，禁止写进公开门面当默认地址。**审查「中继会不会偷看 / 扫码等不等于把电脑交出去 / 合盖后别人占了公网通道」进该文「安全边界」。**
 - `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md`：规划、设计、评审或排查手机会话列表/历史加载慢、**进列表仍先转圈、不要堆滚动分页**、**进详情后返回没反应**、实时数据被大历史拖住、**打开大历史第一次解析整份 JSONL**、Cursor 上下文泄漏、Codex 消息缺失、**Pi 手机聊天空白**、**发了消息对话不更新 / 会话已不在列表里 / 新开会话发了在吗 / 刚开的会话只有自己那句 / 终端里有字聊天没有**、直连/中继切换与断线恢复、**换网后对话像冷启动 / 按序号补缺口**前必读。不读会把压缩或超时当成完整方案，漏掉缓存分页、尾部偏移读取、控制/数据隔离、序号恢复和真实设备验收
+- `docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md`：实现、评审或联调 iOS 会话页右上菜单的复制（`session.copy`，新增）与接力（`session.handoff`，服务端已有）前必读；作用域锁定 copy+handoff（成功后进新会话；不可用/只读隐藏），不含导出/重启/新原生恢复协议/新 i18n/发版；服务端复用 TUI 分叉与托管链路（`SessionHub.copy_session` → `prepare_copy_request` → `build_launch_plan` → `_host`），验收走 fixture 回放与 `test_remote_actions`/`test_remote_sessions`/`test_runtime`。
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里。**用 `show`/`export` 的会话数据做周报、日报、工作总结、活动统计，或排查「导出的内容不够写总结 / 看不出到底改了什么」时，必读「拿会话数据做总结 / 周报时的边界」节**——那 5 条（对话不含工具调用与改码证据、标题只能当索引、`last_agent` 常为空、user 侧混着系统注入文本、没有成果字段）是不会改的产品边界，得在调用方侧校正
 - `PRIVACY.md`：修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界
 - `CONTRIBUTING.md`：修改开源贡献流程、验证命令、设计边界或 PR 要求
