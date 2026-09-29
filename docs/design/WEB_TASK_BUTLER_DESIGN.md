@@ -24,6 +24,26 @@
 9. Agents (X or Y) may ask the owner for details or decisions. The editor design is the key
    to the user experience.
 
+10. The owner judges this project deceptively simple: every detail matters, and it requires
+    deep investigation, testing, and careful design **before** implementation.
+
+### Delivery approach (*Proposed*, follows requirement 10)
+
+1. **Research**: study existing orchestrators (Conductor OSS, claude-orchestrator,
+   Multiclaude, Vibe Kanban, Nimbalyst, Claude Code agent teams) from source — how they
+   represent tasks, detect completion, surface questions, and handle mid-task changes.
+2. **Risk experiments**, each with a pass bar, before any product code:
+   injection reliability per assistant (mid-turn, confirmed delivery); task-level completion
+   accuracy; anchor survival under move/paste/undo; X judgement quality on a corpus of messy
+   drafts (task split, dependencies, steer vs. new task); trigger timing replayed from
+   recorded typing; editor cursor stability under background decoration updates; X session
+   behaviour over hours (compaction, restart from ledger).
+3. **Design freeze**: every §6 case has a decided behaviour and an acceptance check; UI
+   prototype images reviewed by the owner.
+4. **Test layers**: deterministic tests for ledger/anchors/triggers; recorded-replay tests
+   for typing → X rounds; an evaluation set for X decisions; end-to-end runs with real
+   assistants on disposable projects; browser screenshots/recordings for the editor.
+
 ## 2. Existing capability (verified in source, 2026-09-29)
 
 | Need | Present today | Gap |
