@@ -126,6 +126,7 @@ def host_session(
         identity_env = pi_identity.instance_env_pairs(pi_identity.new_instance_id())
     # 新开托管前先压一轮：超软上限时关掉闲置够久且非执行中的旧会话。
     keepalive.reap_pressure()
+    keepalive.ensure_server()
     name = keepalive._session_name(runtime_id, ident)
     argv = [
         *keepalive.tmux_argv(), "-f", keepalive._ensure_config_file(),

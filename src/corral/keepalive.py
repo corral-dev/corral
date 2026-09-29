@@ -180,6 +180,17 @@ def _ensure_config_file() -> str:
 ensure_config_file = _ensure_config_file
 
 
+def ensure_server() -> None:
+    """Start the product server as an app-class launchd job on macOS (best effort).
+
+    Hosted agents inherit the server's scheduling class, so it must not depend
+    on who happens to start it first; see ``corral.tmux_server``.
+    """
+    from corral import tmux_server
+
+    tmux_server.ensure_server(SOCKET_NAME, _ensure_config_file(), tmux_env())
+
+
 def _env_disabled(*names: str) -> bool:
     """兼容旧调用：任一完整变量名被置 0 即视为禁用。新代码请用 env_is_disabled。"""
     return any((os.environ.get(name) or "").strip() == "0" for name in names)
@@ -234,6 +245,7 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
             cwd=plan.cwd,
         )
     name = _session_name(runtime_id, ident)
+    ensure_server()
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]
     if plan.cwd:
         argv += ["-c", plan.cwd]

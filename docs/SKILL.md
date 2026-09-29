@@ -40,6 +40,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 ```
 
 - `diagnose` 的 `package_file` / `install_channel` / `stale_source_warning` 告诉你当前跑的是哪份拷贝；源码树里开发却加载了别处副本时会有告警，以告警为准换入口。
+- `diagnose` 的 `keepalive_server` 报告保活 tmux server 的调度档（`priority`、`interactive_job`、`clamped`）。`clamped: true` 表示托管助手整体被 macOS 限流（新会话起得慢、同样的活比 Corral 外慢数倍）；只能重启一次 server 解决，见 `docs/MAINTAINER_GUIDE.md`「Keepalive server scheduling class」。
 
 ## 命令
 
@@ -56,7 +57,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 | `corral context <会话>` | 生成接续该会话所需的上下文数据包 |
 | `corral plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
 | `corral describe [command]` | 查看命令 / 参数 / 输出字段说明 |
-| `corral diagnose` | 只读诊断：events.log / embed-error.log / `last_error` / 截图目录 / tmux / 配色自检 / **安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
+| `corral diagnose` | 只读诊断：events.log / embed-error.log / `last_error` / 截图目录 / tmux / 保活 server 调度档（`keepalive_server`）/ 配色自检 / **安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
 
 
 ### 会话标识（`<会话>` 参数）

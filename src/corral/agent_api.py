@@ -887,6 +887,16 @@ def cmd_describe(args, registry) -> dict:
     return _ok({"commands": [_describe_command(spec, full=False) for spec in COMMANDS]})
 
 
+def _keepalive_server_report() -> dict | None:
+    """Scheduling class of the running keepalive server (clamped = hosted agents throttled)."""
+    try:
+        from corral import keepalive, tmux_server
+
+        return tmux_server.server_report(keepalive.SOCKET_NAME, keepalive.tmux_env())
+    except Exception:  # noqa: BLE001 - diagnose must never fail on this probe
+        return None
+
+
 def cmd_diagnose(args, registry) -> dict:
     """只读诊断：缓存路径、日志是否存在、runtime 配色自检、tmux 版本。不启动 TUI。"""
     import corral
@@ -918,6 +928,7 @@ def cmd_diagnose(args, registry) -> dict:
         "debug": bool(getenv("DEBUG")),
         "runtime_label_style_claude": corral.runtime_label_style("claude"),
         "tmux_version": tmux_version,
+        "keepalive_server": _keepalive_server_report(),
         "version": install["version"],
         "package_file": install["package_file"],
         "python": install["python"],
@@ -1171,6 +1182,10 @@ COMMANDS = [
             "debug": "当前是否开启 CORRAL_DEBUG",
             "runtime_label_style_claude": "配色自检样例（应为 bold #D97757）",
             "tmux_version": "探测到的 tmux 版本三元组或 null",
+            "keepalive_server": (
+                "保活 tmux server 调度档：running/pid/priority/interactive_job/clamped；"
+                "clamped=true 表示托管助手被系统限流，需重启一次 server"
+            ),
             "version": "当前加载的 corral.__version__",
             "package_file": "当前进程 import 的 corral.__file__ 绝对路径",
             "python": "当前解释器 sys.executable",
