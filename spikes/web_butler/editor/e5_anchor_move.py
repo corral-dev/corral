@@ -49,7 +49,7 @@ async def main() -> int:
             result = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
             await p.key("z", modifiers=4, commands=["undo"])
             after_undo = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
-            await p.key("z", modifiers=5, commands=["redo"])
+            await p.key("z", modifiers=12, commands=["redo"])  # Meta+Shift
             after_redo = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
     finally:
         subprocess.run(["agent-browser", "--session", SESSION, "close"], capture_output=True)

@@ -16,7 +16,8 @@ const addAgent = StateEffect.define({ map: (v, m) => ({ from: m.mapPos(v.from, 1
 const addDone = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
 const resetAll = StateEffect.define();
 const addAnchor = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
-const moveAnchor = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
+const moveAnchor = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1),
+  prevFrom: m.mapPos(v.prevFrom, 1), prevTo: m.mapPos(v.prevTo, -1) }) });
 
 const strikeMark = Decoration.mark({ class: "cm-strike" });
 const agentMark = Decoration.mark({ class: "cm-agent" });
@@ -162,6 +163,10 @@ const strikeUndo = invertedEffects.of((tr) => {
   const out = [];
   for (const e of tr.effects) if (e.is(addStrike)) out.push(removeStrike.of(e.value));
   for (const e of tr.effects) if (e.is(removeStrike)) out.push(addStrike.of(e.value));
+  for (const e of tr.effects) if (e.is(moveAnchor)) {
+    const v = e.value;
+    out.push(moveAnchor.of({ id: v.id, from: v.prevFrom, to: v.prevTo, prevFrom: v.from, prevTo: v.to }));
+  }
   return out;
 });
 
@@ -230,6 +235,23 @@ function fromMarkdown(md) {
 const log = [];
 function create(parent, projects, initial = "") {
   let pendingCut = null; // same-editor provenance; clipboard text is still the public payload
+  let armedPaste = null;
+  // The anchor move is part of the paste transaction, so one undo reverts text and anchor together.
+  const pasteMove = EditorState.transactionExtender.of((tr) => {
+    const token = armedPaste;
+    if (!token || !tr.isUserEvent("input.paste")) return null;
+    armedPaste = null;
+    let at = -1;
+    tr.changes.iterChanges((_fa, _ta, fb, _tb, ins) => { if (at < 0 && ins.toString() === token.text) at = fb; });
+    if (at < 0) return null;
+    const current = {};
+    tr.startState.field(anchorField).between(0, tr.startState.doc.length, (f, t, v) => { current[v.id] = [f, t]; });
+    const effects = token.anchors.filter(({ id }) => current[id]).map(({ id, from, to }) => moveAnchor.of({
+      id, from: at + from, to: at + to,
+      prevFrom: tr.changes.mapPos(current[id][0], 1), prevTo: tr.changes.mapPos(current[id][1], -1),
+    }));
+    return effects.length ? { effects } : null;
+  });
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -237,7 +259,7 @@ function create(parent, projects, initial = "") {
       extensions: [
         history(), keymap.of([...defaultKeymap, ...historyKeymap]), markdown(), EditorView.lineWrapping,
         composeRange, strikeField, agentField, doneField, anchorField,
-        strikeInsteadOfDelete, strikeUndo, lockDone, projectHighlighter(projects),
+        strikeInsteadOfDelete, strikeUndo, lockDone, pasteMove, projectHighlighter(projects),
         EditorView.updateListener.of((u) => { for (const tr of u.transactions) if (tr.docChanged) log.push({ t: performance.now(), ev: tr.annotation(Transaction.userEvent) || (tr.annotation(system) ? "system" : "") }); }),
         EditorView.domEventHandlers({
           cut(_e, current) {
@@ -257,18 +279,9 @@ function create(parent, projects, initial = "") {
           paste(e, current) {
             const token = pendingCut;
             pendingCut = null;
-            if (!token || !token.anchors.length || performance.now() - token.at > 120_000 ||
-                e.clipboardData?.getData("text/plain") !== token.text ||
-                !current.state.selection.main.empty) return false;
-            const at = current.state.selection.main.from;
-            queueMicrotask(() => {
-              if (current.state.sliceDoc(at, at + token.text.length) !== token.text) return;
-              current.dispatch({
-                effects: token.anchors.map(({ id, from, to }) => moveAnchor.of({ id, from: at + from, to: at + to })),
-                annotations: system.of(true),
-              });
-            });
-            return false;
+            armedPaste = token && token.anchors.length && performance.now() - token.at <= 120_000 &&
+              e.clipboardData?.getData("text/plain") === token.text ? token : null;
+            return false; // CodeMirror performs the paste; pasteMove adds the anchor move to it
           },
           mousedown(e) {
             if (!e.target.closest("[data-task]")) return false;

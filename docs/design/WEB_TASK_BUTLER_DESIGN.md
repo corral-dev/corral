@@ -337,9 +337,15 @@ document. The clipboard paste succeeded; the source remained visible and struck,
 The RangeSet anchor stayed at source offset 7 instead of moving to the pasted copy at offset
 29. Therefore ordinary CodeMirror position mapping is insufficient for §6.1's move guarantee.
 
-The next spike will record the source anchor IDs/relative offsets on `cut`, verify that the
-next `paste` carries the same text, and atomically move those IDs to the pasted instance
-while preserving the struck source. This proof covers an unambiguous same-editor cut/paste.
+Fix, verified (E5 PASS, E2 regression 15/15): on `cut` the editor records which anchors lie
+inside the selection and their relative offsets; a following `paste` whose clipboard text is
+identical moves those anchors to the pasted copy **inside the paste transaction itself**, with
+an inverse move registered for history. The struck source stays. A first version moved the
+anchor in a separate transaction; undo then restored the text but left the anchor collapsed
+on an empty span — so the move must be part of the same transaction as the paste. Undo returns
+text and anchor to the source; redo moves both back. Scope: same-editor cut → paste of
+identical text; copy/paste, cross-tab and edited clipboard text are not moves (the anchor
+stays; X sees the pasted text as new writing and decides).
 Copying between apps, repeated identical text, multiple pending cuts, drag/drop and
 undo/redo need separate acceptance; custom clipboard formats are optional in browsers, so
 they cannot be the sole identity channel. [CodeMirror event/RangeSet API](https://codemirror.net/docs/ref/),
