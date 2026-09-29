@@ -318,6 +318,26 @@ is reserved for work not yet started. X needs a `reanchor` action usable during 
 the command boundary must validate exact current-document spans and legal actions for each
 ledger state. This is a contract risk, not merely a prompt-quality score.
 
+Command boundary (built 2026-09-29, **not yet run end to end**): `x_eval/contract.py` checks
+every action before execution — quotes must be contiguous spans of one current block (struck
+characters keep their positions); each action is legal only for certain ledger states
+(`update_task` queued/blocked, `reanchor` and `stop` up to running, `steer`/`mark_done` running,
+`reopen_as_followup` done); ids, dependencies and components must exist; assistants must be
+usable. Rejections go back to X once with reasons (`run_eval.py`). Unit-checked on the typo
+case (rejects the invalid `update_task` + joined quote, accepts `reanchor` + `steer`). The full
+16-case run with the boundary is pending: Codex Luna hit its usage limit, and Claude one-shot
+calls failed until F10 was fixed.
+
+- **F10 Tool catalogs cost context in every session.** A one-shot Claude call carried ~250k
+  tokens of context, over Haiku's 200k limit, because every configured MCP server's tool
+  catalog loads into every new session; one stock-data server alone was ~230k. The owner
+  removed it from the canonical MCP config (2026-09-29); a blank Claude session now starts at
+  ~18k (~13k with MCP disabled). X must be launched with only the tools dispatching needs.
+  Measurement method: shared MCP clients guide (agentsync `docs/MCP_CLIENTS_GUIDE.md`).
+- **F11 X inherits the owner's global rules.** Run as an ordinary Claude session, X wrote Y
+  briefs that already carried the owner's standing requirements (e.g. verify iOS on the paired
+  device). Desirable: keep global instructions loaded for X and Y.
+
 ### 9.5 E4 — trigger-timing replay (`spikes/web_butler/trigger_replay.py`)
 
 Six labeled, **synthetic** typing/event traces were replayed against four idle/running delay
@@ -376,6 +396,17 @@ Preview captures: [desktop](assets/web-task-butler-preview.png),
 4. Kimi launch flag `--auto` (F6; owner-approved; global CLI-wrapping rule already updated).
 5. Persistent same-task assistant reassignment after quota/login failure, with prior progress
    gathered from verified session/workspace evidence rather than a call to the unavailable Y.
+
+### 9.9 Remaining before design freeze (2026-09-29)
+
+1. Full E3 run through the command boundary (cheap model, per requirement 16).
+2. Long-running X: one session across dozens of rounds, including compaction and restart
+   rebuilt from the ledger — not yet tested at all.
+3. Trigger delays from the owner's real typing in the preview page (E4 used synthetic traces;
+   a 10-second thinking pause still woke X at 8 s / 3 s). Needs the owner.
+4. Owner review of the UI drafts in `docs/design/assets/`. Needs the owner.
+5. Freeze: acceptance checks for §6.1, evaluation cases for §6.2, implementation plan for the
+   §9.8 change list, the local web service, the ledger and X's command set.
 
 ## 10. References
 

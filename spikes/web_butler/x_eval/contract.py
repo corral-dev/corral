@@ -1,0 +1,74 @@
+"""X command boundary: validate X's actions against the document, ledger, projects and assistants.
+
+The product executes nothing X proposes until it passes these checks; rejections go back to X
+with reasons. Mechanics only — no judgement about *whether* an action is wise.
+"""
+
+from __future__ import annotations
+
+import re
+
+# Which ledger states each action may target.
+LEGAL_STATES = {
+    "update_task": {"queued", "blocked"},
+    "reanchor": {"queued", "blocked", "running"},
+    "steer": {"running"},
+    "stop": {"queued", "blocked", "running"},
+    "reassign": {"queued", "blocked", "running"},
+    "mark_done": {"running"},
+    "reopen_as_followup": {"done"},
+}
+
+
+def block_texts(document: list[str]) -> list[str]:
+    """Plain text of each block as the owner sees it: markers removed, struck characters kept."""
+    return [re.sub(r"<!--/?x-->", "", t).replace("~~", "") for t in document]
+
+
+def validate(actions: list[dict], document: list[str], ledger: list[dict], projects: dict,
+             assistants: dict) -> list[str]:
+    errors: list[str] = []
+    blocks = block_texts(document)
+    tasks = {t["id"]: t for t in ledger}
+    components = {c for comps in projects.values() for c in comps}
+    usable = {name for name, status in assistants.items() if status == "usable"}
+    new_ids: set[str] = set()
+
+    def quote_ok(q: str, where: str) -> None:
+        if not q or not any(q in b for b in blocks):
+            errors.append(f"{where}: quote {q!r} is not a contiguous span of one current block "
+                          "(struck characters still occupy their positions)")
+
+    for i, a in enumerate(actions):
+        kind = a.get("type")
+        where = f"action {i + 1} ({kind})"
+        target = a.get("id") if kind != "reopen_as_followup" else a.get("of")
+        if kind in ("create_task", "reopen_as_followup"):
+            nid = a.get("id")
+            if not nid or nid in tasks or nid in new_ids:
+                errors.append(f"{where}: new task id {nid!r} is missing or already used")
+            new_ids.add(nid)
+        if kind in LEGAL_STATES:
+            t = tasks.get(target)
+            if t is None:
+                errors.append(f"{where}: task {target!r} does not exist")
+            elif t["state"] not in LEGAL_STATES[kind]:
+                errors.append(f"{where}: not allowed on a {t['state']} task (allowed: "
+                              f"{', '.join(sorted(LEGAL_STATES[kind]))})")
+        if kind == "create_task":
+            if a.get("project") not in components:
+                errors.append(f"{where}: project {a.get('project')!r} is not a known component")
+            for dep in a.get("depends_on") or []:
+                if dep not in tasks and dep not in new_ids:
+                    errors.append(f"{where}: dependency {dep!r} does not exist")
+        if kind in ("create_task", "reassign") and a.get("assistant") not in (None, *usable):
+            errors.append(f"{where}: assistant {a.get('assistant')!r} is not usable now")
+        if kind == "reassign" and not a.get("assistant"):
+            errors.append(f"{where}: reassign needs a usable assistant")
+        for q in a.get("anchors") or []:
+            quote_ok(q, where)
+        if kind == "mark_done":
+            quote_ok(a.get("quote"), where)
+        if kind == "ask":
+            quote_ok(a.get("near"), where)
+    return errors

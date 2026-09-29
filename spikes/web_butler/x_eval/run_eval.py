@@ -16,6 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from contract import validate
 from scenarios import ASSISTANTS, PROJECTS, SCENARIOS
 
 HERE = Path(__file__).resolve().parent
@@ -25,6 +26,7 @@ ACTION_FIELDS = {
     "create_task": {"id": "string", "project": "string", "assistant": "nullable_string",
                     "instruction": "string", "anchors": "strings", "depends_on": "strings"},
     "update_task": {"id": "string", "instruction": "string", "anchors": "strings"},
+    "reanchor": {"id": "string", "anchors": "strings"},
     "steer": {"id": "string", "message": "string", "interrupt": "boolean"},
     "stop": {"id": "string", "reason": "string"},
     "reassign": {"id": "string", "assistant": "string", "instruction": "string", "reason": "string"},
@@ -64,7 +66,9 @@ def ask(assistant: str, text: str) -> tuple[str, float, str | None]:
         if assistant == "claude-haiku":
             cmd = ["claude", "-p", text, "--model", "haiku", "--output-format", "json",
                    "--tools", "", "--permission-mode", "bypassPermissions",
-                   "--no-session-persistence"]
+                   "--no-session-persistence",
+                   # F10: the owner's MCP tool catalog alone is ~237k tokens; X gets none of it
+                   "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
             out = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=180)
             try:
                 raw = json.loads(out.stdout).get("result", "")
@@ -110,17 +114,32 @@ def quotes_exact(actions: list[dict], document: list[str]) -> list[str]:
 
 
 def run_one(assistant: str, s: dict) -> dict:
-    text = PROMPT + "\n\n## This round\n\n```json\n" + payload(s) + "\n```\n\nReturn only the JSON object."
-    try:
-        raw, secs, error = ask(assistant, text)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raw, secs, error = "", 0, str(exc)
-    obj = parse(raw)
-    actions = (obj or {}).get("actions") or []
-    ok = bool(obj) and bool(s["check"](actions)) if not error else False
+    """One round through the command boundary: rejected actions go back to X once with reasons."""
+    base = PROMPT + "\n\n## This round\n\n```json\n" + payload(s) + "\n```\n\nReturn only the JSON object."
+    text, attempts, total = base, [], 0.0
+    obj, actions, error = None, [], None
+    for _ in range(2):
+        try:
+            raw, secs, error = ask(assistant, text)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raw, secs, error = "", 0, str(exc)
+        total += secs
+        obj = parse(raw)
+        actions = (obj or {}).get("actions") or []
+        rejected = [] if error or obj is None else validate(
+            actions, s["document"], s["ledger"], PROJECTS, ASSISTANTS)
+        attempts.append({"actions": actions, "rejected": rejected, "seconds": round(secs, 1)})
+        if error or obj is None or not rejected:
+            break
+        text = (base + "\n\n## Your previous answer was rejected by the command boundary\n\n"
+                + json.dumps({"actions": actions}, ensure_ascii=False) + "\n\nReasons:\n- "
+                + "\n- ".join(rejected) + "\n\nReturn a corrected, complete JSON object.")
+    final_rejected = attempts[-1]["rejected"] if attempts else []
+    ok = bool(obj) and not error and not final_rejected and bool(s["check"](actions))
     bad = quotes_exact(actions, s["document"])
     return {"id": s["id"], "expect": s["expect"], "behaviour_ok": ok, "quotes_ok": not bad, "bad_quotes": bad,
-            "seconds": round(secs, 1), "actions": actions, "note": (obj or {}).get("note"),
+            "seconds": round(total, 1), "actions": actions, "note": (obj or {}).get("note"),
+            "attempts": attempts, "first_rejected": attempts[0]["rejected"] if attempts else [],
             "error": error, "raw": None if obj else raw[:800]}
 
 
@@ -136,7 +155,8 @@ def main() -> int:
         results = list(pool.map(lambda s: run_one(assistant, s), chosen))
     for r in results:
         flag = "ERROR" if r["error"] else "PASS" if r["behaviour_ok"] and r["quotes_ok"] else "FAIL"
-        print(f"{flag} {r['id']:<30} {r['seconds']:>5}s  behaviour={r['behaviour_ok']} quotes={r['quotes_ok']}  "
+        retry = " retried" if len(r["attempts"]) > 1 else ""
+        print(f"{flag} {r['id']:<30} {r['seconds']:>5}s{retry}  behaviour={r['behaviour_ok']} quotes={r['quotes_ok']}  "
               f"{json.dumps([a.get('type') for a in r['actions']])} {r['error'] or ''}")
     label = "full" if not prefixes else "-".join(prefixes)
     out = HERE / "results" / f"e3-{assistant}-{label}.json"

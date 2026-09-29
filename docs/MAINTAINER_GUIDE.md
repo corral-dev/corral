@@ -81,6 +81,7 @@ helper，不要先照抄再改。运行时私有的解析格式（JSONL 字段�
 - **判活禁止「同目录只留最新一条」**：同一工作目录常会同时跑多个 Kimi TUI。正向证据优先：命令行 `-S` / `--session`，托管注入的完整 `CORRAL_SESSION_ID`（8 位占位 ident 不得前缀猜测），再才是 `--continue` / `-c` 或「进程启动 ≤ 会话创建」一对一认领。进程 comm 是 `kimi-code` 不是 `kimi`。`-p` 打印模式与 `server` / `web` 等子命令不算 TUI。旧实现按 cwd 折叠后只标最新一条，会把仍在跑的会话标成已结束，多个新建还会把 pid 错绑到别人的历史上。判活失败静默降级为空集。回归：`KimiScanTests.test_live_flags_*`。
 - **接力到 Kimi 只能走非交互模式（相对 claude/codex 的已知能力差距）**：Kimi 的 `-p/--prompt` 是「跑一个 prompt 并打印，跑完退出」的 headless 模式；根命令不接受位置参数形式的初始 prompt（带位置参数会报 `unknown command`），交互式 TUI 也没有从命令行预置首条消息的入口（实测 dist 里根 action 是 `opts.prompt !== void 0 ? "run prompt" : "start shell"`，二选一）。因此 `KimiRuntime.build_new_plan`（跨运行时接力读别家历史新建 Kimi 会话）只能用 `kimi --add-dir <源历史目录> -y -p <接力提示词>`：Kimi 读原始历史、把最后一个未完成任务跑完并打印结果后退出，用户随后可用 `kimi -c`（continue previous session for working dir）在同一会话上继续交互。同运行时原生恢复（`kimi -y -S <sessionId>`）和空白新会话（`kimi -y`）不受此限。Kimi 作为接力**源**（被别家读取）完全正常：`export_handoff` 指向 `wire.jsonl`，`history_reading_hint` 说明上面的格式。未来 Kimi 若新增交互式预置 prompt 的入口，应把 `build_new_plan` 切成交互式，与 claude/codex 对齐。
 - **`-y/--yolo` 在根命令即生效**：不像 OpenCode 的危险参数只在子命令下可用，Kimi 的 `-y` 主命令直接接受，所以正常放进 `KimiRuntime.auto_approve_args`，`corral kimi` 裸直启会自动垫上，与 claude/codex 一致。
+  - **更正（2026-09-29，Kimi Code 2.1.1 实测 `kimi --help`）**：`-y/--yolo` 已改义为「Ask When Needed」——日常编辑和命令自动执行，**风险操作、提问和计划仍会停下来问人**；真正不打断的是 `--auto`（Never Ask）。当前 `KimiRuntime.auto_approve_args` 仍是 `-y`，托管 Kimi 会话可能卡在审批上；机主已批准改为 `--auto`（待随网页任务管家的 Corral 改造落地，见 `docs/design/WEB_TASK_BUTLER_DESIGN.md` §9.8）。全局包装规则已同步为 `--auto`。
 
 ## Pi 扫描与启动
 
@@ -577,6 +578,8 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 3. 推 tag 后必须用 `git ls-remote --tags origin` / `github` 核对远端真有该 tag；本地 `git push` 因门禁失败时可能**根本没推上去**，不能只看本机 tag 列表。
 4. `CORRAL_SKIP_PUSH_GATE=1` 只允许在：**GitHub 侧该版本已验证过**（或本机刚跑完完整 `ci-test`）、且阻塞原因是脏 WIP / 双 remote 重复跑门禁之类非产品缺陷时使用；禁止用跳过门禁掩盖未跑测试。
 5. **显式给旧 tag 跑收尾时，工作区版本号必须等于该 tag。** `publish-release.sh` 按当前工作区打包，不会切回 tag 源码。2026-08-16 给 `v0.24.125` 收尾时工作区已被并行 Agent 升到 `0.24.126`，把 126 的 macOS 安装包传到了 125 的 Release（校验和清单仍是 125 的，附件列表却混了两套）。发现后应立刻从该 Release 删掉版本号不符的附件。脚本现在会在版本不一致时直接退出。
+6. **公开仓库的提交历史**：`origin` 上的全部提交会在**任何一个 Agent** 的下一次发版里随 `git push github` 原样公开（含实验目录、测试夹具、设计文档与截图）。因此不得提交机主的私有项目名、本机项目清单或本机路径清单：示例和夹具用虚构名（如 `Notely`）或已公开项目名；本机数据运行时生成并加入 `.gitignore`（参照 `spikes/web_butler/editor/export_projects.py`）。已推到私有 `origin`、尚未公开的误提交，只能在机主确认后改写**自己的**提交并 `--force-with-lease` 推送（2026-09-29 两次按此处理）；公开前可用 `git merge-base --is-ancestor <提交> github/main` 核对是否已公开。
+7. **推送门禁扫的是工作区，不是本次推送的提交**：`ci-test.py --lint-only` 会检查别的 Agent 未跟踪、未提交的半成品测试文件，导致只改文档或实验目录的推送被拦（2026-09-29：他人暂停中的 `tests/test_remote_richmsg_pi_baseline.py` 报 14 处 ruff）。本次推送不含产品代码时按第 4 条用 `CORRAL_SKIP_PUSH_GATE=1`（全局泄漏门禁照常运行）；**不得**为过门禁挪动或格式化他人文件。环境改进项（未实施）：门禁改为只检查待推送提交的文件树。
 
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
