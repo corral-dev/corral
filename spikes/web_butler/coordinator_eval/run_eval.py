@@ -1,4 +1,4 @@
-"""E3 — X judgement evaluation. Runs every scenario through an assistant in one-shot mode.
+"""E3 — coordinator judgement evaluation. Runs every scenario through an assistant in one-shot mode.
 
 Usage: python run_eval.py claude-haiku|codex-luna [scenario-id-prefix ...]
 Scores: scenario check (behaviour) + quote exactness (every anchor/quote/near must be copied
@@ -20,7 +20,7 @@ from contract import validate
 from scenarios import ASSISTANTS, PROJECTS, SCENARIOS
 
 HERE = Path(__file__).resolve().parent
-PROMPT = (HERE / "x_prompt.md").read_text()
+PROMPT = (HERE / "coordinator_prompt.md").read_text()
 
 ACTION_FIELDS = {
     "create_task": {"id": "string", "project": "string", "assistant": "nullable_string",
@@ -31,7 +31,7 @@ ACTION_FIELDS = {
     "stop": {"id": "string", "reason": "string"},
     "reassign": {"id": "string", "assistant": "string", "instruction": "string", "reason": "string"},
     "ask": {"near": "string", "text": "string"},
-    "mark_done": {"id": "string", "quote": "string", "summary": "string"},
+    "mark_done": {"id": "string", "quote": "string", "evidence": "string", "summary": "string"},
     "reopen_as_followup": {"of": "string", "id": "string", "instruction": "string", "anchors": "strings"},
 }
 
@@ -51,7 +51,7 @@ def output_schema() -> dict:
 
 
 def plain(text: str) -> str:
-    return re.sub(r"<!--/?x-->", "", text).replace("~~", "")
+    return re.sub(r"<!--/?coordinator-->", "", text).replace("~~", "")
 
 
 def payload(s: dict) -> str:
@@ -67,7 +67,7 @@ def ask(assistant: str, text: str) -> tuple[str, float, str | None]:
             cmd = ["claude", "-p", text, "--model", "haiku", "--output-format", "json",
                    "--tools", "", "--permission-mode", "bypassPermissions",
                    "--no-session-persistence",
-                   # F10: the owner's MCP tool catalog alone is ~237k tokens; X gets none of it
+                   # F10: the owner's MCP tool catalog alone is ~237k tokens; the coordinator gets none of it
                    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
             out = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=180)
             try:
@@ -114,7 +114,7 @@ def quotes_exact(actions: list[dict], document: list[str]) -> list[str]:
 
 
 def run_one(assistant: str, s: dict) -> dict:
-    """One round through the command boundary: rejected actions go back to X once with reasons."""
+    """One round through the command boundary: rejected actions go back to the coordinator once with reasons."""
     base = PROMPT + "\n\n## This round\n\n```json\n" + payload(s) + "\n```\n\nReturn only the JSON object."
     text, attempts, total = base, [], 0.0
     obj, actions, error = None, [], None

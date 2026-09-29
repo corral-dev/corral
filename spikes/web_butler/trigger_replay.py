@@ -1,7 +1,7 @@
-"""E4: replay labeled drafting traces against the proposed X wake-up policy.
+"""E4: replay labeled drafting traces against the proposed coordinator wake-up policy.
 
 This is a design experiment, not product scheduler code. Timestamps are simulated so a
-long pause and a busy X can be examined without waiting in real time.
+long pause and a busy coordinator can be examined without waiting in real time.
 """
 
 from __future__ import annotations
@@ -164,7 +164,7 @@ def main() -> None:
         results[key] = {trace["name"]: replay(trace, idle, running) for trace in TRACES}
         total = sum(len(v["rounds"]) for v in results[key].values())
         early = sum(len(v["premature"]) for v in results[key].values())
-        print(f"{key}: {total} X rounds, {early} before labeled idea completion")
+        print(f"{key}: {total} coordinator rounds, {early} before labeled idea completion")
     base = results["idle_8000_running_3000"]
     assert len(base["busy_x_merges_edits_and_worker_event"]["rounds"]) == 2
     assert base["busy_x_merges_edits_and_worker_event"]["rounds"][1]["worker_events"] == ["t1 turn finished"]

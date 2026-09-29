@@ -114,7 +114,7 @@ async def main() -> int:
             results.append({"check": name, "ok": bool(ok), "detail": detail})
             print(("PASS " if ok else "FAIL ") + name + "  " + json.dumps(detail, ensure_ascii=False)[:300])
 
-        # T1 backspace x3 on text X has seen strikes, never removes
+        # T1 backspace x3 on text the coordinator has seen strikes, never removes
         await reset()
         await p.type("hello")
         await p.js("butler.markSeen(view); true")
@@ -208,19 +208,19 @@ async def main() -> int:
         typed = "我正在这里连续打字 typing steadily 123"
         agent_task = p.js(
             "(async () => { for (let i = 0; i < 5; i++) { await new Promise(r => setTimeout(r, 90));"
-            " butler.insertAgentText(view, 9, `[X: question ${i}?]\\n`); } return true })()")
+            " butler.insertAgentText(view, 9, `[Coordinator: question ${i}?]\\n`); } return true })()")
         typing_task = p.type(typed, delay=0.02)
         await asyncio.gather(agent_task, typing_task)
         s = await state()
         check("T10 owner typing unaffected by agent inserts",
-              typed in s["text"] and s["text"].count("[X: question") == 5,
+              typed in s["text"] and s["text"].count("[Coordinator: question") == 5,
               {"tail": s["text"][-60:], "md_head": s["md"][:160]})
 
         # T11 round trip through Markdown
-        await reset("a ~~b~~ c <!--x-->ask?<!--/x--> d")
+        await reset("a ~~b~~ c <!--coordinator-->ask?<!--/coordinator--> d")
         s = await state()
         check("T11 markdown round trip",
-              s["md"] == "a ~~b~~ c <!--x-->ask?<!--/x--> d" and s["text"] == "a b c ask? d", s)
+              s["md"] == "a ~~b~~ c <!--coordinator-->ask?<!--/coordinator--> d" and s["text"] == "a b c ask? d", s)
 
         # T12 project hints
         await reset("Corral 要改一下，SessKit 也是。Go ahead and go.")
@@ -245,7 +245,7 @@ async def main() -> int:
         check("T13 done click keeps caret and anchors to final fragment",
               pop["head"] == before and pop["visible"] and pop["left"] > pop["last"], pop)
 
-        # T15 text X has not seen is deleted outright
+        # T15 text the coordinator has not seen is deleted outright
         await reset()
         await p.type("draft")
         await p.key("Backspace")
@@ -310,7 +310,7 @@ async def main() -> int:
         check("T14 move-line shortcut does not rewrite text", s["md"] == "first\nsecond" and not s["strikes"], s)
 
         await p.js("butler.load(view, 'Fix the login bug. Then add dark mode to Corral. "
-                   "~~drop this~~ <!--x-->Which project for dark mode?<!--/x-->'); "
+                   "~~drop this~~ <!--coordinator-->Which project for dark mode?<!--/coordinator-->'); "
                    "butler.markDone(view, 0, 18, 't1', 'Done: login fixed in Notely/web.\\n"
                    "Verified: test run + screenshot.'); true")
     subprocess.run(["agent-browser", "--session", "butler-e2", "screenshot", str(HERE / "results" / "e2.png")],

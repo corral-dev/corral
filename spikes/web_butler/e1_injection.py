@@ -1,4 +1,4 @@
-"""E1 — can Corral drive a worker (Y) reliably? One run per assistant runtime.
+"""E1 — can Corral drive a worker reliably? One run per assistant runtime.
 
 Checks, per runtime, through Corral's own session layer (no re-implementation):
   1. create a hosted session in a disposable git project;

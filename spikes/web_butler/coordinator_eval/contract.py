@@ -1,7 +1,9 @@
-"""X command boundary: validate X's actions against the document, ledger, projects and assistants.
+"""Coordinator command boundary: validate the coordinator's actions against the document,
+ledger, projects and assistants.
 
-The product executes nothing X proposes until it passes these checks; rejections go back to X
-with reasons. Mechanics only — no judgement about *whether* an action is wise.
+The product executes nothing the coordinator proposes until it passes these checks; rejections
+go back to the coordinator with reasons. Mechanics only — no judgement about *whether* an
+action is wise.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ LEGAL_STATES = {
 
 def block_texts(document: list[str]) -> list[str]:
     """Plain text of each block as the owner sees it: markers removed, struck characters kept."""
-    return [re.sub(r"<!--/?x-->", "", t).replace("~~", "") for t in document]
+    return [re.sub(r"<!--/?coordinator-->", "", t).replace("~~", "") for t in document]
 
 
 def validate(actions: list[dict], document: list[str], ledger: list[dict], projects: dict,
@@ -69,6 +71,11 @@ def validate(actions: list[dict], document: list[str], ledger: list[dict], proje
             quote_ok(q, where)
         if kind == "mark_done":
             quote_ok(a.get("quote"), where)
+            report = (tasks.get(target) or {}).get("worker_report") or ""
+            evidence = a.get("evidence") or ""
+            if not evidence or evidence not in report:
+                errors.append(f"{where}: evidence must be copied exactly from the worker report "
+                              "and say how the result was checked")
         if kind == "ask":
             quote_ok(a.get("near"), where)
     return errors

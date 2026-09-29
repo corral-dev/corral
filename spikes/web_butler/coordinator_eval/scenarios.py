@@ -1,4 +1,7 @@
-"""E3 scenarios: messy owner writing → what a good X does. Project names are fictional except Corral/SessKit."""
+"""E3 scenarios: messy owner writing → what a good coordinator does.
+
+Project names are fictional except Corral/SessKit.
+"""
 
 PROJECTS = {
     "Corral": ["Corral/cli", "Corral/ios"],
@@ -6,7 +9,8 @@ PROJECTS = {
     "Notely": ["Notely/web", "Notely/backend", "Notely/app-ios"],
     "Beacon": ["Beacon/backend"],
 }
-ASSISTANTS = {"claude": "usable", "codex": "usable", "pi": "usable", "cursor": "quota exhausted", "kimi": "not logged in"}
+ASSISTANTS = {"claude": "usable", "codex": "usable", "pi": "usable",
+              "cursor": "quota exhausted", "kimi": "not logged in"}
 
 
 def task(id, state, project, anchors, assistant="claude", report=None, deps=None):
@@ -57,7 +61,8 @@ SCENARIOS = [
     {
         "id": "S5-typo-strike",
         "document": ["Corral 列表加个~~索~~搜索框"],
-        "changes": [{"block": 1, "kind": "edited", "before": "Corral 列表加个索", "after": "Corral 列表加个~~索~~搜索框"}],
+        "changes": [{"block": 1, "kind": "edited", "before": "Corral 列表加个索",
+                     "after": "Corral 列表加个~~索~~搜索框"}],
         "ledger": [task("t1", "running", "Corral/ios", ["Corral 列表加个索"])],
         "expect": "no stop, no new task (typo fix)",
         "check": lambda a: not kinds(a, "stop") and not kinds(a, "create_task")
@@ -115,7 +120,8 @@ SCENARIOS = [
     },
     {
         "id": "S12-answer-in-text",
-        "document": ["登录后立刻跳回登录页，把这个 bug 修了", "<!--x-->是哪个项目的登录？<!--/x-->", "Notely 网页版的"],
+        "document": ["登录后立刻跳回登录页，把这个 bug 修了",
+                     "<!--coordinator-->是哪个项目的登录？<!--/coordinator-->", "Notely 网页版的"],
         "changes": [{"block": 3, "kind": "added"}],
         "ledger": [],
         "expect": "task on Notely/web",
@@ -151,7 +157,8 @@ SCENARIOS = [
     },
     {
         "id": "S16-vague-bug-still-needs-detail",
-        "document": ["把那个登录 bug 修了", "<!--x-->是哪个项目的登录？<!--/x-->", "Notely 网页版的"],
+        "document": ["把那个登录 bug 修了",
+                     "<!--coordinator-->是哪个项目的登录？<!--/coordinator-->", "Notely 网页版的"],
         "changes": [{"block": 3, "kind": "added"}],
         "ledger": [],
         "expect": "ask for the symptom because the owner has not identified a particular bug",

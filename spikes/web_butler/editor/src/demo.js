@@ -1,10 +1,10 @@
 // Backend-free demo of the idea document. The editor mechanics are the real prototype
-// (main.js); X is simulated here with simple rules so the page can be tried anywhere.
+// (main.js); the coordinator is simulated here with simple rules so the page can be tried anywhere.
 import { EditorView } from "@codemirror/view";
 import "./main.js";
 
 const B = window.butler;
-const STORE = "corral-ideas-demo-v1";
+const STORE = "corral-ideas-demo-v2";
 const SETTLE_MS = 2500;
 const PROJECTS = ["Corral", "Notely", "Beacon", "SessKit"];
 const ASSISTANTS = { claude: "Claude", codex: "Codex", pi: "Pi" };
@@ -45,7 +45,7 @@ const layout = EditorView.updateListener.of((u) => {
 const view = B.create($("#ed"), PROJECTS, "", { extensions: [layout], onOpenResult: openResult });
 window.view = view;
 
-// ---------------------------------------------------------------- simulated X
+// ---------------------------------------------------------------- simulated coordinator
 function scheduleSettle() {
   clearTimeout(settleTimer);
   settleTimer = setTimeout(() => settle(true), SETTLE_MS);
@@ -66,7 +66,7 @@ function settle(all) {
   }
   dirty = keep;
   if (!lines.size) { renderStatus(); return; }
-  // these lines are now submitted to X: from here on, deleting them strikes instead of erasing
+  // these lines are now submitted to the coordinator: from here on, deleting them strikes instead of erasing
   for (const n of lines) {
     if (n > view.state.doc.lines) continue;
     const line = view.state.doc.line(n);
@@ -74,7 +74,7 @@ function settle(all) {
   }
   busy++;
   renderStatus();
-  // X reads for a moment, like a real round
+  // the coordinator reads for a moment, like a real round
   setTimeout(() => {
     busy--;
     for (const n of [...lines].sort((x, y) => x - y)) {
@@ -86,7 +86,7 @@ function settle(all) {
 }
 
 function liveSpans(line) {
-  // live = not struck and not written by X
+  // live = not struck and not written by the coordinator
   const agents = B.agentTexts(view);
   const isAgent = (p) => agents.some((a) => p >= a.from && p < a.to);
   const spans = [];
@@ -235,7 +235,7 @@ function isReply(q, text) {
 function resolveQuestion(q, answer, answerFrom, answerTo) {
   const project = q.kind === "component" ? q.project : findProject(answer);
   const component = project && componentOf(project, `${q.ideaText} ${answer}`);
-  if (!component) return; // X waits for a clearer answer
+  if (!component) return; // the coordinator waits for a clearer answer
   q.open = false;
   const idea = locate(q.ideaText) || [answerFrom, answerTo];
   dispatch(idea[0], idea[1], q.ideaText, component);
@@ -262,7 +262,7 @@ function renderNotes() {
     const q = questions[a.id];
     if (q && q.open) items.push({ key: a.id, pos: a.from, kind: "question", question: q });
   }
-  // lines X has not read yet get a faint dot where their status will appear
+  // lines the coordinator has not read yet get a faint dot where their status will appear
   const taken = new Set(items.map((it) => view.state.doc.lineAt(Math.min(it.pos, view.state.doc.length)).number));
   const pending = new Set();
   for (const r of dirty) {
@@ -303,7 +303,7 @@ function fillNote(el, it) {
   el.dataset.kind = kind;
   let title, meta;
   if (kind === "pending") {
-    title = busy > 0 ? "X is reading" : "X will read this";
+    title = busy > 0 ? "Coordinator is reading" : "Coordinator will read this";
     meta = "";
   } else if (kind === "question") {
     title = "Waiting for your answer";
@@ -396,9 +396,10 @@ window.addEventListener("scroll", closeResult, { passive: true });
 // ---------------------------------------------------------------- top bar
 function renderStatus() {
   const reading = busy > 0 || dirty.length > 0;
-  const status = $("#x-status");
+  const status = $("#coordinator-status");
   status.dataset.state = reading ? "reading" : "idle";
-  status.querySelector("span").textContent = reading ? "X is reading" : "X is up to date";
+  status.querySelector(".long").textContent = reading ? "Coordinator is reading" : "Coordinator is up to date";
+  status.querySelector(".short").textContent = reading ? "Reading" : "Up to date";
   const open = B.agentTexts(view).filter((a) => questions[a.id]?.open);
   const pill = $("#questions");
   pill.hidden = open.length === 0;
@@ -483,7 +484,7 @@ Corral iPhone: find an older session quickly by project or title. ~~Maybe this n
 Notely PDF export sometimes loses Chinese characters, check a real export after the fix.
 
 Fix the login bug that sends people back to the sign-in page
-<!--x-->Which project is this for?<!--/x-->
+<!--coordinator-->Which project is this for?<!--/coordinator-->
 
 `;
 

@@ -151,8 +151,8 @@ function intersects(set, from, to) {
   return hit;
 }
 
-// ---- what X has seen -------------------------------------------------------------------------
-// Sorted, non-overlapping [from, to) ranges of text already submitted to X. Characters the
+// ---- what the coordinator has seen----------------------------------------------------------------------
+// Sorted, non-overlapping [from, to) ranges of text already submitted to the coordinator. Characters the
 // owner types are unseen until the next round submits them, even inside a seen sentence.
 const markSeen = StateEffect.define(); // { from, to }
 function addRange(ranges, from, to) {
@@ -202,7 +202,7 @@ function seenPieces(ranges, from, to) {
 }
 
 // ---- the core rule: deleting seen text becomes strikethrough -------------------------------
-// Text X has not seen yet is deleted normally; text X has seen is struck instead.
+// Text the coordinator has not seen is deleted normally; text it has seen is struck instead.
 // Composition (IME) may rewrite its own in-progress text; those deletions are exempt.
 const composeRange = StateField.define({
   create: () => null,
@@ -228,7 +228,7 @@ const strikeInsteadOfDelete = EditorState.transactionFilter.of((tr) => {
     if (toA > fromA && !isExempt(fromA, toA) && seenPieces(seen, fromA, toA).some((x) => x[2])) needsRewrite = true;
   });
   if (blocked) return [];
-  if (!needsRewrite) return tr; // nothing X has seen is being removed: an ordinary edit
+  if (!needsRewrite) return tr; // nothing the coordinator has seen is being removed: an ordinary edit
 
   const specs = [];
   const struck = [];
@@ -308,7 +308,7 @@ function projectHighlighter(names) {
 }
 
 // ---- serialization ------------------------------------------------------------------------
-const AGENT_OPEN = "<!--x-->", AGENT_CLOSE = "<!--/x-->";
+const AGENT_OPEN = "<!--coordinator-->", AGENT_CLOSE = "<!--/coordinator-->";
 function merged(set, len) {
   const out = [];
   set.between(0, len, (f, t) => {

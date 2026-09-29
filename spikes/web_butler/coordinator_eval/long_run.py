@@ -1,13 +1,13 @@
-"""E6 — one persistent X session over a long scripted timeline.
+"""E6 — one persistent coordinator session over a long scripted timeline.
 
 Usage: python long_run.py [--restart-at N] [--limit K]
 Round 1 sends the full prompt; later rounds send only the round payload to the
 same session (created with --session-id <uuid>, continued with --resume; plain
 -p --no-session-persistence cannot be resumed). A deterministic ledger
-simulator applies X's validated actions (create_task queued -> running when
+simulator applies the coordinator's validated actions (create_task queued -> running when
 dispatched, stop, mark_done, reassign, reopen_as_followup; ask inserts an
-<!--x--> block near the quoted block); rejections from contract.validate go
-back to X once per round, like run_eval.run_one. --restart-at N starts a
+<!--coordinator--> block near the quoted block); rejections from contract.validate go
+back to the coordinator once per round, like run_eval.run_one. --restart-at N starts a
 fresh session at round N with the full prompt plus the current ledger/document
 only. Writes results/e6-<mode>.json and prints a summary (pass count, token
 growth per round, latency trend).
@@ -27,6 +27,8 @@ from pathlib import Path
 from contract import validate
 from run_eval import PROMPT, parse, plain, quotes_exact
 from scenarios import ASSISTANTS, PROJECTS, kinds
+
+OPEN, CLOSE = "<!--coordinator-->", "<!--/coordinator-->"  # marks text the coordinator wrote
 
 HERE = Path(__file__).resolve().parent
 
@@ -60,9 +62,9 @@ def apply_owner(document: list[str], ops: list[tuple]) -> tuple[list[str], list[
         if kind == "add":
             doc.append(op[1])
             changes.append({"block": len(doc), "kind": "added"})
-        elif kind == "add_after_x":  # answer just below the X question on the matched block
+        elif kind == "add_after_question":  # answer just below the coordinator's question on the matched block
             i = find_block(doc, op[1]) + 1
-            if i < len(doc) and doc[i].startswith("<!--x-->"):
+            if i < len(doc) and doc[i].startswith("<!--coordinator-->"):
                 i += 1
             doc.insert(i, op[2])
             changes.append({"block": i + 1, "kind": "added"})
@@ -111,7 +113,7 @@ def apply_events(tasks: list[dict], events: list[tuple]) -> tuple[list[dict], li
 
 
 class Ctx:
-    """What a round's check may look at: the ledger snapshot X saw this round."""
+    """What a round's check may look at: the ledger snapshot the coordinator saw this round."""
 
     def __init__(self, ledger: list[dict], assistants: dict):
         self.ledger = ledger
@@ -123,7 +125,7 @@ class Ctx:
 
 
 class Simulator:
-    """Deterministic ledger + document: applies X's validated actions, dispatches workers."""
+    """Deterministic ledger + document: applies the coordinator's validated actions, dispatches workers."""
 
     def __init__(self) -> None:
         self.document: list[str] = []
@@ -186,7 +188,7 @@ class Simulator:
 
     def insert_ask(self, a: dict) -> None:
         i = find_block(self.document, a["near"])
-        self.document.insert(i + 1, f"<!--x-->{a['text']}<!--/x-->")
+        self.document.insert(i + 1, f"<!--coordinator-->{a['text']}<!--/coordinator-->")
 
     def plan(self, actions: list[dict], assistants: dict) -> tuple[list[dict], list[str]]:
         """Which of these actions would execute now, in order; the rest with reasons."""
@@ -220,13 +222,14 @@ def invariant_violations(actions: list[dict], document: list[str], ever: list[di
         elif a.get("type") == "ask":
             asked = (a.get("text") or "").strip()
             for block in document:
-                if block.startswith("<!--x-->") and block.endswith("<!--/x-->") \
-                        and block[7:-8].strip() == asked:
+                if block.startswith(OPEN) and block.endswith(CLOSE) \
+                        and block[len(OPEN):-len(CLOSE)].strip() == asked:
                     v.append("ask repeats a question already in the document")
     return v
 
 
-def claude_ask(session_id: str | None, text: str, work: str, create: bool) -> tuple[str, dict | None, float, str | None]:
+def claude_ask(session_id: str | None, text: str, work: str,
+               create: bool) -> tuple[str, dict | None, float, str | None]:
     """One claude -p call on the persistent session (create: --session-id, else --resume)."""
     cmd = ["claude", "-p", text, "--model", "haiku", "--output-format", "json",
            "--tools", "", "--permission-mode", "bypassPermissions",
@@ -301,7 +304,7 @@ TIMELINE = [
       expect="ask which project owns the login; no task yet",
       check=lambda a, c: kinds(a, "ask") and not kinds(a, "create_task")),
     R("R08-answer-in-plain-text",
-      owner=[("add_after_x", "登录 bug", "Notely 网页版的，登录后马上又跳回登录页")],
+      owner=[("add_after_question", "登录 bug", "Notely 网页版的，登录后马上又跳回登录页")],
       expect="the owner's plain-text answer becomes the Notely/web task; no re-ask",
       check=lambda a, c: any(t["project"] == "Notely/web" for t in kinds(a, "create_task"))
       and not kinds(a, "ask")),
@@ -374,7 +377,7 @@ TIMELINE = [
       expect="a project that does not exist yet: ask for its name/location; no task",
       check=lambda a, c: kinds(a, "ask") and not kinds(a, "create_task")),
     R("R22-answer-new-project",
-      owner=[("add_after_x", "汇总成一份日报", "就叫 Beacon Daily，放在 Beacon/backend 里")],
+      owner=[("add_after_question", "汇总成一份日报", "就叫 Beacon Daily，放在 Beacon/backend 里")],
       expect="the named location becomes the Beacon/backend daily-report task; no re-ask",
       check=lambda a, c: any(t["project"] == "Beacon/backend" for t in kinds(a, "create_task"))
       and not kinds(a, "ask")),
@@ -498,7 +501,7 @@ def run_timeline(ask_fn, restart_at: int = 0, limit: int = 0) -> list[dict]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="E6 long-running single X session harness")
+    ap = argparse.ArgumentParser(description="E6 long-running single coordinator session harness")
     ap.add_argument("--restart-at", type=int, default=0, metavar="N",
                     help="start a fresh session at round N (full prompt + current state only)")
     ap.add_argument("--limit", type=int, default=0, metavar="K",
