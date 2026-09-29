@@ -303,6 +303,24 @@ def _ident_matches_session_id(ident: str, session_id: str) -> bool:
     return compact.startswith(ident) or ident.startswith(compact[:8])
 
 
+def _background_busy(names: list[str]) -> set[str] | None:
+    """Names whose pane tree shows pending background work (shared verdict).
+
+    None when the probe itself is unusable — callers must then reap nothing,
+    because an unreadable protection source is never a licence to stop a
+    session. These paths have no history wiring, so only the process-tree
+    signal applies here; the transcript signal lives in ``reclaim`` (which
+    sees session histories) and the migration script waits on both the
+    working phase and this verdict.
+    """
+    from corral import busycheck
+
+    checker = busycheck.BusyChecker.from_probe()
+    if checker is None:
+        return None
+    return set(checker.process_busy_names(names))
+
+
 def _is_working_keepalive(name: str, working_pairs: list[tuple[str, str]]) -> bool:
     """关注状态 phase=working 的会话不得被压力回收。"""
     from corral import liveness
@@ -345,7 +363,9 @@ def reap_idle(now: float | None = None) -> list[str]:
     """Opt-in idle cleanup; disabled by default to protect unfinished tasks.
 
     Detached output advances window_activity, not session_activity. Working
-    Agents remain protected even during long periods without terminal output.
+    Agents remain protected even during long periods without terminal output,
+    as do sessions whose pane tree shows pending background work (a finished
+    reply is not proof the agent is done — see ``busycheck``).
     """
     threshold_hours = _idle_threshold_hours()
     if threshold_hours <= 0:
@@ -360,6 +380,9 @@ def reap_idle(now: float | None = None) -> list[str]:
     if now is None:
         now = time.time()
     working_pairs = _load_working_pairs()
+    background_busy = _background_busy([row[0] for row in rows if row])
+    if background_busy is None:
+        return []
     reaped = []
     for row in rows:
         if len(row) < 2:
@@ -372,6 +395,7 @@ def reap_idle(now: float | None = None) -> list[str]:
         if (
             now - activity > threshold_hours * 3600
             and not _is_working_keepalive(name, working_pairs)
+            and name not in background_busy
             and kill(name)
         ):
             reaped.append(name)
@@ -383,7 +407,8 @@ def reap_pressure(now: float | None = None) -> list[str]:
 
     默认关闭（`CORRAL_KEEPALIVE_MAX_SESSIONS=0`）；候选须 tmux
     无活动超过默认 10 分钟（`CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES`），且关注
-    状态不是 working。按空闲最久优先，关到 ≤ 上限或没有合格候选为止——软上限，
+    状态不是 working，且 pane 树里没有未完成的后台任务（见 `busycheck`）。
+    按空闲最久优先，关到 ≤ 上限或没有合格候选为止——软上限，
     不会拦新建。
     """
     max_sessions = _max_sessions()
@@ -413,10 +438,14 @@ def reap_pressure(now: float | None = None) -> list[str]:
 
     idle_needed = _pressure_idle_seconds()
     working_pairs = _load_working_pairs()
+    background_busy = _background_busy([name for name, _activity in sessions])
+    if background_busy is None:
+        return []
     candidates = [
         (name, activity)
         for name, activity in sessions
         if (now - activity) > idle_needed and not _is_working_keepalive(name, working_pairs)
+        and name not in background_busy
     ]
     candidates.sort(key=lambda item: item[1])  # 空闲最久（activity 最小）优先
 

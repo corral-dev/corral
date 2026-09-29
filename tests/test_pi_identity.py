@@ -12,6 +12,7 @@ from unittest import mock
 
 from corral import pi_identity
 from corral.models import LaunchPlan
+from corral.runtime.host_extension import corral_host_extension
 
 
 def _iso(dt: datetime) -> str:
@@ -248,15 +249,15 @@ class ClaimLiveFlagTests(unittest.TestCase):
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
                 self.scan_pi, "process_environ",
-                side_effect=lambda pid: (
+                side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-a"} if pid == 31 else {}
                 ),
             ), mock.patch.object(
-                # SessKit binds claims via `sesskit.pi_claims as pi_identity` on the
-                # aliased scan module — patch that object, not `corral.pi_identity`.
-                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
+                # Claims flow through the host extension provider, which reads
+                # `corral.pi_identity` — patch the Corral reader, not SessKit.
+                pi_identity, "read_claims", return_value=[claim]
             ):
-                sessions = self.scan_pi.scan_sessions(limit=10)
+                sessions = self.scan_pi.scan_sessions(limit=10, host=corral_host_extension())
             by_id = {item["id"]: item for item in sessions}
             self.assertTrue(by_id[claimed_id]["live"])
             self.assertEqual(by_id[claimed_id]["pid"], 31)
@@ -281,13 +282,13 @@ class ClaimLiveFlagTests(unittest.TestCase):
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
                 self.scan_pi, "process_environ",
-                side_effect=lambda pid: (
+                side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-b"} if pid == 41 else {}
                 ),
             ), mock.patch.object(
-                self.scan_pi.pi_identity, "read_claims", return_value=[]
+                pi_identity, "read_claims", return_value=[]
             ):
-                sessions = self.scan_pi.scan_sessions(limit=10)
+                sessions = self.scan_pi.scan_sessions(limit=10, host=corral_host_extension())
             by_id = {item["id"]: item for item in sessions}
             self.assertFalse(by_id[session_id]["live"])
             self.assertIsNone(by_id[session_id]["pid"])
@@ -311,13 +312,13 @@ class ClaimLiveFlagTests(unittest.TestCase):
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
                 self.scan_pi, "process_environ",
-                side_effect=lambda pid: (
+                side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-c"} if pid == 51 else {}
                 ),
             ), mock.patch.object(
-                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
+                pi_identity, "read_claims", return_value=[claim]
             ):
-                sessions = self.scan_pi.scan_sessions(limit=10)
+                sessions = self.scan_pi.scan_sessions(limit=10, host=corral_host_extension())
             by_id = {item["id"]: item for item in sessions}
             self.assertFalse(by_id[session_id]["live"])
 
@@ -341,9 +342,9 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_environ", return_value={}
             ), mock.patch.object(
-                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
+                pi_identity, "read_claims", return_value=[claim]
             ):
-                sessions = self.scan_pi.scan_sessions(limit=10)
+                sessions = self.scan_pi.scan_sessions(limit=10, host=corral_host_extension())
             by_id = {item["id"]: item for item in sessions}
             self.assertTrue(by_id[session_id]["live"])
             self.assertEqual(by_id[session_id]["pid"], 61)
@@ -367,13 +368,13 @@ class ClaimLiveFlagTests(unittest.TestCase):
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
                 self.scan_pi, "process_environ",
-                side_effect=lambda pid: (
+                side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-file"} if pid == 81 else {}
                 ),
             ), mock.patch.object(
-                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
+                pi_identity, "read_claims", return_value=[claim]
             ):
-                sessions = self.scan_pi.scan_sessions(limit=10)
+                sessions = self.scan_pi.scan_sessions(limit=10, host=corral_host_extension())
             by_id = {item["id"]: item for item in sessions}
             self.assertTrue(by_id[real_id]["live"])
             self.assertEqual(by_id[real_id]["pid"], 81)
@@ -397,13 +398,13 @@ class ClaimLiveFlagTests(unittest.TestCase):
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
                 self.scan_pi, "process_environ",
-                side_effect=lambda pid: (
+                side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-d"} if pid == 71 else {}
                 ),
             ), mock.patch.object(
-                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
+                pi_identity, "read_claims", return_value=[claim]
             ):
-                sessions = self.scan_pi.scan_sessions(limit=10)
+                sessions = self.scan_pi.scan_sessions(limit=10, host=corral_host_extension())
             by_id = {item["id"]: item for item in sessions}
             self.assertTrue(by_id[old_id]["live"])
 

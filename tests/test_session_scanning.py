@@ -23,6 +23,7 @@ from corral.models import ConversationMessage, Handoff, LaunchPlan, format_messa
 from corral.runtime.base import BaseRuntime
 from corral.runtime.claude import ClaudeRuntime
 from corral.runtime.codex import CodexRuntime
+from corral.runtime.host_extension import corral_host_extension
 from corral.scan import claude as scan_claude
 from corral.scan import codex as scan_codex
 from corral.scan import kimi as scan_kimi
@@ -1054,15 +1055,15 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
                 real_build = scan_claude._build_session_info
                 build_calls: list[str] = []
 
-                def counting_build(fpath: str, proj: str):
+                def counting_build(fpath: str, proj: str, host=None):
                     build_calls.append(fpath)
-                    return real_build(fpath, proj)
+                    return real_build(fpath, proj, host)
 
                 with (
                     mock.patch.object(scan_claude.os.path, "isdir", side_effect=counting_isdir),
                     mock.patch.object(scan_claude, "_build_session_info", side_effect=counting_build),
                 ):
-                    sessions = scan_claude.scan_sessions(limit=10)
+                    sessions = scan_claude.scan_sessions(limit=10, host=corral_host_extension())
         finally:
             scan_claude.PROJECTS_DIR = old_projects_dir
 
@@ -1469,7 +1470,7 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
                     mtime = 1_800_000_000 + i * 60
                     os.utime(path, (mtime, mtime))
 
-                sessions = scan_codex.scan_sessions(limit=10)
+                sessions = scan_codex.scan_sessions(limit=10, host=corral_host_extension())
         finally:
             scan_codex.SESSIONS_DIR = old_sessions_dir
             scan_codex.SESSION_INDEX = old_session_index
@@ -1568,7 +1569,7 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
                     mtime = 1_800_000_000 + i * 60
                     os.utime(path, (mtime, mtime))
 
-                sessions = scan_codex.scan_sessions(limit=10)
+                sessions = scan_codex.scan_sessions(limit=10, host=corral_host_extension())
         finally:
             scan_codex.SESSIONS_DIR = old_sessions_dir
             scan_codex.SESSION_INDEX = old_session_index
@@ -1594,6 +1595,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
         environ: dict[int, dict[str, str]] | None = None,
         starts: dict[int, float | None] | None = None,
         limit: int = 10,
+        host=None,
     ) -> list:
         cmdlines = cmdlines or {}
         environ = environ or {}
@@ -1606,13 +1608,13 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
              ), \
              mock.patch.object(
                  scan_opencode, "process_environ",
-                 side_effect=lambda pid: environ.get(pid, {}),
+                 side_effect=lambda pid, **kwargs: environ.get(pid, {}),
              ), \
              mock.patch.object(
                  scan_opencode, "process_start_time",
                  side_effect=lambda pid: starts.get(pid),
              ):
-            return scan_opencode.scan_sessions(limit=limit)
+            return scan_opencode.scan_sessions(limit=limit, host=host)
 
     def test_field_mapping_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1911,6 +1913,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
                 processes=[(77, cwd)],
                 cmdlines={77: "opencode --auto"},
                 environ={77: {"CORRAL_SESSION_ID": session_id}},
+                host=corral_host_extension(),
             )
             by_id = {s["id"]: s for s in sessions}
             self.assertTrue(by_id[session_id]["live"])
@@ -2104,6 +2107,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
                     "Original command was opencode --auto -s ses_old"
                 )},
                 starts={42: 1_700_000_090.0},
+                host=corral_host_extension(),
             )
             by_id = {item["id"]: item for item in sessions}
             self.assertTrue(by_id["ses_new"]["live"])
@@ -2135,7 +2139,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
                  mock.patch.object(scan_opencode, "live_processes", return_value=[]):
-                sessions = scan_opencode.scan_sessions(limit=10)
+                sessions = scan_opencode.scan_sessions(limit=10, host=corral_host_extension())
 
         self.assertEqual([s["id"] for s in sessions], ["ses_real"])
         self.assertEqual(sessions[0]["first_user_msg"], "真实的用户问题")
@@ -2167,7 +2171,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
                  mock.patch.object(scan_opencode, "live_processes", return_value=[]):
-                sessions = scan_opencode.scan_sessions(limit=10)
+                sessions = scan_opencode.scan_sessions(limit=10, host=corral_host_extension())
 
         self.assertEqual([s["id"] for s in sessions], ["ses_real"])
 
@@ -2203,7 +2207,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
                  mock.patch.object(scan_opencode, "live_processes", return_value=[]):
-                found = scan_opencode.scan_sessions(limit=1)
+                found = scan_opencode.scan_sessions(limit=1, host=corral_host_extension())
 
         self.assertEqual([s["id"] for s in found], ["ses_real"])
 
@@ -2295,6 +2299,7 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
         environ: dict[int, dict[str, str]] | None = None,
         starts: dict[int, float | None] | None = None,
         limit: int = 10,
+        host=None,
     ) -> list:
         cmdlines = cmdlines or {}
         environ = environ or {}
@@ -2307,13 +2312,13 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
              ), \
              mock.patch.object(
                  scan_kimi, "process_environ",
-                 side_effect=lambda pid: environ.get(pid, {}),
+                 side_effect=lambda pid, **kwargs: environ.get(pid, {}),
              ), \
              mock.patch.object(
                  scan_kimi, "process_start_time",
                  side_effect=lambda pid: starts.get(pid),
              ):
-            return scan_kimi.scan_sessions(limit=limit)
+            return scan_kimi.scan_sessions(limit=limit, host=host)
 
     def test_scan_signature_tracks_file_stat_not_parent_dir_mtime(self) -> None:
         """祖先目录 touch 不得改变签名；wire 追加必须改变。"""
@@ -2553,6 +2558,7 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
                 processes=[(77, cwd)],
                 cmdlines={77: "kimi -y"},
                 environ={77: {"CORRAL_SESSION_ID": session_id}},
+                host=corral_host_extension(),
             )
             by_id = {s["id"]: s for s in sessions}
             self.assertTrue(by_id[session_id]["live"])
@@ -4060,7 +4066,7 @@ class TuiLayoutTests(unittest.TestCase):
 
     def test_pi_session_dir_newcomers_claim_without_crossing(self) -> None:
         """同 cwd 两个占位卡按 corral-<ident> 目录各领各的真实卡，不再因两条新卡放弃。"""
-        from corral.scan.pi import hosted_session_dir
+        from corral.runtime.host_extension import hosted_session_dir
 
         pi_runtime = mock.Mock()
         pi_runtime.id = "pi"
@@ -5068,6 +5074,7 @@ class CursorScanTests(unittest.TestCase):
 
     def test_scan_filters_self_generated_title_sessions(self) -> None:
         """标题生成 `agent -p` 落盘会话必须过滤 PROMPT_MARKER（首条/fallback/原生标题）。"""
+        from corral.runtime.host_extension import corral_host_extension
         from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
@@ -5105,7 +5112,7 @@ class CursorScanTests(unittest.TestCase):
             with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
                 scan_cursor, "live_processes", return_value=[]
             ):
-                sessions = scan_cursor.scan_sessions(limit=10)
+                sessions = scan_cursor.scan_sessions(limit=10, host=corral_host_extension())
 
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0]["id"], "real-chat-id-0001-0002-0003-000000000001")
@@ -5567,6 +5574,7 @@ class CursorScanTests(unittest.TestCase):
 
     def test_live_flags_bind_via_corral_session_env(self) -> None:
         """托管注入的完整 CORRAL_SESSION_ID 可在无 resume / 尚未打开 db 时精确绑定。"""
+        from corral.runtime.host_extension import corral_host_extension
         from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
@@ -5598,7 +5606,7 @@ class CursorScanTests(unittest.TestCase):
                 "process_environ",
                 return_value={"CORRAL_SESSION_ID": chat_id},
             ):
-                sessions = scan_cursor.scan_sessions(limit=10)
+                sessions = scan_cursor.scan_sessions(limit=10, host=corral_host_extension())
 
             self.assertTrue(sessions[0]["live"])
             self.assertEqual(sessions[0]["pid"], 55021)
@@ -6079,7 +6087,7 @@ class PiScanTests(unittest.TestCase):
                 ])
                 os.utime(path, (2_000_000 + index, 2_000_000 + index))
             with mock.patch.object(scan_pi, "SESSIONS_DIR", td):
-                sessions = scan_pi.scan_sessions(limit=3)
+                sessions = scan_pi.scan_sessions(limit=3, host=corral_host_extension())
             ids = {item["id"] for item in sessions}
             self.assertTrue({"old1", "old2", "old3"}.issubset(ids), ids)
             self.assertTrue({"new1", "new2", "new3"}.issubset(ids), ids)
@@ -6262,6 +6270,8 @@ class PiScanTests(unittest.TestCase):
         starts: dict[int, float | None] | None = None,
         open_paths: dict[int, list[str]] | None = None,
         limit: int = 10,
+        host=None,
+        live_map_dir: str | None = None,
     ) -> list:
         cmdlines = cmdlines or {}
         environ = environ or {}
@@ -6274,7 +6284,7 @@ class PiScanTests(unittest.TestCase):
             side_effect=lambda pid: cmdlines.get(pid, "pi --approve"),
         ), mock.patch.object(
             scan_pi, "process_environ",
-            side_effect=lambda pid: environ.get(pid, {}),
+            side_effect=lambda pid, **kwargs: environ.get(pid, {}),
         ), mock.patch.object(
             scan_pi, "process_start_time",
             side_effect=lambda pid: starts.get(pid),
@@ -6282,7 +6292,14 @@ class PiScanTests(unittest.TestCase):
             scan_pi, "open_file_paths",
             return_value=open_paths,
         ):
-            return scan_pi.scan_sessions(limit=limit)
+            if live_map_dir is None and host is None:
+                return scan_pi.scan_sessions(limit=limit)
+            import dataclasses
+
+            base = host if host is not None else corral_host_extension()
+            if live_map_dir is not None:
+                base = dataclasses.replace(base, pi_live_map_dir=str(live_map_dir))
+            return scan_pi.scan_sessions(limit=limit, host=base)
 
     def _write_pi_session(
         self, directory: Path, session_id: str, cwd: str, created: str, text: str,
@@ -6415,18 +6432,20 @@ class PiScanTests(unittest.TestCase):
             first_ts = datetime(2023, 11, 14, 22, 15, 0, tzinfo=timezone.utc).timestamp()
             second_ts = datetime(2023, 11, 14, 22, 16, 40, tzinfo=timezone.utc).timestamp()
             with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
-                scan_pi._write_live_map({scan_pi._persist_key(22, second_ts - 10): "pi-first"})
+                live_map = os.path.join(cache_dir, "pi-live-pids.json")
+                scan_pi._write_live_map({scan_pi._persist_key(22, second_ts - 10): "pi-first"}, live_map)
                 self._scan_with_live(
                     str(sessions_dir),
                     processes=[(22, cwd), (11, cwd)],
                     cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
                     environ={11: {"CORRAL_SESSION_ID": "pi-first"}, 22: {"CORRAL_SESSION_ID": "pi-second"}},
                     starts={11: first_ts - 10, 22: second_ts - 10},
+                    host=corral_host_extension(),
                 )
-                self.assertEqual(scan_pi._read_live_map(), {})
+                self.assertEqual(scan_pi._read_live_map(live_map), {})
                 # 合法记忆（目标在进程启动后创建，/new 场景）必须保留。
                 good = {scan_pi._persist_key(11, first_ts - 10): "pi-second"}
-                scan_pi._write_live_map(good)
+                scan_pi._write_live_map(good, live_map)
                 scan_pi.reset_live_session_overrides()
                 sessions = self._scan_with_live(
                     str(sessions_dir),
@@ -6434,10 +6453,11 @@ class PiScanTests(unittest.TestCase):
                     cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
                     environ={11: {"CORRAL_SESSION_ID": "pi-first"}, 22: {"CORRAL_SESSION_ID": "pi-second"}},
                     starts={11: first_ts - 10, 22: second_ts - 10},
+                    host=corral_host_extension(),
                 )
                 by_id = {item["id"]: item for item in sessions}
                 self.assertEqual(by_id["pi-second"]["pid"], 11)  # /new 后的记忆胜过日 ident
-                self.assertEqual(scan_pi._read_live_map(), good)
+                self.assertEqual(scan_pi._read_live_map(live_map), good)
 
     def test_follow_switch_correlation_does_not_steal_bound_session(self) -> None:
         """写字节增长与文件 mtime 增长是两次独立采样：同目录两条会话同时活跃时
@@ -6505,6 +6525,7 @@ class PiScanTests(unittest.TestCase):
                     processes=[(11, cwd), (22, cwd)],
                     cmdlines={11: "pi --approve --session-id aaaa1111", 22: "pi"},
                     starts={11: hosted_start, 22: free_start},
+                    host=corral_host_extension(),
                 )
                 by_id = {item["id"]: item for item in sessions}
                 self.assertTrue(by_id["aaaa1111"]["live"])
@@ -6553,28 +6574,32 @@ class PiScanTests(unittest.TestCase):
             hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
             free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
             with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
-                scan_pi._write_live_map({scan_pi._persist_key(11, hosted_start): "bbbb2222"})
+                live_map = os.path.join(cache_dir, "pi-live-pids.json")
+                scan_pi._write_live_map({scan_pi._persist_key(11, hosted_start): "bbbb2222"}, live_map)
                 sessions = self._scan_with_live(
                     str(sessions_dir),
                     processes=[(11, cwd), (22, cwd)],
                     cmdlines={11: "pi --approve --session-id aaaa1111", 22: "pi"},
                     starts={11: hosted_start, 22: free_start},
+                    host=corral_host_extension(),
                 )
                 by_id = {item["id"]: item for item in sessions}
                 self.assertEqual(by_id["aaaa1111"].get("pid"), 11, "硬证据应胜过被污染的记忆")
                 self.assertEqual(by_id["bbbb2222"].get("pid"), 22)
-                self.assertEqual(scan_pi._read_live_map(), {}, "磁盘上的坏记忆也要一并剔掉")
+                self.assertEqual(scan_pi._read_live_map(live_map), {}, "磁盘上的坏记忆也要一并剔掉")
 
     def test_encode_pi_session_cwd_and_isolation_dir(self) -> None:
+        from corral.runtime.host_extension import hosted_session_dir, is_isolation_dir
+
         with tempfile.TemporaryDirectory() as td:
             encoded = scan_pi.encode_pi_session_cwd(td)
             stripped = os.path.realpath(td).lstrip("/\\")
             safe = stripped.replace("/", "-").replace("\\", "-").replace(":", "-")
             self.assertEqual(encoded, f"--{safe}--")
-            hosted = scan_pi.hosted_session_dir(td, "abcd1234")
+            hosted = hosted_session_dir(td, "abcd1234")
             self.assertTrue(hosted.endswith(os.path.join(encoded, "corral-abcd1234")))
-            self.assertTrue(scan_pi.is_hosted_isolation_dir(hosted))
-            self.assertFalse(scan_pi.is_hosted_isolation_dir(td))
+            self.assertTrue(is_isolation_dir(hosted))
+            self.assertFalse(is_isolation_dir(td))
 
     def test_live_flags_session_dir_isolates_two_hosted_panes(self) -> None:
         """同 cwd 两个托管 pane，cmdline 都是 pi，只靠隔离目录绑各自 jsonl。"""
@@ -6597,6 +6622,7 @@ class PiScanTests(unittest.TestCase):
                     11: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_a))},
                     22: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_b))},
                 },
+                host=corral_host_extension(),
             )
             by_id = {item["id"]: item for item in sessions}
             self.assertEqual(by_id["sess-a"]["pid"], 11)
@@ -6674,6 +6700,7 @@ class PiScanTests(unittest.TestCase):
                 processes=[(11, cwd)],
                 cmdlines={11: "pi"},
                 environ={11: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(hosted))}},
+                host=corral_host_extension(),
             )
             by_id = {item["id"]: item for item in sessions}
             self.assertEqual(by_id["01a0new1"]["pid"], 11)

@@ -342,6 +342,7 @@ class AutomaticCleanupSafetyTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
              mock.patch("corral.liveness._list_tmux_sessions", return_value=rows), \
              mock.patch("corral.keepalive._load_working_pairs", return_value=[("pi", "working")]), \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch("corral.keepalive.kill", return_value=True) as kill:
             self.assertEqual(keepalive.reap_idle(now=100000), ["corral-pi-idle"])
         kill.assert_called_once_with("corral-pi-idle")
@@ -351,9 +352,33 @@ class AutomaticCleanupSafetyTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_MAX_SESSIONS": "1"}, clear=True), \
              mock.patch("corral.liveness._list_tmux_sessions", return_value=rows), \
              mock.patch("corral.keepalive._load_working_pairs", return_value=[]), \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch("corral.keepalive.kill", return_value=True) as kill:
             self.assertEqual(keepalive.reap_pressure(now=100000), ["corral-pi-idle"])
         kill.assert_called_once_with("corral-pi-idle")
+
+    def test_reaping_skips_sessions_with_pending_background_work(self):
+        rows = [
+            ["corral-pi-busy", "1", "1"],
+            ["corral-pi-idle", "1", "1"],
+        ]
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
+             mock.patch("corral.liveness._list_tmux_sessions", return_value=rows), \
+             mock.patch("corral.keepalive._load_working_pairs", return_value=[]), \
+             mock.patch("corral.keepalive._background_busy", return_value={"corral-pi-busy"}), \
+             mock.patch("corral.keepalive.kill", return_value=True) as kill:
+            self.assertEqual(keepalive.reap_idle(now=100000), ["corral-pi-idle"])
+        kill.assert_called_once_with("corral-pi-idle")
+
+    def test_reaping_stops_when_the_background_probe_is_unreadable(self):
+        rows = [["corral-pi-idle", "1", "1"]]
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
+             mock.patch("corral.liveness._list_tmux_sessions", return_value=rows), \
+             mock.patch("corral.keepalive._load_working_pairs", return_value=[]), \
+             mock.patch("corral.keepalive._background_busy", return_value=None), \
+             mock.patch("corral.keepalive.kill", return_value=True) as kill:
+            self.assertEqual(keepalive.reap_idle(now=100000), [])
+        kill.assert_not_called()
 
 
 class ReapIdleTests(unittest.TestCase):
@@ -365,6 +390,7 @@ class ReapIdleTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch("corral.liveness.subprocess.check_output", return_value=rows.encode()), \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill:
             reaped = keepalive.reap_idle(now=now)
 
@@ -380,6 +406,7 @@ class ReapIdleTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch("corral.liveness.subprocess.check_output", return_value=rows.encode()), \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill:
             reaped = keepalive.reap_idle(now=now)
 
@@ -409,6 +436,7 @@ class ReapIdleTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "0.5"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch("corral.liveness.subprocess.check_output", return_value=rows.encode()), \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill:
             reaped = keepalive.reap_idle(now=now)
 
@@ -451,6 +479,7 @@ class ReapPressureTests(unittest.TestCase):
                  return_value=self._rows(items).encode(),
              ), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill, \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch(
                  "corral.keepalive._load_working_pairs",
                  return_value=[("claude", "00000001abcd")],
@@ -489,6 +518,7 @@ class ReapPressureTests(unittest.TestCase):
                  return_value=self._rows(items).encode(),
              ), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill, \
+             mock.patch("corral.keepalive._background_busy", return_value=set()), \
              mock.patch("corral.keepalive._load_working_pairs", return_value=[]):
             reaped = keepalive.reap_pressure(now=now)
 

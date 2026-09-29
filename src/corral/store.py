@@ -814,7 +814,8 @@ class SessionStore:
 
         candidates = [session for session in bucket if _is_claim_candidate(session)]
         if runtime_id == "pi":
-            from corral.scan.pi import hosted_session_dir, normalize_session_dir, session_file_dir
+            from corral.runtime.host_extension import hosted_session_dir
+            from corral.scan.pi import normalize_session_dir, session_file_dir
 
             ident = str(provisional.get("id") or "")
             expected_dir = (

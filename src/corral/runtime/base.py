@@ -26,9 +26,9 @@ _DIGEST_RECENT_COUNT = 8  # 摘录保留的最近消息条数
 
 def _clip(text: str | None, limit: int) -> str:
     """抽出接力任务后再压平换行并截断；摘录逐行列消息，多行原文会破坏行结构。"""
-    from sesskit.titles import clip_user_excerpt
+    from corral.runtime.host_extension import clip_for_digest
 
-    peeled = clip_user_excerpt(text, limit=max(limit * 4, 1200))
+    peeled = clip_for_digest(text, limit=limit)
     flat = " ".join(peeled.split())
     if len(flat) <= limit:
         return flat

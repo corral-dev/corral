@@ -6,7 +6,9 @@ clamp for its whole life, and so does every hosted agent (see
 docs/MAINTAINER_GUIDE.md "Keepalive server scheduling class"). The clamp cannot
 be lifted in place, so this script:
 
-1. waits until no hosted agent is in the ``working`` phase (up to --max-wait);
+1. waits until no hosted agent is busy under the shared verdict (``working``
+   attention phase or pending background work — see ``corral.busycheck``;
+   refuses to proceed while any session is busy unless ``--force``);
 2. ends the old server (hosted processes end; their history stays and native
    resume brings them back);
 3. starts the server as the Interactive launchd job and probes a pane's
@@ -24,7 +26,7 @@ import subprocess
 import sys
 import time
 
-from corral import keepalive, observe, tmux_server
+from corral import busycheck, keepalive, observe, tmux_server
 from corral.legacy_names import SOCKET_NAME, cache_dir
 
 LOG = cache_dir() / "keepalive-migration.log"
@@ -50,21 +52,42 @@ def hosted_names() -> list[str]:
     return [n for n in out.stdout.split() if n] if out.returncode == 0 else []
 
 
-def working_hosted(names: list[str]) -> list[str]:
+def busy_hosted(names: list[str]) -> dict[str, str]:
+    """Sessions that must block a whole-server restart, with reasons.
+
+    The shared background-work verdict (``busycheck``) plus the working
+    attention phase. A finished reply is not proof the agent is done: on
+    2026-09-30 this wait saw no ``working`` agent and ended a server whose
+    Claude session was still waiting on its own background shell tasks.
+    """
     pairs = keepalive._load_working_pairs()
-    return [n for n in names if keepalive._is_working_keepalive(n, pairs)]
+    blocked = {n: "working" for n in names if keepalive._is_working_keepalive(n, pairs)}
+    checker = busycheck.BusyChecker.from_probe()
+    if checker is None:
+        # The probe itself is unusable: block on everything rather than
+        # declare the server idle.
+        return {n: blocked.get(n, "background_unknown") for n in names}
+    for name, verdict in checker.process_busy_names(names).items():
+        blocked.setdefault(name, verdict.reason)
+    return blocked
 
 
-def wait_until_idle(max_wait: float, poll: float) -> bool:
+def wait_until_idle(max_wait: float, poll: float, *, force: bool = False) -> bool:
+    if force:
+        log("forced_busy_bypass")
+        print("migrate-keepalive-server: --force bypasses the busy wait", flush=True)
+        return True
     deadline = time.monotonic() + max_wait
     while True:
-        busy = working_hosted(hosted_names())
+        busy = busy_hosted(hosted_names())
         if not busy:
             return True
         if time.monotonic() >= deadline:
             log("gave_up_busy", busy=busy)
+            print(f"migrate-keepalive-server: still busy, giving up: {sorted(busy)}", flush=True)
             return False
         log("waiting_busy", busy=busy)
+        print(f"migrate-keepalive-server: waiting, busy sessions: {sorted(busy)}", flush=True)
         time.sleep(poll)
 
 
@@ -82,7 +105,8 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=0.0, help="seconds to wait before starting")
     parser.add_argument("--max-wait", type=float, default=6 * 3600, help="give up if agents stay busy")
     parser.add_argument("--poll", type=float, default=30.0)
-    parser.add_argument("--force", action="store_true", help="restart even if the server is not clamped")
+    parser.add_argument("--force", action="store_true",
+                        help="restart even if the server is not clamped, and do not wait for busy sessions")
     args = parser.parse_args()
     observe.init(debug=False)
     time.sleep(args.delay)
@@ -93,7 +117,7 @@ def main() -> int:
         log("skipped_not_clamped")
         return 0
     if before.get("running"):
-        if not wait_until_idle(args.max_wait, args.poll):
+        if not wait_until_idle(args.max_wait, args.poll, force=args.force):
             return 2
         ended = hosted_names()
         tmux("kill-server")

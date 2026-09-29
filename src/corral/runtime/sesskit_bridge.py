@@ -29,33 +29,32 @@ def call_scan(
     limit: int,
     keep_ids: set[str] | None = None,
     include_missing_cwd: bool = False,
+    **extra: Any,
 ) -> list[SessionInfo]:
-    """Forward only kwargs the SessKit scanner actually accepts."""
-    try:
-        target = inspect.unwrap(scan_fn)
-    except (TypeError, ValueError):
-        target = scan_fn
+    """Forward ``limit`` plus only the kwargs the SessKit scanner accepts.
+
+    Each runtime adapter passes its own provider explicitly (the Corral host
+    extension and, for Codex, the legacy claim provider for older SessKit
+    builds). Unknown kwargs are dropped so Corral keeps working against both
+    newer scanners (``host``) and older ones (``host_claim_provider`` only).
+    """
     try:
         params = inspect.signature(scan_fn).parameters
     except (TypeError, ValueError):
         params = {}
 
+    accepts_extra = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params.values()
+    )
     kwargs: dict[str, Any] = {"limit": limit}
     if keep_ids is not None and "keep_ids" in params:
         kwargs["keep_ids"] = keep_ids
     if include_missing_cwd and "include_missing_cwd" in params:
         kwargs["include_missing_cwd"] = True
-
-    accepts_host_provider = "host_claim_provider" in params or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params.values()
-    )
-    if (
-        accepts_host_provider
-        and getattr(target, "__module__", None) == "sesskit.parsers.codex"
-        and getattr(target, "__name__", None) == "scan_sessions"
-    ):
-        from corral.codex_identity import live_claims
-
-        kwargs["host_claim_provider"] = live_claims
+    for key, value in extra.items():
+        if value is None:
+            continue
+        if key in params or accepts_extra:
+            kwargs[key] = value
 
     return scan_fn(**kwargs)

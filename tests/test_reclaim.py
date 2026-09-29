@@ -499,6 +499,12 @@ class EntryPointTests(unittest.TestCase):
             mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": self.temp.name}),
             mock.patch.object(reclaim, "_STARTED_AT", time.monotonic() - 1000),
             mock.patch.object(reclaim.shutil, "which", return_value="/usr/bin/tmux"),
+            # These tests pin the non-background plumbing; the background
+            # verdict has its own tests (test_busycheck.py) and must not let
+            # the real machine's pane map classify the fake hosts below.
+            mock.patch.object(
+                reclaim, "_background_state", return_value=reclaim.BackgroundState(),
+            ),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

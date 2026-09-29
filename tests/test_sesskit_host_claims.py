@@ -8,96 +8,54 @@ from pathlib import Path
 from unittest import mock
 
 from corral.codex_identity import live_claims
+from corral.runtime.host_extension import corral_host_extension
 from corral.runtime.sesskit_bridge import call_scan
 
 
-class SessKitHostClaimsTests(unittest.TestCase):
-    def test_codex_scan_receives_corral_claim_provider(self) -> None:
-        seen: list[object] = []
+class CallScanForwardingTests(unittest.TestCase):
+    def test_host_forwarded_only_when_accepted(self) -> None:
+        seen: dict = {}
 
-        def scan_sessions(*, limit: int, host_claim_provider=None):
-            seen.append(host_claim_provider)
+        def new_scan(*, limit: int, host=None):
+            seen["host"] = host
+            return ["new"]
+
+        def old_scan(*, limit: int):
+            return ["old"]
+
+        host = corral_host_extension()
+        self.assertEqual(call_scan(new_scan, limit=7, host=host), ["new"])
+        self.assertIs(seen["host"], host)
+        self.assertEqual(call_scan(old_scan, limit=7, host=host), ["old"])
+
+    def test_codex_style_legacy_provider_still_forwarded(self) -> None:
+        seen: dict = {}
+
+        def legacy_codex_scan(*, limit: int, host_claim_provider=None):
+            seen["provider"] = host_claim_provider
             return host_claim_provider("/synthetic/codex/sessions")
 
-        scan_sessions.__module__ = "sesskit.parsers.codex"
+        with mock.patch("corral.codex_identity.live_claims", return_value={"t": 1}) as provider:
+            from corral.codex_identity import live_claims as claims_fn
 
-        with mock.patch("corral.codex_identity.live_claims", return_value={"thread": 919}) as provider:
-            result = call_scan(scan_sessions, limit=17)
-
+            result = call_scan(
+                legacy_codex_scan, limit=10, host_claim_provider=claims_fn
+            )
         provider.assert_called_once_with("/synthetic/codex/sessions")
-        self.assertIs(seen[0], provider)
-        self.assertEqual(result, {"thread": 919})
+        self.assertEqual(result, {"t": 1})
+        self.assertIs(seen["provider"], provider)
 
-    def test_bridge_injects_provider_for_synthetic_claim_fixture(self) -> None:
-        thread_id = "019efe42-6d51-7fb3-ad48-112a8eefaa01"
-        stale_id = "019efe42-6d51-7fb3-ad48-112a8eefaa02"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            claim_dir = root / "claims"
-            claim_dir.mkdir()
-            sessions_dir = root / "sessions"
-            sessions_dir.mkdir()
-            claims = {
-                thread_id: os.getpid(),
-                stale_id: 987654321,
-            }
-            for claimed_id in claims:
-                rollout = sessions_dir / f"rollout-2026-07-16T10-00-00-{claimed_id}.jsonl"
-                rollout.touch()
-                (claim_dir / f"{claimed_id}.json").write_text(
-                    json.dumps(
-                        {
-                            "thread_id": claimed_id,
-                            "rollout_path": str(rollout),
-                            "pid": claims[claimed_id],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
+    def test_none_extras_are_skipped(self) -> None:
+        def scan(*, limit: int, host=None):
+            return host
 
-            def scan_sessions(*, limit: int, host_claim_provider=None):
-                self.assertEqual(limit, 10)
-                return host_claim_provider(str(sessions_dir))
+        self.assertIsNone(call_scan(scan, limit=3, host=None))
 
-            scan_sessions.__module__ = "sesskit.parsers.codex"
-
-            def process_probe(pid: int, _signal: int) -> None:
-                if pid == 987654321:
-                    raise ProcessLookupError(pid)
-
-            with (
-                mock.patch("corral.codex_identity.CLAIM_DIR", claim_dir),
-                mock.patch("corral.codex_identity.os.kill", side_effect=process_probe),
-            ):
-                result = call_scan(scan_sessions, limit=10)
-
-        self.assertEqual(result, {thread_id: os.getpid()})
-
-    def test_non_codex_scanner_does_not_receive_corral_claim_provider(self) -> None:
-        seen: list[object] = []
-
-        def scan_sessions(*, limit: int, host_claim_provider=None):
-            seen.append(host_claim_provider)
+    def test_unknown_kwargs_are_dropped(self) -> None:
+        def scan(*, limit: int):
             return [limit]
 
-        with mock.patch("corral.codex_identity.live_claims") as provider:
-            result = call_scan(scan_sessions, limit=11)
-
-        provider.assert_not_called()
-        self.assertEqual(seen, [None])
-        self.assertEqual(result, [11])
-
-    def test_older_codex_scanner_without_provider_is_left_unchanged(self) -> None:
-        def scan_sessions(*, limit: int):
-            return [limit]
-
-        scan_sessions.__module__ = "sesskit.parsers.codex"
-
-        with mock.patch("corral.codex_identity.live_claims") as provider:
-            result = call_scan(scan_sessions, limit=8)
-
-        provider.assert_not_called()
-        self.assertEqual(result, [8])
+        self.assertEqual(call_scan(scan, limit=5, host=object(), bogus=1), [5])
 
     def test_uninspectable_scanner_falls_back_to_limit_only(self) -> None:
         class UninspectableScanner:
@@ -110,6 +68,16 @@ class SessKitHostClaimsTests(unittest.TestCase):
 
         self.assertEqual(call_scan(UninspectableScanner(), limit=9), {"limit": 9})
 
+    def test_extension_carries_corral_claim_providers(self) -> None:
+        host = corral_host_extension()
+        self.assertIsNotNone(host)
+        self.assertTrue(callable(host.codex_claim_provider))
+        self.assertTrue(callable(host.pi_claims_provider))
+        self.assertTrue(host.title_prompt_marker)
+        self.assertIn("oc-manager-", host.ephemeral_prefixes)
+
+
+class CodexClaimProviderTests(unittest.TestCase):
     def test_corral_provider_discards_invalid_and_stale_claims(self) -> None:
         valid_id = "019efe42-6d51-7fb3-ad48-112a8eefaa01"
         stale_id = "019efe42-6d51-7fb3-ad48-112a8eefaa02"

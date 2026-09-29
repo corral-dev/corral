@@ -30,9 +30,12 @@ class KimiRuntime(BaseRuntime):
         return scan_kimi.scan_signature()
 
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
+        from corral.runtime.host_extension import corral_host_extension
         from corral.runtime.sesskit_bridge import call_scan
 
-        return call_scan(scan_kimi.scan_sessions, limit=limit, keep_ids=keep_ids)
+        return call_scan(
+            scan_kimi.scan_sessions, limit=limit, keep_ids=keep_ids, host=corral_host_extension()
+        )
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:
         from corral.runtime.sesskit_bridge import load_runtime_conversation

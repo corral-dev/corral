@@ -284,6 +284,7 @@ class TitlePromptTests(unittest.TestCase):
 
     def test_handoff_prompt_survives_scanner_300_char_clip(self) -> None:
         from corral.models import make_session_info
+        from corral.runtime.host_extension import peel_handoff_text
 
         wrapper = (
             "Task: 实现\n\n"
@@ -300,6 +301,8 @@ class TitlePromptTests(unittest.TestCase):
         self.assertGreater(len(wrapper), 300)
         self.assertNotIn("修复 Corral 测试失败", wrapper[:300])
 
+        # Scanners apply the host transform before records are built.
+        peeled = peel_handoff_text(wrapper)
         scanned = make_session_info(
             source="codex",
             id="clip",
@@ -314,8 +317,8 @@ class TitlePromptTests(unittest.TestCase):
             fallback_title="实现",
             status_tag="",
             path="/tmp/clip.jsonl",
-            first_user_msg=wrapper,
-            last_user_msg=wrapper,
+            first_user_msg=peeled,
+            last_user_msg=peeled,
         )
         item = titles._prompt_item(scanned)
 
@@ -331,6 +334,7 @@ class TitlePromptTests(unittest.TestCase):
 
     def test_nested_handoff_prompt_uses_inner_task(self) -> None:
         from corral.models import make_session_info
+        from corral.runtime.host_extension import peel_handoff_text
 
         nested = (
             "Task: 实现\n\n"
@@ -344,6 +348,7 @@ class TitlePromptTests(unittest.TestCase):
             "[Recent conversation]\n"
             "Assistant: 开始改相关用例"
         )
+        peeled = peel_handoff_text(nested)
         scanned = make_session_info(
             source="claude",
             id="nested",
@@ -358,7 +363,7 @@ class TitlePromptTests(unittest.TestCase):
             fallback_title="实现",
             status_tag="",
             path="/tmp/nested.jsonl",
-            first_user_msg=nested,
+            first_user_msg=peeled,
         )
         item = titles._prompt_item(scanned)
         self.assertEqual(item["inherited_task"], "排查并根治 Corral CI 错误")

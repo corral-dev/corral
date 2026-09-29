@@ -13,7 +13,8 @@ reclaim of inactive hosted sessions is ON by default"). In short:
 * inactive means every condition holds and *unknown never counts* (history-backed
   sessions: finished outcome, old history and old session input; placeholder
   sessions without history: old terminal output too — see
-  ``WINDOW_OUTPUT_GATES_HISTORY``);
+  ``WINDOW_OUTPUT_GATES_HISTORY``; every session: no pending background work
+  and no live non-helper descendant processes — see ``busycheck``);
 * never reachable from startup or session-creation paths — callers invoke
   ``maybe_reclaim`` from a background tick only;
 * stopping a session never deletes history; native resume brings it back.
@@ -40,7 +41,7 @@ from typing import Any
 from sesskit.models import session_key
 from sesskit.titles import STATUS_ABORTED, STATUS_DONE, STATUS_PENDING
 
-from corral import keepalive, liveness, observe
+from corral import busycheck, keepalive, liveness, observe
 from corral.legacy_names import (
     ALL_SOCKET_NAMES,
     cache_dir,
@@ -108,6 +109,40 @@ class History:
     runtime_id: str = ""
     session_id: str = ""
     protect: bool = False  # caller veto (e.g. phone is viewing / task in flight)
+    history_path: str = ""  # native history file; feeds the transcript signal
+
+
+@dataclass(frozen=True)
+class BackgroundState:
+    """The shared background-work verdict for one pass (see ``busycheck``).
+
+    ``busy_names`` holds sessions whose pane tree already shows live
+    non-helper work (checked eagerly, before history is consulted).
+    ``checker`` stays around for the lazy transcript signal, which
+    ``evaluate`` runs only for sessions that would otherwise read as idle.
+    """
+
+    busy_names: Collection[str] = ()
+    evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    checker: Any = None  # busycheck.BusyChecker | None
+
+    def check_transcript(self, host: Hosted, entries: Sequence[History]) -> tuple[bool, dict[str, Any]] | None:
+        """(pending, evidence) for the transcript signal; None when the
+        signal does not apply (no checker, or a runtime without a mapped
+        transcript check)."""
+        if self.checker is None:
+            return None
+        runtime_id = host.runtime_id
+        for entry in entries:
+            if entry.runtime_id:
+                runtime_id = entry.runtime_id
+                break
+        verdict = self.checker.verdict(host.name, runtime_id=runtime_id)
+        if verdict.reason == "background_transcript":
+            return True, dict(verdict.evidence)
+        if "transcript" in verdict.evidence:
+            return False, dict(verdict.evidence)
+        return None
 
 
 @dataclass(frozen=True)
@@ -123,6 +158,7 @@ class Context:
     pressure_idle_minutes: float = DEFAULT_PRESSURE_IDLE_MINUTES
     grace_seconds: float = GRACE_SECONDS
     max_per_pass: int = MAX_PER_PASS
+    background: BackgroundState | None = None
 
     @property
     def threshold_minutes(self) -> float:
@@ -249,6 +285,9 @@ def evaluate(host: Hosted, entries: Sequence[History], ctx: Context) -> Verdict:
         return held("pinned")
     if _is_busy(host, entries, ctx.busy_pairs):
         return held("busy")
+    if ctx.background is not None and host.name in ctx.background.busy_names:
+        evidence["background"] = dict(ctx.background.evidence.get(host.name, {}))
+        return held("background_busy")
     blocked = _history_block(real)
     if blocked:
         return held(blocked)
@@ -269,6 +308,13 @@ def evaluate(host: Hosted, entries: Sequence[History], ctx: Context) -> Verdict:
     evidence["idle_min"] = _minutes(idle)
     if idle < ctx.threshold_minutes * 60.0:
         return Verdict(host, False, "recent_activity", idle, evidence)
+    if ctx.background is not None:
+        transcript = ctx.background.check_transcript(host, entries)
+        if transcript is not None:
+            pending, transcript_evidence = transcript
+            evidence["background"] = transcript_evidence
+            if pending:
+                return Verdict(host, False, "background_busy", idle, evidence)
     return Verdict(host, True, "inactive", idle, evidence)
 
 
@@ -461,6 +507,7 @@ def history_from_session(session: Mapping[str, Any]) -> History:
         runtime_id=str(session.get("source") or ""),
         session_id=str(session.get("id") or ""),
         protect=bool(session.get("reclaim_protect")),
+        history_path=str(session.get("path") or ""),
     )
 
 
@@ -473,7 +520,37 @@ def history_by_name(sessions: Iterable[Mapping[str, Any]]) -> dict[str, list[His
     return grouped
 
 
-def _build_context(now: float) -> Context | None:
+def _background_state(
+    hosted: Sequence[Hosted], history: Mapping[str, Sequence[History]],
+) -> BackgroundState | None:
+    """Shared background-work verdict for this pass.
+
+    None when the probe itself is unusable — the caller then blocks the whole
+    pass, because an unreadable protection source is never a licence to stop
+    a session.
+    """
+    paths: dict[str, str] = {}
+    for host in hosted:
+        for entry in history.get(host.name, ()):
+            if entry.history_path:
+                paths[host.name] = entry.history_path
+                break
+    checker = busycheck.BusyChecker.from_probe(sockets=_sockets(), history_paths=paths)
+    if checker is None:
+        return None
+    busy = checker.process_busy_names([host.name for host in hosted])
+    return BackgroundState(
+        busy_names=frozenset(busy),
+        evidence={name: dict(verdict.evidence) for name, verdict in busy.items()},
+        checker=checker,
+    )
+
+
+def _build_context(
+    now: float,
+    hosted: Sequence[Hosted] = (),
+    history: Mapping[str, Sequence[History]] | None = None,
+) -> Context | None:
     """Collect the protections that live outside the session list.
 
     Any source that cannot be read makes the whole pass a no-op: not knowing who
@@ -487,12 +564,16 @@ def _build_context(now: float) -> Context | None:
     pinned = split_layout.pinned_keys_effective()
     if busy is None or viewed is None or pinned is None:
         return None
+    background = _background_state(hosted, history or {})
+    if background is None:
+        return None
     return policy_from_env(
         now,
         pressure=memory_pressure(),
         busy_pairs=frozenset(busy),
         viewed=frozenset(viewed),
         pinned_keys=frozenset(pinned),
+        background=background,
     )
 
 
@@ -608,7 +689,7 @@ def _run_pass(sessions_provider: Callable[[], Iterable[Mapping[str, Any]]], now:
     if not hosted:
         return []
     history = history_by_name(sessions_provider() or ())
-    ctx = _build_context(now)
+    ctx = _build_context(now, hosted, history)
     if ctx is None:
         return []
     return apply(decide(hosted, history, ctx), ctx)

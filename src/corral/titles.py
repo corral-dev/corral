@@ -17,12 +17,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from sesskit.titles import split_handoff_text as _split_handoff_text
-
 from corral import titlegen
 from corral.i18n import get_lang, t
 from corral.legacy_names import cache_dir as _product_cache_dir
 from corral.models import session_key
+from corral.runtime.host_extension import split_handoff_text as _split_handoff_text
 
 CACHE_DIR = str(_product_cache_dir())
 CACHE_FILE = os.path.join(CACHE_DIR, "titles.json")

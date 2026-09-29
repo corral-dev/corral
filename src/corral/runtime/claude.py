@@ -10,6 +10,45 @@ from corral.runtime.base import BaseRuntime, usable_cwd
 from corral.scan import claude as scan_claude
 
 
+def _resolve_continuation_id(session: SessionInfo) -> str:
+    """Follow the Claude `continued-in` chain to the latest readable id.
+
+    A resumed-into-background session keeps the old id resumable but all
+    later work lives in the new file; launching `--resume <old>` would
+    silently miss it (2026-09-30). Any resolution failure keeps the
+    scanned id so resume never breaks because of a malformed pointer.
+    """
+    fallback = str(session.get("id") or "")
+    try:
+        from sesskit.relations import resolve_continuation
+    except ImportError:
+        return fallback
+    try:
+        return resolve_continuation(dict(session)) or fallback
+    except Exception:  # noqa: BLE001 resolution must never break resume
+        return fallback
+
+
+def _merge_continued_sessions(sessions: list[SessionInfo]) -> list[SessionInfo]:
+    """Hide a superseded card when its continuation target is also listed.
+
+    The old file stays a separate card only while the target is missing
+    (deleted history): then the pointer cannot be followed and the old
+    conversation remains the only readable one.
+    """
+    by_id = {str(session.get("id") or ""): session for session in sessions}
+    merged: list[SessionInfo] = []
+    for session in sessions:
+        target = str(session.get("superseded_by") or "")
+        if target and target in by_id:
+            latest = by_id[target]
+            if not latest.get("keepalive_name") and session.get("keepalive_name"):
+                latest["keepalive_name"] = session["keepalive_name"]
+            continue
+        merged.append(session)
+    return merged
+
+
 class ClaudeRuntime(BaseRuntime):
     id = "claude"
     display_name = "Claude"
@@ -67,9 +106,13 @@ class ClaudeRuntime(BaseRuntime):
         return scan_claude.scan_signature()
 
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
+        from corral.runtime.host_extension import corral_host_extension
         from corral.runtime.sesskit_bridge import call_scan
 
-        return call_scan(scan_claude.scan_sessions, limit=limit, keep_ids=keep_ids)
+        sessions = call_scan(
+            scan_claude.scan_sessions, limit=limit, keep_ids=keep_ids, host=corral_host_extension()
+        )
+        return _merge_continued_sessions(sessions)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:
         from corral.runtime.sesskit_bridge import load_runtime_conversation
@@ -85,7 +128,7 @@ class ClaudeRuntime(BaseRuntime):
                 self.executable,
                 *self.hosted_args(),
                 "--resume",
-                str(session["id"]),
+                _resolve_continuation_id(session),
             ),
             cwd=usable_cwd(str(session.get("cwd") or "")),
         )
@@ -97,7 +140,7 @@ class ClaudeRuntime(BaseRuntime):
                 self.executable,
                 *self.auto_approve_args,
                 "--resume",
-                str(session["id"]),
+                _resolve_continuation_id(session),
                 "--print",
                 instruction,
             ),
@@ -110,7 +153,7 @@ class ClaudeRuntime(BaseRuntime):
                 self.executable,
                 *self.hosted_args(),
                 "--resume",
-                str(session["id"]),
+                _resolve_continuation_id(session),
                 "--fork-session",
             ),
             cwd=usable_cwd(str(session.get("cwd") or "")),
