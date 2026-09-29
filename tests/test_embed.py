@@ -354,6 +354,17 @@ class SessionIoTests(unittest.TestCase):
             "tmux-256color", "screen-256color", "xterm-256color", "screen",
         })
 
+    def test_default_terminal_probe_runs_once_per_process(self):
+        """Every host_session/wrap_plan builds the config; it must not fork infocmp each time."""
+        from corral import keepalive
+
+        keepalive._resolve_default_terminal.cache_clear()
+        self.addCleanup(keepalive._resolve_default_terminal.cache_clear)
+        with mock.patch.object(keepalive, "_terminfo_exists", return_value=True) as probe:
+            for _ in range(3):
+                keepalive._tmux_config()
+        self.assertEqual(probe.call_count, 1)
+
     def test_tmux_env_strips_ld_library_path(self):
         """setup-python on Linux sets LD_LIBRARY_PATH; tmux must not inherit it."""
         from corral import keepalive

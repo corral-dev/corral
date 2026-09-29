@@ -11,6 +11,7 @@ tmux。使用独立 socket（`-L corral-keepalive`）和专属配置，与用户
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -98,6 +99,7 @@ def _terminfo_exists(name: str) -> bool:
         return name in {"screen-256color", "screen", "xterm-256color", "xterm"}
 
 
+@functools.lru_cache(maxsize=1)
 def _resolve_default_terminal() -> str:
     """Pick a TERM entry that exists on this machine.
 
@@ -106,6 +108,10 @@ def _resolve_default_terminal() -> str:
     entry as ``default-terminal`` can make ``new-session -d`` fail before any
     pane program runs — which shows up in the TUI as a stuck
     \"Press Enter to restart\" static frame.
+
+    Cached for the process lifetime: terminfo does not change while we run, and
+    every ``host_session`` / ``wrap_plan`` used to fork ``infocmp`` through here.
+    Tests that mock ``_terminfo_exists`` call ``cache_clear()`` first.
     """
     for name in ("tmux-256color", "screen-256color", "xterm-256color", "screen"):
         if _terminfo_exists(name):

@@ -733,10 +733,28 @@ class MainScreen(
                     self.app.call_from_thread(self._rebuild_list)
                 elif recovered:
                     self.app.call_from_thread(self._update_header)
+                self._reclaim_inactive_hosts()
         finally:
             watcher.stop()
             if self._history_watcher is watcher:
                 self._history_watcher = None
+
+    def _reclaim_inactive_hosts(self) -> None:
+        """Silent reclaim tick; runs on the refresh worker thread only.
+
+        `reclaim.maybe_reclaim` owns the throttle, the protections and the audit
+        event; this hook only supplies a session snapshot. It must never touch
+        the UI (no notify/bell) and never break the refresh loop. Snapshot-only
+        (hydrated) data has no host annotations yet, so wait for a real scan.
+        """
+        try:
+            from corral import reclaim
+
+            if not self.store.loaded or not reclaim.enabled():
+                return
+            reclaim.maybe_reclaim(lambda: [dict(s) for s in self.store.all_sessions()])
+        except Exception:  # noqa: BLE001 — best effort, never disturb the refresh loop
+            pass
 
     def _poll_cache(self) -> None:
         """标题缓存文件轮询：比会话重扫轻得多（只 stat 一个文件），保持独立的

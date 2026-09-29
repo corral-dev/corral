@@ -2,7 +2,22 @@
 
 ## 什么时候读
 
-改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、**侧边栏列表重建与分屏加格**、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 corral 卡、自身占用却不高」「自身 CPU 占用过高 / 风扇狂转 / 两个窗口特别吃 CPU」「Cursor 进程过多 / 活动监视器一堆 agent / cursor-agent」「同类会话管理 / 内嵌终端 TUI 的性能坑」「打开大历史第一次解析整份 JSONL / 详情把通道堵住」时也读**（见「系统高负载下的调度优先级」、「自身占用过高」与「同类应用踩坑地图」）。**性能优化动手前先做一轮外部调研**（同类 TUI / 终端工具的公开优化经验），再结合本地计时拆解，不要只靠本地 profile 闭门造车（机主 2026-08-17 纠正；本地计时的做法见「新开分屏（加格）链路」节）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
+改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、**侧边栏列表重建与分屏加格**、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 corral 卡、自身占用却不高」「corral 内新开任何助手都慢、外面直接启动秒开」「新开会话要等半分钟 / 内存被托管会话占满 / swap 爆 / 整机 load 两百多」「自身 CPU 占用过高 / 风扇狂转 / 两个窗口特别吃 CPU」「Cursor 进程过多 / 活动监视器一堆 agent / cursor-agent」「同类会话管理 / 内嵌终端 TUI 的性能坑」「打开大历史第一次解析整份 JSONL / 详情把通道堵住」时也读**（见「系统高负载下的调度优先级」、「托管子进程被限流」、「Slow new sessions / laggy UI = machine out of memory」、「自身占用过高」与「同类应用踩坑地图」）。**性能优化动手前先做一轮外部调研**（同类 TUI / 终端工具的公开优化经验），再结合本地计时拆解，不要只靠本地 profile 闭门造车（机主 2026-08-17 纠正；本地计时的做法见「新开分屏（加格）链路」节）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
+
+## §0 目录索引
+
+- [什么时候读](#什么时候读)
+- [系统高负载下的调度优先级](#系统高负载下的调度优先级为什么自己不重却卡)
+- [托管子进程被限流](#托管子进程被限流老保活-server-的子女只分到约-2-cpu2026-09-29)
+- [Slow new sessions / laggy UI = machine out of memory](#slow-new-sessions--laggy-ui--machine-out-of-memory-2026-09-29-diagnosis)
+- [同类应用踩坑地图](#同类应用踩坑地图会话管理--内嵌终端-tui)
+- [性能架构](#性能架构)
+- [切换选中会话时的右栏更新](#切换选中会话时的右栏更新)
+- [开屏首卡响应](#开屏首卡响应2026-08-17-第二轮修复快照秒开--首铺分片)
+- [全文搜索索引](#全文搜索索引)
+- [派生缓存边界](#派生缓存边界)
+- [原生扩展与分发](#原生扩展与分发)
+- [测量与验收](#测量与验收)
 
 ## 系统高负载下的调度优先级（为什么「自己不重却卡」）
 
@@ -15,6 +30,50 @@
 - **不要**给标题生成守护进程、纯扫描后台也抬到 Interactive——那些可以让路；只保「用户正在看的界面」。远程守护的刷新线程用 `demote_background()`（Utility / nice+5）。
 - **优先级反转**：界面线程若同步等更低 QoS 的辅助进程（如未抬档的 tmux 子进程），高负载下仍可能一起卡。macOS 对 Mach IPC 有 QoS override，但对「fork 出去的普通 tmux 客户端」不保证同等提权——因此热路径应走常驻控制通道，并给喂画面的线程也抬档。
 - 这解决的是**被别人抢走时间片**，不是替代抓帧节流 / 原生解析等业务侧优化。若空闲时也卡，仍按本文其它节与下方踩坑地图排查。
+
+### 托管子进程被限流（老保活 server 的子女只分到约 2% CPU，2026-09-29）
+
+上一节是 corral 自己被饿死；这里是反过来的镜像：**保活 tmux 里生出来的助手进程被限流**。症状是 corral 内新建 / 恢复**任何**助手都慢（重初始化的白屏等首帧）、外面直接启动秒开；`new-session` 本身也变慢（10 倍），与具体助手无关。
+
+- 实测（同机同分钟，`nice` 均为 0）：`perl -e 'while(1){$x++}'` 在保活 pane 里 10 秒只拿到 2.0% CPU（0.10s），在全新 tmux server 里拿到 63.8%（5.91s）；Mach 优先级 17 vs 23。`opencode --auto` 子进程同样：保活侧 +6s 时 2.5–2.9% CPU、RSS 仅约 69MB、无子进程、无连接，还在 bootstrapping 里饿着（`ps` 状态 `Rs+`），全新侧 8.5%、149MB、已建连接。`new-session` 406ms vs 41ms。
+- 机理：连续跑了 2 天的老 server（`tmux -L corral-keepalive` 常驻、无可见窗口）被系统降了重要性等级，fork 出来的子进程继承限流；新 server 无此问题。整机 overload 会进一步放大：当场 load 230、swap 5/6GB 用掉，opencode 这类重初始化（bun + 12 插件 + 6 MCP + 插件对账的 npm/pnpm/bun/yarn/vp 外部探针）2 秒的活被拖成 20–35 秒白屏。
+- **Mechanism correction (2026-09-29, measured): it is the launch context, not the server's age.** The keepalive tmux server daemonizes and keeps the scheduling class of whatever started it, and every hosted agent inherits it. `ps -o pri` / `proc_pidinfo` flags on the live machine: iTerm-started processes are PRI 31 with the APPLICATION flag; the TUI running under the `shell-gate-ttyd` web terminal (a launchd job), the `com.x0c.corral.remote` daemon, the keepalive server and all hosted agents are PRI 20 without it. A new TUI opened from iTerm is PRI 31, but its hosted agents still land in the old PRI 20 server. Same perl busy loop (6 s, load ~200): launched from an app-tree shell 48–64% CPU; from a default launchd job 14% (thread QoS user-interactive before spawn 30%, `taskpolicy -B -p` 31%, `posix_spawnattr_set_qos_class_np` 18%, all still PRI 20); from a launchd job with `ProcessType=Interactive` 74–86% (PRI 31). A fresh server looked healthy earlier only because it was started from an app-tree shell. So: whoever first starts the server (web terminal, remote daemon, or iTerm) fixes the priority of every hosted agent until the server exits. Candidate fixes (not implemented, need an owner decision because re-homing an existing server ends its sessions): start the keepalive server through a launchd job with `ProcessType=Interactive`; set `ProcessType=Interactive` on the ttyd web-terminal job. Userland QoS calls cannot lift a launchd-job tree to app class. Official basis: an unspecified `ProcessType` (= `Standard`) gets "light resource limits … throttling its CPU usage and I/O bandwidth", `Interactive` gets app limits, i.e. none ([launchd.plist(5)](https://keith.github.io/xcode-man-pages/launchd.plist.5.html)); the clamp covers the whole tree and its low-priority I/O makes swapped-out pages crawl under memory pressure ([omnipus#880](https://github.com/elicify-ai/omnipus/issues/880)); a web terminal hit the same clamp on every TUI inside it ([web-terminal#9](https://github.com/code-yeongyu/web-terminal/issues/9)).
+- 判别：怀疑这条时跑死循环 A/B——两边各一个 `perl` 忙循环 10 秒，对 `ps` 的 %CPU。两边接近 → 不是这条，按扫描 / 抓帧查；保活侧低一个数量级 → 就是这条，不要先查扫描或重装助手。
+- 处置（从轻到重）：先降负载（TUI 里结束不看的托管会话，结束进程不删历史），再用同一组 A/B 复测——负载下来后恢复 → 只是 overload 放大；依然被限 → 续期 server：`tmux -L corral-keepalive kill-server` 一次性杀掉全部托管进程（历史都在，可原生恢复），下次进 corral 自动建新 server。该操作不可逆（进行中任务丢失），必须机主明确授权。2026-09-29 现场：已清 21 个闲置 >6h 会话（56→35），机主裁定其余暂时不动、opencode service 暂不重启。
+- opencode 专项：它的首帧慢另有一半是自身插件对账（`opencode --auto --print-logs` 可见 `spawning process npm/pnpm/bun/yarn/vp` + 多次 `plugin reconciliation`）；怀疑时先裸测 `npm list -g --depth=0` 计时（现场阵发性挂起 4 分钟 vs 正常 2.7 秒），不要先改 embed。12 插件 + 6 MCP 属于偏重配置。
+- 禁止的误修：不要把这条当成 fork 风暴去拆保活 / 通道（症状相似、根因相反：这里是子进程拿不到 CPU，不是 corral fork 太多）；不要靠 renice 去动 server（机制是重要性继承不是 nice，动 server 影响面大）；核对只用 A/B 复测说话。
+
+### Slow new sessions / laggy UI = machine out of memory (2026-09-29 diagnosis)
+
+Symptom: starting a new hosted session in Corral (any runtime) takes about 30 s before the agent TUI shows in the right pane, while the same agent started in a plain terminal tab is instant. Diagnosed on the owner's 16 GiB Mac, 2026-09-29 roughly 22:20–23:00 local, load average 180–245.
+
+**Relation to the previous section.** That section shows children of an old, long-running `corral-keepalive` server getting ~2% CPU. This one is a separate, compounding cause: the whole machine ran out of memory and Corral's hosted tree is its largest resident. Both can hold at once, and the previous section's A/B does not measure memory pressure and is itself distorted by it. Caveat on the timings below: the startup probes (E2) ran on a *fresh* scratch tmux server, which the previous section shows is not throttled — they prove hosting and agent startup are cheap on a healthy server, not that the old server's children were healthy.
+
+Verified evidence (single snapshots; reproduce each with the command shown):
+
+- **E1 — hosting is not the wait.** `host_session` events: 920 / 498 / 192 (pi) / 1053 ms. Reproduce: `grep '"host_session"' ~/.cache/corral/events.log`.
+- **E2 — agents paint fast on a fresh server, even at load ~229.** First non-blank pane capture in a detached session using the same `keepalive.tmux.conf`, no client: claude 1.13 s, codex 0.88 s, opencode 4.66 s; session creation 0.11–0.21 s (30–60 ms for a bare `new-session` on a fresh socket). Reproduce: `tmux -L <scratch> new-session -d -x 96 -y 40 -c <dir> -- <agent cmd>`, poll `tmux -L <scratch> capture-pane -p` every 100 ms until non-blank, then kill only your own scratch server.
+- **E3 — the real keepalive server was not busy.** 2167 of 2550 samples in `select`; `list-sessions` took 0.6 / 1.2 / 1.2 s in the first probe and 0.01–0.26 s minutes later (tracks system load, not server work). Reproduce: `sample <tmux server pid> 3`; `time tmux -L corral-keepalive list-sessions`.
+- **E4 — the Corral UI process was starved.** In a 6 s native sample the main thread had 4074 samples: 3973 (97%) inside asyncio task steps, about 96 (2%) idle in kqueue; a large share of the busy samples were `take_gil` waits (another thread holds the GIL). All threads together executed only ~2.5 s of Python in those 6 s. Threads present: 4 `_capture_loop`, 5 control-channel `_read_loop`, history watcher, 6 pool workers. Reproduce: `sample <corral TUI pid> 6 -file /tmp/x.txt`, then read "Call graph" for the main thread and "Sort by top of stack".
+- **E5 — the UI's own timings blew up.** `list_rebuild` 6975 ms (in_place, normally 4–6 ms), 18274 ms (splice), 47994 ms (full); TUI `scan_all` reason=refresh (280 sessions) outliers of 31–404 s (83713, 112470, 59004, 31048, 38041, 64061, 404545 ms) against a typical 4–8 s. Reproduce: events.log entries with `duration_ms > 3000`.
+- **E6 — constant cold rescans.** The remote daemon (817 sessions) rescans about every 20 s taking 3–9 s, with `cache_hit=false` and `shared_index=false` on nearly every line, because ~30 agents keep writing history. Same log.
+- **E7 — the machine is out of memory.** `sysctl vm.swapusage`: total 10240M, used 9115M (the previous section recorded 5/6 GB earlier the same day; macOS swap size is dynamic). Cumulative Swapins 21.6M, Swapouts 23.7M, Decompressions 1.23 billion, Pageins 132M. Second `top -l 2` sample: 33–37% user, 62–66% sys, 0.0% idle; 968 processes, 7711 threads, 86 running; load 229 / 221 / 198; `kernel_task` ~185% CPU, `fseventsd` ~31%, WindowServer ~37%, iTerm2 ~24%. Reproduce: `sysctl vm.swapusage`; `vm_stat`; `top -l 2 -n 0 -s 2 | grep '^CPU usage'` — read the SECOND sample, the first is cumulative since boot.
+- **E8 — memory demand including compressed and swapped pages, by group** (`top -stats mem,cmprs`, MB, compressed part in brackets): opencode.exe 19 procs 7877 (6233); node 111 procs 4361 (3898); codex 18 procs 3960 (3468); Chrome 25 procs 2553 (2164); claude.exe 7 procs 1444 (1222). `ps` RSS hides this (a codex showing ~106 MB RSS). Reproduce: `top -l 1 -n 400 -o mem -stats pid,command,mem,cmprs`, aggregate by command.
+- **E9 — Corral's share.** Descendants of the keepalive tmux server: 207 processes, 13.3 GiB of ~30.8 GiB total demand across 961 processes on 16 GiB of RAM (opencode 4.61, codex 3.88, MCP `server-memory` 1.58, node 1.42, claude 1.13, node_repl 0.36 GiB). About 30 hosted sessions; tmux `window_activity` idle times ranged 0–180 min (an imperfect signal, see `MAINTAINER_GUIDE.md`). Process counts at that moment: 72 node, 42 node_repl, 35 codebase-memory-mcp, 33 server-memory. Reproduce: walk the process tree from the tmux server pid (`ps -Ao pid,ppid,comm`) and sum `top`'s mem per pid.
+- **E10 — a large consumer outside Corral's tree.** An orphan `opencode.exe serve --service` (ppid 1) at 160–240% CPU, ~1.0–1.2 GB RSS, 19 children, ~395 open files, next to `fseventsd` at ~31%: the largest single CPU consumer. It was NOT stopped (owner decision needed). Reproduce: `ps -Ao pid,ppid,etime,%cpu,command | grep 'opencode.exe serve'`.
+
+**Why "outside Corral is fast, inside is slow".** Outside, it is one fresh small process with nothing else to wait for (~1 s first paint even at load ~229, E2). Inside, hosting is under 1.1 s (E1); the rest of the ~30 s is the wait on the Corral UI process (E4–E5): a long-lived Python process with one GIL shared by the UI loop, 4 capture threads, 5 control channels, a history watcher and 6 scan workers, whose pages compete for RAM under swap thrash, so each step of the new-session path (`_on_embed_hosted`, list rebuild, first frame) waits on page-ins and on the GIL. Corral also causes much of the pressure: it keeps every hosted agent and its MCP helpers resident (E9, ~43% of memory demand), and before this decision nothing reclaimed them automatically. Status: the statement about the UI process is inferred from system counters and event timings (E3–E7), not from Python-level stacks (see Unverified).
+
+**Ruled out.** Title daemon: in a 60 s window there were 2 spawns (both from the remote daemon, ~24 s apart), each alive ~1.2 s and 0.3 s CPU; a spawn that loses the lock exits in 0.28–0.36 s wall (0.14 s user), about 1% of a core. An earlier burst of ~6 TUI-side spawns in 30 s was transient (pending titles). tmux server busy: no (E3). Reclaim on the host path: at diagnosis time `keepalive.reap_pressure` was a no-op at the default cap of 0.
+
+**Run these first next time** (cheap, in order; under thrash every timing is inflated, so re-measure after load drops): 1. `sysctl vm.swapusage` — used above ~70% of total with Swapouts still climbing means thrash. 2. `top -l 2 -n 0 -s 2 | grep '^CPU usage'`, second sample — idle near 0 with sys above 50% means kernel-bound. 3. Memory by group including compressed, and the hosted tree's share (E8–E9). 4. events.log outliers (E5–E6). 5. Only then the throttle A/B (item 6) and per-thread sampling.
+
+**Unverified / limits.**
+- No Python-level stack of the live TUI was obtained: `sample` gives native frames only; `sys.remote_exec` raised `PermissionError: Cannot get task port` (needs root or the `com.apple.system-task-ports` entitlement); `py-spy dump` needs sudo (password required). Which Python task holds the main thread is unknown.
+- The decisive A/B is pending: does freeing memory (stopping idle hosted sessions) make `list_rebuild` and host-to-first-frame fast again? Until measured, memory exhaustion is the best-supported explanation, not a proven one; the throttled-children mechanism (previous section) may be a co-cause.
+- E2 does not cover the old server's throttling. Whether hosted OpenCode sessions depend on the orphan `opencode serve --service` is unknown. All numbers are single snapshots; `top` mem includes compressed memory and is approximate.
+
+**Mitigation and backlog.** Mitigation: silent automatic reclaim of inactive hosted sessions — contract recorded 2026-09-29 in the "Silent automatic reclaim" bullet of `MAINTAINER_GUIDE.md`「会话保活」; confirm `reclaim.py` and its background tick exist in the installed version before relying on it. Backlog, NOT implemented: (a) pressure-adaptive backoff for the ~20 s cold rescans in both the TUI and the remote daemon (E5–E6), without lengthening `REFRESH_MIN_GAP` globally (existing rule); (b) move scanning and frame parsing out of the UI process's GIL (E4); (c) the per-session MCP fan-out (`server-memory`, `codebase-memory-mcp`, `node_repl` per hosted agent, E9) lives in the owner's global agentsync `mcp.json`, not in Corral, so lazy or shared servers is a configuration decision; (d) a UI memory-pressure indicator is not wanted for reclaim (owner decision: silent, no notification) — any passive indicator needs a new owner decision.
 
 ## 同类应用踩坑地图（会话管理 / 内嵌终端 TUI）
 
@@ -50,7 +109,9 @@
 2. **自身 CPU 高、风扇转、两个界面窗口同时开着特别明显** → 先看事件日志里的全量重扫频率与耗时（见下节「自身占用过高」），不要一上来当成 fork 风暴或抓帧死循环。
 3. **空闲也卡、日志里重扫并不密** → 查 fork 数（是否狂出 `tmux`）、控制客户端个数、抓帧是否退回外部 fork、Textual 主线程是否被同步活堵住。
 4. **连 `tmux ls` 都卡住** → 怀疑 tmux 服务端本身（livelock），别只在 corral 里加日志。
-5. **活动监视器里 Cursor / agent / cursor-agent 进程很多** → 先分清图形版和命令行助手。图形版没开时，这些几乎全是调度界面里打开过、还挂在保活里的 Cursor 命令行会话：**一张卡一只顶层进程，不是泄漏、也不是同一条聊天开了两份**。侧栏显示「就绪」的会话进程也还活着；空闲回收默认约 2 小时，**另有托管软上限 10**：超限时会关掉闲置 >10 分钟且非「执行中」的卡（进界面 / 新开托管时顺带跑）。刚开过不久、或仍在执行中的不会被压关，因此仍可能暂时多于 10。真正打满核的通常只有仍在「执行中」的那几只。问「有没有超限」只数保活托管会话，不要拿活动监视器进程数去比 10，也**不要对真实保活跑回收来“验证”**。不要为了消掉进程个数去关图形版 Cursor、杀 ChatGPT 名下的 node，或当成 fork 风暴去拆保活。要马上减进程：在调度界面结束不需要的托管会话（结束进程不删历史）；不要从活动监视器按短名一把杀光。权威机制见 `docs/MAINTAINER_GUIDE.md`「会话保活」回收段。
+5. **活动监视器里 Cursor / agent / cursor-agent 进程很多** → 先分清图形版和命令行助手。图形版没开时，这些几乎全是调度界面里打开过、还挂在保活里的 Cursor 命令行会话：**一张卡一只顶层进程，不是泄漏、也不是同一条聊天开了两份**。侧栏显示「就绪」的会话进程也还活着；空闲回收默认约 2 小时，**另有托管软上限 10**（历史：旧版 `keepalive.py` 的自动回收自 2026-09-14 起默认关闭，`IDLE_HOURS=0`、`MAX_SESSIONS=0`，「2 小时 / 上限 10」是更早的默认值。**自 2026-09-29 起默认开启的是静默精确回收（`reclaim.py`）**：闲置 120 分钟（内存吃紧时 10 分钟），且非执行中 / 非等待回答 / 无观看方 / 未置顶才结束，无任何通知，契约见 `MAINTAINER_GUIDE.md`「会话保活」节的「Silent automatic reclaim」条；旧的 `IDLE_HOURS` / `MAX_SESSIONS` 仍只在显式设置时才生效）：以下「超限会关掉闲置 >10 分钟且非「执行中」的卡（进界面 / 新开托管时顺带跑）」仅描述该显式软上限开启时的行为。刚开过不久、或仍在执行中的不会被压关，因此仍可能暂时多于 10。真正打满核的通常只有仍在「执行中」的那几只。问「有没有超限」只数保活托管会话，不要拿活动监视器进程数去比 10，也**不要对真实保活跑回收来“验证”**。不要为了消掉进程个数去关图形版 Cursor、杀 ChatGPT 名下的 node，或当成 fork 风暴去拆保活。要马上减进程：在调度界面结束不需要的托管会话（结束进程不删历史）；不要从活动监视器按短名一把杀光。权威机制见 `docs/MAINTAINER_GUIDE.md`「会话保活」回收段。
+6. **corral 内新开 / 恢复任何助手都慢、外面直接启动秒开** → 先跑上节（托管子进程被限流）的死循环 A/B；保活侧低一个数量级就是 server 限流，按那节处置，不要先查扫描或重装助手。
+7. **New session takes ~30 s to show in the right pane (a session opened outside Corral is instant), whole machine at load 100+, or swap nearly full** → run the memory checks first (`sysctl vm.swapusage`, second `top -l 2` sample, memory including compressed by process group) per the section "Slow new sessions / laggy UI = machine out of memory", *before* the throttle A/B in item 6: under swap thrash every timing, including that A/B, is amplified and can mislead. Silent reclaim of inactive hosted sessions (contract in `MAINTAINER_GUIDE.md`「会话保活」) is the mitigation; do not run reclaim against the real keepalive socket just to "verify".
 
 更细的控制通道协议与「禁止主线程调 tmux」见 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`。
 
@@ -332,4 +393,4 @@ python3 scripts/benchmark.py
 CORRAL_NATIVE=0 python3 scripts/benchmark.py
 python3 -c "import time; from corral.runtime import default_registry; r
 
-<!-- 该文档整理/压缩于 2026-09-05 -->
+<!-- 该文档整理/压缩于 2026-09-29 -->

@@ -476,6 +476,38 @@ def desired_host_size(
     return best
 
 
+def live_host_viewer_names() -> set[str] | None:
+    """Hosted session names that any Corral window is showing right now.
+
+    Read-only: applies the same staleness and pid-alive rules as
+    ``desired_host_size`` but never deletes rows. Returns ``None`` when the
+    registry cannot be read — callers that want to stop a session must treat
+    that as "unknown", not as "nobody is watching".
+    """
+    conn = _connect_host_viewers()
+    if conn is None:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT session_name, pid, updated_at FROM host_viewers"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    now = time.monotonic()
+    live: set[str] = set()
+    for name, pid, updated_at in rows:
+        try:
+            fresh = now - float(updated_at) <= _HOST_VIEW_STALE_SECONDS
+            alive = _pid_is_alive(int(pid))
+        except (TypeError, ValueError):
+            continue
+        if fresh and alive:
+            live.add(str(name))
+    return live
+
+
 def release_host_view(name: str | None, viewer_id: str) -> None:
     """本格切走 / 卸载时丢掉登记，让剩下的观看方按自己的格宽收窗。"""
     if not name or not viewer_id:

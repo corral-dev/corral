@@ -53,7 +53,7 @@ def _header() -> dict:
 
 
 def _wire(messages: list[richmsg.RichMessage]) -> list[dict]:
-    return [message.to_dict() for message in messages]
+    return [message.to_wire_dict() for message in messages]
 
 
 class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
@@ -105,12 +105,16 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
         self.assertEqual(
             (read_tool["name"], read_tool["kind"], read_tool["summary"]), ("read", "read", "read demo.txt")
         )
-        self.assertEqual(json.loads(read_tool["detail"])["path"], "/tmp/demo.txt")
+        self.assertNotIn("status", read_tool)
+        self.assertNotIn("detail", read_tool)
+        self.assertNotIn("output", read_tool)
+        self.assertTrue(read_tool["has_detail"])
+        self.assertEqual(json.loads(messages[1].tools[0].to_dict()["detail"])["path"], "/tmp/demo.txt")
         self.assertEqual((bash_tool["kind"], bash_tool["summary"]), ("shell", "printf demo"))
-        self.assertEqual(bash_tool["detail"], '{\n  "command": "printf demo"\n}')
+        self.assertEqual(messages[1].tools[1].to_dict()["detail"], '{\n  "command": "printf demo"\n}')
         self.assertEqual([tool.status for tool in messages[1].tools], ["running", "running"])
 
-    def test_results_arrive_in_steps_and_explicit_error_reuses_host_seq(self) -> None:
+    def test_results_arrive_in_steps_and_inferred_error_reuses_host_seq(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "session.jsonl"
             prefix = [
@@ -161,7 +165,10 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
             self.assertEqual(len(second), 1)
             self.assertEqual(second[0]["seq"], 2)
             self.assertEqual([tool.status for tool in second_messages[0].tools], ["ok", "running"])
-            self.assertEqual(second[0]["tools"][0]["output"], "all checks passed")
+            self.assertTrue(second[0]["tools"][0]["has_detail"])
+            self.assertNotIn("output", second[0]["tools"][0])
+            [ok_detail] = second_messages[0].tool_detail_page(tool_id="check-ok")["tools"]
+            self.assertEqual(ok_detail["output"], "all checks passed")
 
             _write(
                 path,
@@ -185,7 +192,6 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
                         "2026-09-01T00:00:04Z",
                         toolCallId="check-fail",
                         toolName="bash",
-                        isError=True,
                     ),
                 ],
             )
@@ -196,7 +202,10 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
         self.assertEqual(third[0]["seq"], 2)
         self.assertEqual([tool["id"] for tool in third[0]["tools"]], ["check-ok", "check-fail"])
         self.assertEqual([tool.status for tool in third_messages[0].tools], ["ok", "error"])
-        self.assertEqual(third[0]["tools"][1]["output"], "Error: synthetic failure")
+        self.assertTrue(third[0]["tools"][1]["has_detail"])
+        self.assertNotIn("output", third[0]["tools"][1])
+        [error_detail] = third_messages[0].tool_detail_page(tool_id="check-fail")["tools"]
+        self.assertEqual(error_detail["output"], "Error: synthetic failure")
 
     def test_question_extension_fixture_preserves_single_and_grouped_choices(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -249,6 +258,7 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
         self.assertEqual(tools[0]["kind"], "question")
         self.assertEqual(tools[0]["status"], "running")
         self.assertEqual(tools[0]["options"], ["Blue", "Green"])
+        self.assertNotIn("questions_meta", tools[0])
         self.assertNotIn("questions", tools[0])
         self.assertNotIn("options", tools[1])
         self.assertEqual(
@@ -284,10 +294,13 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
                 ),
             ]
             _write(path, common)
-            active = _wire(richmsg.RichReader(_session(path)).read_all())
+            reader = richmsg.RichReader(_session(path))
+            initial = _wire(reader.poll())
+            active = initial
             self.assertEqual(
                 [item.get("text", "") for item in active], ["Start.", "Continue on active branch.", "Active answer."]
             )
+            self.assertEqual([item["seq"] for item in initial], [1, 2, 3])
             self.assertNotIn("Abandoned answer.", json.dumps(active))
 
             switched = common + [
@@ -300,11 +313,65 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
                 ),
             ]
             _write(path, switched)
-            after_switch = _wire(richmsg.RichReader(_session(path)).read_all())
+            switch_delta = _wire(reader.poll())
+            after_switch = _wire(reader.read_all())
 
         self.assertEqual([item.get("text", "") for item in after_switch], ["Start.", "Switched answer."])
         self.assertNotIn("Abandoned answer.", json.dumps(after_switch))
         self.assertNotIn("Active answer.", json.dumps(after_switch))
+        # Legacy Pi poll reuses the changed active-path sequence and has no tombstone
+        # for the old trailing message; consumers rebuild/replace by generation.
+        self.assertEqual([(item["seq"], item.get("text")) for item in switch_delta], [(2, "Switched answer.")])
+
+    def test_restored_reader_reemits_tool_error_with_original_host_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            prefix = [
+                _header(),
+                _entry("u1", None, "user", [{"type": "text", "text": "Run the check."}], "2026-09-01T00:00:01Z"),
+                _entry(
+                    "a1",
+                    "u1",
+                    "assistant",
+                    [
+                        {"type": "text", "text": "Checking."},
+                        {"type": "toolCall", "id": "check-1", "name": "bash", "arguments": {"command": "check"}},
+                    ],
+                    "2026-09-01T00:00:02Z",
+                ),
+            ]
+            _write(path, prefix)
+            original_reader = richmsg.RichReader(_session(path))
+            original_messages = original_reader.read_all()
+            restored_reader = richmsg.RichReader(_session(path))
+            reader_state = json.loads(json.dumps(original_reader.export_state()))
+            restored_messages = [richmsg.RichMessage.from_dict(item.to_dict()) for item in original_messages]
+            restored_reader.restore_state(reader_state, restored_messages)
+
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        _entry(
+                            "tr1",
+                            "a1",
+                            "toolResult",
+                            [{"type": "text", "text": "exit code: 2\nsynthetic failure"}],
+                            "2026-09-01T00:00:03Z",
+                            toolCallId="check-1",
+                            toolName="bash",
+                        )
+                    )
+                    + "\n"
+                )
+            updated_messages = restored_reader.poll()
+            updated = _wire(updated_messages)
+
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0]["seq"], original_messages[1].seq)
+        self.assertEqual([tool.status for tool in updated_messages[0].tools], ["error"])
+        self.assertTrue(updated[0]["tools"][0]["has_detail"])
+        [detail] = updated_messages[0].tool_detail_page(tool_id="check-1")["tools"]
+        self.assertTrue(detail["output"].startswith("exit code: 2"))
 
     def test_empty_body_agent_error_is_preserved_as_assistant_message(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

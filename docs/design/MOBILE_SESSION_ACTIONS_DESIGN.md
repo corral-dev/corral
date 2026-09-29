@@ -76,3 +76,5 @@ not touch it. One line to add later under the method table (`session.new` /
 `resume` / `handoff` row): `` `session.copy` → `{"session": <SessionSummary>}`
 (same-assistant clone: official fork else disk clone; readonly hidden,
 `SESSION_CREATE` limit, no confirm) ``.
+
+<!-- 该文档整理/压缩于 2026-09-29 -->

@@ -999,6 +999,27 @@ def default_layout_db() -> SidebarLayoutDB:
         return _DEFAULT_DB
 
 
+def pinned_keys_effective() -> set[str] | None:
+    """Session keys the user pinned: individually, or as a member of a pinned group.
+
+    Read-only view for the silent reclaimer, which must never stop a session the
+    user explicitly pinned. Groups that are merely remembered but not pinned do
+    not count. Returns ``None`` when the layout database is unreadable (the
+    reader then hands back its in-process fallback, which knows no pins) so the
+    caller treats pins as unknown instead of absent.
+    """
+    db = default_layout_db()
+    store = db.read()
+    if store is db._memory:
+        return None
+    keys = set(store.pinned_session_keys)
+    for gid in store.pinned_group_ids:
+        group = store.groups.get(gid)
+        if group is not None:
+            keys.update(group.session_keys)
+    return keys
+
+
 def remembered_ids_by_runtime() -> dict[str, set[str]]:
     """置顶与分组成员的会话 id，按运行时分组，供扫描 limit 豁免。"""
     store = default_layout_db().read()

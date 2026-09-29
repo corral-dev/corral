@@ -193,12 +193,40 @@ def _run_title_daemon(registry: RuntimeRegistry, limit: int) -> None:
         lock_fp.close()
 
 
+def _title_daemon_running() -> bool:
+    """True when another process holds the title lock (cheap probe, no fork).
+
+    Callers spawn a whole interpreter that imports the registry only to lose the
+    lock and exit; probing first skips that fork while a generator is running. A
+    shared lock never blocks other probers; any error reads as "not running" so
+    the spawn proceeds exactly as before (the daemon still guards itself).
+    """
+    try:
+        fd = os.open(_TITLE_LOCK_FILE, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 def _spawn_title_daemon(limit: int) -> None:
     """以脱离当前终端的方式拉起后台标题生成进程。
 
     start_new_session 让子进程独立成新会话/进程组：TUI 之后无论被 execvp
     替换（原生恢复）还是退出，该进程都继续把标题生成完并写入缓存。
+    已有进程持锁时直接跳过，不再白白起一个必然撞锁退出的解释器。
     """
+    if _title_daemon_running():
+        return
     try:
         subprocess.Popen(
             [sys.executable, "-m", "corral", "--generate-titles", "--limit", str(limit)],

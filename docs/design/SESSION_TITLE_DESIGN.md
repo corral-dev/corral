@@ -113,3 +113,5 @@ A successful title stays stable as conversation content grows. Re-generation of 
 - Current gateway policy: [Global LLM gateway guide](/Users/geraltgraham/.config/agentsync/docs/LLM_GATEWAY_GUIDE.md). Its mandatory gateway boundary supersedes the maintainer guide's legacy assistant-CLI transport description for new implementation.
 - [Official offline-first guidance](https://developer.android.com/topic/architecture/data-layer/offline-first): separate local reads from network synchronization.
 - [Now in Android repository implementation](https://github.com/android/nowinandroid/blob/main/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstNewsRepository.kt): shallow-cloned and inspected for local observable reads plus synchronization writes. Borrow that ownership separation only; do not adopt its Kotlin/JVM stack, Room, or Android scheduling APIs.
+
+<!-- 该文档整理/压缩于 2026-09-29 -->

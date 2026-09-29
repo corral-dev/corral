@@ -31,10 +31,31 @@ def call_scan(
     include_missing_cwd: bool = False,
 ) -> list[SessionInfo]:
     """Forward only kwargs the SessKit scanner actually accepts."""
-    params = inspect.signature(scan_fn).parameters
+    try:
+        target = inspect.unwrap(scan_fn)
+    except (TypeError, ValueError):
+        target = scan_fn
+    try:
+        params = inspect.signature(scan_fn).parameters
+    except (TypeError, ValueError):
+        params = {}
+
     kwargs: dict[str, Any] = {"limit": limit}
     if keep_ids is not None and "keep_ids" in params:
         kwargs["keep_ids"] = keep_ids
     if include_missing_cwd and "include_missing_cwd" in params:
         kwargs["include_missing_cwd"] = True
+
+    accepts_host_provider = "host_claim_provider" in params or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params.values()
+    )
+    if (
+        accepts_host_provider
+        and getattr(target, "__module__", None) == "sesskit.parsers.codex"
+        and getattr(target, "__name__", None) == "scan_sessions"
+    ):
+        from corral.codex_identity import live_claims
+
+        kwargs["host_claim_provider"] = live_claims
+
     return scan_fn(**kwargs)

@@ -579,13 +579,27 @@ class AttentionStore:
         供保活压力回收判断「进行中」：长任务可能长时间无终端输出，不得只靠
         tmux session_activity 判断。
         """
+        return self._pairs_in_phases(("working",)) or []
+
+    def busy_pairs(self) -> list[tuple[str, str]] | None:
+        """返回 phase 为 working 或 waiting 的 (runtime_id, session_id)。
+
+        供静默回收判断「不可动」：执行中与等待用户回答的会话都不能停。与
+        ``working_pairs`` 不同，库不可用时返回 ``None`` 而不是空列表——回收方必须把
+        「不知道」当作阻断，不能把它读成「没有会话在忙」。
+        """
+        return self._pairs_in_phases(("working", "waiting"))
+
+    def _pairs_in_phases(self, phases: tuple[str, ...]) -> list[tuple[str, str]] | None:
         conn = self._open()
         if conn is None:
-            return []
+            return None
         try:
+            marks = ",".join("?" for _ in phases)
             rows = conn.execute(
                 "SELECT runtime_id, session_id FROM session_attention "
-                "WHERE phase = 'working'"
+                f"WHERE phase IN ({marks})",
+                phases,
             ).fetchall()
             pairs: list[tuple[str, str]] = []
             for row in rows:
@@ -596,7 +610,7 @@ class AttentionStore:
             return pairs
         except (OSError, sqlite3.Error) as error:
             self._report_degraded(error)
-            return []
+            return None
         finally:
             conn.close()
 

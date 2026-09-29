@@ -38,3 +38,5 @@ Still open:
 - Prove `ios-sessions.png` / `ios-chat.png` against the live iPhone app (or replace them) before treating them as current evidence.
 
 Capture pitfalls: do not rely on Color Emoji font swaps under Cairo; do not empty `group_emoji` to hide tofu; missing `docs/screenshots/emoji/*.png` must fail the capture.
+
+<!-- 该文档整理/压缩于 2026-09-29 -->

@@ -532,6 +532,7 @@ class SessionHub:
                     # History scan failures must not block title-only propagation.
                     pass
                 last_scan = time.monotonic()
+                self._reclaim_inactive_hosts()
             title_keys.update(self.store.poll_title_updates())
             self._follow_key_migrations()
             self._detect_attention_changes()
@@ -541,6 +542,21 @@ class SessionHub:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
                 self._emit_title_events(title_keys)
+
+    def _reclaim_inactive_hosts(self) -> None:
+        """Silent reclaim tick on the refresh thread; the daemon may run with no TUI open.
+
+        `reclaim.maybe_reclaim` owns the machine-wide throttle, the protections and
+        the audit event. Failures must never disturb the refresh loop.
+        """
+        try:
+            from corral import reclaim
+
+            if not self.store.loaded or not reclaim.enabled():
+                return
+            reclaim.maybe_reclaim(lambda: [dict(s) for s in self.store.all_sessions()])
+        except Exception:  # noqa: BLE001 — best effort
+            pass
 
     def _emit_title_events(self, title_keys: set[str]) -> None:
         with self._lock:

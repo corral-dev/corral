@@ -4,6 +4,20 @@
 
 配套客户端：`../ios/`（见 `../ios/AGENTS.md`）。零知识中继：`../relay/`（开源自建看其 README）。维护者本人的多租户公网实例运维只写在私有 agentsync 基础设施知识库，**禁止**写进公开 GitHub 门面当默认地址。
 
+## §0 目录索引
+
+- [Task execution reliability](#task-execution-reliability)
+- [开源中继硬规则](#开源中继硬规则2026-09-12-用户裁定-记牢)
+- [产品边界](#产品边界)
+- [Native agent questions: implemented paths](#native-agent-questions-implemented-paths-2026-09-29)
+- [命令入口](#命令入口)
+- [协议分层](#协议分层)
+- [加密与身份](#加密与身份)
+- [安全边界](#安全边界)
+- [连接策略](#连接策略)
+- [踩坑](#踩坑)
+- [验证](#验证)
+
 ## Task execution reliability
 
 - Execution state must agree across the host, mobile list, and open conversation. Opening or reconnecting during a running turn must immediately restore the current state; reading a conversation must not clear working. Process existence alone does not prove an active turn.
@@ -275,4 +289,4 @@ python3 scripts/phone_remote_acceptance.py \
 2. 同局域网时优先直连（可加速），失败须自动回落中继，**不要**要求用户再扫一张「外网码」。
 3. 无手机时用 `cli/scripts/phone_remote_acceptance.py` 经当前配置的中继跑完整表订阅，并**每个助手各打开一条详情**；`device_probe.py` 只作握手对照。
 
-<!-- 该文档整理/压缩于 2026-09-05 -->
+<!-- 该文档整理/压缩于 2026-09-29 -->

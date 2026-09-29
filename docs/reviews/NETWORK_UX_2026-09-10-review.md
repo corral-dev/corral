@@ -8,7 +8,7 @@ Decision: **corrections applied; release candidate once the full CLI gate and th
 
 ### P1: Failed input injection is reported as delivered
 
-Location: `cli/src/corral/remote/service.py`, `_run_receipted_input`, lines 831-845; underlying `cli/src/corral/embed.py`, `_send` and `paste`, lines 527-558.
+Location: `cli/src/corral/remote/service.py` `_run_receipted_input`; underlying `cli/src/corral/embed.py` `_send` and `paste`.
 
 The new receipt wrapper treats a normal return from `SessionHub.send_text` as delivery evidence. The real helpers suppress OS errors/timeouts and ignore subprocess exit status. Consequently a failed paste and failed Enter can both return normally and produce a durable `delivered` receipt. This is a new false guarantee even though the old helper behavior predates the change.
 
@@ -18,7 +18,7 @@ Required correction: propagate explicit injection outcomes; declare delivery onl
 
 ### P1: A lost response destroys pending-command reconciliation
 
-Location: `ios/Corral/Views/Chat/SessionDetailView.swift`, `submitText` catch paths, lines 291-304 (also `submitPrompt`); `ios/Corral/Store/PendingCommandStore.swift`, `updateDelivery`.
+Location: `ios/Corral/Views/Chat/SessionDetailView.swift` `submitText` catch paths (also `submitPrompt`); `ios/Corral/Store/PendingCommandStore.swift` `updateDelivery`.
 
 On any transport exception, the view marks the command rejected and restores its text to the draft. The pending store maps rejection to failed and removes the durable record. If the host executed the command but its reply was lost, reconnection no longer queries its status. Pressing the ordinary retry/send action allocates a new UUID, bypassing host deduplication and potentially executing the same instruction twice.
 
@@ -26,7 +26,7 @@ Required correction: distinguish an authoritative host rejection from timeout/di
 
 ### P1: A valid large legacy frame disconnects the shared host
 
-Location: `relay/internal/hub/queue.go`, `queuedSink.Send`, lines 44-52; `hub.go` interaction budget and primary lane routing.
+Location: `relay/internal/hub/queue.go` `queuedSink.Send`; `hub.go` interaction budget and primary lane routing.
 
 The existing wire accepts frames up to 8 MiB, but the new primary destination queue closes its underlying socket when queued bytes exceed 256 KiB. Even an empty queue cannot accept a single 300 KiB frame. Legacy clients and current image submission can still send an unchunked payload on the interaction connection; closing that shared host socket disconnects all attached phones, not merely the sender. The same mismatch exists between bulk's 512 KiB queue and unchunked larger responses.
 
@@ -36,7 +36,7 @@ Required correction: negotiate frame/chunk limits before enforcing incompatible 
 
 ### P2: Old bulk-connection cleanup closes its replacement
 
-Location: `relay/internal/hub/hub.go`, `AttachHostLane` lines 166-171 and `DetachHostLane` lines 177-198; `internal/server/server.go`, deferred detach in `handleHostAttachV2`.
+Location: `relay/internal/hub/hub.go` `AttachHostLane` and `DetachHostLane`; `internal/server/server.go` deferred detach in `handleHostAttachV2`.
 
 Attaching a replacement closes the previous bulk connection. Its handler then runs deferred cleanup identified only by host ID, registration generation, and lane name. Those values also match the replacement, so cleanup removes and closes the new lane. This can repeatedly break bulk reconnection without affecting the primary generation.
 
@@ -54,7 +54,7 @@ Source fixes for the four findings above (not a release approval; versions uncha
 4. **Old bulk detach closes replacement** — `AttachHostLane` returns a unique `attachID`; `DetachHostLane` only closes when it still matches. Test: `TestOldBulkDetachMustNotCloseReplacement`.
 
 
-- Existing receipt suite: 15 tests passed using the project's `.venv`, isolated temporary state, and `PYTHONPATH=src`. System Python lacked `sesskit`; that environment error was resolved by using the project environment.
+- Existing receipt suite: 15 tests passed using the project's `.venv`, isolated temporary state, and `PYTHONPATH=src`.
 - Existing relay packages: `go test -race ./internal/hub ./internal/protocol ./internal/server` passed.
 - Additional relay regression tests: both failed as described above, in `/tmp/corral-review-relay-20260910/internal/hub/review_regressions_test.go`. Temporary tests were not added to product source.
 - Real adapter failure simulation: reproduced false delivery using fake subprocess failure and isolated state.
@@ -73,3 +73,5 @@ SHA-256 at final inspection, to distinguish subsequent corrections:
 | iOS `PendingCommandStore.swift` | `4be56088fe0096c6bb8689906d2a2978c4a0099dac6dab2cbb83ca47abab2715` |
 | Relay `hub.go` | `e8734e7da0c5c8ffbb86944406a0ce693cc2f7900118bbb17185b953a016fd77` |
 | Relay `queue.go` | `c8037895e56c878f9ee3d9c92f3e85cf5b5df757ec9235d8d6de55cd3fa6f6b9` |
+
+<!-- 该文档整理/压缩于 2026-09-29 -->
