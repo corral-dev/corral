@@ -24,7 +24,7 @@ DEFAULT_MAX_MB = 256
 # Bump when list metadata extraction changes; otherwise performance-cache keeps
 # old first_user_msg slices (2026-09-12: handoff digest must be extracted before
 # the 300-char clip).
-_PARSER_VERSION = "2026-09-12.1"
+_PARSER_VERSION = "2026-09-29.1"
 
 
 def enabled() -> bool:

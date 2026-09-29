@@ -35,9 +35,13 @@ def _pane_accepts_input(plain: str) -> bool:
     """Finding F2: product readiness only knows the arrow prompt; Claude Code 2.1 shows '❯'."""
     if _product_ready(plain):
         return True
-    if "Trust" in plain and "folder" in plain:
+    if "Trust" in plain and ("folder" in plain or "workspace" in plain):
         return False
-    return any(line.strip() in ("❯", "›") or line.startswith(("❯ ", "› "))
+    if "Ask anything" in plain:  # OpenCode composer placeholder
+        return True
+    if " turns" in plain and "────" in plain:  # Pi footer under an empty editor box
+        return True
+    return any(line.strip() in ("❯", "›", ">") or line.startswith(("❯ ", "› ", "> "))
                for line in plain.splitlines())
 
 
@@ -67,7 +71,8 @@ def _project(runtime_id: str) -> Path:
 TRUST_GATES = (
     ("Yes, I trust this folder", ("Down", "Enter")),  # Claude Code: default is "No, exit"
     ("1. Trust and continue", ("Enter",)),  # Codex: default is trust
-    ("Trust this workspace", ("Enter",)),  # Cursor (assumed wording; verify)
+    ("[a] Trust this workspace", ("Enter",)),  # Cursor: default is trust; "a" repeats would type
+    ("Trust this folder?", ("Enter",)),  # Kimi Code: default is trust
 )
 
 
