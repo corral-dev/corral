@@ -36,6 +36,8 @@
     own question as text near the related idea, visibly marked as agent-written. The owner
     answers by writing in the editor whenever convenient. No separate question cards.
 14. Questions awaiting the owner are also pushed to the phone.
+15. SessKit and OpenConductor may be changed, optimized, used as references, and have modules
+    extracted or updated for reuse.
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -184,7 +186,69 @@ questions.
 Strikethrough applies to all deletions, including text X has never seen (owner, same day);
 overwrite = strike old + insert new (owner-approved).
 
-## 9. References
+## 9. Research and experiment findings (2026-09-29)
+
+### 9.1 Reference implementations (read from source)
+
+| Project | Worker control | Completion / needs-input | Take | Do not copy |
+|---|---|---|---|---|
+| multiclaude | tmux set-buffer + paste + Enter; "delivered" = command exit 0 | Daemon nudges every agent every 2 min | Supervisor acts only through CLI commands; "Brownian ratchet" (overlap is fine) matches requirement 11 | Unconfirmed delivery; timer polling instead of events |
+| Conductor OSS | Workers in real terminal UIs; dispatcher over ACP | Executor-specific output parsing → `NeedsInput`; 15-min dispatcher heartbeat | Dispatcher turns chat into structured cards (objective, dependencies, acceptance) | Fixed board columns as the input format |
+| claude-orchestrator | Headless `claude --print` with stream-json in/out | Process exit + event stream | Structured events are reliable | Invisible sessions — conflicts with requirement 5 |
+| OpenConductor (own) | — | — | Deterministic core + model only for semantics; HITL; "real call + data diff" live tests | Go code cannot be lifted into Python directly |
+
+Chosen direction: Y and X stay visible, hosted Corral sessions; **delivery and completion are
+confirmed from each assistant's own history files**, never from paste exit codes or screen text
+alone; X's decisions land through Corral commands, never parsed from its screen.
+
+### 9.2 E1 — driving hosted assistants (`spikes/web_butler/e1_injection.py`)
+
+Per assistant: start hosted session in a new git folder → first instruction (≈40 s busy) →
+mid-turn second instruction → verify from history files and produced files.
+
+| Assistant | Startup gate | Mid-turn instruction | Evidence of delivery in history | Completion signal |
+|---|---|---|---|---|
+| Claude Code 2.1.284 | Folder trust, default **No, exit** | Absorbed mid-turn | `queue-operation enqueue` (received) and `remove … absorbed_mid_turn` (seen by model); SessKit ignores both | Correct |
+| Codex 0.158 | Folder trust, appears **seconds after** the composer looks ready | Held until the current tool call ends ("Messages to be submitted after next tool call"; Esc sends immediately) | Recorded once submitted | **Three "completed" signals inside one turn**, the first while `sleep` still ran |
+| Cursor Agent 2026.09 | Workspace trust (`[a]`/Enter) | Not testable: weekly quota exhausted | — | Quota error shown as **completed** |
+| Pi | none | Absorbed | Recorded as a user message | Correct — full pass |
+| OpenCode 2.0.16 | none; composer placeholder disappears while busy | Absorbed (both files made) | Not found by a text search of its history store — evidence path still to be identified | Correct |
+| Kimi Code 2.1.1 | Folder trust, default trust | Not testable: not logged in ("LLM not set, send /login") | — | Shown as **waiting for reply** while unusable |
+
+Findings that change the design or existing Corral behavior:
+
+- **F1 Startup gates** (trust dialogs) block unattended sessions in new folders for Claude,
+  Codex, Cursor and Kimi, with different defaults and keys, and can appear late. Gate
+  handling must match the exact dialog screen, per assistant.
+- **F2 Readiness detection is per assistant.** Corral's `_pane_accepts_input` only recognizes
+  an arrow prompt; it rejects Claude Code 2.1 (`❯`), Codex (`›`), OpenCode, Pi and Kimi
+  prompts, so `send_turn` (used by EditHere) times out for them. Existing defect.
+- **F3 Delivery must be confirmed from history.** Paste + Enter can succeed while the text is
+  lost (Codex dialog race) or stays in the composer (Enter before paste settled). Claude
+  records mid-turn input only as queue-operation / queued_command entries, which SessKit
+  drops — so mid-turn messages (including phone messages) are missing from Corral's
+  conversation view. SessKit change.
+- **F4 A finished turn is not a finished task.** Codex emits several completion ids within a
+  single turn; Cursor reports a quota error as completed; an unlogged Kimi shows as waiting. X must verify completion content;
+  quota exhaustion and "not logged in" must be distinct availability states that X can act on
+  (switch assistant). Of six installed assistants, two were unusable on test day.
+- **F5 Mid-turn semantics differ**: absorbed at the next model step (Claude, Pi) vs. held until
+  the running tool call ends (Codex). X needs this per assistant to choose wait vs. interrupt.
+- **F6 Kimi permission mode.** Kimi 2.1.1 redefined `-y` as "Ask When Needed" (risky actions,
+  questions and plans still ask); never-ask is `--auto`. Corral still launches Kimi with `-y`,
+  so hosted Kimi sessions can stop for approval. Existing defect; the global CLI-wrapping rule
+  that names `-y` is also outdated.
+
+### 9.3 Corral / SessKit change list derived so far
+
+1. Session-control layer shared by the phone daemon, the web service and X (create, send with
+   confirmed delivery, interrupt, observe), extracted from `SessionHub`.
+2. Per-assistant adapters for startup gates, readiness and mid-turn submission.
+3. SessKit: surface mid-turn user input (Claude queue records); one completion per turn
+   (Codex); quota/limit as its own status (Cursor, others).
+4. Kimi launch flag `--auto` (F6).
+
+## 10. References
 
 - CodeMirror decorations / atomic ranges: https://codemirror.net/examples/decoration/ ,
   https://codemirror.net/docs/ref/

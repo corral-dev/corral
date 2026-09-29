@@ -37,7 +37,9 @@ def _pane_accepts_input(plain: str) -> bool:
         return True
     if "Trust" in plain and ("folder" in plain or "workspace" in plain):
         return False
-    if "Ask anything" in plain:  # OpenCode composer placeholder
+    if "Ask anything" in plain or "┃  Build" in plain:  # OpenCode composer (idle / busy)
+        return True
+    if any(line.strip().startswith("│ >") for line in plain.splitlines()):  # Kimi Code box
         return True
     if " turns" in plain and "────" in plain:  # Pi footer under an empty editor box
         return True
