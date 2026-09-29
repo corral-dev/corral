@@ -539,8 +539,8 @@ Captures: [desktop](assets/web-task-butler-preview.png),
 3. Trigger delays from the owner's real typing in the preview page (E4 used synthetic traces;
    a 10-second thinking pause still woke the coordinator at 8 s / 3 s). Needs the owner.
 4. Owner review of the interactive demo (§9.7). Needs the owner.
-5. Freeze: acceptance checks for §6.1, evaluation cases for §6.2, implementation plan for the
-   §9.8 change list, the local web service, the ledger and the coordinator's command set.
+5. Freeze: acceptance checks for §6.1 and evaluation cases for §6.2 (coverage and gaps in
+   §9.10); implementation plan in §10, with three decisions for the owner.
 
 ### 9.10 Freeze coverage (2026-09-29)
 
@@ -557,7 +557,7 @@ Freeze requires an acceptance check for every §6.1 guarantee and an evaluation 
 | Identical text removed and re-inserted in one settle window is reported as a move | Gap | — |
 | Undo changes text only; never undoes a dispatch or unlocks done text | Covered | E2 T6, T18, T21, T22 (F12 fixed) |
 | Seen text struck, unseen text deleted, mixed selections split | Covered | E2 T1–T5, T15–T20 |
-| Completion marking verifies the quote; falls back to the stored anchor | Partly | Boundary checks the quote (`contract.py`); fallback is Product |
+| Completion marking verifies the quote; falls back to the stored anchor | Partly | Boundary checks the quote and evidence (`contract.py`, 53 tests in `test_contract.py`, including action shapes); fallback is Product |
 | A span shared by several tasks turns green only when all are done | Product | — |
 | Project highlight: whole words, short names case-sensitive, "not a project" | Partly | E2 T12; "not a project" is Product |
 | Typing always wins; coordinator never inserts inside the block being edited | Partly | E2 T10 (inserts while typing); the insertion policy is Product |
@@ -571,19 +571,42 @@ Freeze requires an acceptance check for every §6.1 guarantee and an evaluation 
 | §6.2 judgement | Scenarios |
 |---|---|
 | One sentence → several tasks | S1 |
-| Scattered sentences → one task | Gap |
+| Scattered sentences → one task | S17 (written, first run pending) |
 | Later text amends an earlier idea | S7; E6 |
-| Repeated idea, including one already done | S8 (follow-up); plain duplicate is a Gap |
+| Repeated idea, including one already done | S8 (follow-up), S18 (pending) |
 | Struck text: typo fix vs. withdrawal | S5, S6; E6 |
-| Edit to dispatched text: steer vs. stop and restart | S7 (steer); reversal needing stop + new task is a Gap |
+| Edit to dispatched text: steer vs. stop and restart | S7 (steer), S19 reversal (pending) |
 | Which project; ambiguous; new project; answer in text | S3, S9, S12, S16 |
-| Project aliases; several projects per idea | S1 (several); alias is a Gap |
-| Dependencies, including one discovered after start | S2; discovered later is a Gap |
-| Failures, retries, quota, switching assistants | S11, S15; a worker that failed (not quota) is a Gap |
+| Project aliases; several projects per idea | S1 (several), S20 shorthand (pending) |
+| Dependencies, including one discovered after start | S2, S21 (pending) |
+| Failures, retries, quota, switching assistants | S11, S15, S22 worker error (pending) |
 | Accepting a finished turn as done | S13, S14 |
 | Whether writing answers a question; whether to ask at all | S4, S12, S16 |
 
-## 10. References
+## 10. Implementation plan (*Proposed*, for design freeze)
+
+Order follows risk: the parts every later slice depends on come first. Each slice ships
+behind no user-facing entry until slice 6 (unfinished features are not exposed).
+
+| Slice | What | Where | Acceptance |
+|---|---|---|---|
+| 0 | **Session control layer**: host, deliver-and-confirm, interrupt, stop, observe turn state. Extracted from `SessionHub` so the phone daemon and the butler share it. Per-assistant startup gates, input readiness, composer check and mid-turn mode become runtime-adapter methods (fixes F1/F2; follows the "runtime-private behaviour lives in `runtime/`" rule). | new `src/corral/control.py`; `runtime/*.py`; `remote/sessions.py` delegates | Unit tests per adapter from recorded pane text. Opt-in live E1 matrix per installed assistant: start in a new folder, first message, mid-turn message, delivery confirmed from history. Phone `send_turn` regression tests unchanged. |
+| 1 | **SessKit signals**: one completion id per turn (Codex), quota/limit and not-logged-in as their own states (Cursor, Kimi). | SessKit, then Corral pin | SessKit contract tests on recorded histories. |
+| 2 | **Ledger and command boundary**: tasks, questions, dependencies, anchors, results, audit log (actor, action, target, time; same transaction as the change). Boundary = the spike's `contract.py` + shape checks + `test_contract.py`. | new `src/corral/butler/` (`ledger.py`, `boundary.py`); SQLite under `~/.config/corral/butler/` | Deterministic tests: every action and state from §6.1; audit row for every mutation; replay of E6's 26 rounds against the ledger with recorded coordinator answers. |
+| 3 | **Document service and editor**: loopback-only server on `websockets` (already a dependency) serving the editor and a live channel. Random token, origin check, single editing tab, versioned saves, seen ranges persisted with the document. Editor source moves from the spike; the built bundle ships in the package. | `src/corral/butler/web.py`, `document.py`; editor source under `cli/web/butler/` | E2/E5 checks (25 + anchor) run against the served page; restart and two-tab tests; token/origin rejection tests. |
+| 4 | **Coordinator runner**: one hosted coordinator session, standing prompt from `coordinator_prompt.md`. Rounds are triggered per §5: block settle, idle delay, one round in flight. The payload sends finished tasks in compact form. Replies are parsed, validated with one retry, and applied to the ledger. The coordinator restarts from the ledger when its context grows (E6). | `src/corral/butler/coordinator.py` | Recorded-replay tests of trigger timing (E4 traces); E3 scenarios + new S17–S22 through the real runner with a cheap model; restart test. |
+| 5 | **Worker lifecycle**: create a worker session per task with `worker_prompt.md` + brief. Steer, stop and reassign go through slice 0. Completion and failure events go back to the coordinator. Worker sessions appear in Corral's list, grouped. | `src/corral/butler/workers.py`; `split_layout` grouping | Live end-to-end on a disposable project: idea → task → worker → verified report → done span; quota switch with a fake unavailable assistant. |
+| 6 | **Owner-facing finish**: margin notes and result card with "open session in Corral"; questions pushed to the phone through the existing push path; a command to open the page. | editor; `remote/` push; `bootstrap.py` entry | Browser screenshots light/dark/phone; push received on a real phone; §9.10 Product rows all checked. |
+
+Decisions for the owner at freeze:
+1. **Entry point name.** Proposed: `corral ideas` opens the page in the browser. The internal
+   code name "butler" never appears in the interface.
+2. **Coordinator assistant.** Proposed: the first usable of Claude, Codex, Pi, overridable in
+   settings (requirement 3 leaves it open).
+3. **Scope of the first release.** Proposed: slices 0–5 plus the page command. Phone push of
+   questions (slice 6) can follow in the next release.
+
+## 11. References
 
 - CodeMirror decorations / atomic ranges: https://codemirror.net/examples/decoration/ ,
   https://codemirror.net/docs/ref/

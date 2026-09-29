@@ -16,6 +16,9 @@ def task(id_, state="running", report=None):
     return {"id": id_, "state": state, "worker_report": report}
 
 
+# Default document and anchor so shape checks pass without every caller supplying them.
+_DEFAULT_DOC = ["x"]
+
 def create(id_, project="Corral/cli", assistant=None, depends_on=None, anchors=None):
     return {
         "type": "create_task",
@@ -23,7 +26,7 @@ def create(id_, project="Corral/cli", assistant=None, depends_on=None, anchors=N
         "project": project,
         "assistant": assistant,
         "instruction": "do it",
-        "anchors": anchors or [],
+        "anchors": anchors if anchors is not None else ["x"],
         "depends_on": depends_on or [],
     }
 
@@ -31,7 +34,7 @@ def create(id_, project="Corral/cli", assistant=None, depends_on=None, anchors=N
 def run(actions, document=None, ledger=None, projects=None, assistants=None):
     return contract.validate(
         actions,
-        document if document is not None else [],
+        document if document is not None else _DEFAULT_DOC,
         ledger if ledger is not None else [],
         projects if projects is not None else PROJECTS,
         assistants if assistants is not None else ASSISTANTS,
@@ -76,27 +79,32 @@ class TestQuoteContiguity(unittest.TestCase):
 
 class TestLedgerStates(unittest.TestCase):
     def test_update_task_states(self):
-        self.assertEqual(run([{"type": "update_task", "id": "t1"}], ledger=[task("t1", "queued")]), [])
-        errors = run([{"type": "update_task", "id": "t1"}], ledger=[task("t1", "running")])
+        action = {"type": "update_task", "id": "t1", "instruction": "do it", "anchors": ["x"]}
+        self.assertEqual(run([action], ledger=[task("t1", "queued")]), [])
+        errors = run([action], ledger=[task("t1", "running")])
         self.assertTrue(any("not allowed on a running task" in e for e in errors))
 
     def test_reanchor_states(self):
-        self.assertEqual(run([{"type": "reanchor", "id": "t1"}], ledger=[task("t1", "running")]), [])
-        errors = run([{"type": "reanchor", "id": "t1"}], ledger=[task("t1", "done")])
+        action = {"type": "reanchor", "id": "t1", "anchors": ["x"]}
+        self.assertEqual(run([action], ledger=[task("t1", "running")]), [])
+        errors = run([action], ledger=[task("t1", "done")])
         self.assertTrue(any("not allowed on a done task" in e for e in errors))
 
     def test_steer_states(self):
-        self.assertEqual(run([{"type": "steer", "id": "t1"}], ledger=[task("t1", "running")]), [])
-        errors = run([{"type": "steer", "id": "t1"}], ledger=[task("t1", "queued")])
+        action = {"type": "steer", "id": "t1", "message": "try this", "interrupt": False}
+        self.assertEqual(run([action], ledger=[task("t1", "running")]), [])
+        errors = run([action], ledger=[task("t1", "queued")])
         self.assertTrue(any("not allowed on a queued task" in e for e in errors))
 
     def test_stop_states(self):
-        self.assertEqual(run([{"type": "stop", "id": "t1"}], ledger=[task("t1", "blocked")]), [])
-        errors = run([{"type": "stop", "id": "t1"}], ledger=[task("t1", "done")])
+        action = {"type": "stop", "id": "t1", "reason": "done"}
+        self.assertEqual(run([action], ledger=[task("t1", "blocked")]), [])
+        errors = run([action], ledger=[task("t1", "done")])
         self.assertTrue(any("not allowed on a done task" in e for e in errors))
 
     def test_reassign_states(self):
-        action = {"type": "reassign", "id": "t1", "assistant": "claude"}
+        action = {"type": "reassign", "id": "t1", "assistant": "claude", "instruction": "do it",
+                  "reason": "quota"}
         self.assertEqual(run([action], ledger=[task("t1", "queued")]), [])
         errors = run([action], ledger=[task("t1", "done")])
         self.assertTrue(any("not allowed on a done task" in e for e in errors))
@@ -105,13 +113,14 @@ class TestLedgerStates(unittest.TestCase):
         doc = ["Corral 手机端会话列表加搜索框"]
         report = "Added a search field. Ran 42 tests and checked a screenshot."
         ok = {"type": "mark_done", "id": "t1", "quote": "Corral 手机端会话列表加搜索框",
-              "evidence": "Ran 42 tests and checked a screenshot"}
+              "evidence": "Ran 42 tests and checked a screenshot", "summary": "added search field"}
         self.assertEqual(run([ok], document=doc, ledger=[task("t1", "running", report)]), [])
         errors = run([ok], document=doc, ledger=[task("t1", "queued", report)])
         self.assertTrue(any("not allowed on a queued task" in e for e in errors))
 
     def test_reopen_as_followup_states(self):
-        action = {"type": "reopen_as_followup", "of": "t1", "id": "new1"}
+        action = {"type": "reopen_as_followup", "of": "t1", "id": "new1", "instruction": "do it",
+                  "anchors": ["x"]}
         self.assertEqual(run([action], ledger=[task("t1", "done")]), [])
         errors = run([action], ledger=[task("t1", "running")])
         self.assertTrue(any("not allowed on a running task" in e for e in errors))
@@ -119,7 +128,7 @@ class TestLedgerStates(unittest.TestCase):
 
 class TestUnknownTask(unittest.TestCase):
     def test_unknown_task_id_rejected(self):
-        errors = run([{"type": "steer", "id": "nope"}])
+        errors = run([{"type": "steer", "id": "nope", "message": "try this", "interrupt": False}])
         self.assertTrue(any("does not exist" in e for e in errors))
 
 
@@ -140,12 +149,15 @@ class TestNewTaskIds(unittest.TestCase):
     def test_reopen_missing_and_duplicate_id(self):
         self.assertTrue(
             any("missing or already used" in e
-                for e in run([{"type": "reopen_as_followup", "of": "t1", "id": None}],
+                for e in run([{"type": "reopen_as_followup", "of": "t1", "id": None,
+                               "instruction": "do it", "anchors": ["x"]}],
                              ledger=[task("t1", "done")]))
         )
         errors = run(
-            [{"type": "reopen_as_followup", "of": "t1", "id": "n"},
-             {"type": "reopen_as_followup", "of": "t1", "id": "n"}],
+            [{"type": "reopen_as_followup", "of": "t1", "id": "n", "instruction": "do it",
+              "anchors": ["x"]},
+             {"type": "reopen_as_followup", "of": "t1", "id": "n", "instruction": "do it",
+              "anchors": ["x"]}],
             ledger=[task("t1", "done")],
         )
         self.assertEqual(len(errors), 1)
@@ -190,17 +202,20 @@ class TestAssistants(unittest.TestCase):
 
     def test_reassign_usable_assistant_ok(self):
         self.assertEqual(
-            run([{"type": "reassign", "id": "t1", "assistant": "claude"}], ledger=[task("t1", "queued")]),
+            run([{"type": "reassign", "id": "t1", "assistant": "claude", "instruction": "do it",
+                  "reason": "quota"}], ledger=[task("t1", "queued")]),
             [],
         )
 
     def test_reassign_unusable_assistant_rejected(self):
-        errors = run([{"type": "reassign", "id": "t1", "assistant": "cursor"}],
+        errors = run([{"type": "reassign", "id": "t1", "assistant": "cursor", "instruction": "do it",
+                        "reason": "quota"}],
                      ledger=[task("t1", "queued")])
         self.assertTrue(any("is not usable now" in e for e in errors))
 
     def test_reassign_missing_assistant_rejected(self):
-        errors = run([{"type": "reassign", "id": "t1"}], ledger=[task("t1", "queued")])
+        errors = run([{"type": "reassign", "id": "t1", "instruction": "do it", "reason": "quota"}],
+                     ledger=[task("t1", "queued")])
         self.assertTrue(any("reassign needs a usable assistant" in e for e in errors))
 
 
@@ -211,17 +226,18 @@ class TestMarkDoneEvidence(unittest.TestCase):
 
     def test_evidence_exact_substring_accepted(self):
         action = {"type": "mark_done", "id": "t1", "quote": "Corral 手机端会话列表加搜索框",
-                  "evidence": "Ran 42 tests and checked a screenshot"}
+                  "evidence": "Ran 42 tests and checked a screenshot", "summary": "added search"}
         self.assertEqual(run([action], document=self.doc, ledger=[task("t1", "running", self.report)]), [])
 
     def test_evidence_missing_rejected(self):
-        action = {"type": "mark_done", "id": "t1", "quote": "Corral 手机端会话列表加搜索框"}
+        action = {"type": "mark_done", "id": "t1", "quote": "Corral 手机端会话列表加搜索框",
+                  "summary": "added search"}
         errors = run([action], document=self.doc, ledger=[task("t1", "running", self.report)])
         self.assertTrue(any("evidence must be copied exactly" in e for e in errors))
 
     def test_evidence_not_in_report_rejected(self):
         action = {"type": "mark_done", "id": "t1", "quote": "Corral 手机端会话列表加搜索框",
-                  "evidence": "deployed to production"}
+                  "evidence": "deployed to production", "summary": "added search"}
         errors = run([action], document=self.doc, ledger=[task("t1", "running", self.report)])
         self.assertTrue(any("evidence must be copied exactly" in e for e in errors))
 
@@ -236,6 +252,114 @@ class TestAskNear(unittest.TestCase):
         doc = ["登录后立刻跳回登录页，把这个 bug 修了"]
         errors = run([{"type": "ask", "near": "登录 修了", "text": "what?"}], document=doc)
         self.assertTrue(any("not a contiguous span" in e for e in errors))
+
+
+class TestUnknownActionType(unittest.TestCase):
+    def test_unknown_action_type_rejected(self):
+        errors = run([{"type": "invented_action", "id": "t1"}])
+        self.assertTrue(any("unknown action type" in e for e in errors))
+
+    def test_known_action_types_accepted(self):
+        # Each known kind should pass basic shape and state checks with proper fields.
+        action = {"type": "create_task", "id": "t1", "project": "Corral/cli", "assistant": None,
+                  "instruction": "do it", "anchors": ["x"], "depends_on": []}
+        self.assertEqual(run([action]), [])
+
+
+class TestMissingFields(unittest.TestCase):
+    def test_create_task_missing_instruction(self):
+        errors = run([{"type": "create_task", "id": "t1", "project": "Corral/cli", "assistant": None,
+                       "anchors": ["x"], "depends_on": []}])
+        self.assertTrue(any("missing required field 'instruction'" in e for e in errors))
+
+    def test_update_task_missing_instruction(self):
+        errors = run([{"type": "update_task", "id": "t1", "anchors": ["x"]}])
+        self.assertTrue(any("missing required field 'instruction'" in e for e in errors))
+
+    def test_mark_done_missing_summary(self):
+        doc = ["Corral 列表"]
+        report = "Added search. Verified."
+        errors = run([{"type": "mark_done", "id": "t1", "quote": "Corral 列表",
+                       "evidence": "Verified."}], document=doc,
+                     ledger=[task("t1", "running", report)])
+        self.assertTrue(any("missing required field 'summary'" in e for e in errors))
+
+
+class TestWrongFieldTypes(unittest.TestCase):
+    def test_string_field_must_be_non_empty(self):
+        errors = run([{"type": "create_task", "id": "a", "project": "Corral/cli", "assistant": None,
+                       "instruction": "", "anchors": ["x"], "depends_on": []}])
+        self.assertTrue(any("'instruction' must be string" in e for e in errors))
+
+    def test_strings_field_must_be_list_of_strings(self):
+        errors = run([create("a", anchors="not a list")])
+        self.assertTrue(any("'anchors' must be strings" in e for e in errors))
+
+    def test_boolean_field_must_be_bool(self):
+        errors = run([{"type": "steer", "id": "t1", "message": "try", "interrupt": "yes"}],
+                     ledger=[task("t1", "running")])
+        self.assertTrue(any("'interrupt' must be boolean" in e for e in errors))
+
+    def test_nullable_string_accepts_string(self):
+        errors = run([create("a", assistant="claude")])
+        self.assertEqual(errors, [])
+
+    def test_nullable_string_accepts_none(self):
+        errors = run([create("a", assistant=None)])
+        self.assertEqual(errors, [])
+
+    def test_nullable_string_rejects_int(self):
+        errors = run([create("a", assistant=5)])
+        self.assertTrue(any("'assistant' must be a string or null" in e for e in errors))
+
+
+class TestSelfDependency(unittest.TestCase):
+    def test_self_dependency_rejected(self):
+        errors = run([create("a", depends_on=["a"])])
+        self.assertTrue(any("cannot depend on itself" in e for e in errors))
+
+    def test_other_dependency_ok(self):
+        errors = run([create("a", depends_on=["b"]), create("b")])
+        self.assertFalse(any("cannot depend on itself" in e for e in errors))
+        self.assertTrue(any("dependency 'b' does not exist" in e for e in errors))
+
+
+class TestAnchorsRequired(unittest.TestCase):
+    def test_create_task_no_anchors_rejected(self):
+        # Use run without _DEFAULT_DOC to avoid the "x" fallback; explicitly empty anchors list.
+        errors = contract.validate(
+            [{"type": "create_task", "id": "t1", "project": "Corral/cli", "assistant": None,
+              "instruction": "do it", "anchors": [], "depends_on": []}],
+            [], [], PROJECTS, ASSISTANTS,
+        )
+        self.assertTrue(any("needs at least one anchor" in e for e in errors))
+
+    def test_create_task_with_anchors_ok(self):
+        doc = ["Corral 列表加搜索框"]
+        errors = run([create("a", anchors=["Corral 列表加搜索框"])], document=doc)
+        self.assertEqual(errors, [])
+
+    def test_update_task_no_anchors_rejected(self):
+        errors = contract.validate(
+            [{"type": "update_task", "id": "t1", "instruction": "do it", "anchors": []}],
+            [], [task("t1", "queued")], PROJECTS, ASSISTANTS,
+        )
+        self.assertTrue(any("needs at least one anchor" in e for e in errors))
+
+    def test_reopen_as_followup_no_anchors_rejected(self):
+        errors = contract.validate(
+            [{"type": "reopen_as_followup", "of": "t1", "id": "new1", "instruction": "do it",
+              "anchors": []}],
+            [], [task("t1", "done")], PROJECTS, ASSISTANTS,
+        )
+        self.assertTrue(any("needs at least one anchor" in e for e in errors))
+
+    def test_reanchor_no_anchors_rejected(self):
+        errors = contract.validate(
+            [{"type": "reanchor", "id": "t1", "anchors": []}],
+            [], [task("t1", "queued")], PROJECTS, ASSISTANTS,
+        )
+        self.assertTrue(any("needs at least one anchor" in e for e in errors))
 
 
 if __name__ == "__main__":

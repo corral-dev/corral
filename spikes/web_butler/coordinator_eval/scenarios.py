@@ -168,4 +168,75 @@ SCENARIOS = [
         and not any(word in kinds(a, "ask")[0]["text"].lower()
                     for word in ("哪个组件", "哪个项目", "web or backend", "which component", "which project")),
     },
+    {
+        # S17: the second block only details the first (same change) — exactly one create_task.
+        "id": "S17-scattered-one-task",
+        "document": ["Notely 后端导出 PDF 时加上页眉。", "页眉里放文档标题和导出日期，字号小一点。"],
+        "changes": [{"block": 1, "kind": "added"}, {"block": 2, "kind": "added"}],
+        "ledger": [],
+        "expect": "exactly one create_task on Notely/backend covering both blocks",
+        "check": lambda a: len(kinds(a, "create_task")) == 1
+        and kinds(a, "create_task")[0]["project"] == "Notely/backend",
+    },
+    {
+        # S18: owner repeats an idea that is already running — no new task.
+        "id": "S18-duplicate-running",
+        "document": ["给 Notely 网页版加暗色模式切换按钮", "对，就是那个暗色模式，别忘了"],
+        "changes": [{"block": 2, "kind": "added"}],
+        "ledger": [task("t8", "running", "Notely/web",
+                        ["给 Notely 网页版加暗色模式切换按钮"])],
+        "expect": "no new task; steer or nothing",
+        "check": lambda a: not kinds(a, "create_task")
+        and not kinds(a, "stop"),
+    },
+    {
+        # S19: owner reverses a running task's direction — stop old + new task.
+        "id": "S19-reversal-new-task",
+        "document": ["给 Corral 手机端加一个导出 CSV 的功能",
+                     "不对，不要加 CSV，把现有的导出改成更通用的 JSON 格式"],
+        "changes": [{"block": 2, "kind": "added"}],
+        "ledger": [task("t9", "running", "Corral/ios",
+                        ["给 Corral 手机端加一个导出 CSV 的功能"])],
+        "expect": "stop t9 and create new task on Corral/ios",
+        "check": lambda a: any(s.get("id") == "t9" for s in kinds(a, "stop"))
+        and len(kinds(a, "create_task")) >= 1
+        and any(t["project"] == "Corral/ios" for t in kinds(a, "create_task")),
+    },
+    {
+        # S20: a project shorthand resolves to the correct component.
+        "id": "S20-project-shorthand",
+        "document": ["notely 后端加一个导出 CSV"],
+        "changes": [{"block": 1, "kind": "added"}],
+        "ledger": [],
+        "expect": "task on Notely/backend, not Notely/web or Notely/app-ios",
+        "check": lambda a: len(kinds(a, "create_task")) >= 1
+        and all(t["project"] == "Notely/backend" for t in kinds(a, "create_task")),
+    },
+    {
+        # S21: dependency discovered after start — new task depends on the running one.
+        "id": "S21-late-dependency",
+        "document": ["先给 SessKit 加一个导出 JSON 的接口",
+                     "然后给 Corral 手机端加个按钮，调 SessKit 那个新接口导出"],
+        "changes": [{"block": 2, "kind": "added"}],
+        "ledger": [task("t10", "running", "SessKit",
+                        ["先给 SessKit 加一个导出 JSON 的接口"])],
+        "expect": "new Corral task depends_on t10",
+        "check": lambda a: any(t.get("depends_on") and "t10" in t.get("depends_on", [])
+                               and t["project"].startswith("Corral")
+                               for t in kinds(a, "create_task")),
+    },
+    {
+        # S22: worker failed with an error, assistant still usable — steer or reassign, never done.
+        "id": "S22-worker-failed",
+        "document": ["给 Beacon 拉取 RSS 加上 ETag 支持"],
+        "changes": [{"event": "turn_finished", "task": "t11"}],
+        "ledger": [task("t11", "running", "Beacon/backend",
+                        ["给 Beacon 拉取 RSS 加上 ETag 支持"], assistant="claude",
+                        report="Error: module 'feedparser' has no attribute 'etag'. "
+                                "The script crashed during testing.")],
+        "expect": "steer to retry/fix or reassign; never mark_done",
+        "check": lambda a: not kinds(a, "mark_done")
+        and (any(s.get("id") == "t11" for s in kinds(a, "steer"))
+             or any(r.get("id") == "t11" for r in kinds(a, "reassign"))),
+    },
 ]

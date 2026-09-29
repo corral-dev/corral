@@ -10,6 +10,24 @@ from __future__ import annotations
 
 import re
 
+# Required fields and their types for every action kind.
+# "string"     → non-empty str
+# "nullable_string" → str or None (None means omit assistant)
+# "strings"    → list of str
+# "boolean"    → bool
+ACTION_FIELDS = {
+    "create_task": {"id": "string", "project": "string", "assistant": "nullable_string",
+                    "instruction": "string", "anchors": "strings", "depends_on": "strings"},
+    "update_task": {"id": "string", "instruction": "string", "anchors": "strings"},
+    "reanchor": {"id": "string", "anchors": "strings"},
+    "steer": {"id": "string", "message": "string", "interrupt": "boolean"},
+    "stop": {"id": "string", "reason": "string"},
+    "reassign": {"id": "string", "assistant": "string", "instruction": "string", "reason": "string"},
+    "ask": {"near": "string", "text": "string"},
+    "mark_done": {"id": "string", "quote": "string", "evidence": "string", "summary": "string"},
+    "reopen_as_followup": {"of": "string", "id": "string", "instruction": "string", "anchors": "strings"},
+}
+
 # Which ledger states each action may target.
 LEGAL_STATES = {
     "update_task": {"queued", "blocked"},
@@ -36,15 +54,51 @@ def validate(actions: list[dict], document: list[str], ledger: list[dict], proje
     usable = {name for name, status in assistants.items() if status == "usable"}
     new_ids: set[str] = set()
 
+    _NEEDS_ANCHORS = {"create_task", "update_task", "reanchor", "reopen_as_followup"}
+
     def quote_ok(q: str, where: str) -> None:
         if not q or not any(q in b for b in blocks):
             errors.append(f"{where}: quote {q!r} is not a contiguous span of one current block "
                           "(struck characters still occupy their positions)")
 
+    def _check_type(val: object, expected: str, where: str) -> bool:
+        """Return True iff *val* matches *expected* (from ACTION_FIELDS)."""
+        if expected == "string":
+            return isinstance(val, str) and val != ""
+        if expected == "nullable_string":
+            return val is None or isinstance(val, str)
+        if expected == "strings":
+            return isinstance(val, list) and all(isinstance(v, str) for v in val)
+        if expected == "boolean":
+            return isinstance(val, bool)
+        return False  # unknown type name — already caught by the key-existence check
+
     for i, a in enumerate(actions):
         kind = a.get("type")
         where = f"action {i + 1} ({kind})"
         target = a.get("id") if kind != "reopen_as_followup" else a.get("of")
+
+        # -- unknown action type --
+        if kind not in ACTION_FIELDS:
+            errors.append(f"{where}: unknown action type; allowed: "
+                          f"{', '.join(sorted(ACTION_FIELDS))}")
+            continue  # no further checks make sense
+
+        # -- shape: required fields present and correctly typed --
+        for field, ftype in ACTION_FIELDS[kind].items():
+            val = a.get(field)
+            if field not in a:
+                errors.append(f"{where}: missing required field {field!r}")
+            elif (ftype == "nullable_string" and val is not None and not isinstance(val, str)):
+                errors.append(f"{where}: {field!r} must be a string or null, got {type(val).__name__}")
+            elif not _check_type(val, ftype, where):
+                errors.append(f"{where}: {field!r} must be {ftype}, got {type(val).__name__}"
+                              f" {val!r}")
+
+        # -- at least one anchor --
+        if kind in _NEEDS_ANCHORS and len(a.get("anchors") or []) == 0:
+            errors.append(f"{where}: needs at least one anchor quote")
+
         if kind in ("create_task", "reopen_as_followup"):
             nid = a.get("id")
             if not nid or nid in tasks or nid in new_ids:
@@ -63,6 +117,8 @@ def validate(actions: list[dict], document: list[str], ledger: list[dict], proje
             for dep in a.get("depends_on") or []:
                 if dep not in tasks and dep not in new_ids:
                     errors.append(f"{where}: dependency {dep!r} does not exist")
+                elif dep == a.get("id"):
+                    errors.append(f"{where}: a task cannot depend on itself")
         if kind in ("create_task", "reassign") and a.get("assistant") not in (None, *usable):
             errors.append(f"{where}: assistant {a.get('assistant')!r} is not usable now")
         if kind == "reassign" and not a.get("assistant"):

@@ -16,24 +16,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from contract import validate
+from contract import ACTION_FIELDS, validate
 from scenarios import ASSISTANTS, PROJECTS, SCENARIOS
 
 HERE = Path(__file__).resolve().parent
 PROMPT = (HERE / "coordinator_prompt.md").read_text()
-
-ACTION_FIELDS = {
-    "create_task": {"id": "string", "project": "string", "assistant": "nullable_string",
-                    "instruction": "string", "anchors": "strings", "depends_on": "strings"},
-    "update_task": {"id": "string", "instruction": "string", "anchors": "strings"},
-    "reanchor": {"id": "string", "anchors": "strings"},
-    "steer": {"id": "string", "message": "string", "interrupt": "boolean"},
-    "stop": {"id": "string", "reason": "string"},
-    "reassign": {"id": "string", "assistant": "string", "instruction": "string", "reason": "string"},
-    "ask": {"near": "string", "text": "string"},
-    "mark_done": {"id": "string", "quote": "string", "evidence": "string", "summary": "string"},
-    "reopen_as_followup": {"of": "string", "id": "string", "instruction": "string", "anchors": "strings"},
-}
 
 
 def output_schema() -> dict:
