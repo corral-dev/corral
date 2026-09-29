@@ -232,6 +232,8 @@ flowchart TD
 | 修改运行时委托边界 | 运行时适配 | `runtime.base.BaseRuntime` 与 `runtime/*.py` | 适配器只把统一调用委托给私有扫描器 / SessKit 桥接，不在界面层写运行时分支；完整对话走 `sesskit_bridge`，不要绕回手写 path 拼接 |
 | 修改任一助手的彻底删除逻辑 | 各扫描器 | `scan.<助手>.delete_session(...)` | Claude/Codex 单文件 `os.unlink`；Kimi/Cursor 每会话一目录、`shutil.rmtree` 整个会话目录；OpenCode 所有会话共享一个库，必须按会话 ID 在可写连接里精确删 `part`/`message`/`session` 三表对应行，一次事务提交，不能删文件本身（见 §4 与 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` 的 `x` 删除会话流程） |
 
+Claude image-first session recovery (2026-09-29): a hosted placeholder can appear in the Corral list with `path=""` even while its real `~/.claude/projects/...jsonl` file exists. When the first human prompt starts with `[Image #1]`, old SessKit title filtering rejected every fallback candidate as a bracketed array, then dropped the scan result as an empty local-command session. The placeholder therefore had an empty Your prompts panel and cross-runtime handoff failed with “no recorded history file path.” The real transcript loader already preserved the human prompt; do not patch Your prompts or guess a history path from the project directory. SessKit strips the leading image marker only for fallback-title selection and reparses affected cached metadata; Corral must advance its parser cache version when taking this change. Verify the exact session appears in `claude.scan_sessions()` with its JSONL path, `liveness.annotate()` binds its existing hosted pane, `summarize_user_messages()` yields the prompt, and `export_handoff()` succeeds without launching a new agent. See SessKit `docs/CONTRACT.md` under Listing modes.
+
 ## §4 本域外部数据入口索引
 
 本域没有业务数据库、没有项目业务表，也不维护权威会话镜像。所有输入都是各助手自己的本机历史；读取必须只读，文件路径可随助手版本变化而演进。corral 仅维护可随时删除和重建的本地派生缓存，不改变任何助手的历史。

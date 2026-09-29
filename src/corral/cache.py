@@ -23,8 +23,9 @@ SCHEMA_VERSION = 1
 DEFAULT_MAX_MB = 256
 # Bump when list metadata extraction changes; otherwise performance-cache keeps
 # old first_user_msg slices (2026-09-12: handoff digest must be extracted before
-# the 300-char clip).
-_PARSER_VERSION = "2026-09-29.1"
+# the 300-char clip; 2026-09-29.3: Claude mid-turn queued_command prompts now
+# count as user messages in conversation/Your prompts).
+_PARSER_VERSION = "2026-09-29.3"
 
 
 def enabled() -> bool:

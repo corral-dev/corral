@@ -557,7 +557,10 @@ class ClaudeRootAutoApproveTests(unittest.TestCase):
         with mock.patch.object(os, "geteuid", return_value=0, create=True), \
              mock.patch.dict(os.environ, env, clear=True):
             plan = ClaudeRuntime().build_resume_plan({"id": "abc", "cwd": ""})
-        self.assertEqual(plan.argv, ("claude", "--resume", "abc"))
+        self.assertEqual(
+            plan.argv,
+            ("claude", "--settings", ClaudeRuntime._QUESTION_HOOK_SETTINGS, "--resume", "abc"),
+        )
 
 
 if __name__ == "__main__":

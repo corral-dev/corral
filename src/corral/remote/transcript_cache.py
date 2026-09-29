@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-09-19.1"  # handoff prompt counts as human prompt on mobile
+PARSER_VERSION = "2026-09-29.1"  # question tools keep native per-question metadata
 _SCHEMA_VERSION = 1
 
 

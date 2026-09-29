@@ -63,6 +63,9 @@ class ToolCall:
     options: list[str] = field(default_factory=list)  # 仅单道提问：可选答案
     # 一次询问里的多道题；有值时不要再读摊平后的 options。
     question_groups: list[dict] = field(default_factory=list)
+    # Per-question native shape (prompt, option descriptions, multi-select) for
+    # session.prompts / input.question. Cached with the tool; never on the history wire.
+    questions_meta: list[dict] = field(default_factory=list)
 
     def has_body(self) -> bool:
         """Whether detail/output exist server-side (for on-demand fetch)."""
@@ -112,12 +115,15 @@ class ToolCall:
             data["options"] = self.options
         if self.question_groups:
             data["questions"] = self.question_groups
+        if self.questions_meta:
+            data["questions_meta"] = self.questions_meta
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> ToolCall:
         options = data.get("options")
         groups = data.get("questions")
+        meta = data.get("questions_meta")
         # has_detail is wire metadata only; bodies live in detail/output when present.
         return cls(
             call_id=str(data.get("id") or ""),
@@ -130,6 +136,9 @@ class ToolCall:
             options=list(options) if isinstance(options, list) else [],
             question_groups=[g for g in groups if isinstance(g, dict)]
             if isinstance(groups, list)
+            else [],
+            questions_meta=[q for q in meta if isinstance(q, dict)]
+            if isinstance(meta, list)
             else [],
         )
 
@@ -377,6 +386,48 @@ def _question_fields(kind: str, args: dict) -> tuple[list[str], list[dict]]:
     if len(groups) == 1:
         return list(groups[0].get("options") or []), []
     return [], groups
+
+
+def _question_meta(kind: str, args: dict) -> list[dict]:
+    """Native per-question shape. Option ids are native positions (keystroke order)."""
+    if kind not in QUESTION_KINDS or not isinstance(args, dict):
+        return []
+    raw = args.get("questions")
+    items = raw if isinstance(raw, list) and raw and isinstance(raw[0], dict) else [args]
+    meta: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        prompt = _clip(
+            item.get("question") or item.get("prompt") or item.get("title") or item.get("header") or "",
+            1000,
+        )
+        header = _clip(item.get("header") or "", 80)
+        nested = item.get("options") if isinstance(item.get("options"), list) else item.get("choices")
+        options: list[dict] = []
+        for index, entry in enumerate(nested if isinstance(nested, list) else []):
+            label = _option_label(entry)
+            if not label:
+                continue
+            option = {"id": str(index), "label": label}
+            if isinstance(entry, dict) and entry.get("description"):
+                option["description"] = _clip(entry.get("description"), 300)
+            options.append(option)
+        if not prompt and not options:
+            continue
+        meta.append(
+            {
+                "id": str(len(meta)),
+                "prompt": prompt,
+                "header": header if header != prompt else "",
+                "multi_select": bool(
+                    item.get("multiSelect") or item.get("multi_select") or item.get("multiple")
+                ),
+                "is_secret": bool(item.get("isSecret") or item.get("is_secret")),
+                "options": options,
+            }
+        )
+    return meta
 
 
 def _extract_options(args: dict) -> list[str]:
@@ -973,6 +1024,7 @@ def _parse_codex(reader: RichReader) -> list[RichMessage]:
                 detail=detail,
                 options=options,
                 question_groups=groups,
+                questions_meta=_question_meta(classify(name), args),
             )
             attach(tool)
             if messages:
@@ -1132,6 +1184,7 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
                 detail=detail,
                 options=options,
                 question_groups=groups,
+                questions_meta=_question_meta(kind, args),
             )
             tools.append(tool)
         if texts or tools:
@@ -1259,6 +1312,7 @@ def _cursor_assistant(content: object, reader: RichReader) -> tuple[str, list[To
                 detail=detail,
                 options=options,
                 question_groups=groups,
+                questions_meta=_question_meta(kind, args),
             )
             tools.append(tool)
     return _clip("\n\n".join(texts), _MAX_TEXT), tools
@@ -1384,6 +1438,7 @@ def _pi_build_messages(path: str) -> list[RichMessage]:
                         detail=detail,
                         options=options,
                         question_groups=groups,
+                        questions_meta=_question_meta(kind, args),
                     )
                     tools.append(tool)
 
@@ -1533,6 +1588,13 @@ def pending_prompts_from_messages(items: list[RichMessage]) -> list[dict]:
 
 
 def _prompt_entries_for_tool(tool: ToolCall) -> list[dict]:
+    if tool.questions_meta:
+        return prompt_entries(
+            request_id=tool.call_id,
+            name=tool.name,
+            questions=tool.questions_meta,
+            detail=tool.detail,
+        )
     groups = tool.question_groups or [{"summary": tool.summary, "options": list(tool.options)}]
     multi = len(groups) > 1
     entries: list[dict] = []
@@ -1547,6 +1609,47 @@ def _prompt_entries_for_tool(tool: ToolCall) -> list[dict]:
         }
         if tool.detail and not multi:
             entry["detail"] = tool.detail
+        entries.append(entry)
+    return entries
+
+
+def prompt_entries(
+    *,
+    request_id: str,
+    name: str,
+    questions: list[dict],
+    detail: str = "",
+    allow_custom: bool | None = None,
+) -> list[dict]:
+    """session.prompts rows: legacy ``id/summary/options`` plus the native request shape.
+
+    ``allow_custom`` None keeps each question's own flag (default True). Runtimes
+    without a native answer path still list the question; ``input.question``
+    reports them unavailable instead of pasting text.
+    """
+    multi = len(questions) > 1
+    entries: list[dict] = []
+    for index, question in enumerate(questions):
+        options = [o for o in question.get("options") or [] if isinstance(o, dict)]
+        prompt = str(question.get("prompt") or question.get("header") or name)
+        custom = question.get("allow_custom", True) if allow_custom is None else allow_custom
+        entry: dict = {
+            "id": f"{request_id}:{index}" if multi else request_id,
+            "name": name,
+            "summary": prompt,
+            "prompt": prompt,
+            "options": [str(o.get("label") or "") for o in options],
+            "request_id": request_id,
+            "question_id": str(question.get("id") or index),
+            "multi_select": bool(question.get("multi_select")),
+            "allow_custom": bool(custom),
+            "is_secret": bool(question.get("is_secret")),
+            "option_details": options,
+        }
+        if question.get("header"):
+            entry["header"] = str(question["header"])
+        if detail and not multi:
+            entry["detail"] = detail
         entries.append(entry)
     return entries
 

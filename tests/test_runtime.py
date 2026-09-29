@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -12,6 +13,7 @@ from corral.i18n import t
 from corral.models import Handoff, LaunchPlan, LaunchRequest, NewSessionRequest, session_key
 from corral.runtime import BaseRuntime, LaunchError, RuntimeRegistry, default_registry
 from corral.runtime import pi as runtime_pi
+from corral.runtime.claude import ClaudeRuntime
 
 
 def _prepare_copy_request(registry: RuntimeRegistry, session, title: str):
@@ -131,7 +133,14 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             plan.argv,
-            ("claude", "--dangerously-skip-permissions", "--resume", "session-123"),
+            (
+                "claude",
+                "--dangerously-skip-permissions",
+                "--settings",
+                ClaudeRuntime._QUESTION_HOOK_SETTINGS,
+                "--resume",
+                "session-123",
+            ),
         )
         self.assertIsNone(plan.cwd)
 
@@ -577,8 +586,31 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             plan = default_registry().build_new_session_plan(NewSessionRequest("claude", td))
 
-        self.assertEqual(plan.argv, ("claude", "--dangerously-skip-permissions"))
+        self.assertEqual(
+            plan.argv,
+            (
+                "claude",
+                "--dangerously-skip-permissions",
+                "--settings",
+                ClaudeRuntime._QUESTION_HOOK_SETTINGS,
+            ),
+        )
         self.assertEqual(plan.cwd, td)
+
+    def test_claude_hosted_plans_persist_pending_questions(self) -> None:
+        settings = json.loads(ClaudeRuntime._QUESTION_HOOK_SETTINGS)
+        hook = settings["hooks"]["PreToolUse"][0]
+        self.assertEqual(hook["matcher"], "AskUserQuestion")
+        self.assertEqual(hook["hooks"], [{"type": "command", "command": "true"}])
+        runtime = ClaudeRuntime()
+        resume = runtime.build_resume_plan({"id": "abc", "cwd": ""}).argv
+        self.assertIn("--settings", resume)
+        own = runtime.compose_passthrough_argv(("--settings", "mine.json"))
+        self.assertEqual(own.count("--settings"), 1)
+        self.assertNotIn(
+            "--settings",
+            runtime.build_continue_plan({"id": "abc", "cwd": ""}, "go").argv,
+        )
 
     def test_codex_new_session_plan_has_no_handoff_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -754,7 +786,16 @@ class RuntimeTests(unittest.TestCase):
     def test_passthrough_plan_prepends_auto_approve_args(self) -> None:
         plan = default_registry().build_passthrough_plan("claude", ["把测试修到全绿"])
 
-        self.assertEqual(plan.argv, ("claude", "--dangerously-skip-permissions", "把测试修到全绿"))
+        self.assertEqual(
+            plan.argv,
+            (
+                "claude",
+                "--dangerously-skip-permissions",
+                "--settings",
+                ClaudeRuntime._QUESTION_HOOK_SETTINGS,
+                "把测试修到全绿",
+            ),
+        )
         self.assertIsNone(plan.cwd)
 
     def test_passthrough_plan_does_not_duplicate_user_supplied_auto_approve_arg(self) -> None:

@@ -836,6 +836,15 @@ class RemoteService:
             side_effect=lambda: self.hub.send_keys(session_key, cleaned),
         )
 
+    def _input_question(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        return self.hub.answer_question(
+            _key(params),
+            str(params.get("request_id") or ""),
+            params.get("answers"),
+        )
+
     def _input_image(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
@@ -1139,6 +1148,7 @@ _HANDLERS = {
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,
+    protocol.M_INPUT_QUESTION: RemoteService._input_question,
     protocol.M_COMMAND_STATUS: RemoteService._command_status,
     protocol.M_SESSION_NEW: RemoteService._session_new,
     protocol.M_SESSION_RESUME: RemoteService._session_resume,

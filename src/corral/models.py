@@ -10,17 +10,29 @@ from dataclasses import dataclass
 
 from sesskit.models import (  # noqa: F401 — re-export
     ConversationMessage,
-    SessionInfo,
     effective_session_time,
     format_message_time,
     make_session_info,
     parse_session_key,
     session_key,
 )
+from sesskit.models import (
+    SessionInfo as _SessKitSessionInfo,
+)
 
 from corral.i18n import t
 
 SHELL_RUNTIME_ID = "shell"
+
+
+class SessionInfo(_SessKitSessionInfo, total=False):
+    """SessKit session metadata plus Corral-owned hosting and attention state."""
+
+    keepalive_name: str
+    provisional: bool
+    attention_kind: str
+    attention_token: str | None
+    attention_updated_at: float
 
 
 def is_shell_session(session: SessionInfo | dict) -> bool:

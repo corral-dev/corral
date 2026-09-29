@@ -1714,6 +1714,38 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "The image could not be saved on the development machine",
         "zh": "图片没能保存到开发机上",
     },
+    "remote.question.stale": {
+        "en": "This question was already answered or replaced",
+        "zh": "这道问题已经回答过或已被新问题替换",
+    },
+    "remote.question.unsupported": {
+        "en": "This assistant can't take answers from the phone yet; answer on the computer",
+        "zh": "这个助手暂不支持在手机上回答，请在电脑上回答",
+    },
+    "remote.question.invalid": {
+        "en": "The answer doesn't match this question",
+        "zh": "回答和这道问题对不上",
+    },
+    "remote.question.incomplete": {
+        "en": "Answer every question before submitting",
+        "zh": "每道题都要先回答再提交",
+    },
+    "remote.question.too_long": {
+        "en": "Answer is too long",
+        "zh": "回答太长了",
+    },
+    "remote.question.not_on_screen": {
+        "en": "The question isn't open in the session right now; nothing was sent",
+        "zh": "会话里当前没有打开这道问题，什么都没发送",
+    },
+    "remote.question.partial": {
+        "en": "The answer was typed but the question is still open; check it on the computer",
+        "zh": "回答已输入，但问题仍未关闭，请到电脑上确认",
+    },
+    "remote.question.opencode_failed": {
+        "en": "OpenCode didn't accept the answer",
+        "zh": "OpenCode 没有接受这个回答",
+    },
     "remote.err.inject_failed": {
         "en": "Could not deliver input to the session",
         "zh": "没能把输入送进会话",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
@@ -18,6 +19,20 @@ class ClaudeRuntime(BaseRuntime):
         "last-prompt 等记录及其 message.content。"
     )
     _AUTO_APPROVE_ARGS = ("--dangerously-skip-permissions",)
+    # Claude Code (verified 2.1.284, anthropics/claude-code#96795) holds a pending
+    # AskUserQuestion out of the transcript until it is answered, so the phone can't
+    # see it. Any PreToolUse hook matching the tool makes it persist within ~2s;
+    # this one is a no-op and leaves the permission flow unchanged.
+    _QUESTION_HOOK_SETTINGS = json.dumps(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "true"}]}
+                ]
+            }
+        },
+        separators=(",", ":"),
+    )
 
     @property
     def auto_approve_args(self) -> tuple[str, ...]:  # type: ignore[override]
@@ -37,6 +52,16 @@ class ClaudeRuntime(BaseRuntime):
         if os.environ.get("IS_SANDBOX") or os.environ.get("CLAUDE_CODE_BUBBLEWRAP"):
             return self._AUTO_APPROVE_ARGS
         return ()
+
+    def hosted_args(self, user_args: tuple[str, ...] = ()) -> tuple[str, ...]:
+        """Auto-approve plus the question-persisting hook, unless the user brings settings."""
+        extra = tuple(arg for arg in self.auto_approve_args if arg not in user_args)
+        if "--settings" in user_args:
+            return extra
+        return (*extra, "--settings", self._QUESTION_HOOK_SETTINGS)
+
+    def compose_passthrough_argv(self, user_args: tuple[str, ...]) -> tuple[str, ...]:
+        return (self.executable, *self.hosted_args(user_args), *user_args)
 
     def scan_signature(self) -> object | None:
         return scan_claude.scan_signature()
@@ -58,7 +83,7 @@ class ClaudeRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
-                *self.auto_approve_args,
+                *self.hosted_args(),
                 "--resume",
                 str(session["id"]),
             ),
@@ -83,7 +108,7 @@ class ClaudeRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
-                *self.auto_approve_args,
+                *self.hosted_args(),
                 "--resume",
                 str(session["id"]),
                 "--fork-session",
@@ -98,7 +123,7 @@ class ClaudeRuntime(BaseRuntime):
                 self.executable,
                 "--add-dir",
                 history_dir,
-                *self.auto_approve_args,
+                *self.hosted_args(),
                 handoff.render_prompt(),
             ),
             cwd=usable_cwd(handoff.original_cwd),
@@ -108,7 +133,7 @@ class ClaudeRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
-                *self.auto_approve_args,
+                *self.hosted_args(),
             ),
             cwd=usable_cwd(cwd),
         )

@@ -223,6 +223,9 @@ M_SCREEN_RESIZE = "screen.resize"
 M_INPUT_TEXT = "input.text"
 M_INPUT_KEYS = "input.keys"
 M_INPUT_IMAGE = "input.image"
+# Answer the pending native agent question: {key, request_id, answers:[{question_id, selected:[option_id], text}]}
+# → {status: delivered|stale|unavailable, detail?}. Never falls back to input.text.
+M_INPUT_QUESTION = "input.question"
 
 M_SESSION_NEW = "session.new"
 M_SESSION_RESUME = "session.resume"

@@ -25,7 +25,7 @@ from corral import embed, keepalive, titles
 from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, session_key
-from corral.remote import richmsg, transcript_cache
+from corral.remote import questions, richmsg, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.runtime import LaunchError
 from corral.split_layout import default_layout_db
@@ -1072,8 +1072,21 @@ class SessionHub:
     def prompts(self, key: str) -> list[dict]:
         """当前仍待回答的提问型工具调用（含可点选项列表）。"""
         session = self.require_session(key)
+        if str(session.get("source") or "") == "opencode":
+            return questions.pending_prompts(session, [])
         transcript = self._ensure_transcript(session)
-        return richmsg.pending_prompts_from_messages(transcript.messages)
+        return questions.pending_prompts(session, transcript.messages)
+
+    def answer_question(self, key: str, request_id: str, answers: object) -> dict:
+        """Finish the pending native question; never falls back to a chat turn."""
+        session = self.require_session(key)
+        return questions.answer(
+            session,
+            self.prompts(key),
+            request_id,
+            answers,
+            pane_name=lambda: self._keepalive_name(key),
+        )
 
     def projects(self) -> list[dict]:
         # path/name 与 iOS NewSessionSheet 对齐；cwd/label 保留给桌面侧同一套项目列表语义。
