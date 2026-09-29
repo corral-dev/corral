@@ -1,6 +1,6 @@
 # Web Task Butler (draft-driven dispatch) — requirements and analysis
 
-> Status: **analysis draft; core decisions made, edge-case behaviour open** (2026-09-29). No product code yet.
+> Status: **analysis draft; owner decisions recorded, design freeze pending** (2026-09-29). No product code yet.
 > Read before planning, implementing, or reviewing the local web idea editor, the
 > dispatcher agent (X), worker agents (Y), or Corral changes made for them.
 > Items marked *Proposed* are unadopted suggestions; §8 records owner decisions.
@@ -26,6 +26,16 @@
 
 10. The owner judges this project deceptively simple: every detail matters, and it requires
     deep investigation, testing, and careful design **before** implementation.
+11. **The product is agentic.** Do not design it with conventional rule-based software
+    thinking: whenever a situation calls for judgement (duplicates, failures, retries,
+    deleted ideas, dependencies, which assistant), X decides. The system supplies facts,
+    tools and guarantees, not hard-coded workflow policies.
+12. **Nothing is deleted in the editor.** Deleting marks the text with a strikethrough; the
+    text stays visible. X is told which text the owner struck out and decides what to do.
+13. **Agents talk inside the document.** When X needs details or a decision, it inserts its
+    own question as text near the related idea, visibly marked as agent-written. The owner
+    answers by writing in the editor whenever convenient. No separate question cards.
+14. Questions awaiting the owner are also pushed to the phone.
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -38,8 +48,8 @@
    drafts (task split, dependencies, steer vs. new task); trigger timing replayed from
    recorded typing; editor cursor stability under background decoration updates; X session
    behaviour over hours (compaction, restart from ledger).
-3. **Design freeze**: every §6 case has a decided behaviour and an acceptance check; UI
-   prototype images reviewed by the owner.
+3. **Design freeze**: every §6.1 guarantee has an acceptance check and every §6.2 judgement
+   an evaluation case; UI prototype images reviewed by the owner.
 4. **Test layers**: deterministic tests for ledger/anchors/triggers; recorded-replay tests
    for typing → X rounds; an evaluation set for X decisions; end-to-end runs with real
    assistants on disposable projects; browser screenshots/recordings for the editor.
@@ -62,8 +72,14 @@
   context; each X round receives the ledger snapshot plus the change set, and acts only
   through validated Corral commands. X can therefore be restarted or compacted without loss.
   (Same lesson as OpenConductor's "deterministic core + model only for semantics".)
-- **Markdown stays pure.** The draft file is byte-for-byte the owner's text. Anchors, states,
-  checks and question cards live in the ledger and are rendered as view-only decorations.
+- **The document is shared by owner and X.** Owner text, struck-out text and X-written text
+  all live in the Markdown file (strikethrough as Markdown strikethrough; X text carries an
+  authorship marker so the file alone shows who wrote what — exact syntax fixed at design
+  freeze). Task anchors, states and results live in the ledger and are rendered as view-only
+  decorations.
+- **Mechanics vs. judgement.** The system guarantees mechanics (anchors follow text, typing
+  is never disturbed, nothing is lost, delivery is confirmed, done text is locked). Every
+  semantic choice belongs to X's instructions, not to code.
 - **Storage** under `~/.config/corral/`; every ledger mutation records actor
   (owner / X / Y / system), action, target and time in an append-only audit log.
 - **Local-only web service**: bind loopback, random access token, origin check. It can start
@@ -77,12 +93,15 @@
 - Visual states on anchored text: waiting-to-dispatch (dotted underline, cancellable),
   running (subtle gutter dot), waiting on owner (amber), failed (red), done (green text +
   green check, locked; click opens result popover with summary and a link to the session).
-- Done text is read-only; a "reopen" action on the popover unlocks it. Adding new text beside
-  done text is a new idea, not an edit of the done one.
-- **Questions from X or Y** appear as an inline card under the related sentence (view-only
-  widget, not written into the Markdown), with option buttons or a free-text reply. A top-bar
-  count and a keyboard jump go to the next unanswered card. Y questions go to X first; X
-  answers from the draft when it can and escalates only real decisions.
+- Done text is read-only. New text written beside it is simply new input for X.
+- **Deleting never removes text**: once text has been sent to X, delete/backspace/overwrite
+  turns it into strikethrough (overwriting = old text struck + new text inserted). Text
+  still inside its settle window (never seen by X) can be truly deleted, so ordinary typo
+  fixing stays normal.
+- **X's questions are text in the document**, inserted near the related idea in a distinct
+  agent style. The owner answers by writing anywhere nearby; X reads the answer on its next
+  round. A top-bar count and a keyboard jump go to the next unanswered X question. Y's
+  questions go to X first; X answers from the document when it can.
 
 ## 5. When X is prompted (*Proposed*)
 
@@ -97,85 +116,50 @@
 - New ideas get a short visible dispatch countdown; continued editing restarts it, so
   half-written ideas are not dispatched.
 
-## 6. Edge-case behavior
+## 6. Edge cases
 
-Status: behaviors below are **decided by the design owner (agent) 2026-09-29** unless marked
-*Owner to decide*; each still needs an acceptance check. Governing principle: the owner only
-writes; the system never asks when a safe default exists, and asks only for real decisions.
+Split by requirement 11: the system guarantees mechanics; X judges everything else.
+Each item still needs an acceptance check (mechanics) or an evaluation case (X judgement).
 
-Text ↔ task mapping
-- **One sentence, several tasks**: each task anchors to its own sub-phrase; if the words
-  cannot be split, tasks share the span. The span turns green only when all its tasks are
-  done; until then its popover shows per-task progress.
-- **Several scattered sentences, one task**: the task holds several anchors. On completion
-  all turn green; the check icon sits on the anchor X names as primary.
-- **Later sentence amends an earlier idea**: treated as a change to the existing task (update
-  if not started, steer if running, new linked follow-up task if done). The new sentence
-  becomes an extra anchor of that task.
-- **Move / cut-paste / merge paragraphs**: anchors follow the text. Identical text removed
-  and re-inserted within one settle window is a move, reported to X as "moved", never as
-  delete + new idea; no re-dispatch.
-- **Undo/redo** changes text only; it never undoes a dispatch. Undoing an idea's text is a
-  deletion; redoing it re-attaches the anchor. Undo steps that would alter locked text skip.
-- **Deleting text before dispatch** (inside the settle window): the pending idea is dropped
-  silently.
-- **Deleting text of a running task**: *Owner to decide* (§8).
-- **Editing text**: waiting-to-dispatch → countdown restarts; dispatched but blocked by a
-  dependency → task updated silently; running → X steers Y, or stops and restarts Y when the
-  direction reverses (X's call, never asks the owner); done → locked.
-- **Same idea written twice**: the second text is linked to the existing task, no duplicate
-  dispatch. If that task is already done: *Owner to decide* (§8).
-- **Completion quote drifted**: the system checks X's quote against the current text; if it
-  is gone, the task's stored anchor range is used as-is. Never guesses a different span.
+### 6.1 System guarantees (mechanics)
 
-Project names
-- **Highlight is a hint, not a decision.** Whole-word matches only; names of ≤4 letters or
-  common words match case-sensitively. Clicking a highlight offers "not a project"; that
-  choice is remembered for the phrase. X decides the actual project independently.
-- **Aliases** (e.g. a Chinese nickname) are learned when X resolves one and the owner has not
-  rejected it; learned aliases highlight too.
-- **No project mentioned**: X infers from nearby text and recent ideas; if not confident it
-  asks with a card listing the likely candidates.
-- **Several projects in one idea**: split into per-project tasks, with a dependency only if
-  one really needs the other.
-- **Project does not exist yet**: *Owner to decide* (§8).
-
-Dispatch and dependencies
-- **Dependency found after both started**: X tells the dependent Y to stop at a safe point
-  and wait; when the prerequisite is done, the same Y session is resumed with the new facts.
-- **Failure**: X retries once, on another available assistant if the cause is the assistant.
-  A second failure marks the text red with a card: retry / change approach / drop.
-  Dependents stay blocked and say which prerequisite they wait for.
-- **Quota exhausted / assistant unavailable**: X continues the task on another available
-  assistant through Corral's cross-assistant handoff, without asking.
-- **Machine asleep / Corral or web service restarted**: the ledger is persisted; on start
-  the system reconciles ledger with live sessions and resumes. Nothing is re-dispatched
-  twice.
-- **"Done" means accepted, not a finished turn**: Y must end with a report (what changed,
-  where, how verified). X accepts it or sends Y back; missing or failed verification is not
-  done.
-
-Questions
-- **Several open questions**: each card sits under its own text; the top counter shows the
-  total; blocking questions first when jumping.
-- **Anchor edited**: the card stays; X re-reads the edit and closes the card if the edit
-  answered it. **Owner answers in the draft instead of the card**: same rule.
-- **Owner ignores a question**: that task waits; everything else continues; no nagging in
-  the editor. Phone push: *Owner to decide* (§8).
-- **Y's questions** go to X first; X answers from the draft and records its answer in the
-  task history; only real decisions reach the owner.
-
-Editor experience
+- **Anchors follow text** through typing, moves, cut/paste, merges and undo/redo. Identical
+  text removed and re-inserted within one settle window is reported to X as a move.
+- **Undo/redo** changes text only; it never undoes a dispatch or unlocks done text.
+- **Strikethrough, not deletion**, for any text X has seen (§4); the change sent to X says
+  which text was struck.
+- **Completion marking**: X names the words to mark; the system verifies they exist in the
+  current text and otherwise uses the task's stored anchor range. It never guesses a span.
+  A span shared by several tasks turns green only when all of them are done.
+- **Project highlight** is a hint only: whole-word matches, short/common names matched
+  case-sensitively; clicking a highlight offers "not a project", remembered for that phrase.
 - **Typing always wins**: background updates never move the cursor or re-layout the block
-  being edited; decorations for that block wait until it settles.
-- **Result popover**: plain-language summary, project, verification evidence, assistant
-  used, time taken, "open session in Corral", and "reopen".
-- **Reopen**: unlocks the text and returns it to normal color; task history is kept; later
-  edits become a linked follow-up task.
-- **Never lose the draft**: every change is saved locally in the page and to the service;
-  after a restart the page reconnects and reconciles by version. Only one tab edits; other
-  tabs are read-only with a "edit here" takeover.
+  being edited; its decorations and X insertions wait until it settles, and X never inserts
+  inside the block the owner is editing.
+- **Never lose the draft**: saved locally in the page and in the service; reconciled by
+  version after restarts; only one tab edits, others are read-only with an "edit here"
+  takeover.
+- **Restarts**: the ledger is persisted; after sleep or restart the system reconciles the
+  ledger with live sessions and tells X; no action is replayed twice.
+- **Confirmed delivery** of every message X sends to Y; failed delivery is reported to X.
+- **Phone push** for X questions that await the owner; answers are written in the editor.
+- **Result popover** shows X's plain-language summary, project, verification evidence,
+  assistant used, time taken, and "open session in Corral".
 - **Y sessions** appear in Corral's normal session list, grouped under the butler.
+
+### 6.2 X decides (judgement, covered by X's instructions and evaluation set)
+
+- How text maps to tasks: one sentence → several tasks, scattered sentences → one task,
+  later text amending earlier ideas, repeated ideas (including ideas already done).
+- What struck-out text means for its task (stop, keep, adjust) — requirement 12.
+- Edits to dispatched text: update, steer, or stop and restart Y.
+- Which project an idea targets, aliases, several projects per idea, and a project that does
+  not exist yet (X asks in the document when it needs the owner, e.g. a new project's name).
+- Dependencies, including ones discovered after tasks started.
+- Failures, retries, quota exhaustion and switching assistants.
+- Whether a Y's finished turn is an accepted completion (Y must report what changed and how
+  it was verified; X may send it back).
+- Whether the owner's nearby writing answers an open question; whether to ask at all.
 
 ## 7. Risks
 
@@ -194,11 +178,12 @@ Editor experience
    itself runs on whichever assistant runtime is available — no fixed requirement.
 4. **One draft document** per owner.
 
-Still open (§6 *Owner to decide*):
-- Deleting the text of a running task.
-- Writing again an idea whose task is already done.
-- An idea for a project that does not exist yet.
-- Whether questions awaiting the owner also push to the phone.
+Later decisions (same day): requirements 11–14 — agentic judgement by X, strikethrough
+instead of deletion, questions as agent-written text in the document, phone push for
+questions.
+
+Design decisions made by the agent for veto: truly deleting text still inside its settle
+window; overwrite = strike old + insert new.
 
 ## 9. References
 
