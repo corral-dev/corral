@@ -53,7 +53,7 @@ elif command -v python3 >/dev/null 2>&1; then
 fi
 if [ -z "$SESSKIT_REQ" ]; then
   # Keep in sync with scripts/sesskit_dep.py (curl|bash has no local helper).
-  SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.1.6/sesskit-0.1.6-py3-none-any.whl#sha256=dd1085ff187a5167ec1948ef21a89e6547fbc2856f40ed0ca04cc15ce6e89072"
+  SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.1.9/sesskit-0.1.9-py3-none-any.whl#sha256=0e7189c902de868ae1a6a9dd59b3f555d5626726c0e32cd9634aec75cfd1b404"
 fi
 echo "正在安装依赖 sesskit ..."
 python3 -m pip install --user --upgrade "$SESSKIT_REQ"

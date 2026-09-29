@@ -17,6 +17,7 @@ from corral.display import (
 from corral.models import ConversationMessage, is_shell_session, session_key
 from corral.projects import normalize_cwd, project_entries
 from corral.runtime import RuntimeRegistry, default_registry
+from corral.scan.common import is_ephemeral_agent_cwd
 
 # 新扫到的会话：mtime 在此窗口内才插到列表最前；更旧的（常为临时 cwd 复活）
 # 追加到末尾，避免几天前的会话整批顶到侧边栏。
@@ -647,6 +648,8 @@ class SessionStore:
                 continue
             if name in claimed or runtime_id not in known_runtimes:
                 continue
+            if is_ephemeral_agent_cwd(str(host.get("cwd") or "")):
+                continue  # automation / experiment pane; its sessions never list either
             key = f"{runtime_id}:{ident}"
             with self.lock:
                 if key in self._provisional or key in self.hosted:

@@ -1517,6 +1517,20 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
         self.assertFalse(is_ephemeral_agent_cwd(""))
         self.assertFalse(is_ephemeral_agent_cwd("/tmp/other-project"))
 
+    def test_ephemeral_marker_hides_workspace_and_descendants(self) -> None:
+        """Experiments drop .sesskit-ignore; plain /tmp work must still list."""
+        from corral.scan.common import is_ephemeral_agent_cwd
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "butler-e1"
+            run = root / "claude-1790653232" / "sub"
+            run.mkdir(parents=True)
+            self.assertFalse(is_ephemeral_agent_cwd(str(run)))
+            (root / ".sesskit-ignore").touch()
+            self.assertTrue(is_ephemeral_agent_cwd(str(root)))
+            self.assertTrue(is_ephemeral_agent_cwd(str(run)))
+            self.assertFalse(is_ephemeral_agent_cwd(td))
+
     def test_scan_filters_ephemeral_oc_manager_cwd(self) -> None:
         """OpenConductor 管家 /tmp/oc-manager-* 会话不进列表（目录复活也不刷屏）。"""
         old_sessions_dir = scan_codex.SESSIONS_DIR
@@ -3803,6 +3817,35 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertTrue(card.get("live"))
         self.assertEqual(card.get("keepalive_name"), "corral-cursor-deadbeef")
         self.assertEqual(card.get("cwd"), "/tmp/phone-proj")
+
+    def test_foreign_hosted_pane_in_ephemeral_workspace_is_not_adopted(self) -> None:
+        """Experiment panes hosted by another process must not become sidebar cards."""
+        cursor_runtime = mock.Mock()
+        cursor_runtime.id = "claude"
+        cursor_runtime.display_name = "Claude"
+        cursor_runtime.scan_signature.return_value = None
+        cursor_runtime.scan_sessions.return_value = []
+        registry = corral.RuntimeRegistry((cursor_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}), mock.patch.object(
+            corral.liveness, "list_managed_hosts", return_value=[]
+        ), mock.patch.object(corral.liveness, "annotate"):
+            store = corral.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / ".sesskit-ignore").touch()
+            foreign = {
+                "name": "corral-claude-0badf00d",
+                "runtime_id": "claude",
+                "ident": "0badf00d",
+                "cwd": str(Path(td) / "claude-1790653232"),
+                "pane_pid": 4242,
+            }
+            with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+                corral.liveness, "list_managed_hosts", return_value=[foreign]
+            ), mock.patch.object(corral.liveness, "is_alive", return_value=True):
+                store.refresh()
+        self.assertIsNone(store.find_session("claude:0badf00d"))
 
     def test_foreign_adopted_provisional_retires_onto_real_history(self) -> None:
         """Adopted remote provisional must retire when formal history appears."""
