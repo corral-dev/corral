@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ideas — Corral preview</title>
+  <style>
+    :root { color-scheme: light; --ink:#242b31; --muted:#79817e; --line:#e5e8e3; --green:#287a4e; --blue:#365fba; --violet:#725cb0; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#f7f8f5; color:var(--ink); font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; }
+    button { font:inherit; }
+    .topbar { height:64px; background:#fff; border-bottom:1px solid var(--line); display:flex; align-items:center; padding:0 clamp(24px,5vw,80px); gap:34px; }
+    .brand { font-size:17px; font-weight:700; letter-spacing:-.04em; }
+    .topbar .current { color:#2b6b48; font-weight:650; border-bottom:2px solid #2b6b48; height:100%; display:flex; align-items:center; padding:2px 4px 0; }
+    .topbar .spacer { flex:1; }
+    .local { display:flex; gap:8px; align-items:center; font-size:12px; color:#6f7971; }
+    .local::before { content:""; width:6px; height:6px; background:#5fa679; border-radius:50%; }
+    .shell { max-width:1340px; margin:auto; display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:52px; padding:63px clamp(24px,5vw,80px) 80px; }
+    .heading { border-bottom:1px solid var(--line); padding:0 0 24px; }
+    .eyebrow { font-size:11px; color:#6a736c; letter-spacing:.18em; font-weight:750; }
+    h1 { font-size:46px; letter-spacing:-.06em; line-height:1.12; font-weight:720; margin:10px 0 9px; }
+    .subtitle { margin:0; color:#777f79; font-size:15px; }
+    .document { padding-top:30px; }
+    #ed .cm-editor { background:transparent; border:0; min-height:590px; }
+    #ed .cm-editor.cm-focused { outline:none; }
+    #ed .cm-scroller { font:17px/1.82 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; }
+    #ed .cm-content { padding:0 0 80px; caret-color:#2c6f4a; }
+    #ed .cm-line { padding:0 2px; }
+    #ed .cm-activeLine { background:transparent; }
+    #ed .cm-cursor { border-left:2px solid #277746; }
+    .cm-strike { color:#a0a6a0; text-decoration:line-through; text-decoration-color:#9ea79c; }
+    .cm-project { color:var(--blue); font-weight:650; text-decoration:underline; text-decoration-color:#b8c8eb; text-underline-offset:4px; }
+    .cm-agent { color:#584290; background:#f0ecf8; border-radius:4px; box-decoration-break:clone; -webkit-box-decoration-break:clone; }
+    .cm-done { color:var(--green); font-weight:580; cursor:pointer; }
+    .cm-check { display:inline-grid; place-items:center; width:17px; height:17px; margin-left:4px; border-radius:50%; color:white; background:#2c9360; font:11px/1 -apple-system,sans-serif; vertical-align:super; cursor:pointer; }
+    .side { padding-top:86px; }
+    .side-title { font-size:11px; font-weight:750; letter-spacing:.15em; color:#7d857e; text-transform:uppercase; margin:0 0 17px; }
+    .status { padding:17px 0; border-top:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
+    .status strong { font-size:24px; letter-spacing:-.05em; font-weight:650; min-width:28px; }
+    .status span { color:#626c64; font-size:13px; }
+    .status.question strong { color:#a17227; }
+    .status.running strong { color:#597366; }
+    .status.done strong { color:#35845b; }
+    .side-note { border-top:1px solid var(--line); margin-top:14px; padding-top:22px; color:#858e85; font-size:12px; line-height:1.65; }
+    .question-link { border:0; background:none; color:#795598; padding:18px 0 0; font-size:13px; text-align:left; cursor:pointer; }
+    .question-link:hover { text-decoration:underline; }
+    #popover { position:absolute; z-index:4; max-width:340px; white-space:pre-wrap; background:#fff; border:1px solid #dce5da; border-radius:12px; box-shadow:0 14px 42px rgba(22,46,31,.16); padding:16px 18px; color:#334238; font-size:13px; }
+    @media(max-width:900px) { .shell { grid-template-columns:1fr; gap:0; padding-top:42px; } .side { padding-top:8px; display:flex; gap:20px; flex-wrap:wrap; } .side-title,.side-note { display:none; } .status { min-width:105px; } h1 { font-size:40px; } }
+    @media(max-width:560px) { .topbar { padding:0 20px; gap:24px; } .shell { padding:34px 20px 56px; } h1 { font-size:36px; } #ed .cm-scroller { font-size:16px; } .local { font-size:11px; } }
+  </style>
+</head>
+<body>
+  <header class="topbar"><div class="brand">Corral</div><div class="current">Ideas</div><div class="spacer"></div><div class="local">Saved on this Mac</div></header>
+  <main class="shell">
+    <section>
+      <div class="heading"><div class="eyebrow">YOUR IDEA DOCUMENT</div><h1>Ideas</h1><p class="subtitle">Write as you think. X follows the thread and keeps the work moving.</p></div>
+      <div class="document"><div id="ed" aria-label="Idea document"></div></div>
+    </section>
+    <aside class="side" aria-label="Task status">
+      <h2 class="side-title">Today</h2>
+      <div class="status running"><strong>2</strong><span>tasks in progress</span></div>
+      <div class="status question"><strong>1</strong><span>question for you</span></div>
+      <div class="status done"><strong>4</strong><span>completed</span></div>
+      <button class="question-link" id="jump">Jump to the question →</button>
+      <p class="side-note">Your words stay here, including what you cross out. Decisions and results appear beside the ideas they belong to.</p>
+    </aside>
+  </main>
+  <div id="popover" hidden></div>
+  <script type="module">
+    import "./dist/main.js";
+    const sample = `# This week
+
+Make Corral session titles consistent between Mac and iPhone. The title should follow the conversation, not the interface language.
+
+Corral iPhone: help me find an older session quickly by project or title. ~~Maybe this needs a separate screen.~~ Keep it in the list if that feels simpler.
+
+Notely PDF exports sometimes lose Chinese characters. Check a real export after the fix.
+<!--x-->Which Notely component owns PDF export: web or backend?<!--/x-->
+Backend. Please keep the document layout the same.
+
+I also want a small way to see what each agent is doing while I keep writing here.`;
+    const view = window.butler.create(document.getElementById("ed"), ["Corral", "Notely"]);
+    window.butler.load(view, sample);
+    const done = "Make Corral session titles consistent between Mac and iPhone.";
+    const from = window.butler.text(view).indexOf(done);
+    window.butler.markDone(view, from, from + done.length, "sample-1", "Completed in Corral.\nMac and iPhone titles now agree.\nVerified on the active session list and a real iPhone screen.");
+    document.getElementById("jump").addEventListener("click", () => {
+      const pos = window.butler.text(view).indexOf("Which Notely component");
+      view.dispatch({selection:{anchor:pos},scrollIntoView:true}); view.focus();
+    });
+    window.view = view;
+    document.body.dataset.ready = "1";
+  </script>
+</body>
+</html>

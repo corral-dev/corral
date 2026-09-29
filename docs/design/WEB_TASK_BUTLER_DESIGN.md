@@ -38,6 +38,8 @@
 14. Questions awaiting the owner are also pushed to the phone.
 15. SessKit and OpenConductor may be changed, optimized, used as references, and have modules
     extracted or updated for reuse.
+16. Use an explicitly selected low-cost model, such as Haiku or Luna, when calling real agents
+    for debugging and risk experiments; do not silently use the CLI's default model.
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -167,6 +169,8 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (X j
 - Steering interrupts a running Y; X must choose steer vs. queue vs. cancel-and-restart.
 - X token cost grows with edit frequency; block settling and merging bound it.
 - Project-name false positives; ambiguity must be resolvable by the owner.
+- A quota-exhausted or logged-out Y cannot be asked for a status report. Corral must retain
+  the last verified session/workspace state so X can move the task to another usable Y.
 
 ## 8. Owner decisions (2026-09-29)
 
@@ -185,6 +189,9 @@ questions.
 
 Strikethrough applies to all deletions, including text X has never seen (owner, same day);
 overwrite = strike old + insert new (owner-approved).
+
+Undo/redo restore the previous editor state exactly (undoing just-typed text removes it); if X
+had already seen that text, X is told it was withdrawn (owner, same day).
 
 ## 9. Research and experiment findings (2026-09-29)
 
@@ -208,7 +215,7 @@ mid-turn second instruction → verify from history files and produced files.
 
 | Assistant | Startup gate | Mid-turn instruction | Evidence of delivery in history | Completion signal |
 |---|---|---|---|---|
-| Claude Code 2.1.284 | Folder trust, default **No, exit** | Absorbed mid-turn | `queue-operation enqueue` (received) and `remove … absorbed_mid_turn` (seen by model); SessKit ignores both | Correct |
+| Claude Code 2.1.284 | Folder trust, default **No, exit** | Absorbed mid-turn | `queue-operation enqueue` (received) and `remove … absorbed_mid_turn` (seen by model); the human text also lands as `attachment/queued_command`, which SessKit now surfaces as a user message (`queue-operation` rows stay ignored so each prompt counts once) | Correct |
 | Codex 0.158 | Folder trust, appears **seconds after** the composer looks ready | Held until the current tool call ends ("Messages to be submitted after next tool call"; Esc sends immediately) | Recorded once submitted | **Three "completed" signals inside one turn**, the first while `sleep` still ran |
 | Cursor Agent 2026.09 | Workspace trust (`[a]`/Enter) | Not testable: weekly quota exhausted | — | Quota error shown as **completed** |
 | Pi | none | Absorbed | Recorded as a user message | Correct — full pass |
@@ -225,9 +232,11 @@ Findings that change the design or existing Corral behavior:
   prompts, so `send_turn` (used by EditHere) times out for them. Existing defect.
 - **F3 Delivery must be confirmed from history.** Paste + Enter can succeed while the text is
   lost (Codex dialog race) or stays in the composer (Enter before paste settled). Claude
-  records mid-turn input only as queue-operation / queued_command entries, which SessKit
-  drops — so mid-turn messages (including phone messages) are missing from Corral's
-  conversation view. SessKit change.
+  records mid-turn input as queue-operation rows plus an `attachment/queued_command`
+  entry carrying the human text; SessKit now surfaces that entry as a user message
+  (2026-09-29 fix, verified on a 3-prompt session showing Your prompts = 3), so mid-turn
+  messages — including phone messages — appear in Corral's conversation view.
+  SessKit change (landed).
 - **F4 A finished turn is not a finished task.** Codex emits several completion ids within a
   single turn; Cursor reports a quota error as completed; an unlogged Kimi shows as waiting. X must verify completion content;
   quota exhaustion and "not logged in" must be distinct availability states that X can act on
@@ -239,14 +248,128 @@ Findings that change the design or existing Corral behavior:
   so hosted Kimi sessions can stop for approval. Existing defect; the global CLI-wrapping rule
   that names `-y` is also outdated.
 
-### 9.3 Corral / SessKit change list derived so far
+### 9.3 E2 — editor mechanics (`spikes/web_butler/editor/`)
+
+CodeMirror 6 prototype driven in real Chrome through CDP with real key and IME events
+(`e2_editor_test.py`, 14/14 pass). Model: the text never loses characters; strike, agent text,
+done spans and task anchors are range sets beside the text, serialized to Markdown only on
+save (`~~…~~` for strike; an HTML-comment pair for agent text in the spike).
+
+Verified: backspace / forward delete / cut / overwrite-typing / paste-over-selection all
+strike instead of delete, with the caret where the owner expects; undo removes a strike;
+pinyin composition can correct itself without leaving strikes, and committed text strikes on
+backspace; done spans reject edits and deletions; anchors follow inserts and strikes before
+them; five X insertions above the caret while the owner types continuously lose or misplace
+no characters; Markdown round trip is exact; project hints render; clicking a done span opens
+the result popover (`results/e2.png`, `results/e2-popover.png`).
+
+Findings:
+- **F7 Adjacent strikes must merge** (each backspace creates its own range) — fixed in the
+  spike by merging on read/serialize.
+- **F8 Projects are components, the owner names products.** Corral lists git roots
+  (`Corral/cli`, `Notely/web`); the owner writes `Corral`, `Notely`. Hints match both; X needs
+  the product → components map.
+- **F9 Clicking done text places a caret** inside the locked span; the product should open
+  the popover without a caret. The done span can be split into several DOM fragments when
+  a project hint overlaps it, so the popover must anchor to the whole task's final fragment,
+  not the first word that happened to receive the click.
+  Clicking the check icon itself was still ignored by the editor (CodeMirror widgets ignore
+  events by default), so the browser placed a caret and no popover opened; the widget must
+  opt in to editor event handling. Fixed and re-verified in the spike (icon click and text
+  click both open the result with no caret).
+- Undo/redo is exempt from strike conversion — owner decision, §8.
+
+Still unverified: T9 only covered typing and strikethrough **before** an anchor. A cut in
+this editor strikes the source and leaves its characters in place. A later paste creates
+a second copy, so ordinary range mapping may leave the task anchor on the struck source
+instead of following the move. This needs a separate cut/paste experiment before the anchor
+guarantee in §6.1 can be accepted.
+
+### 9.4 E3 — X judgement (`spikes/web_butler/x_eval/`)
+
+The first 15-case run with an explicitly selected **Luna, medium** model returned 15 valid
+responses; 13 met their case checks and copied anchor text exactly. The earlier Claude CLI
+run was interrupted by a session quota: only 9 responses were valid, so its apparent 8/15
+score must not be treated as a judgement result. E3 is one-shot; it does not yet test one X
+session across many edits or ledger reconstruction after compaction.
+
+The two failures require different treatment. In the "owner answers in text" case, the
+fixture said only "that login bug"; X had a legitimate reason to ask for the symptom even
+after learning the project. That check was over-specific, so the case is being revised to
+give X a concrete symptom, with a separate ambiguous case where asking remains valid. When
+Cursor's quota was exhausted, X tried to steer Cursor for a status report. A disabled
+runtime cannot receive that request. The command vocabulary needs a same-task **reassign**
+action carrying a new usable assistant and a brief based on verified ledger/session/workspace
+evidence. In the first targeted rerun X chose `reassign` correctly but placed its reason
+outside the action object, yielding invalid JSON. Therefore X's command boundary needs an
+enforced structured output schema plus validation, not prompt wording alone. This correction
+is being evaluated before freezing the contract; it is not product code yet.
+
+With the schema, the 16-case rerun passed all **mechanical** checks, but manual review found
+two checks too loose: X asked about a visibly unfinished fragment, and later asked which
+component owned a bug after the owner had already said "web". The evaluation must check
+the *content* of questions and require silence for incomplete fragments. A numerical pass
+count alone is insufficient for design acceptance.
+
+After tightening those checks, the next full run passed **15/16**. In the typo-strike case,
+X constructed an anchor by skipping over struck text, so the quote did not occur contiguously
+in the current document. It also sent `update_task` to a running task, although that action
+is reserved for work not yet started. X needs a `reanchor` action usable during execution;
+the command boundary must validate exact current-document spans and legal actions for each
+ledger state. This is a contract risk, not merely a prompt-quality score.
+
+### 9.5 E4 — trigger-timing replay (`spikes/web_butler/trigger_replay.py`)
+
+Six labeled, **synthetic** typing/event traces were replayed against four idle/running delay
+pairs with a 20-second X round. At 3 s idle / 1.5 s running, 3 X rounds fired before the
+labeled ideas were complete; at 8 s / 3 s, 1 did; at 12 s / 3 s, none did, but the longer
+wait may defer dispatch. An explicit cursor leave sent a settled block immediately. Edits
+and a worker event arriving while X was busy merged into one following round; whitespace
+only did not wake X, while a strikethrough did. The 8 s / 3 s setting is a candidate, not
+an accepted UX threshold: a 10-second thinking pause still woke X early. X's semantic
+"half-written" check remains necessary, and real typing traces are needed before freezing
+the delays.
+
+### 9.6 E5 — moving a task anchor by cut/paste (`spikes/web_butler/editor/e5_anchor_move.py`)
+
+The real-browser E5 probe cut an anchored sentence and pasted it elsewhere in the same
+document. The clipboard paste succeeded; the source remained visible and struck, as required.
+The RangeSet anchor stayed at source offset 7 instead of moving to the pasted copy at offset
+29. Therefore ordinary CodeMirror position mapping is insufficient for §6.1's move guarantee.
+
+The next spike will record the source anchor IDs/relative offsets on `cut`, verify that the
+next `paste` carries the same text, and atomically move those IDs to the pasted instance
+while preserving the struck source. This proof covers an unambiguous same-editor cut/paste.
+Copying between apps, repeated identical text, multiple pending cuts, drag/drop and
+undo/redo need separate acceptance; custom clipboard formats are optional in browsers, so
+they cannot be the sole identity channel. [CodeMirror event/RangeSet API](https://codemirror.net/docs/ref/),
+[Clipboard API specification](https://www.w3.org/TR/clipboard-apis/).
+
+### 9.7 Interactive visual draft (`spikes/web_butler/editor/preview.html`)
+
+The visual draft uses the same CodeMirror prototype as E2. Its desktop and 390 px views were
+opened and inspected in Chrome. It shows one Markdown idea document, project hints, struck
+text, an X-written question, a done span, a status summary, and a result popover. Clicking a
+done span now leaves the caret outside the locked text and anchors the popover to its final
+DOM fragment even when a project hint splits the span. The preview is for owner review; its
+layout and copy are not frozen product decisions.
+
+Preview captures: [desktop](assets/web-task-butler-preview.png),
+[result popover](assets/web-task-butler-result-preview.png),
+[390 px layout](assets/web-task-butler-mobile-preview.png).
+
+### 9.8 Corral / SessKit change list derived so far
 
 1. Session-control layer shared by the phone daemon, the web service and X (create, send with
    confirmed delivery, interrupt, observe), extracted from `SessionHub`.
 2. Per-assistant adapters for startup gates, readiness and mid-turn submission.
-3. SessKit: surface mid-turn user input (Claude queue records); one completion per turn
+3. SessKit: surface mid-turn user input (Claude queue records — landed 2026-09-29:
+   `attachment/queued_command` prompts surface as user messages; `queue-operation`
+   rows ignored); one completion per turn
    (Codex); quota/limit as its own status (Cursor, others).
-4. Kimi launch flag `--auto` (F6).
+4. Kimi launch flag `--auto` (F6; owner-approved; global CLI-wrapping rule already updated).
+5. Persistent same-task assistant reassignment after quota/login failure, with prior progress
+   gathered from verified session/workspace evidence rather than a call to the unavailable Y.
 
 ## 10. References
 

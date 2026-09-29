@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Butler editor spike</title>
+<style>
+  body { font: 16px/1.6 -apple-system, "PingFang SC", sans-serif; margin: 40px auto; max-width: 820px; color: #1d1d1f; }
+  #ed .cm-editor { border: 1px solid #d2d2d7; border-radius: 12px; min-height: 360px; padding: 8px; }
+  #ed .cm-editor.cm-focused { outline: none; }
+  .cm-strike { text-decoration: line-through; color: #86868b; }
+  .cm-agent { color: #6e3fd1; background: #f3eefe; border-radius: 4px; }
+  .cm-done { color: #1f9d55; cursor: pointer; }
+  .cm-check { display: inline-flex; width: 14px; height: 14px; border-radius: 50%; background: #1f9d55; color: #fff;
+              font-size: 10px; align-items: center; justify-content: center; vertical-align: super; margin-left: 2px; cursor: pointer; }
+  .cm-project { font-weight: 600; color: #0a64d6; }
+  #popover { position: absolute; max-width: 320px; background: #fff; border: 1px solid #d2d2d7; border-radius: 12px;
+             box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 12px 14px; font-size: 14px; white-space: pre-wrap; }
+</style></head>
+<body><div id="ed"></div><div id="popover" hidden></div>
+<script type="module">
+  import "./dist/main.js";
+  const projects = await fetch("./projects.json").then(r => r.ok ? r.json() : []).catch(() => []);
+  window.view = window.butler.create(document.getElementById("ed"), projects);
+  window.view.focus();
+  document.body.dataset.ready = "1";
+</script></body></html>
