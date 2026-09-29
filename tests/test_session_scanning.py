@@ -2657,6 +2657,8 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
     def test_is_kimi_tui_cmdline(self) -> None:
         self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi -y"))
         self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi -y -S session_x"))
+        self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi --auto"))
+        self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi --auto -S session_x"))
         self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi --session=session_x"))
         self.assertFalse(scan_kimi.is_kimi_tui_cmdline("kimi -p hello"))
         self.assertFalse(scan_kimi.is_kimi_tui_cmdline("kimi --prompt=hello"))

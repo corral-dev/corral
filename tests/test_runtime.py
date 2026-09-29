@@ -489,14 +489,14 @@ class RuntimeTests(unittest.TestCase):
 
         plan = registry.build_launch_plan(LaunchRequest(session, "kimi", "修复会话接力"))
 
-        self.assertEqual(plan.argv, ("kimi", "-y", "-S", "session-123"))
+        self.assertEqual(plan.argv, ("kimi", "--auto", "-S", "session-123"))
         self.assertIsNone(plan.cwd)
 
     def test_kimi_new_session_plan_has_no_handoff_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = default_registry().build_new_session_plan(NewSessionRequest("kimi", td))
 
-        self.assertEqual(plan.argv, ("kimi", "-y"))
+        self.assertEqual(plan.argv, ("kimi", "--auto"))
         self.assertEqual(plan.cwd, td)
 
     def test_claude_session_can_handoff_to_kimi(self) -> None:

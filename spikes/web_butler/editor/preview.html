@@ -3,93 +3,182 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ideas — Corral preview</title>
+  <meta name="robots" content="noindex">
+  <title>Ideas — Corral</title>
   <style>
-    :root { color-scheme: light; --ink:#242b31; --muted:#79817e; --line:#e5e8e3; --green:#287a4e; --blue:#365fba; --violet:#725cb0; }
+    :root {
+      color-scheme: light dark;
+      --radius: 10px;
+      --bg: #f7f7f4; --surface: #ffffff; --ink: #20242a; --muted: #6c7278; --faint: #9aa0a4; --line: #e3e4df;
+      --project: #2f5fbf; --project-line: #bccbeb;
+      --x: #6247b8; --x-bg: #f0ecfa;
+      --queued: #8a9096; --running: #2f7d8c; --running-bg: #e6f2f4;
+      --asking: #a2660c; --asking-bg: #fbf1e0; --failed: #c0392b; --done: #23804e; --done-bg: #e5f3ea;
+      --link-bg: #fff4c7;
+      --shadow: 0 12px 40px rgba(24, 32, 28, .14), 0 1px 3px rgba(24, 32, 28, .08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181b; --surface: #202328; --ink: #e6e8ea; --muted: #9aa1a8; --faint: #6d747b; --line: #2d3136;
+        --project: #86a8ef; --project-line: #3d4f78;
+        --x: #b9a6f5; --x-bg: #2b2640;
+        --queued: #8b9299; --running: #6cc0cf; --running-bg: #1d3136;
+        --asking: #e3a64b; --asking-bg: #3a2e1b; --failed: #ef7b6d; --done: #6fcf97; --done-bg: #1c3326;
+        --link-bg: #4a4220;
+        --shadow: 0 12px 40px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
+      }
+    }
     * { box-sizing: border-box; }
-    body { margin:0; background:#f7f8f5; color:var(--ink); font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; }
-    button { font:inherit; }
-    .topbar { height:64px; background:#fff; border-bottom:1px solid var(--line); display:flex; align-items:center; padding:0 clamp(24px,5vw,80px); gap:34px; }
-    .brand { font-size:17px; font-weight:700; letter-spacing:-.04em; }
-    .topbar .current { color:#2b6b48; font-weight:650; border-bottom:2px solid #2b6b48; height:100%; display:flex; align-items:center; padding:2px 4px 0; }
-    .topbar .spacer { flex:1; }
-    .local { display:flex; gap:8px; align-items:center; font-size:12px; color:#6f7971; }
-    .local::before { content:""; width:6px; height:6px; background:#5fa679; border-radius:50%; }
-    .shell { max-width:1340px; margin:auto; display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:52px; padding:63px clamp(24px,5vw,80px) 80px; }
-    .heading { border-bottom:1px solid var(--line); padding:0 0 24px; }
-    .eyebrow { font-size:11px; color:#6a736c; letter-spacing:.18em; font-weight:750; }
-    h1 { font-size:46px; letter-spacing:-.06em; line-height:1.12; font-weight:720; margin:10px 0 9px; }
-    .subtitle { margin:0; color:#777f79; font-size:15px; }
-    .document { padding-top:30px; }
-    #ed .cm-editor { background:transparent; border:0; min-height:590px; }
-    #ed .cm-editor.cm-focused { outline:none; }
-    #ed .cm-scroller { font:17px/1.82 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; }
-    #ed .cm-content { padding:0 0 80px; caret-color:#2c6f4a; }
-    #ed .cm-line { padding:0 2px; }
-    #ed .cm-activeLine { background:transparent; }
-    #ed .cm-cursor { border-left:2px solid #277746; }
-    .cm-strike { color:#a0a6a0; text-decoration:line-through; text-decoration-color:#9ea79c; }
-    .cm-project { color:var(--blue); font-weight:650; text-decoration:underline; text-decoration-color:#b8c8eb; text-underline-offset:4px; }
-    .cm-agent { color:#584290; background:#f0ecf8; border-radius:4px; box-decoration-break:clone; -webkit-box-decoration-break:clone; }
-    .cm-done { color:var(--green); font-weight:580; cursor:pointer; }
-    .cm-check { display:inline-grid; place-items:center; width:17px; height:17px; margin-left:4px; border-radius:50%; color:white; background:#2c9360; font:11px/1 -apple-system,sans-serif; vertical-align:super; cursor:pointer; }
-    .side { padding-top:86px; }
-    .side-title { font-size:11px; font-weight:750; letter-spacing:.15em; color:#7d857e; text-transform:uppercase; margin:0 0 17px; }
-    .status { padding:17px 0; border-top:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
-    .status strong { font-size:24px; letter-spacing:-.05em; font-weight:650; min-width:28px; }
-    .status span { color:#626c64; font-size:13px; }
-    .status.question strong { color:#a17227; }
-    .status.running strong { color:#597366; }
-    .status.done strong { color:#35845b; }
-    .side-note { border-top:1px solid var(--line); margin-top:14px; padding-top:22px; color:#858e85; font-size:12px; line-height:1.65; }
-    .question-link { border:0; background:none; color:#795598; padding:18px 0 0; font-size:13px; text-align:left; cursor:pointer; }
-    .question-link:hover { text-decoration:underline; }
-    #popover { position:absolute; z-index:4; max-width:340px; white-space:pre-wrap; background:#fff; border:1px solid #dce5da; border-radius:12px; box-shadow:0 14px 42px rgba(22,46,31,.16); padding:16px 18px; color:#334238; font-size:13px; }
-    @media(max-width:900px) { .shell { grid-template-columns:1fr; gap:0; padding-top:42px; } .side { padding-top:8px; display:flex; gap:20px; flex-wrap:wrap; } .side-title,.side-note { display:none; } .status { min-width:105px; } h1 { font-size:40px; } }
-    @media(max-width:560px) { .topbar { padding:0 20px; gap:24px; } .shell { padding:34px 20px 56px; } h1 { font-size:36px; } #ed .cm-scroller { font-size:16px; } .local { font-size:11px; } }
+    [hidden] { display: none !important; }
+    html, body { margin: 0; background: var(--bg); color: var(--ink); }
+    body { font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif; }
+    button { font: inherit; color: inherit; }
+    button:focus { outline: none; }
+    button:focus-visible { outline: none; background-color: color-mix(in srgb, var(--ink) 9%, transparent); }
+
+    /* top bar */
+    .bar { position: sticky; top: 0; z-index: 5; height: 56px; display: flex; align-items: center; gap: 12px;
+           padding: 0 clamp(16px, 4vw, 48px); background: color-mix(in srgb, var(--bg) 88%, transparent);
+           backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px);
+           border-bottom: 1px solid var(--line); }
+    .brand { font-weight: 700; letter-spacing: -.02em; }
+    .doc-name { color: var(--muted); }
+    .doc-name::before { content: "/"; margin: 0 10px 0 0; color: var(--faint); }
+    .spacer { flex: 1; }
+    .pill { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: 15px;
+            border: 0; font-size: 13px; white-space: nowrap; }
+    #x-status { color: var(--muted); background: transparent; padding: 0 4px; }
+    #x-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--done); }
+    #x-status[data-state="reading"]::before { background: var(--x); animation: pulse 1.1s ease-in-out infinite; }
+    #working { color: var(--running); background: var(--running-bg); }
+    #questions { color: var(--asking); background: var(--asking-bg); cursor: pointer; font-weight: 600; }
+    #questions::after { content: "↓"; }
+    #questions:hover { filter: brightness(.97); }
+    @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
+
+    /* demo notice */
+    .demo { display: flex; justify-content: center; gap: 10px; align-items: center; font-size: 12px; color: var(--muted);
+            padding: 8px 16px; border-bottom: 1px solid var(--line); }
+    .demo button { background: none; border: 0; padding: 0; color: var(--project); cursor: pointer; font-size: 12px; }
+
+    /* document + margin */
+    .page { max-width: 1120px; margin: 0 auto; padding: 48px clamp(16px, 4vw, 48px) 120px;
+            display: grid; grid-template-columns: minmax(0, 720px) 232px; justify-content: center; gap: 48px; }
+    .doc { min-width: 0; max-width: 720px; }
+    #ed .cm-editor { background: transparent; min-height: 70vh; }
+    #ed .cm-editor.cm-focused { outline: none; }
+    #ed .cm-scroller { font: 17px/1.8 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif; overflow: visible; }
+    #ed .cm-content { padding: 0 0 40vh; caret-color: var(--ink); }
+    #ed .cm-line { padding: 0; }
+    #ed .cm-cursor { border-left: 2px solid var(--ink); }
+    #ed .cm-selectionBackground, #ed .cm-focused .cm-selectionBackground { background: color-mix(in srgb, var(--project) 22%, transparent) !important; }
+
+    .md-h1 { font-size: 1.75em; font-weight: 700; letter-spacing: -.025em; line-height: 1.5; }
+    .md-h2 { font-size: 1.35em; font-weight: 680; letter-spacing: -.015em; }
+    .md-h3 { font-size: 1.12em; font-weight: 650; }
+    .md-mark { color: var(--faint); font-weight: 400; }
+    .md-strong { font-weight: 680; }
+    .md-em { font-style: italic; }
+    .md-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; background: var(--line); border-radius: 4px; padding: 1px 4px; }
+    .md-link { color: var(--project); }
+    .md-quote { color: var(--muted); }
+
+    .cm-project { color: var(--project); font-weight: 600; }
+    .cm-strike { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--faint); }
+    .cm-agent { color: var(--x); background: var(--x-bg); border-radius: 4px; padding: 1px 2px;
+                box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+    .cm-agent::before { content: "X  "; font-size: .72em; font-weight: 700; letter-spacing: .04em; vertical-align: 1px; opacity: .8; white-space: pre; }
+    .cm-agent .cm-agent::before { content: none; }
+
+    .cm-task { text-decoration-line: underline; text-underline-offset: 5px; text-decoration-thickness: 1.5px; transition: background .15s; }
+    .cm-task-queued { text-decoration-style: dotted; text-decoration-color: var(--queued); }
+    .cm-task-running { text-decoration-color: color-mix(in srgb, var(--running) 70%, transparent); }
+    .cm-task-asking { text-decoration-color: var(--asking); }
+    .cm-task-failed { text-decoration-style: wavy; text-decoration-color: var(--failed); }
+    .cm-task-stopped { text-decoration: none; }
+    .cm-done { color: var(--done); cursor: pointer; }
+    .cm-done .cm-project { color: inherit; }
+    .cm-check { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 3px; border-radius: 50%;
+                color: #fff; background: var(--done); font: 700 10px/1 -apple-system, sans-serif; vertical-align: super; cursor: pointer; }
+    .is-linked { background: var(--link-bg); border-radius: 3px; }
+
+    /* margin notes */
+    .margin { position: relative; }
+    #notes { position: absolute; inset: 0; }
+    .note { position: absolute; left: 0; right: 0; top: 0; display: flex; gap: 9px; align-items: flex-start; text-align: left;
+            border: 0; background: none; padding: 6px 8px; margin: -6px 0 0 -8px; border-radius: var(--radius); cursor: pointer;
+            transition: transform .25s cubic-bezier(.2, .8, .2, 1), background .15s; }
+    .note:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+    .note .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; background: var(--queued); }
+    .note-text { display: flex; flex-direction: column; min-width: 0; }
+    .note-title { font-size: 13px; font-weight: 600; line-height: 1.5; }
+    .note-meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .note[data-kind="queued"] .note-title { color: var(--muted); }
+    .note[data-kind="queued"] .dot { background: transparent; border: 1.5px dashed var(--queued); }
+    .note[data-kind="running"] .dot { background: var(--running); animation: pulse 1.6s ease-in-out infinite; }
+    .note[data-kind="running"] .note-title { color: var(--running); }
+    .note[data-kind="question"] .dot, .note[data-kind="asking"] .dot { background: var(--asking); }
+    .note[data-kind="question"] .note-title, .note[data-kind="asking"] .note-title { color: var(--asking); }
+    .note[data-kind="failed"] .dot { background: var(--failed); }
+    .note[data-kind="failed"] .note-title { color: var(--failed); }
+    .note[data-kind="stopped"] { opacity: .6; }
+    .note[data-kind="stopped"] .dot { background: var(--faint); }
+    .note[data-kind="done"] .dot { background: var(--done); }
+    .note[data-kind="done"] .note-title { color: var(--done); }
+    .note.flash { animation: flash 1.2s ease-out; }
+    @keyframes flash { 0% { background: var(--running-bg); } 100% { background: transparent; } }
+
+    /* result card */
+    #result { position: fixed; z-index: 10; width: min(360px, calc(100vw - 24px)); background: var(--surface); color: var(--ink);
+              border-radius: calc(var(--radius) + 4px); box-shadow: var(--shadow); padding: 16px 16px 14px; }
+    #result header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    #result .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--done); }
+    #result:not([data-kind="done"]) .badge { color: var(--muted); }
+    #result[data-kind="running"] .badge { color: var(--running); }
+    #result[data-kind="question"] .badge, #result[data-kind="asking"] .badge { color: var(--asking); }
+    #result:not([data-kind="done"]) .badge::before { content: none; }
+    #result:not([data-kind="done"]) #result-meta { margin-top: 4px; padding-top: 0; border-top: 0; }
+    #result .badge::before { content: "✓"; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
+                              background: var(--done); color: #fff; font-size: 11px; }
+    #result-close { margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 14px; background: transparent;
+                    color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+    #result-close:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+    #result-title { font-weight: 600; margin: 0 0 6px; line-height: 1.45; }
+    #result-body { margin: 0; white-space: pre-wrap; color: var(--ink); font-size: 14px; line-height: 1.55; }
+    #result-meta { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+
+    @media (max-width: 860px) {
+      .page { grid-template-columns: minmax(0, 1fr) 30px; gap: 12px; padding-top: 28px; }
+      .note { padding: 6px; margin: -6px 0 0 -2px; }
+      .note-text { display: none; }
+      .doc-name, #working { display: none; }
+      #ed .cm-scroller { font-size: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
   </style>
+  <style id="answered-style"></style>
 </head>
 <body>
-  <header class="topbar"><div class="brand">Corral</div><div class="current">Ideas</div><div class="spacer"></div><div class="local">Saved on this Mac</div></header>
-  <main class="shell">
-    <section>
-      <div class="heading"><div class="eyebrow">YOUR IDEA DOCUMENT</div><h1>Ideas</h1><p class="subtitle">Write as you think. X follows the thread and keeps the work moving.</p></div>
-      <div class="document"><div id="ed" aria-label="Idea document"></div></div>
-    </section>
-    <aside class="side" aria-label="Task status">
-      <h2 class="side-title">Today</h2>
-      <div class="status running"><strong>2</strong><span>tasks in progress</span></div>
-      <div class="status question"><strong>1</strong><span>question for you</span></div>
-      <div class="status done"><strong>4</strong><span>completed</span></div>
-      <button class="question-link" id="jump">Jump to the question →</button>
-      <p class="side-note">Your words stay here, including what you cross out. Decisions and results appear beside the ideas they belong to.</p>
-    </aside>
+  <header class="bar">
+    <div class="brand">Corral</div>
+    <div class="doc-name">Ideas</div>
+    <div class="spacer"></div>
+    <span class="pill" id="working" hidden></span>
+    <button class="pill" id="questions" type="button" hidden></button>
+    <span class="pill" id="x-status" data-state="idle"><span>X is up to date</span></span>
+  </header>
+  <div class="demo"><span>Demo · X is simulated in this page</span><button id="reset" type="button">Start over</button></div>
+  <main class="page">
+    <div class="doc"><div id="ed" aria-label="Idea document"></div></div>
+    <aside class="margin" aria-label="Task status"><div id="notes"></div></aside>
   </main>
   <div id="popover" hidden></div>
-  <script type="module">
-    import "./dist/main.js";
-    const sample = `# This week
-
-Make Corral session titles consistent between Mac and iPhone. The title should follow the conversation, not the interface language.
-
-Corral iPhone: help me find an older session quickly by project or title. ~~Maybe this needs a separate screen.~~ Keep it in the list if that feels simpler.
-
-Notely PDF exports sometimes lose Chinese characters. Check a real export after the fix.
-<!--x-->Which Notely component owns PDF export: web or backend?<!--/x-->
-Backend. Please keep the document layout the same.
-
-I also want a small way to see what each agent is doing while I keep writing here.`;
-    const view = window.butler.create(document.getElementById("ed"), ["Corral", "Notely"]);
-    window.butler.load(view, sample);
-    const done = "Make Corral session titles consistent between Mac and iPhone.";
-    const from = window.butler.text(view).indexOf(done);
-    window.butler.markDone(view, from, from + done.length, "sample-1", "Completed in Corral.\nMac and iPhone titles now agree.\nVerified on the active session list and a real iPhone screen.");
-    document.getElementById("jump").addEventListener("click", () => {
-      const pos = window.butler.text(view).indexOf("Which Notely component");
-      view.dispatch({selection:{anchor:pos},scrollIntoView:true}); view.focus();
-    });
-    window.view = view;
-    document.body.dataset.ready = "1";
-  </script>
+  <section id="result" role="dialog" aria-labelledby="result-title" hidden>
+    <header><span class="badge">Done</span><button id="result-close" type="button" aria-label="Close">✕</button></header>
+    <p id="result-title"></p>
+    <p id="result-body"></p>
+    <div id="result-meta"></div>
+  </section>
+  <script type="module" src="./dist/demo.js"></script>
 </body>
 </html>

@@ -21,8 +21,10 @@ class KimiRuntime(BaseRuntime):
         "忽略）。开头体量很大的 config.update（系统提示）、llm.tools_snapshot、llm.request、"
         "usage.record 等都是协议噪音，可直接跳过。"
     )
-    # `-y/--yolo` 在根命令即被接受（自动放行全部操作），供原生恢复、空白新会话和直启子命令复用。
-    auto_approve_args = ("-y",)
+    # Kimi 2.1.1+ turned `-y/--yolo` into "Ask When Needed" (risky actions still
+    # prompt); `--auto` is "Never Ask" and is accepted at the root command, so
+    # unattended launches (native resume, blank new session, direct subcommand) use it.
+    auto_approve_args = ("--auto",)
 
     def scan_signature(self) -> object | None:
         return scan_kimi.scan_signature()

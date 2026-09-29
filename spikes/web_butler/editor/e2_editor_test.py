@@ -21,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 KEYS = {
     "Backspace": ("Backspace", 8), "Delete": ("Delete", 46), "Enter": ("Enter", 13),
     "ArrowLeft": ("ArrowLeft", 37), "ArrowRight": ("ArrowRight", 39), "End": ("End", 35),
+    "ArrowDown": ("ArrowDown", 40),
 }
 
 
@@ -162,7 +163,8 @@ async def main() -> int:
         s1 = await state()
         await p.key("z", modifiers=4, commands=["undo"])
         s = await state()
-        check("T6 undo removes strike", s1["md"] == "undo m~~e~~" and s["md"] == "undo me", {"after_bs": s1, "after_undo": s})
+        check("T6 undo removes strike", s1["md"] == "undo m~~e~~" and s["md"] == "undo me",
+              {"after_bs": s1, "after_undo": s})
 
         # T7 IME: composition edits itself freely; after commit, backspace strikes
         await reset("")
@@ -171,7 +173,8 @@ async def main() -> int:
         await p.ime(["s", "sh", "shi"], "世")
         await p.key("Backspace")
         s = await state()
-        check("T7 IME commit then backspace", s1["md"] == "你好" and s["md"] == "你好~~世~~", {"after_ime": s1, "after_bs": s})
+        check("T7 IME commit then backspace", s1["md"] == "你好" and s["md"] == "你好~~世~~",
+              {"after_ime": s1, "after_bs": s})
 
         # T7b IME with in-composition backspace (user corrects pinyin)
         await reset("")
@@ -207,13 +210,15 @@ async def main() -> int:
         typing_task = p.type(typed, delay=0.02)
         await asyncio.gather(agent_task, typing_task)
         s = await state()
-        check("T10 owner typing unaffected by agent inserts", typed in s["text"] and s["text"].count("[X: question") == 5,
+        check("T10 owner typing unaffected by agent inserts",
+              typed in s["text"] and s["text"].count("[X: question") == 5,
               {"tail": s["text"][-60:], "md_head": s["md"][:160]})
 
         # T11 round trip through Markdown
         await reset("a ~~b~~ c <!--x-->ask?<!--/x--> d")
         s = await state()
-        check("T11 markdown round trip", s["md"] == "a ~~b~~ c <!--x-->ask?<!--/x--> d" and s["text"] == "a b c ask? d", s)
+        check("T11 markdown round trip",
+              s["md"] == "a ~~b~~ c <!--x-->ask?<!--/x--> d" and s["text"] == "a b c ask? d", s)
 
         # T12 project hints
         await reset("Corral 要改一下，SessKit 也是。Go ahead and go.")
@@ -233,12 +238,22 @@ async def main() -> int:
         await p.cmd("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1)
         pop = await p.js("({head:view.state.selection.main.head, visible:!document.querySelector('#popover').hidden, "
                          "left:document.querySelector('#popover').getBoundingClientRect().left, "
-                         "last:[...document.querySelectorAll('[data-task=t13]')].at(-1).getBoundingClientRect().right})")
+                         "last:[...document.querySelectorAll('[data-task=t13]')].at(-1)"
+                         ".getBoundingClientRect().right})")
         check("T13 done click keeps caret and anchors to final fragment",
               pop["head"] == before and pop["visible"] and pop["left"] > pop["last"], pop)
 
-        await p.js("butler.load(view, 'Fix the login bug. Then add dark mode to Corral. ~~drop this~~ <!--x-->Which project for dark mode?<!--/x-->'); "
-                   "butler.markDone(view, 0, 18, 't1', 'Done: login fixed in Notely/web.\\nVerified: test run + screenshot.'); true")
+        # T14 Option+Down (move line) is not bound: it would strike the line and copy it elsewhere
+        await reset("first\nsecond")
+        await p.js("view.dispatch({selection:{anchor:2}}); true")
+        await p.key("ArrowDown", modifiers=1)
+        s = await state()
+        check("T14 move-line shortcut does not rewrite text", s["md"] == "first\nsecond" and not s["strikes"], s)
+
+        await p.js("butler.load(view, 'Fix the login bug. Then add dark mode to Corral. "
+                   "~~drop this~~ <!--x-->Which project for dark mode?<!--/x-->'); "
+                   "butler.markDone(view, 0, 18, 't1', 'Done: login fixed in Notely/web.\\n"
+                   "Verified: test run + screenshot.'); true")
     subprocess.run(["agent-browser", "--session", "butler-e2", "screenshot", str(HERE / "results" / "e2.png")],
                    capture_output=True)
     (HERE / "results").mkdir(exist_ok=True)

@@ -13,7 +13,6 @@ import urllib.request
 from pathlib import Path
 
 import websockets
-
 from e2_editor_test import Page, serve
 
 HERE = Path(__file__).resolve().parent
@@ -43,14 +42,17 @@ async def main() -> int:
             start = INITIAL.index(SOURCE)
             await p.js(f"view.dispatch({{selection:{{anchor:{start},head:{start + len(SOURCE)}}}}}); true")
             await p.key("x", modifiers=4, commands=["cut"])
-            after_cut = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
+            after_cut = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), "
+                                   "anchors:butler.anchors(view)})")
             await p.js("view.dispatch({selection:{anchor:view.state.doc.length}}); true")
             await p.key("v", modifiers=4, commands=["paste"])
             result = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
             await p.key("z", modifiers=4, commands=["undo"])
-            after_undo = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
+            after_undo = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), "
+                                    "anchors:butler.anchors(view)})")
             await p.key("z", modifiers=12, commands=["redo"])  # Meta+Shift
-            after_redo = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), anchors:butler.anchors(view)})")
+            after_redo = await p.js("({text:butler.text(view), md:butler.toMarkdown(view), "
+                                    "anchors:butler.anchors(view)})")
     finally:
         subprocess.run(["agent-browser", "--session", SESSION, "close"], capture_output=True)
 

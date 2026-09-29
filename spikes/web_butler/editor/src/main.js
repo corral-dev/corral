@@ -6,13 +6,15 @@ import { EditorState, StateField, StateEffect, Annotation, RangeSet, RangeValue,
 import { EditorView, Decoration, WidgetType, MatchDecorator, ViewPlugin, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, invertedEffects } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 
 const system = Annotation.define(); // programmatic edits (agent insert, load) bypass the filter
 
 // ---- range sets -----------------------------------------------------------------------
 const addStrike = StateEffect.define({ map: (v, m) => ({ from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
 const removeStrike = StateEffect.define({ map: (v, m) => ({ from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
-const addAgent = StateEffect.define({ map: (v, m) => ({ from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
+const addAgent = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
 const addDone = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
 const resetAll = StateEffect.define();
 const addAnchor = StateEffect.define({ map: (v, m) => ({ ...v, from: m.mapPos(v.from, 1), to: m.mapPos(v.to, -1) }) });
@@ -43,7 +45,8 @@ function rangeField(effectAdd, effectRemove, makeDeco) {
 }
 
 const strikeField = rangeField(addStrike, removeStrike, () => strikeMark);
-const agentField = rangeField(addAgent, null, () => agentMark);
+const agentField = rangeField(addAgent, null, (v) => v.id
+  ? Decoration.mark({ class: "cm-agent", attributes: { "data-agent": v.id } }) : agentMark);
 
 class CheckWidget extends WidgetType {
   constructor(id) { super(); this.id = id; }
@@ -77,7 +80,11 @@ const doneField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-class AnchorValue extends RangeValue { constructor(id) { super(); this.id = id; } eq(o) { return o.id === this.id; } }
+class AnchorValue extends RangeValue {
+  constructor(id, state = "queued") { super(); this.id = id; this.state = state; }
+  eq(o) { return o.id === this.id && o.state === this.state; }
+}
+const setTaskState = StateEffect.define(); // { id, state }
 const anchorField = StateField.define({
   create: () => RangeSet.empty,
   update(set, tr) {
@@ -85,15 +92,48 @@ const anchorField = StateField.define({
     set = set.map(tr.changes);
     for (const e of tr.effects) {
       if (e.is(addAnchor)) {
-        set = set.update({ add: [new AnchorValue(e.value.id).range(e.value.from, e.value.to)], sort: true });
-      } else if (e.is(moveAnchor)) {
+        set = set.update({ add: [new AnchorValue(e.value.id, e.value.state).range(e.value.from, e.value.to)], sort: true });
+      } else if (e.is(moveAnchor) || e.is(setTaskState)) {
+        let old = null;
+        set.between(0, tr.state.doc.length, (f, t, v) => { if (v.id === e.value.id) old = { f, t, v }; });
+        if (!old) continue;
+        const from = e.is(moveAnchor) ? e.value.from : old.f, to = e.is(moveAnchor) ? e.value.to : old.t;
+        const state = e.is(setTaskState) ? e.value.state : old.v.state;
         set = set.update({ filter: (_f, _t, value) => value.id !== e.value.id });
-        set = set.update({ add: [new AnchorValue(e.value.id).range(e.value.from, e.value.to)], sort: true });
+        set = set.update({ add: [new AnchorValue(e.value.id, state).range(from, to)], sort: true });
       }
     }
     return set;
   },
 });
+
+// Anchored text shows its task state; done spans are drawn by doneField instead.
+const taskMarks = EditorView.decorations.compute([anchorField], (state) => {
+  const out = [];
+  state.field(anchorField).between(0, state.doc.length, (f, t, v) => {
+    if (t > f && v.state !== "done") {
+      out.push(Decoration.mark({ class: `cm-task cm-task-${v.state}`, attributes: { "data-anchor": v.id } }).range(f, t));
+    }
+  });
+  return Decoration.set(out, true);
+});
+
+// Markdown stays source text; styling only makes its structure readable.
+const markdownLook = syntaxHighlighting(HighlightStyle.define([
+  { tag: tags.heading1, class: "md-h1" },
+  { tag: tags.heading2, class: "md-h2" },
+  { tag: [tags.heading3, tags.heading4, tags.heading5, tags.heading6], class: "md-h3" },
+  { tag: tags.processingInstruction, class: "md-mark" },
+  { tag: tags.strong, class: "md-strong" },
+  { tag: tags.emphasis, class: "md-em" },
+  { tag: tags.monospace, class: "md-code" },
+  { tag: [tags.link, tags.url], class: "md-link" },
+  { tag: tags.quote, class: "md-quote" },
+]));
+
+// Commands that move text would turn into "strike here + copy there"; the owner cuts and pastes instead.
+const REWRITING = new Set(["Alt-ArrowUp", "Alt-ArrowDown", "Ctrl-t"]);
+const editorKeys = defaultKeymap.filter((b) => !REWRITING.has(b.key) && !REWRITING.has(b.mac));
 
 // ---- helpers --------------------------------------------------------------------------
 function covered(set, from, to) {
@@ -233,7 +273,7 @@ function fromMarkdown(md) {
 
 // ---- setup ------------------------------------------------------------------------------
 const log = [];
-function create(parent, projects, initial = "") {
+function create(parent, projects, initial = "", options = {}) {
   let pendingCut = null; // same-editor provenance; clipboard text is still the public payload
   let armedPaste = null;
   // The anchor move is part of the paste transaction, so one undo reverts text and anchor together.
@@ -257,8 +297,8 @@ function create(parent, projects, initial = "") {
     state: EditorState.create({
       doc: "",
       extensions: [
-        history(), keymap.of([...defaultKeymap, ...historyKeymap]), markdown(), EditorView.lineWrapping,
-        composeRange, strikeField, agentField, doneField, anchorField,
+        history(), keymap.of([...editorKeys, ...historyKeymap]), markdown(), markdownLook, EditorView.lineWrapping,
+        composeRange, strikeField, agentField, doneField, anchorField, taskMarks, ...(options.extensions || []),
         strikeInsteadOfDelete, strikeUndo, lockDone, pasteMove, projectHighlighter(projects),
         EditorView.updateListener.of((u) => { for (const tr of u.transactions) if (tr.docChanged) log.push({ t: performance.now(), ev: tr.annotation(Transaction.userEvent) || (tr.annotation(system) ? "system" : "") }); }),
         EditorView.domEventHandlers({
@@ -291,10 +331,11 @@ function create(parent, projects, initial = "") {
           click(e) {
             const el = e.target.closest("[data-task]");
             const pop = document.getElementById("popover");
-            if (!el) { pop.hidden = true; return false; }
+            if (!el) { if (pop) pop.hidden = true; return false; }
             const fragments = [...document.querySelectorAll("[data-task]")].filter(
               node => node.dataset.task === el.dataset.task);
             const r = fragments[fragments.length - 1].getBoundingClientRect();
+            if (options.onOpenResult) { options.onOpenResult(el.dataset.task, r); return true; }
             pop.textContent = results[el.dataset.task] || "(no result)";
             pop.hidden = false;
             pop.style.left = `${Math.max(12, Math.min(r.right + 8, window.innerWidth - pop.offsetWidth - 12)) + window.scrollX}px`;
@@ -314,7 +355,7 @@ function load(view, md) {
   view.dispatch({ effects: resetAll.of(null), annotations: system.of(true) });
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: system.of(true) });
   view.dispatch({
-    effects: [...strikes.map(([f, t]) => addStrike.of({ from: f, to: t })), ...agents.map(([f, t]) => addAgent.of({ from: f, to: t }))],
+    effects: [...strikes.map(([f, t]) => addStrike.of({ from: f, to: t })), ...agents.map(([f, t], i) => addAgent.of({ from: f, to: t, id: `q${i + 1}` }))],
     annotations: system.of(true),
   });
 }
@@ -323,13 +364,23 @@ window.butler = {
   create, load, toMarkdown: (view) => toMarkdown(view.state), log,
   text: (view) => view.state.doc.toString(),
   strikes: (view) => merged(view.state.field(strikeField), view.state.doc.length).map(([f, t]) => [f, t, view.state.sliceDoc(f, t)]),
-  insertAgentText(view, pos, text) {
-    view.dispatch({ changes: { from: pos, insert: text }, effects: addAgent.of({ from: pos, to: pos + text.length }), annotations: system.of(true) });
+  insertAgentText(view, pos, text, id) {
+    view.dispatch({ changes: { from: pos, insert: text }, effects: addAgent.of({ from: pos, to: pos + text.length, id }), annotations: system.of(true) });
   },
+  agentTexts(view) {
+    const o = [];
+    view.state.field(agentField).between(0, view.state.doc.length, (f, t, d) => {
+      o.push({ id: d.spec.attributes?.["data-agent"] || null, from: f, to: t, text: view.state.sliceDoc(f, t) });
+    });
+    return o;
+  },
+  setTaskState(view, id, state) { view.dispatch({ effects: setTaskState.of({ id, state }), annotations: system.of(true) }); },
+  result: (id) => results[id],
   markDone(view, from, to, id, result) {
     results[id] = result;
-    view.dispatch({ effects: addDone.of({ from, to, id }), annotations: system.of(true) });
+    view.dispatch({ effects: [addDone.of({ from, to, id }), setTaskState.of({ id, state: "done" })], annotations: system.of(true) });
   },
-  addAnchor(view, id, from, to) { view.dispatch({ effects: addAnchor.of({ id, from, to }), annotations: system.of(true) }); },
-  anchors(view) { const o = []; view.state.field(anchorField).between(0, view.state.doc.length, (f, t, v) => { o.push({ id: v.id, from: f, to: t, text: view.state.sliceDoc(f, t) }); }); return o; },
+  addAnchor(view, id, from, to, state = "queued") { view.dispatch({ effects: addAnchor.of({ id, from, to, state }), annotations: system.of(true) }); },
+  anchors(view) { const o = []; view.state.field(anchorField).between(0, view.state.doc.length, (f, t, v) => { o.push({ id: v.id, state: v.state, from: f, to: t, text: view.state.sliceDoc(f, t) }); }); return o; },
+  struckIn(view, from, to) { return covered(view.state.field(strikeField), from, to); },
 };

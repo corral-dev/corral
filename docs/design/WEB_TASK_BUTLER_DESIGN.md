@@ -318,15 +318,27 @@ is reserved for work not yet started. X needs a `reanchor` action usable during 
 the command boundary must validate exact current-document spans and legal actions for each
 ledger state. This is a contract risk, not merely a prompt-quality score.
 
-Command boundary (built 2026-09-29, **not yet run end to end**): `x_eval/contract.py` checks
-every action before execution — quotes must be contiguous spans of one current block (struck
-characters keep their positions); each action is legal only for certain ledger states
-(`update_task` queued/blocked, `reanchor` and `stop` up to running, `steer`/`mark_done` running,
-`reopen_as_followup` done); ids, dependencies and components must exist; assistants must be
-usable. Rejections go back to X once with reasons (`run_eval.py`). Unit-checked on the typo
-case (rejects the invalid `update_task` + joined quote, accepts `reanchor` + `steer`). The full
-16-case run with the boundary is pending: Codex Luna hit its usage limit, and Claude one-shot
-calls failed until F10 was fixed.
+Command boundary (`x_eval/contract.py`, built 2026-09-29). Every action is checked before
+it runs:
+- Quotes must be contiguous spans of one current block; struck characters keep their positions.
+- Each action is legal only in certain ledger states: `update_task` when queued or blocked,
+  `reanchor` and `stop` up to running, `steer` and `mark_done` when running,
+  `reopen_as_followup` when done.
+- Ids, dependencies and components must exist, and assistants must be usable.
+
+Rejections go back to X once with reasons (`run_eval.py`).
+
+Full run with the boundary (2026-09-29, Claude Haiku one-shot, two complete runs):
+- **15/16 pass in both runs**, with no transport errors and every quote exact.
+- Latency: median ~12 s, maximum 58.6 s (a retried case).
+- **S5 (typo strike):** Haiku's first answer both times joined live text across a struck
+  character. The boundary rejected it and the one retry produced a legal span both times.
+  The boundary plus one retry is the mechanism that makes quote exactness hold.
+- **S16 (vague bug, product now known) fails in both runs, identically.** X dispatches instead
+  of asking what actually happens. Cause: judging rule 1 ("ask only for a concrete missing fact
+  that blocks…") licenses acting, and Haiku resolves it against rule 11 in favour of action.
+  This is a prompt defect to fix, not a boundary defect.
+- Codex Luna could not be scored (account usage limit).
 
 - **F10 Tool catalogs cost context in every session.** A one-shot Claude call carried ~250k
   tokens of context, over Haiku's 200k limit, because every configured MCP server's tool
@@ -371,18 +383,56 @@ undo/redo need separate acceptance; custom clipboard formats are optional in bro
 they cannot be the sole identity channel. [CodeMirror event/RangeSet API](https://codemirror.net/docs/ref/),
 [Clipboard API specification](https://www.w3.org/TR/clipboard-apis/).
 
-### 9.7 Interactive visual draft (`spikes/web_butler/editor/preview.html`)
+### 9.7 Interactive demo (`spikes/web_butler/editor/preview.html`, `src/demo.js`)
 
-The visual draft uses the same CodeMirror prototype as E2. Its desktop and 390 px views were
-opened and inspected in Chrome. It shows one Markdown idea document, project hints, struck
-text, an X-written question, a done span, a status summary, and a result popover. Clicking a
-done span now leaves the caret outside the locked text and anchors the popover to its final
-DOM fragment even when a project hint splits the span. The preview is for owner review; its
-layout and copy are not frozen product decisions.
+The demo runs the real editor prototype with a rule-based stand-in for X, so the whole
+loop can be tried without a backend. It was checked in Chrome at 1440 px and 390 px, in
+light and dark mode, by typing into the page. Screenshots and simulated behaviour are for
+owner review; layout and copy are not frozen product decisions.
 
-Preview captures: [desktop](assets/web-task-butler-preview.png),
-[result popover](assets/web-task-butler-result-preview.png),
-[390 px layout](assets/web-task-butler-mobile-preview.png).
+Layout and states (proposed for the product):
+
+- One column of writing (max 720 px) with a **margin** on the right. Each task shows a
+  margin note beside the first line of its text: a status dot, the state (Queued, Working,
+  Needs your answer, Failed, Stopped, Done), and `assistant · component`. Notes stack
+  downward when they would overlap. Hovering a note highlights its text. Clicking a note
+  scrolls to its text, or opens the result for a done task.
+- Anchored text carries the same state in the text itself: dotted underline (queued),
+  solid tinted underline (working), amber (needs answer), wavy red (failed), none
+  (stopped, the text is struck anyway), green with a check (done).
+- X's questions are violet text with a small `X` label. Answered questions fade.
+- The top bar has only live facts: how many tasks are working, a question count that jumps
+  to the next open question (hidden at zero), and whether X has read everything
+  ("X is reading" pulses while a round is pending).
+- The result card has a close button, closes on Esc, outside click and scroll, and shows
+  the idea, the result, and `assistant · component · time`.
+- Below 860 px the margin shrinks to dots; tapping a dot opens the same card with the
+  state and details.
+- Markdown stays source text but is styled: headings are sized, and syntax marks such as
+  `#` and `**` are dimmed.
+- The editor keymap drops shortcuts that move text (Option+Up/Down move-line and
+  Ctrl+T transpose). Under strike-instead-of-delete they would leave a struck copy
+  behind (E2 check T14).
+
+The simulated X in the demo:
+- It reads a line about 2.5 s after typing stops, or when the caret leaves the line.
+- It dispatches lines that name a known project.
+- It asks "Which project is this for?" for lines that name none, and asks for the component
+  when a product has several.
+- It treats the first short non-blank line under a question as the answer.
+- It stops a task whose text is struck.
+- It reports "Update sent" when a working task's line is edited.
+
+These rules only exercise the interface; they are not the judgement design in §6.2.
+
+A backend-free build is published for owner review (static files; nothing is sent
+anywhere; the document is kept in the browser's local storage). Its address is kept in the
+maintainer's private infrastructure notes, not in this public repository.
+
+Captures: [desktop](assets/web-task-butler-preview.png),
+[result card](assets/web-task-butler-result-preview.png),
+[dark](assets/web-task-butler-dark-preview.png),
+[390 px](assets/web-task-butler-mobile-preview.png).
 
 ### 9.8 Corral / SessKit change list derived so far
 
@@ -399,12 +449,13 @@ Preview captures: [desktop](assets/web-task-butler-preview.png),
 
 ### 9.9 Remaining before design freeze (2026-09-29)
 
-1. Full E3 run through the command boundary (cheap model, per requirement 16).
+1. ~~Full E3 run through the command boundary~~ — done (15/16, see §9.4); fix the S16 prompt
+   conflict and rerun.
 2. Long-running X: one session across dozens of rounds, including compaction and restart
    rebuilt from the ledger — not yet tested at all.
 3. Trigger delays from the owner's real typing in the preview page (E4 used synthetic traces;
    a 10-second thinking pause still woke X at 8 s / 3 s). Needs the owner.
-4. Owner review of the UI drafts in `docs/design/assets/`. Needs the owner.
+4. Owner review of the interactive demo (§9.7). Needs the owner.
 5. Freeze: acceptance checks for §6.1, evaluation cases for §6.2, implementation plan for the
    §9.8 change list, the local web service, the ledger and X's command set.
 
