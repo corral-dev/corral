@@ -538,7 +538,12 @@ Captures: [desktop](assets/web-task-butler-preview.png),
 2. ~~Long-running coordinator~~ — done (E6, 26/26 continuous and restarted, §9.4).
 3. Trigger delays from the owner's real typing in the preview page (E4 used synthetic traces;
    a 10-second thinking pause still woke the coordinator at 8 s / 3 s). Needs the owner.
-4. Owner review of the interactive demo (§9.7). Needs the owner.
+4. Owner review of the interactive demo (§9.7). The first trial (2026-09-29) produced two
+   decisions: unseen text deletes outright (requirement 12) and the roles get names
+   (requirement 17). Further review is open.
+6. Read the scheduled full run of S1–S22 (queued for after the model usage limit reset,
+   2026-09-30). It checks the S16 fix, the stricter action shapes (possible extra retries)
+   and the first results for S17–S22.
 5. Freeze: acceptance checks for §6.1 and evaluation cases for §6.2 (coverage and gaps in
    §9.10); implementation plan in §10, with three decisions for the owner.
 

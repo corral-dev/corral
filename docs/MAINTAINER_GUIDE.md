@@ -586,6 +586,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 5. **显式给旧 tag 跑收尾时，工作区版本号必须等于该 tag。** `publish-release.sh` 按当前工作区打包，不会切回 tag 源码。2026-08-16 给 `v0.24.125` 收尾时工作区已被并行 Agent 升到 `0.24.126`，把 126 的 macOS 安装包传到了 125 的 Release（校验和清单仍是 125 的，附件列表却混了两套）。发现后应立刻从该 Release 删掉版本号不符的附件。脚本现在会在版本不一致时直接退出。
 6. **公开仓库的提交历史**：`origin` 上的全部提交会在**任何一个 Agent** 的下一次发版里随 `git push github` 原样公开（含实验目录、测试夹具、设计文档与截图）。因此不得提交机主的私有项目名、本机项目清单或本机路径清单：示例和夹具用虚构名（如 `Notely`）或已公开项目名；本机数据运行时生成并加入 `.gitignore`（参照 `spikes/web_butler/editor/export_projects.py`）。已推到私有 `origin`、尚未公开的误提交，只能在机主确认后改写**自己的**提交并 `--force-with-lease` 推送（2026-09-29 两次按此处理）；公开前可用 `git merge-base --is-ancestor <提交> github/main` 核对是否已公开。
 7. **推送门禁扫的是工作区，不是本次推送的提交**：`ci-test.py --lint-only` 会检查别的 Agent 未跟踪、未提交的半成品测试文件，导致只改文档或实验目录的推送被拦（2026-09-29：他人暂停中的 `tests/test_remote_richmsg_pi_baseline.py` 报 14 处 ruff）。本次推送不含产品代码时按第 4 条用 `CORRAL_SKIP_PUSH_GATE=1`（全局泄漏门禁照常运行）；**不得**为过门禁挪动或格式化他人文件。环境改进项（未实施）：门禁改为只检查待推送提交的文件树。
+8. **推送时别把输出管道给 `tail`/`head`（未查明原因的观察，2026-09-29 v0.24.228）**：`git push origin main vX.Y.Z 2>&1 | tail -4` 触发的门禁完整检查以 `Exception ignored while flushing sys.stdout` 结束、推送被拒，两个远程都一样；改成 `git push … > /tmp/push.log 2>&1` 重推即成功（门禁认戳跳过重复检查）。发版推送一律把输出写文件再看，不要走管道。
 
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
