@@ -234,19 +234,25 @@ def list_managed_hosts() -> list[dict]:
     return hosts
 
 
-def _name_matches_session(name: str, session: dict) -> bool:
-    """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。
-
-    与 ``store._session_matches_keepalive_ident`` 同口径；liveness 不得 import store。
-    """
-    ident = str(name or "").rsplit("-", 1)[-1]
-    sid = str(session.get("id") or "")
+def _ident_matches_id(ident: str, sid: str) -> bool:
     if not ident or not sid:
         return False
     if sid == ident or sid.startswith(ident):
         return True
     compact = sid.replace("-", "")
     return compact.startswith(ident) or ident.startswith(compact[:8])
+
+
+def _name_matches_session(name: str, session: dict) -> bool:
+    """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。
+
+    Also accepts ids this card absorbed from superseded continuation files
+    (``continued_from``): the hosted pane keeps the name it was launched
+    with while the conversation moves on to a new history file.
+    """
+    ident = str(name or "").rsplit("-", 1)[-1]
+    ids = [str(session.get("id") or ""), *(session.get("continued_from") or ())]
+    return any(_ident_matches_id(ident, str(sid)) for sid in ids)
 
 
 def _codex_resumed_thread_id(pane_pid: int) -> str | None:

@@ -39,14 +39,29 @@ def _merge_continued_sessions(sessions: list[SessionInfo]) -> list[SessionInfo]:
     by_id = {str(session.get("id") or ""): session for session in sessions}
     merged: list[SessionInfo] = []
     for session in sessions:
-        target = str(session.get("superseded_by") or "")
-        if target and target in by_id:
-            latest = by_id[target]
-            if not latest.get("keepalive_name") and session.get("keepalive_name"):
-                latest["keepalive_name"] = session["keepalive_name"]
+        latest = _latest_listed(session, by_id)
+        if latest is None:
+            merged.append(session)
             continue
-        merged.append(session)
+        if not latest.get("keepalive_name") and session.get("keepalive_name"):
+            latest["keepalive_name"] = session["keepalive_name"]
+        # Hosted panes keep the name they were launched with (the old id);
+        # liveness matches that name against these ids after the merge.
+        absorbed = latest.setdefault("continued_from", [])
+        absorbed.append(str(session.get("id") or ""))
     return merged
+
+
+def _latest_listed(session: SessionInfo, by_id: dict[str, SessionInfo]) -> SessionInfo | None:
+    """Last listed card along the `superseded_by` chain, or None if not superseded."""
+    seen = {str(session.get("id") or "")}
+    latest = None
+    target = str(session.get("superseded_by") or "")
+    while target and target in by_id and target not in seen:
+        seen.add(target)
+        latest = by_id[target]
+        target = str(latest.get("superseded_by") or "")
+    return latest
 
 
 class ClaudeRuntime(BaseRuntime):

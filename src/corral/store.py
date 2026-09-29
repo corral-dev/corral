@@ -32,14 +32,7 @@ def _session_matches_keepalive_ident(session: dict, name: str) -> bool:
     """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。"""
     if session.get("source") == "codex":
         return False
-    ident = str(name or "").rsplit("-", 1)[-1]
-    sid = str(session.get("id") or "")
-    if not ident or not sid:
-        return False
-    if sid == ident or sid.startswith(ident):
-        return True
-    compact = sid.replace("-", "")
-    return compact.startswith(ident) or ident.startswith(compact[:8])
+    return liveness._name_matches_session(name, session)
 
 
 class SessionStore:

@@ -130,6 +130,45 @@ class MergeTests(unittest.TestCase):
         merged = _merge_continued_sessions([old])
         self.assertEqual(merged, [old])
 
+    def test_merge_follows_chain_and_records_absorbed_ids(self):
+        mid = "cccccccc-0000-4000-8000-000000000003"
+        old = {"source": "claude", "id": OLD, "superseded_by": mid}
+        middle = {"source": "claude", "id": mid, "superseded_by": NEW}
+        new = {"source": "claude", "id": NEW}
+        merged = _merge_continued_sessions([old, middle, new])
+        self.assertEqual([s["id"] for s in merged], [NEW])
+        self.assertEqual(sorted(merged[0]["continued_from"]), sorted([OLD, mid]))
+
+
+class HostedPaneAfterContinuationTests(unittest.TestCase):
+    """Incident 2026-09-30: the pane named after the old id lost its session.
+
+    Claude runs the continued conversation in a background daemon, so the
+    live pid is outside the pane's process tree and only the pane name can
+    reattach it. Without the absorbed ids the merged card showed as an
+    external session with no live terminal.
+    """
+
+    def test_pane_named_after_old_id_binds_to_merged_card(self):
+        from corral import liveness
+
+        merged = _merge_continued_sessions([
+            {"source": "claude", "id": OLD, "superseded_by": NEW},
+            {"source": "claude", "id": NEW, "live": True, "pid": 99999},
+        ])
+        rows = [[f"corral-claude-{OLD[:8]}", "12345", "claude"]]
+        with mock.patch.object(liveness, "_list_tmux_sessions", return_value=rows), \
+                mock.patch.object(liveness, "_build_ppid_map", return_value={}):
+            liveness.annotate(merged)
+        self.assertEqual(merged[0].get("keepalive_name"), f"corral-claude-{OLD[:8]}")
+
+    def test_unrelated_pane_name_does_not_bind(self):
+        from corral import liveness
+
+        session = {"source": "claude", "id": NEW, "continued_from": [OLD]}
+        self.assertFalse(liveness._name_matches_session("corral-claude-dddddddd", session))
+        self.assertTrue(liveness._name_matches_session(f"corral-claude-{NEW[:8]}", session))
+
 
 class ResumeResolutionTests(unittest.TestCase):
     def test_resume_plan_uses_latest_id(self):
