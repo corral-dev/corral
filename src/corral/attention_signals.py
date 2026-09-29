@@ -548,6 +548,161 @@ def _json_object(value: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _opencode_has_v1_session(connection: sqlite3.Connection, session_id: str) -> bool:
+    """id 是否落在 v1 session 表里（含双表并存的迁移行）。
+
+    双表并存时扫描/对话/transcript 一律走 v1（SessKit `_is_v1_session` /
+    `_opencode_use_v2` 同口径），关注证据必须跟随，否则同一会话的绿点
+    与对话/状态看到的不是同一份历史。探针失败（纯 v2 库无此表）按无命中
+    处理，调用方继续走 v2。"""
+    try:
+        hit = connection.execute(
+            "SELECT 1 FROM session WHERE id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        return hit is not None
+    except sqlite3.Error:
+        return False
+
+
+def _opencode_v2_tail_rows(connection: sqlite3.Connection, session_id: str) -> list[sqlite3.Row]:
+    """v2 尾部行（seq 降序）；查不到表时返回空列表，调用方走未知态降级。"""
+    try:
+        return connection.execute(
+            "SELECT type, seq, time_created, time_updated, id, data FROM session_message "
+            "WHERE session_id = ? ORDER BY seq DESC, id DESC LIMIT ?",
+            (session_id, _DB_TAIL_ROWS),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+
+def _inspect_opencode_v2_tail(
+    tail: list[sqlite3.Row],
+    *,
+    live: bool,
+    observed_at: float,
+) -> AttentionEvidence | None:
+    """v2 专属会话的关注证据；空尾部返回 None，由调用方回落 v1 分支。
+
+    只收 v1 session 表里没有的 id（双表并存的迁移行由调用方先拦，走 v1）。
+    口径（只读实测契约，与 SessKit v2 解析同源）：
+    - 倒序跳过 system/synthetic/compaction/idle/agent-switched/model-switched
+      后首行定状态：user → idle（开口不是执行证据，见 Pi 同条）；
+      assistant + 非空 error → idle（报错是终止态，等同 v1 finish=stop）；
+      finish=stop → idle；finish=tool-calls → live 才 working；
+      finish 缺失/unknown（落盘中）→ 有文本/工具才 working，否则 unknown；
+    - question 工具（state.metadata.answers 为空）→ waiting，completed/error
+      仍带 answers 即视为已答；尾部 idle failed 不出事件但翻转本轮 working。
+    - 进程已死一律收成 idle：常驻空转与已结束都不能留 working/waiting。
+      v2 有行但全是跳过型尾巴时回落 v1（v1 行为零变化）；v1 缺表的新库回落
+      unknown（reconcile 只认明确 working/waiting，unknown 不会冒充绿点）。
+    """
+    if not tail:
+        return None
+    pending: dict[str, str] = {}
+    activity_token: str | None = None
+    relevant_times: list[float] = []
+    skipped_idle_failed = False
+    newest: sqlite3.Row | None = None
+    for row in tail:
+        row_type = str(row["type"] or "")
+        if row_type in {"system", "synthetic", "compaction", "idle", "agent-switched", "model-switched"}:
+            if row_type == "idle":
+                idle_data = _json_object(row["data"])
+                if idle_data.get("outcome") == "failed":
+                    skipped_idle_failed = True
+            continue
+        newest = row
+        break
+    if newest is None:
+        return None
+    message = _json_object(newest["data"])
+    role = str(newest["type"] or "")
+    created = message.get("time", {}).get("created") if isinstance(message.get("time"), dict) else None
+    message_time = _timestamp(created) or _timestamp(newest["time_updated"]) or _timestamp(newest["time_created"])
+    if message_time is not None:
+        relevant_times.append(message_time)
+    if role == "user":
+        phase: str = "idle"
+    elif role == "assistant":
+        native = newest["id"] or newest["time_updated"] or newest["time_created"]
+        activity_token = _token("opencode", "assistant", native)
+        if message.get("error"):
+            phase = "idle"
+        elif message.get("finish") == "stop":
+            phase = "idle"
+        elif message.get("finish") == "tool-calls":
+            phase = "working" if live else "idle"
+        else:
+            content = message.get("content")
+            items = content if isinstance(content, list) else []
+            has_signal = any(
+                isinstance(item, dict)
+                and (
+                    (item.get("type") == "text" and isinstance(item.get("text"), str) and item["text"].strip())
+                    or (item.get("type") == "tool")
+                )
+                for item in items
+            )
+            if live and has_signal:
+                phase = "working"
+            elif not live:
+                phase = "idle"
+            else:
+                phase = "unknown"
+        # 尾部向前扫 question 工具：v2 落盘只有 completed/error 两种终态；
+        # completed + metadata.answers 非空 = 已作答；completed 无 answers =
+        # 仍在等用户作答（落盘早于作答）；error = 已驳回/参数错，不算等待。
+        for row in tail:
+            if str(row["type"] or "") != "assistant":
+                if str(row["type"] or "") == "user":
+                    break
+                continue
+            data = _json_object(row["data"])
+            content = data.get("content")
+            items = content if isinstance(content, list) else []
+            for item in items:
+                if not isinstance(item, dict) or item.get("type") != "tool":
+                    continue
+                if item.get("name") not in _QUESTION_TOOLS:
+                    continue
+                state = item.get("state") if isinstance(item.get("state"), dict) else {}
+                if state.get("status") in {"pending", "running"}:
+                    call_id = str(item.get("id") or row["id"] or "")
+                    if call_id:
+                        pending[call_id] = _token("opencode", "question", call_id) or call_id
+                    continue
+                if state.get("status") == "completed":
+                    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+                    if metadata.get("answers"):
+                        pending.pop(str(item.get("id") or ""), None)
+                    else:
+                        call_id = str(item.get("id") or row["id"] or "")
+                        if call_id:
+                            pending[call_id] = _token("opencode", "question", call_id) or call_id
+            if data.get("finish") == "stop" or data.get("error"):
+                break
+    else:
+        phase = "unknown"
+    if skipped_idle_failed and phase == "working":
+        phase = "idle"
+    if relevant_times:
+        observed_at = max(relevant_times)
+    if pending and live:
+        return _evidence(
+            "waiting",
+            activity_token=activity_token,
+            question_token=next(reversed(pending.values())),
+            observed_at=observed_at,
+        )
+    if not live:
+        phase = "idle" if phase in {"working", "waiting"} else phase
+        if phase == "unknown":
+            phase = "idle"
+    return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+
+
 def _inspect_opencode(session: dict) -> AttentionEvidence:
     db_path = str(session.get("path") or "")
     session_id = str(session.get("id") or "")
@@ -557,7 +712,17 @@ def _inspect_opencode(session: dict) -> AttentionEvidence:
     connection = _connect_ro(db_path)
     if connection is None:
         return _evidence(observed_at=observed_at)
+    live = session.get("live") is True
+    v2_tail: list[sqlite3.Row] = []
     try:
+        # 双表并存的迁移行走 v1（与扫描/对话/transcript 同口径），v1 行为零变化。
+        if not _opencode_has_v1_session(connection, session_id):
+            v2_tail = _opencode_v2_tail_rows(connection, session_id)
+        if v2_tail:
+            v2_evidence = _inspect_opencode_v2_tail(v2_tail, live=live, observed_at=observed_at)
+            if v2_evidence is not None:
+                return v2_evidence
+            # v2 有行但全是跳过型尾巴（compaction/idle）：v1 行为零变化，回落 v1。
         messages = connection.execute(
             "SELECT id, time_created, time_updated, data FROM message "
             "WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT ?",
@@ -569,11 +734,16 @@ def _inspect_opencode(session: dict) -> AttentionEvidence:
             (session_id, _DB_TAIL_ROWS),
         ).fetchall()
     except sqlite3.Error:
-        return _evidence(observed_at=observed_at)
+        # v1 缺表的新库：v2 已判过（v2_tail 非空即已返回），此处仅当 v2
+        # 无行又无 v1 表——回 unknown。注意 reconcile() 里仍活着的 unknown
+        # 不会自动变绿：要亮绿必须有明确 working/waiting 证据，见知识库。
+        if not v2_tail:
+            return _evidence(observed_at=observed_at)
+        messages = []
+        parts = []
     finally:
         connection.close()
 
-    live = session.get("live") is True
     pending: dict[str, str] = {}
     activity_token = None
     relevant_times: list[float] = []

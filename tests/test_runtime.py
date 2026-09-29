@@ -229,6 +229,7 @@ class RuntimeTests(unittest.TestCase):
             codex_req = _prepare_copy_request(registry, codex, "讨论")
             codex_plan = registry.build_launch_plan(codex_req)
             self.assertEqual(codex_plan.argv[:2], ("codex", "fork"))
+            self.assertIn("--no-daemon", codex_plan.argv)
             self.assertIn("session-123", codex_plan.argv)
 
             opencode = self._session("opencode", str(history), td)
@@ -356,6 +357,7 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertEqual(plan.argv[0], "codex")
             self.assertNotIn("resume", plan.argv)
+            self.assertIn("--no-daemon", plan.argv)
             self.assertIn("--add-dir", plan.argv)
             self.assertIn(str(history), plan.argv[-1])
             self.assertIn("修复会话接力", plan.argv[-1])
@@ -584,7 +586,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             plan.argv,
-            ("codex", "--dangerously-bypass-approvals-and-sandbox"),
+            ("codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"),
         )
         self.assertEqual(plan.cwd, td)
 
@@ -762,8 +764,19 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             plan.argv,
-            ("codex", "--dangerously-bypass-approvals-and-sandbox", "resume"),
+            ("codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox", "resume"),
         )
+
+    def test_codex_passthrough_uses_current_account_unless_remote_is_explicit(self) -> None:
+        registry = default_registry()
+        bare = registry.build_passthrough_plan("codex", [])
+        self.assertEqual(bare.argv[:2], ("codex", "--no-daemon"))
+
+        remote = registry.build_passthrough_plan("codex", ["--remote", "unix://"])
+        self.assertNotIn("--no-daemon", remote.argv)
+
+        explicit = registry.build_passthrough_plan("codex", ["--no-daemon"])
+        self.assertEqual(explicit.argv.count("--no-daemon"), 1)
 
     def test_opencode_passthrough_prepends_auto_for_bare_tui(self) -> None:
         plan = default_registry().build_passthrough_plan("opencode", [])

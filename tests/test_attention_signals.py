@@ -452,6 +452,10 @@ class OpenCodeAttentionSignalTests(unittest.TestCase):
     def _database(self, path: Path) -> sqlite3.Connection:
         connection = sqlite3.connect(path)
         connection.execute(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, "
+            "time_created INTEGER, time_updated INTEGER, parent_id TEXT, time_archived INTEGER)"
+        )
+        connection.execute(
             "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, "
             "time_updated INTEGER, data TEXT)"
         )
@@ -459,7 +463,25 @@ class OpenCodeAttentionSignalTests(unittest.TestCase):
             "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, "
             "time_created INTEGER, time_updated INTEGER, data TEXT)"
         )
+        connection.execute(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT NOT NULL,"
+            " title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,"
+            " parent_id TEXT, time_archived INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,"
+            " type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL,"
+            " time_updated INTEGER NOT NULL, data TEXT NOT NULL)"
+        )
         return connection
+
+    def _write_v2(self, connection: sqlite3.Connection, rows: list[tuple]) -> None:
+        """rows: (id, type, seq, ts, data-dict)。"""
+        for mid, mtype, seq, ts, data in rows:
+            connection.execute(
+                "INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mid, "session-1", mtype, seq, ts, ts, json.dumps(data)),
+            )
 
     def test_incomplete_assistant_and_pending_question(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -585,6 +607,289 @@ class OpenCodeAttentionSignalTests(unittest.TestCase):
             connection.commit()
             connection.close()
             self.assertEqual(inspect_session(_session("opencode", path)).phase, "working")
+
+    def test_v2_tool_calls_tail_is_working_while_live(self) -> None:
+        """v2 专属会话：tool-calls 尾部 live 亮绿，进程已死收 idle。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {
+                            "time": {"created": 2000},
+                            "content": [
+                                {
+                                    "type": "tool",
+                                    "id": "c1",
+                                    "name": "bash",
+                                    "state": {"status": "completed", "input": {}, "content": []},
+                                }
+                            ],
+                            "finish": "tool-calls",
+                        },
+                    ),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "working")
+            self.assertEqual(inspect_session(_session("opencode", path, live=False)).phase, "idle")
+
+    def test_v2_stop_and_error_tails_are_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {
+                            "time": {"created": 2000, "completed": 2500},
+                            "content": [{"type": "text", "text": "done"}],
+                            "finish": "stop",
+                        },
+                    ),
+                    ("m3", "idle", 2, 3000, {"time": {"created": 3000}, "outcome": "succeeded"}),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "idle")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {
+                            "time": {"created": 2000, "completed": 2500},
+                            "content": [],
+                            "finish": "error",
+                            "error": {"type": "aborted", "message": "Aborted"},
+                        },
+                    ),
+                    ("m3", "idle", 2, 3000, {"time": {"created": 3000}, "outcome": "failed"}),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "idle")
+
+    def test_v2_unanswered_question_is_waiting_answered_is_not(self) -> None:
+        """v2 question 只有 completed/error 终态：completed 无 answers 才算等待。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {
+                            "time": {"created": 2000},
+                            "content": [
+                                {
+                                    "type": "tool",
+                                    "id": "q1",
+                                    "name": "question",
+                                    "state": {"status": "completed", "input": {}, "content": [], "metadata": {}},
+                                }
+                            ],
+                            "finish": "tool-calls",
+                        },
+                    ),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            evidence = inspect_session(_session("opencode", path))
+            self.assertEqual(evidence.phase, "waiting")
+            self.assertIsNotNone(evidence.question_token)
+            self.assertEqual(inspect_session(_session("opencode", path, live=False)).phase, "idle")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {
+                            "time": {"created": 2000},
+                            "content": [
+                                {
+                                    "type": "tool",
+                                    "id": "q1",
+                                    "name": "question",
+                                    "state": {
+                                        "status": "completed",
+                                        "input": {},
+                                        "content": [{"type": "text", "text": "User has answered"}],
+                                        "metadata": {"answers": [["x"]]},
+                                    },
+                                }
+                            ],
+                            "finish": "tool-calls",
+                        },
+                    ),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            evidence = inspect_session(_session("opencode", path))
+            self.assertEqual(evidence.phase, "working")
+            self.assertIsNone(evidence.question_token)
+
+    def test_v2_user_tail_and_midstream_streaming(self) -> None:
+        """user 尾 live 仍 idle；无 finish 但有文本/工具的落盘中行 live 才 working。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    (
+                        "m1",
+                        "assistant",
+                        0,
+                        1000,
+                        {
+                            "time": {"created": 1000},
+                            "content": [{"type": "text", "text": "done"}],
+                            "finish": "stop",
+                        },
+                    ),
+                    ("m2", "user", 1, 2000, {"time": {"created": 2000}, "text": "next?"}),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "idle")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {"time": {"created": 2000}, "content": [{"type": "text", "text": "draft"}]},
+                    ),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "working")
+            self.assertEqual(inspect_session(_session("opencode", path, live=False)).phase, "idle")
+
+    def test_v2_only_skip_tail_falls_back_to_v1(self) -> None:
+        """v2 只有 compaction/idle 尾巴时回落 v1：v1 有 running 工具则 working。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            connection.execute(
+                "INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("other", "/r", "t", 1, 1, None, None),
+            )
+            connection.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                ("m1", "session-1", 1, 1, json.dumps({"role": "assistant", "time": {"created": 1}})),
+            )
+            connection.execute(
+                "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "p1",
+                    "m1",
+                    "session-1",
+                    2,
+                    2,
+                    json.dumps({"type": "tool", "tool": "bash", "callID": "c1", "state": {"status": "running"}}),
+                ),
+            )
+            self._write_v2(
+                connection,
+                [("m9", "idle", 12, 3000, {"time": {"created": 3000}, "outcome": "succeeded"})],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "working")
+
+    def test_dual_table_session_follows_v1(self) -> None:
+        """双表并存的迁移行走 v1：v2 是 tool-calls 也必须看 v1 的 stop。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            connection.execute(
+                "INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("session-1", "/r", "t", 1, 2, None, None),
+            )
+            connection.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                (
+                    "m1",
+                    "session-1",
+                    1,
+                    2,
+                    json.dumps({"role": "assistant", "finish": "stop", "time": {"created": 1, "completed": 2}}),
+                ),
+            )
+            self._write_v2(
+                connection,
+                [
+                    ("m1", "user", 0, 1000, {"time": {"created": 1000}, "text": "hi"}),
+                    (
+                        "m2",
+                        "assistant",
+                        1,
+                        2000,
+                        {
+                            "time": {"created": 2000},
+                            "content": [
+                                {
+                                    "type": "tool",
+                                    "id": "c1",
+                                    "name": "bash",
+                                    "state": {"status": "completed", "input": {}, "content": []},
+                                }
+                            ],
+                            "finish": "tool-calls",
+                        },
+                    ),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "idle")
 
 
 class CursorAttentionSignalTests(unittest.TestCase):

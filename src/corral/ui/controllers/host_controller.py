@@ -143,6 +143,14 @@ class HostControllerMixin:
             corral._log_embed_error("内嵌会话启动线程", exc)
             self.app.call_from_thread(self._on_host_failed)
             return
+        # 新 tmux 会话刚建好：控制通道（`tmux -C attach`，含 `_ready.wait` +
+        # pane_id 查询，重启瞬间 tmux 正忙时是主线程卡顿的来源之一）在这里
+        # 直接预热。主线程 `focus_session` 随后进来是池命中，只换回调 + LRU，
+        # 约 0ms；预热失败也不影响，全部路径仍会自动回退外部 fork。
+        try:
+            embed.open_channel(name)
+        except Exception:  # noqa: BLE001 预热失败不该影响托管成功收尾
+            pass
         observe.event(
             "host_session",
             duration_ms=int((time.perf_counter() - t0) * 1000),
@@ -246,6 +254,17 @@ class HostControllerMixin:
         self._persist_split_composition()
         self._begin_attention_read(corral.session_key(current))
         self.call_next(self._rebuild_list, select_key)
+        # 托管刚成功：pid 快照变化让下一次签名必穿，全量重扫（秒级）会和
+        # 首帧抓取抢 GIL。退避一轮，让首帧先上屏（见主屏刷新循环与
+        # REFRESH_HOST_COOLDOWN；不是拉长间隔，下一轮自然补扫）。
+        try:
+            import time as _time
+
+            from corral.ui.main_screen import REFRESH_HOST_COOLDOWN
+
+            self._refresh_cooldown_until = _time.monotonic() + REFRESH_HOST_COOLDOWN
+        except Exception:  # noqa: BLE001 退避失败不该影响托管收尾
+            pass
 
     def _embed_open_shell(self, cwd: str) -> None:
         """顶栏「终端」：在当前项目目录下内嵌一个可自由输入的 shell 分屏。"""

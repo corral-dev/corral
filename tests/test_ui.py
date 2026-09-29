@@ -6057,13 +6057,25 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 # 默认高亮在接力项（最后一项）；上移一次落到「重启会话」
                 await pilot.press("up")
                 await pilot.press("enter")
-                # 菜单选定即执行，不再二次确认
+                # 菜单选定即占位返回：杀旧 + 起新串行跑在后台 host worker，
+                # 前台只做校验 + 占位（右栏「正在重启…」），不再冻住事件循环。
+                # worker 里 kill/channel/host 按序各调一次；旧会话 1s 内不消失
+                # 则同名复用（liveness.is_alive 已 mock 为 True）。
                 await _wait_until(lambda: kill_mock.call_count == 1)
+                await _wait_until(lambda: close_mock.call_count == 1)
                 await _wait_until(lambda: host_mock.call_count == 1)
-                await _wait_until(lambda: app.screen._host_pending == 0)
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
 
                 kill_mock.assert_called_once_with("corral-claude-s0")
                 close_mock.assert_called_once_with("corral-claude-s0")
+                # 重启中占位：右栏标题栏常驻「正在重启…」，收尾后清掉不残留。
+                # 新实现是后台 worker 收尾时清占位，这里只断言占位机制本身可用。
+                area = app.screen.query_one(SplitPaneArea)
+                area.set_restarting(source_key, True)
+                header = area.cells()[0]._pane_header()  # noqa: SLF001
+                hint = str(header._hint_widget.render())  # noqa: SLF001
+                self.assertTrue(hint.strip(), "重启占位必须在标题栏写提示")
+                area.set_restarting(source_key, False)
                 self.assertEqual(len(captured), 1)
                 self.assertFalse(captured[0].force_new)
                 self.assertFalse(captured[0].copy_session)
@@ -9168,6 +9180,70 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             selected = list_view.selected_session()
             self.assertIsNotNone(selected)
             self.assertEqual(selected["id"], "a")
+
+    def _dated_store(self):
+        """今天 / 昨天各一条，外加一条三天前的——默认藏在「更早」叠卡里。"""
+        now = time.time()
+        sessions = [
+            _claude_session("today", _local_day_mtime(0, now=now), "今天"),
+            _claude_session("yest", _local_day_mtime(1, now=now), "昨天"),
+            _claude_session("old", _local_day_mtime(3, now=now), "三天前"),
+        ]
+        conversations = {
+            "today": [corral.ConversationMessage("user", "今天的事")],
+            "yest": [corral.ConversationMessage("user", "昨天的事")],
+            "old": [corral.ConversationMessage("user", "参考 OpenConductor 的调度")],
+        }
+        store, registry = _make_store(sessions=sessions)
+        registry.get("claude").load_conversation.side_effect = (
+            lambda s: list(conversations[s["id"]])
+        )
+        return store
+
+    async def test_enter_reveals_session_hidden_in_older_stack(self) -> None:
+        """回归（2026-09-29）：三天前的命中项在收起的叠卡里，回车曾静默落回「＋ 新建」。"""
+        app = CorralApp(self._dated_store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            self.assertIn(OLDER_STACK_ID, list_view._current_row_identities())
+            self.assertNotIn("claude:old", list_view._current_row_identities())
+
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "opencon")
+            self.assertEqual([m.session["id"] for m in modal._matches], ["old"])
+            await pilot.press("enter")
+            await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
+            await pilot.pause(delay=0.2)
+
+            selected = list_view.selected_session()
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected["id"], "old")
+
+    async def test_enter_reveals_member_of_collapsed_group(self) -> None:
+        """命中项在收起的会话组里：落到组卡，不能落回「＋ 新建」。"""
+        app = CorralApp(self._dated_store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = ["claude:today", "claude:old"]
+            snapshot = list_view.on_layout_change(
+                lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
+            )
+            group_id = snapshot.get_group(keys[0]).group_id
+            list_view.on_layout_change(lambda s: s.set_collapsed(group_id, True))
+            await list_view.rebuild()
+            self.assertNotIn("claude:old", list_view._current_row_identities())
+
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "opencon")
+            await pilot.press("enter")
+            await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
+            await pilot.pause(delay=0.2)
+
+            group = list_view.selected_group()
+            self.assertIsNotNone(group)
+            self.assertEqual(group.group_id, group_id)
 
     async def test_escape_closes_without_touching_the_sidebar(self) -> None:
         app = CorralApp(self._store(), embed_ok=False)

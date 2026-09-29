@@ -293,6 +293,10 @@ class PaneCell(Vertical):
         self._osc_report = osc_report
         self._title = title
         self._closable = closable
+        # 重启中占位标记：`set_restarting(True)` 立起，收尾时清掉。`sync_chrome`
+        # 按格子当前态重算标题栏提示时会先看它——占位期间不许被 Enter 重启
+        # 提示盖掉，否则用户会再按一次回车触发重复重启。
+        self._restarting_hint = False
         # Live panes must not *display* a transcript renderer (capture gaps
         # would flash chat). Keep it as an ended fallback so a confirmed-dead
         # host can switch to the same preview path as a history card.
@@ -545,8 +549,13 @@ class PaneCell(Vertical):
         self._on_pane_focused(key)
 
     def _is_restart_chrome_target(self) -> bool:
-        """预览/已结束格才在顶底 chrome 写 Enter 重启；占位格与托管中不算。"""
+        """预览/已结束格才在顶底 chrome 写 Enter 重启；占位格与托管中不算。
+
+        重启中占位（`_restarting_hint`）的格子也不算：后台 worker 正在杀旧起新，
+        再写 Enter 提示会诱导用户按第二次回车触发重复重启。"""
         if self.spec.is_shell or self.spec.session_key.startswith("__"):
+            return False
+        if self._restarting_hint:
             return False
         pane = self.embed_pane()
         return pane is not None and pane._is_restart_target()  # noqa: SLF001
@@ -580,9 +589,13 @@ class PaneCell(Vertical):
         header = self._pane_header()
         if header is not None:
             header.set_active(active)
-            header.set_restart_hint(
-                t("pane.restart_hint") if restart_target else ""
-            )
+            if self._restarting_hint:
+                # 重启中占位：标题栏常驻「正在重启…」，不许被常规重算盖掉。
+                header.set_restart_hint(t("pane.restarting"))
+            else:
+                header.set_restart_hint(
+                    t("pane.restart_hint") if restart_target else ""
+                )
         footer = self._pane_footer()
         if footer is not None:
             footer.set_state(
@@ -696,6 +709,55 @@ class SplitPaneArea(Vertical):
     def mark_selected(self, session_key: str | None) -> None:
         """登记当前会话（列表高亮），不抢键盘；高光仍跟这条走。"""
         self._focus_key = session_key
+        self.sync_chrome()
+
+    def set_restarting(self, session_key: str, restarting: bool) -> None:
+        """重启中占位：标题栏常驻「正在重启…」，顶掉 Enter 重启提示。
+
+        重启的杀旧 + 起新现在跑在后台 worker（见 MainScreen._restart_and_focus）：
+        前台不能再用旧的 Enter 提示装作「这一格没活干」，否则用户会再按一次回车
+        触发重复重启。占位只改标题栏展示，不动格子绑定与焦点。退出占位时只清
+        自己立的提示：`sync_chrome` 会按格子当前态重算 Enter 提示，直接调它
+        会把「正在重启…」盖掉，所以清占位走「只清重启提示」的回写。"""
+        for cell in self._cells():
+            if cell.spec.session_key != session_key:
+                continue
+            header = cell._pane_header()  # noqa: SLF001
+            if header is None:
+                continue
+            if restarting:
+                cell._restarting_hint = True  # noqa: SLF001
+                header.set_restart_hint(t("pane.restarting"))
+            else:
+                cell._restarting_hint = False  # noqa: SLF001
+                pane = cell.embed_pane()
+                restart_target = (
+                    pane is not None and pane._is_restart_target()  # noqa: SLF001
+                )
+                header.set_restart_hint(
+                    t("pane.restart_hint") if restart_target else ""
+                )
+
+    def rebind_keepalive(self, old_name: str, new_name: str) -> None:
+        """重启换绑：把绑着旧 tmux 名的格子改到新名，不销毁重建。
+
+        杀旧起新是同名复用失败后才换名（极少）：这时右栏还有格子绑着已死的
+        旧名。逐格改 `spec.keepalive_name` 并让 pane 重新 `focus_session`，
+        复用现有的改绑路径（保画面缓存、保通道池、保焦点），不走整排 remount。"""
+        for cell in self._cells():
+            if cell.spec.keepalive_name != old_name:
+                continue
+            pane = cell.embed_pane()
+            if pane is not None:
+                try:
+                    pane.clear_stale_screen(old_name)
+                except Exception:  # noqa: BLE001 清画面失败仍继续改绑
+                    pass
+            cell.spec.keepalive_name = new_name
+            cell._bind_renderers(cell._ended_fallback, hosted=True)  # noqa: SLF001
+            pane = cell.embed_pane()
+            if pane is not None:
+                pane.focus_session(new_name)
         self.sync_chrome()
 
     def cells(self) -> list[PaneCell]:

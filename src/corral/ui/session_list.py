@@ -1930,6 +1930,26 @@ class SessionListView(Vertical):
         self._older_stack_expanded = not self._older_stack_expanded
         self.call_next(self.rebuild)
 
+    def _expand_older_stack_for(self, session_key: str) -> None:
+        """Open the Older stack when a forced selection targets a session behind it."""
+        if self._older_stack_expanded or self.nav.project_query.strip():
+            return
+        session = self.store.find_session(session_key)
+        if session is not None and _session_days_ago(session, time.time()) >= _RECENT_BUCKET_LIMIT:
+            self._older_stack_expanded = True
+
+    def _collapsed_group_identity(
+        self, session_key: str, identities: list[str],
+    ) -> str | None:
+        """Group card identity standing in for a member hidden by a collapsed group."""
+        if self.group_store is None:
+            return None
+        group = self.group_store.get_group(session_key)
+        if group is None:
+            return None
+        identity = f"{GROUP_ID_PREFIX}{group.group_id}"
+        return identity if identity in identities else None
+
     def select_activity_board(self) -> None:
         """把高亮挪到活跃会话入口（固定头第二项）。"""
         target = STICKY_IDS.index(ACTIVITY_BOARD_ID)
@@ -2172,10 +2192,9 @@ class SessionListView(Vertical):
                 if self.index != target:
                     self.index = target
                 return True
-        if not self._older_stack_expanded and not self.nav.project_query.strip():
-            session = self.store.find_session(session_key)
-            if session is not None and _session_days_ago(session, time.time()) >= _RECENT_BUCKET_LIMIT:
-                self._older_stack_expanded = True
+        if not self._older_stack_expanded:
+            self._expand_older_stack_for(session_key)
+            if self._older_stack_expanded:
                 self.call_next(self.rebuild)
         if self.group_store is not None:
             group = self.group_store.get_group(session_key)
@@ -2404,12 +2423,18 @@ class SessionListView(Vertical):
         select_key: str | None,
     ) -> None:
         """rebuild() 的实现体；只允许持 `_rebuild_lock` 时调用。"""
+        if select_key is not None:
+            self._expand_older_stack_for(select_key)
         previous_identity = select_key
         if previous_identity is None and keep_selection:
             previous_identity = self._displayed_selected_identity()
 
         rows = self._sidebar_rows()
         new_identities = [row.identity for row in rows]
+        if select_key is not None and select_key not in new_identities:
+            previous_identity = self._collapsed_group_identity(
+                select_key, new_identities
+            ) or previous_identity
         self._prune_multi_keys(
             {row.identity for row in rows if row.kind == "session"}
         )

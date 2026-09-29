@@ -71,6 +71,12 @@ REFRESH_STALE_HINT_AFTER = 10.0
 # Back-compat aliases for tests that still patch the old names.
 REFRESH_INTERVAL = REFRESH_MIN_GAP
 REFRESH_INTERVAL_MAX = REFRESH_RECONCILE_FALLBACK
+# 重启/新建托管后后台重扫退避一轮的时长：杀旧起新会让 Pi 的 pid 快照变化、
+# 签名必穿，紧接着的全量重扫（秒级，握住 GIL）会和首帧抓取抢时间片。
+# worker 在托管成功后把 `_refresh_cooldown_until` 推后这么久，刷新循环
+# 到点后跳过这一轮扫描（不是拉长间隔：FS 事件仍会唤醒，只是这次不扫）。
+# 禁止把 REFRESH_MIN_GAP 改大来达到同样效果——那会拖慢所有正常刷新。
+REFRESH_HOST_COOLDOWN = 6.0
 CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重扫轻得多，保持高频）
 # 秒，侧边栏记忆的跨窗口同步间隔。每次只读一个版本号（单行 SELECT），版本号没变就什么都不做；
 # 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
@@ -288,6 +294,10 @@ class MainScreen(
         self.nav = NavState(source=source)
         self._host_pending = 0
         self._preview_gen = 0
+        # 托管刚成功后后台重扫退避的截止时间（monotonic）：杀旧起新让 pid 快照
+        # 变化、签名必穿，紧接着的全量重扫会和首帧抓取抢 GIL。见刷新循环里的
+        # 跳过逻辑与 REFRESH_HOST_COOLDOWN。
+        self._refresh_cooldown_until = 0.0
         # 后台重扫、标题刷新和交互动作都可能要求重建列表；Textual 的异步
         # clear/extend 不能并发，否则会重复挂载同一个「新建会话」条目。
         self._rebuild_lock = asyncio.Lock()
@@ -696,6 +706,15 @@ class MainScreen(
                     gap = REFRESH_MIN_GAP - (_time.monotonic() - last_refresh)
                     if gap > 0 and worker.cancelled_event.wait(gap):
                         return
+                # 托管刚成功（新建/重启）：pid 快照变化让签名必穿，紧接着的
+                # 全量重扫（秒级，握住 GIL）会和首帧抓取抢时间片。跳过这一轮
+                # 扫描，让首帧先上屏；FS 事件仍保留（watcher.clear 照常），
+                # 下一轮（≥3s 后）自然补扫，不丢新鲜度。
+                cooldown_until = getattr(self, "_refresh_cooldown_until", 0.0)
+                if _time.monotonic() < cooldown_until:
+                    watcher.clear()
+                    last_refresh = _time.monotonic()
+                    continue
                 watcher.clear()
                 had_error = self.store.get_load_error() is not None
                 try:
@@ -1276,8 +1295,19 @@ class MainScreen(
             # 这一格里的会话刚跑完退出，但 store 里的托管标记要等下一轮重扫才撤。
             # 画面确认没了之后会先切回对话预览（dead 已清），标记却可能还在；
             # 不先撤掉的话 `_embed_open` 会认定它"已托管"，转身把那格死画面又摆一遍。
+            # 托管标记的残留名也要一并清掉：旧 tmux 会话可能还没死透（`is_alive`
+            # 仍真），不清的话后台 worker 的「等旧会话消失」轮询会空等 1s，
+            # 而且旧名残留会让下一轮重扫又把它标回托管。
+            stale_name = session.get("keepalive_name") or self.store.hosted.get(session_key)
             session = self.store.mark_hosted(session_key, None) or session
             session.pop("keepalive_name", None)
+            if stale_name:
+                try:
+                    from corral import embed as _embed
+
+                    _embed.close_channel(str(stale_name))
+                except Exception:  # noqa: BLE001 关通道失败不该拦住重启
+                    pass
         request = corral.LaunchRequest(
             session, str(session.get("source") or self.nav.source), self.store.get_title(session)
         )
@@ -1876,9 +1906,15 @@ class MainScreen(
         重新托管后经 `_show_session_group` 原位换回实时画面，不拆用户的分屏组合。
 
         高级菜单里已经点过「重启会话」即算确认，不再弹二次确认（2026-09-13）。
+
+        杀旧进程（`keepalive.kill` 走 tmux 子进程，超时 1.5s；`close_channel`
+        回收控制 client）是同步阻塞 I/O：放在事件循环上会把整个 TUI 冻住，
+        尤其旧进程正在退出时。所以这里只做校验 + 占位（右栏保留旧画面、
+        `_host_pending` 占位），真正的杀旧 + 起新串行跑在后台 `host` worker
+        里（见 `_restart_and_focus`）——同名会话必须串行，不能并行起新，
+        否则会复用上还没死透的旧 tmux 会话。
         """
         import corral
-        from corral import embed, keepalive
         from corral.models import is_shell_session
 
         keepalive_name = session.get("keepalive_name")
@@ -1891,17 +1927,205 @@ class MainScreen(
             self.app.bell()
             return
         key = corral.session_key(session)
-        keepalive.kill(str(keepalive_name))
-        embed.close_channel(str(keepalive_name))
-        current = self.store.mark_hosted(key, None) or session
-        # mark 未命中时落到原 session，里面还带着旧 keepalive 名；不搞掉的话
-        # `_embed_open` 会误判「已托管」而只聚焦旧格，重启实际没发生。
-        current.pop("keepalive_name", None)
-        title = self.store.get_title(current)
+        if self._host_pending > 0:
+            self.app.bell()
+            return
+        title = self.store.get_title(session)
+        area = self._split_area()
+        pane = self._find_embed_pane(key)
+        current = self.store.find_session(key) or session
         request = corral.LaunchRequest(
             current, str(current.get("source") or self.nav.source), title,
         )
-        await self._open_or_exit(request)
+        # 乐观占位：右栏先保留旧画面（`mark_restarting` 不清空 `_grid`），
+        # 用户看到的是旧画面静止，而不是整格闪成空白 + 整机冻住。
+        if pane is not None:
+            pane.mark_restarting()
+        area.set_restarting(key, True)
+        width, height = area.host_pane_size()
+        self._host_pending += 1
+        self._restart_and_focus(
+            str(keepalive_name), key, request, title, width, height,
+        )
+
+    def _find_embed_pane(self, session_key: str):
+        """右栏找到绑着该会话键的实时格；找不到返回 None（调用方走纯后台重启）。"""
+        try:
+            area = self._split_area()
+        except Exception:
+            return None
+        for cell in area._cells():  # noqa: SLF001
+            try:
+                pane = cell.embed_pane()
+            except Exception:
+                continue
+            if (
+                pane is not None
+                and cell.spec.session_key == session_key
+                and pane.session_name
+            ):
+                return pane
+        return None
+
+    @work(thread=True, group="host")
+    def _restart_and_focus(
+        self, keepalive_name: str, session_key: str, request, title: str,
+        width: int, height: int,
+    ) -> None:
+        """后台重启 worker：杀旧（阻塞）→ 起新（阻塞）→ 主线程挂格。
+
+        杀旧和起新必须在同一个 worker 里串行：`host_session` 对同名会话会
+        直接复用，并行起新会接回还没死透的旧进程。失败（旧进程杀不掉也算
+        成功继续，只是新格可能短暂复用旧画面）一律走 `_on_restart_failed`，
+        把占位和计数清掉，不留僵尸态。"""
+        import time
+
+        import corral
+        from corral import embed, keepalive, liveness, observe
+
+        t0 = time.perf_counter()
+        try:
+            keepalive.kill(keepalive_name)
+        except Exception as exc:  # noqa: BLE001 杀旧失败也继续起新，由 tmux 同名复用兜底
+            corral._log_embed_error("重启会话结束旧进程", exc)
+        try:
+            embed.close_channel(keepalive_name)
+        except Exception as exc:  # noqa: BLE001 关通道失败不该拦住起新
+            corral._log_embed_error("重启会话关闭控制通道", exc)
+        liveness.forget_alive(keepalive_name)
+        # 同名复用的是「已经退出」的旧会话名：新 `new-session -d` 会因名字
+        # 已存在而直接返回旧名。轮询等旧会话真正消失（最多约 1s），避免把
+        # 还没死透的旧进程当成新托管挂回去。
+        for _ in range(10):
+            if not liveness.is_alive(keepalive_name):
+                break
+            time.sleep(0.1)
+        try:
+            from corral.runtime.base import LaunchError
+
+            plan = self.store.registry.build_launch_plan(request)
+        except LaunchError as exc:
+            observe.event(
+                "host_session",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                runtime=getattr(request, "target_runtime_id", ""),
+                ok=False,
+            )
+            corral._log_embed_error("重启会话生成启动计划", exc)
+            self.app.call_from_thread(
+                self._on_restart_failed, session_key, keepalive_name,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 非预期异常同样收尾，不留僵尸占位
+            observe.event(
+                "host_session",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                runtime=getattr(request, "target_runtime_id", ""),
+                ok=False,
+            )
+            corral._log_embed_error("重启会话生成启动计划", exc)
+            self.app.call_from_thread(
+                self._on_restart_failed, session_key, keepalive_name,
+            )
+            return
+        # 重启是同会话恢复：沿用原会话 id 做 ident（`bind_hosted_ident`
+        # 恢复分支不用 `--session-id`，`build_resume_plan` 走 `--session`），
+        # 落盘历史不变，不插占位卡。注意不能拿旧 tmux 名的末段当 ident——
+        # 占位/残留名的末段未必等于会话 id（跨窗口/占位卡场景）。
+        ident = str(request.session.get("id") or "").strip()
+        if not ident:
+            ident = keepalive_name.rsplit("-", 1)[-1]
+        try:
+            name = embed.host_session(
+                plan, request.target_runtime_id, ident,
+                width, height, osc_report=self.osc_report,
+            )
+        except Exception as exc:
+            observe.event(
+                "host_session",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                runtime=getattr(request, "target_runtime_id", ""),
+                ok=False,
+            )
+            corral._log_embed_error("重启会话内嵌启动线程", exc)
+            self.app.call_from_thread(
+                self._on_restart_failed, session_key, keepalive_name,
+            )
+            return
+        try:
+            embed.open_channel(name)
+        except Exception:  # noqa: BLE001 预热失败不该影响托管成功收尾
+            pass
+        observe.event(
+            "host_session",
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            runtime=getattr(request, "target_runtime_id", ""),
+            ok=True,
+        )
+        self.app.call_from_thread(
+            self._on_restart_hosted, request, name, keepalive_name,
+            session_key, title,
+        )
+
+    def _on_restart_failed(self, session_key: str, keepalive_name: str) -> None:
+        """后台重启失败收尾：清占位和计数，格子恢复旧绑定，不留僵尸态。"""
+        self._host_pending = max(0, self._host_pending - 1)
+        try:
+            self._split_area().set_restarting(session_key, False)
+        except Exception:  # noqa: BLE001 右栏中间态缺失不该盖掉失败提示
+            pass
+        self.app.bell()
+
+    def _on_restart_hosted(
+        self, request, name: str, old_name: str, session_key: str, title: str,
+    ) -> None:
+        """后台重启成功收尾（主线程）：旧画面已由占位保住，这里只换绑。
+
+        与 `_on_embed_hosted` 的区别：重启是同会话原地恢复，不插占位卡、
+        不改分屏组合、右栏格子不动，只把格子从旧 tmux 名改绑到新名。
+        同名复用时（旧会话没死透）`name == old_name`，退化成普通聚焦。"""
+        import corral
+
+        self._host_pending = max(0, self._host_pending - 1)
+        area = self._split_area()
+        # 旧进程已死：清掉它的残留画面与屏缓存，新帧到来前格子是空白底，
+        # 不再闪回旧会话的静止帧。
+        pane = self._find_embed_pane(session_key)
+        if pane is not None:
+            try:
+                pane.clear_stale_screen(old_name)
+            except Exception:  # noqa: BLE001 清画面失败不该拦住换绑
+                pass
+        current = self.store.find_session(session_key) or request.session
+        marked = self.store.mark_hosted(session_key, name)
+        current = marked or current
+        autofocus = self._can_autofocus()
+        if name != old_name:
+            # 旧 tmux 名已死：右栏还有格子绑着它，先改绑再聚焦。
+            try:
+                area.rebind_keepalive(old_name, name)
+            except Exception:  # noqa: BLE001 改绑失败则退回整组重摆
+                pass
+        self._show_session_group(session_key, focus_pane=autofocus)
+        self._persist_split_composition()
+        self._begin_attention_read(corral.session_key(current))
+        self.call_next(self._rebuild_list, session_key)
+        # 托管刚成功：pid 快照变化让下一次签名必穿，全量重扫（秒级）会和
+        # 首帧抓取抢 GIL。退避一轮，让首帧先上屏（见刷新循环与
+        # REFRESH_HOST_COOLDOWN；不是拉长间隔，下一轮自然补扫）。
+        try:
+            import time as _time
+
+            self._refresh_cooldown_until = _time.monotonic() + REFRESH_HOST_COOLDOWN
+        except Exception:  # noqa: BLE001 退避失败不该影响重启收尾
+            pass
+        # 换绑/重摆可能把「正在重启…」的标题栏提示盖掉：收尾时清一次占位，
+        # 保证提示不残留。正常路径（格子不动、只换 tmux 名）这里清掉；
+        # 若格子被重建，提示本来就不在新格上，清一次无副作用。
+        try:
+            area.set_restarting(session_key, False)
+        except Exception:  # noqa: BLE001 右栏中间态缺失不该拦住收尾
+            pass
 
     @work
     async def action_kill_keepalive(self) -> None:

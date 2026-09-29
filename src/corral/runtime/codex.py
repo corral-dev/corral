@@ -8,6 +8,8 @@ from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from corral.runtime.base import BaseRuntime, usable_cwd
 from corral.scan import codex as scan_codex
 
+_NO_DAEMON = "--no-daemon"
+
 
 class CodexRuntime(BaseRuntime):
     id = "codex"
@@ -42,7 +44,7 @@ class CodexRuntime(BaseRuntime):
             argv=(
                 self.executable,
                 "resume",
-                "--no-daemon",
+                _NO_DAEMON,
                 *self.auto_approve_args,
                 str(session["id"]),
             ),
@@ -68,6 +70,7 @@ class CodexRuntime(BaseRuntime):
             argv=(
                 self.executable,
                 "fork",
+                _NO_DAEMON,
                 *self.auto_approve_args,
                 str(session["id"]),
             ),
@@ -79,6 +82,7 @@ class CodexRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
+                _NO_DAEMON,
                 *self.auto_approve_args,
                 "--add-dir",
                 history_dir,
@@ -91,7 +95,16 @@ class CodexRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
+                _NO_DAEMON,
                 *self.auto_approve_args,
             ),
             cwd=usable_cwd(cwd),
         )
+
+    def compose_passthrough_argv(self, user_args: tuple[str, ...]) -> tuple[str, ...]:
+        argv = super().compose_passthrough_argv(user_args)
+        if _NO_DAEMON in user_args or any(
+            arg == "--remote" or arg.startswith("--remote=") for arg in user_args
+        ):
+            return argv
+        return (argv[0], _NO_DAEMON, *argv[1:])

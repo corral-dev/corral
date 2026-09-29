@@ -460,6 +460,40 @@ class EmbedPane(Widget):
                 embed.report_theme(channel, osc_report)
         self.refresh()
 
+    def mark_restarting(self) -> None:
+        """重启中热启动：保留旧画面等首帧，禁止退回静态预览闪一下。
+
+        调用方在杀旧进程前先调这里：格子仍绑着旧会话名（旧帧继续展示，
+        不清空 `_grid`），抓帧代次提升让旧回调失效；真正杀掉后调
+        `clear_stale_screen()` 丢掉可能残留的旧画面。新托管挂回同一格时
+        `focus_session` 会再次提升代次并抓新帧，画面无缝替换。"""
+        self._capture_generation += 1
+        self.dead = False
+        self.detail_offset = 0
+        self.history_offset = 0
+        self._clear_resize_capture_hold()
+        self._heal_target = None
+        self._heal_count = 0
+        self._detail_renderer = None
+        self._detail_stick_bottom = False
+        self.invalidate_detail()
+        self._poke.set()
+
+    def clear_stale_screen(self, name: str | None = None) -> None:
+        """旧进程已确认退出：丢掉该会话的残留画面与屏缓存。
+
+        与 `mark_restarting` 配对：前者保住画面，后者只在确认旧进程已死
+        后清掉，避免 kill 超时/失败时格子提前变空白。`name` 省略时清当前格。"""
+        target = name or self.session_name
+        if target:
+            forget_cached_screen(target)
+        if name is None or name == self.session_name:
+            self._capture_generation += 1
+            self._grid = None
+            self._strips = None
+            self._cursor = None
+            self.refresh()
+
     def focus_session(
         self,
         name: str,

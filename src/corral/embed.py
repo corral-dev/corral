@@ -1031,41 +1031,88 @@ class ControlChannel:
         return lines if ok else None
 
     def close(self) -> None:
-        """幂等关闭控制 client，唤醒请求方并完整回收子进程、管道和 reader。"""
+        """幂等关闭控制 client，唤醒请求方并完整回收子进程、管道和 reader。
+
+        `_mark_dead` 必须同步：唤醒等待的同步请求并让后续调用走回退路径；
+        真正的进程回收（terminate/wait/join）可能要等几百毫秒（格子重启时
+        tmux 正在退出），除调用方显式要求同步外，统一丢给 daemon 线程，
+        避免把调用方（重启/关格的事件循环）一起冻住。"""
+        import threading as _threading
+
         with self._close_lock:
             if self._closed:
                 return
             self._closed = True
             self._mark_dead()
+            proc = self._proc
+            reader = self._reader
+        _threading.Thread(
+            target=self._reap_control_process, args=(proc, reader), daemon=True,
+            name="embed-channel-reaper",
+        ).start()
+
+    def close_sync(self) -> None:
+        """同步关闭：标记死亡后在当前线程完成全部回收再返回。
+
+        仅测试与退出兜底用——生产路径（重启/关格/LRU 淘汰）在事件循环上
+        调用 `close()`，不能被 terminate/wait 的几百毫秒拖住。"""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._mark_dead()
+            proc = self._proc
+            reader = self._reader
+        self._reap_control_process(proc, reader)
+
+    @staticmethod
+    def _reap_control_process(proc, reader) -> None:
+        """后台回收控制 client 子进程与读线程；永不阻塞调用方。"""
+        import threading as _threading
+
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except OSError:
+            pass
+        if proc.poll() is None:
             try:
-                if self._proc.stdin is not None:
-                    self._proc.stdin.close()
-            except OSError:
-                pass
-            if self._proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
                 try:
-                    self._proc.terminate()
-                    self._proc.wait(timeout=0.5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        self._proc.kill()
-                        self._proc.wait(timeout=0.5)
-                    except (OSError, subprocess.TimeoutExpired):
-                        pass
-                except OSError:
-                    pass
-            else:
-                try:
-                    self._proc.wait(timeout=0)
+                    proc.kill()
+                    proc.wait(timeout=0.5)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-            if threading.current_thread() is not self._reader:
-                self._reader.join(timeout=0.5)
-            try:
-                if self._proc.stdout is not None:
-                    self._proc.stdout.close()
             except OSError:
                 pass
+        else:
+            try:
+                proc.wait(timeout=0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if _threading.current_thread() is not reader:
+            reader.join(timeout=0.5)
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except OSError:
+            pass
+
+    def wait_reaped(self, timeout: float = 2.0) -> bool:
+        """测试用：等到回收线程把子进程与读线程收完（或超时）。"""
+        import time as _time
+
+        deadline = _time.monotonic() + max(0.0, timeout)
+        while _time.monotonic() < deadline:
+            proc_done = self._proc.poll() is not None
+            reader_done = not self._reader.is_alive()
+            stdout_done = getattr(self._proc.stdout, "closed", False)
+            if proc_done and reader_done and stdout_done:
+                return True
+            _time.sleep(0.02)
+        return False
 
 
 _channels: dict[str, ControlChannel] = {}
@@ -1116,8 +1163,11 @@ def _prune_channels(keep: str | None = None) -> None:
     """按最久未用关掉超额通道。调用方必须已持有 `_channel_lock`。
 
     正在显示的格子每轮抓帧都会经 `_active_channel` 刷新使用时间，因此 LRU 天然
-    不会淘汰在用的格子，不需要再单独维护一份「已挂载会话」名单。
+    不会淘汰在用的格子，不需要再单独维护一份「已挂载会话」名单。淘汰只做 pop，
+    真正的进程回收由 `ControlChannel.close` 丢给后台线程——淘汰发生在持锁期间，
+    不能在这里同步等子进程退出，否则会连带堵住抓帧的 `_active_channel`。
     """
+    evicted: list = []
     while len(_channels) > _MAX_CHANNELS:
         candidates = [n for n in _channels if n != keep]
         if not candidates:
@@ -1126,22 +1176,28 @@ def _prune_channels(keep: str | None = None) -> None:
         ch = _channels.pop(oldest, None)
         _channel_used.pop(oldest, None)
         if ch is not None:
-            ch.close()
+            evicted.append(ch)
+    for ch in evicted:
+        ch.close()
 
 
 def close_channel(name: str | None = None) -> None:
-    """关闭控制通道。指定 name 时只关该会话；省略 name 时关闭全部（应用退出兜底）。"""
+    """关闭控制通道。指定 name 时只关该会话；省略 name 时关闭全部（应用退出兜底）。
+
+    关闭本身是幂等的即时标记 + 后台回收（见 `ControlChannel.close`）：
+    锁内只做 pop，不在持锁期间等子进程退出——重启/关格路径在事件循环上
+    调用这里，不能被 terminate/wait 的几百毫秒拖住。"""
     with _channel_lock:
         if name is None:
-            for ch in list(_channels.values()):
-                ch.close()
+            channels = list(_channels.values())
             _channels.clear()
             _channel_used.clear()
-            return
-        ch = _channels.pop(name, None)
-        _channel_used.pop(name, None)
-        if ch is not None:
-            ch.close()
+        else:
+            ch = _channels.pop(name, None)
+            _channel_used.pop(name, None)
+            channels = [ch] if ch is not None else []
+    for ch in channels:
+        ch.close()
 
 
 def _active_channel(name: str) -> ControlChannel | None:

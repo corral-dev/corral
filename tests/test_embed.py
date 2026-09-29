@@ -831,7 +831,9 @@ class ControlChannelProtocolTests(unittest.TestCase):
         self.assertTrue(channel._closed)
         self.assertFalse(channel._pending)
         self.assertIsNone(channel._active_waiter)
-        self.assertFalse(channel._reader.is_alive())
+        # close() 只同步标记死亡并唤醒请求方，子进程回收走后台线程：
+        # 这里等回收线程收完再断言资源（生产路径不能同步等，见 close 文档）。
+        self.assertTrue(channel.wait_reaped())
         self.assertTrue(process.waited)
         self.assertTrue(process.stdin.closed)
         self.assertTrue(process.stdout.closed)
@@ -870,7 +872,8 @@ class ControlChannelProtocolTests(unittest.TestCase):
         self.assertEqual(results, {"first": None, "second": None})
         self.assertFalse(channel._pending)
         self.assertIsNone(channel._active_waiter)
-        self.assertFalse(channel._reader.is_alive())
+        # 回收走后台线程：等收完再断言资源（见上条用例注释）。
+        self.assertTrue(channel.wait_reaped())
         self.assertIsNotNone(process.poll())
         self.assertTrue(process.stdin.closed)
         self.assertTrue(process.stdout.closed)
@@ -1239,7 +1242,8 @@ class ControlChannelIntegrationTests(unittest.TestCase):
         ch.close()
         ch.close()  # 幂等关闭不能再次操作已回收资源或抛异常
 
-        self.assertIsNotNone(process.poll(), "真实 tmux 控制 client 必须已经 wait 回收")
+        # 回收走后台线程：等收完再断言资源（见协议用例注释）。
+        self.assertTrue(ch.wait_reaped(), "真实 tmux 控制 client 必须已经 wait 回收")
         self.assertFalse(reader.is_alive())
         self.assertTrue(process.stdin.closed)
         self.assertTrue(process.stdout.closed)
