@@ -94,10 +94,9 @@
   running (subtle gutter dot), waiting on owner (amber), failed (red), done (green text +
   green check, locked; click opens result popover with summary and a link to the session).
 - Done text is read-only. New text written beside it is simply new input for X.
-- **Deleting never removes text**: once text has been sent to X, delete/backspace/overwrite
-  turns it into strikethrough (overwriting = old text struck + new text inserted). Text
-  still inside its settle window (never seen by X) can be truly deleted, so ordinary typo
-  fixing stays normal.
+- **Deleting never removes text**, whether or not X has seen it: delete, backspace and
+  overwrite always turn the text into strikethrough (overwriting = old text struck + new
+  text inserted). There is no true deletion anywhere in the editor.
 - **X's questions are text in the document**, inserted near the related idea in a distinct
   agent style. The owner answers by writing anywhere nearby; X reads the answer on its next
   round. A top-bar count and a keyboard jump go to the next unanswered X question. Y's
@@ -126,8 +125,8 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (X j
 - **Anchors follow text** through typing, moves, cut/paste, merges and undo/redo. Identical
   text removed and re-inserted within one settle window is reported to X as a move.
 - **Undo/redo** changes text only; it never undoes a dispatch or unlocks done text.
-- **Strikethrough, not deletion**, for any text X has seen (§4); the change sent to X says
-  which text was struck.
+- **Strikethrough, not deletion**, for all text (§4); the change sent to X says which text
+  was struck. Whether struck text is a typo fix or a withdrawn idea is X's judgement.
 - **Completion marking**: X names the words to mark; the system verifies they exist in the
   current text and otherwise uses the task's stored anchor range. It never guesses a span.
   A span shared by several tasks turns green only when all of them are done.
@@ -182,8 +181,8 @@ Later decisions (same day): requirements 11–14 — agentic judgement by X, str
 instead of deletion, questions as agent-written text in the document, phone push for
 questions.
 
-Design decisions made by the agent for veto: truly deleting text still inside its settle
-window; overwrite = strike old + insert new.
+Strikethrough applies to all deletions, including text X has never seen (owner, same day);
+overwrite = strike old + insert new (owner-approved).
 
 ## 9. References
 
