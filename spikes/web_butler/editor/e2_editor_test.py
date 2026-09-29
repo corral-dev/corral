@@ -114,9 +114,10 @@ async def main() -> int:
             results.append({"check": name, "ok": bool(ok), "detail": detail})
             print(("PASS " if ok else "FAIL ") + name + "  " + json.dumps(detail, ensure_ascii=False)[:300])
 
-        # T1 backspace x3 strikes, never removes
+        # T1 backspace x3 on text X has seen strikes, never removes
         await reset()
         await p.type("hello")
+        await p.js("butler.markSeen(view); true")
         for _ in range(3):
             await p.key("Backspace")
         s = await state()
@@ -171,6 +172,7 @@ async def main() -> int:
         await p.ime(["n", "ni", "nih", "niha", "nihao"], "你好")
         s1 = await state()
         await p.ime(["s", "sh", "shi"], "世")
+        await p.js("butler.markSeen(view); true")
         await p.key("Backspace")
         s = await state()
         check("T7 IME commit then backspace", s1["md"] == "你好" and s["md"] == "你好~~世~~",
@@ -242,6 +244,63 @@ async def main() -> int:
                          ".getBoundingClientRect().right})")
         check("T13 done click keeps caret and anchors to final fragment",
               pop["head"] == before and pop["visible"] and pop["left"] > pop["last"], pop)
+
+        # T15 text X has not seen is deleted outright
+        await reset()
+        await p.type("draft")
+        await p.key("Backspace")
+        await p.key("Backspace")
+        s = await state()
+        check("T15 unseen text deletes for real", s["md"] == "dra" and not s["strikes"], s)
+
+        # T16 a selection over seen + unseen text: seen part struck, unseen part removed
+        await reset("seen ")
+        await p.type("new")
+        await p.js("view.dispatch({selection:{anchor:0, head:view.state.doc.length}}); true")
+        await p.key("Backspace")
+        s = await state()
+        check("T16 mixed selection splits", s["md"] == "~~seen ~~", s)
+
+        # T17 characters typed inside a seen sentence are unseen until submitted
+        await reset("abc")
+        await p.js("view.dispatch({selection:{anchor:1}}); true")
+        await p.type("XY")
+        for _ in range(3):
+            await p.key("Backspace")
+        s = await state()
+        check("T17 new chars inside seen text delete, seen chars strike", s["md"] == "~~a~~bc", s)
+
+        # T18 undo brings back text that was deleted outright
+        await reset()
+        await p.type("hello")
+        await asyncio.sleep(0.6)  # edits closer than ~0.5 s share one undo step
+        await p.key("Backspace")
+        s1 = await state()
+        await p.key("z", modifiers=4, commands=["undo"])
+        s = await state()
+        check("T18 undo restores an unseen deletion", s1["md"] == "hell" and s["md"] == "hello",
+              {"after_bs": s1, "after_undo": s})
+
+        # T19 overwriting unseen text replaces it; overwriting seen text strikes it
+        await reset("old")
+        await p.type(" tmp")
+        await p.js("view.dispatch({selection:{anchor:3, head:view.state.doc.length}}); true")
+        await p.type(" new")
+        s1 = await state()
+        await p.js("view.dispatch({selection:{anchor:0, head:3}}); true")
+        await p.type("OLD")
+        s = await state()
+        check("T19 overwrite: unseen replaced, seen struck", s1["md"] == "old new" and s["md"] == "~~old~~OLD new",
+              {"unseen": s1, "seen": s})
+
+        # T20 backspace right after struck text skips the whole struck run
+        await reset("keep ~~gone~~")
+        await p.key("Backspace")
+        s = await state()
+        check("T20 backspace skips an already-struck run", s["head"] == 5 and s["md"] == "keep ~~gone~~", s)
+        await p.key("Backspace")
+        s = await state()
+        check("T20b next backspace strikes before the run", s["md"] == "keep~~ gone~~", s)
 
         # T14 Option+Down (move line) is not bound: it would strike the line and copy it elsewhere
         await reset("first\nsecond")

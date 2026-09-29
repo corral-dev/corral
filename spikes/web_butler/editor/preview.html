@@ -125,6 +125,10 @@
     .note[data-kind="stopped"] .dot { background: var(--faint); }
     .note[data-kind="done"] .dot { background: var(--done); }
     .note[data-kind="done"] .note-title { color: var(--done); }
+    .note[data-kind="pending"] { cursor: default; }
+    .note[data-kind="pending"]:hover { background: none; }
+    .note[data-kind="pending"] .dot { background: transparent; border: 1.5px dashed var(--x); animation: pulse 1.1s ease-in-out infinite; }
+    .note[data-kind="pending"] .note-title { color: var(--x); font-weight: 500; }
     .note.flash { animation: flash 1.2s ease-out; }
     @keyframes flash { 0% { background: var(--running-bg); } 100% { background: transparent; } }
 

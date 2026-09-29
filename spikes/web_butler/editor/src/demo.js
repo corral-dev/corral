@@ -66,6 +66,12 @@ function settle(all) {
   }
   dirty = keep;
   if (!lines.size) { renderStatus(); return; }
+  // these lines are now submitted to X: from here on, deleting them strikes instead of erasing
+  for (const n of lines) {
+    if (n > view.state.doc.lines) continue;
+    const line = view.state.doc.line(n);
+    if (line.to > line.from) B.markSeen(view, line.from, line.to);
+  }
   busy++;
   renderStatus();
   // X reads for a moment, like a real round
@@ -111,8 +117,8 @@ function readLine(line) {
     .filter(([f, to]) => to - f > 0 && !anchors.some((a) => f < a.to && to > a.from));
   for (const [f, to] of outside) {
     const text = view.state.sliceDoc(f, to);
-    const answered = [...text].length <= 40 ? answerFor(line) : null; // a long line is a new idea, not a reply
-    if (answered) { resolveQuestion(answered, text, f, to); continue; }
+    const answered = answerFor(line);
+    if (answered && isReply(answered, text)) { resolveQuestion(answered, text, f, to); continue; }
     if (!settled(text)) continue;
     const project = findProject(text);
     if (!project) { ask(line, f, to, text, "project"); continue; }
@@ -215,6 +221,17 @@ function answerFor(line) {
   return null;
 }
 
+function isReply(q, text) {
+  // a reply is little more than the missing fact; anything longer is a new idea
+  const words = (t) => t.trim().split(/[\s,.;:，。；：]+/u).filter(Boolean);
+  if (q.kind === "component") return /web|网页|backend|后端|server|服务/i.test(text) && [...text].length <= 60;
+  const project = findProject(text);
+  if (!project) return false;
+  const FILLER = /\b(it|it's|its|is|the|this|that|that's|one|for|in|on|of|a|an|app|project|please|i|mean)\b|是|的|这个|那个|项目/giu;
+  const rest = text.replace(new RegExp(project, "i"), "").replace(FILLER, " ");
+  return words(rest).length <= 3 && [...rest.replace(/\s/g, "")].length <= 16;
+}
+
 function resolveQuestion(q, answer, answerFrom, answerTo) {
   const project = q.kind === "component" ? q.project : findProject(answer);
   const component = project && componentOf(project, `${q.ideaText} ${answer}`);
@@ -245,6 +262,16 @@ function renderNotes() {
     const q = questions[a.id];
     if (q && q.open) items.push({ key: a.id, pos: a.from, kind: "question", question: q });
   }
+  // lines X has not read yet get a faint dot where their status will appear
+  const taken = new Set(items.map((it) => view.state.doc.lineAt(Math.min(it.pos, view.state.doc.length)).number));
+  const pending = new Set();
+  for (const r of dirty) {
+    const line = view.state.doc.lineAt(Math.min(r.from, view.state.doc.length));
+    if (taken.has(line.number) || pending.has(line.number) || /^\s*#/.test(line.text)) continue;
+    if ([...line.text.trim()].length < 12) continue;
+    pending.add(line.number);
+    items.push({ key: `pending-${line.number}`, pos: line.from, kind: "pending" });
+  }
   items.sort((x, y) => x.pos - y.pos);
   const seen = new Set();
   let floor = 0;
@@ -257,7 +284,7 @@ function renderNotes() {
       el.type = "button";
       el.className = "note";
       el.dataset.note = it.key;
-      el.addEventListener("click", () => noteClicked(el.dataset.note));
+      el.addEventListener("click", () => { if (!el.dataset.note.startsWith("pending-")) noteClicked(el.dataset.note); });
       el.addEventListener("mouseenter", () => highlight(el.dataset.note, true));
       el.addEventListener("mouseleave", () => highlight(el.dataset.note, false));
       notes.append(el);
@@ -275,7 +302,10 @@ function fillNote(el, it) {
   const kind = it.kind;
   el.dataset.kind = kind;
   let title, meta;
-  if (kind === "question") {
+  if (kind === "pending") {
+    title = busy > 0 ? "X is reading" : "X will read this";
+    meta = "";
+  } else if (kind === "question") {
     title = "Waiting for your answer";
     meta = "Reply on the next line";
   } else {
@@ -376,6 +406,7 @@ function renderStatus() {
   const running = Object.values(tasks).filter((t) => t.state === "running" || t.state === "queued").length;
   $("#working").hidden = running === 0;
   $("#working").textContent = `${running} working`;
+  requestAnimationFrame(renderNotes);
 }
 let jump = 0;
 $("#questions").addEventListener("click", () => {
@@ -405,21 +436,25 @@ function ago(t) {
 }
 
 // ---------------------------------------------------------------- persistence
-let saveTimer = null;
+let saveTimer = null, resetting = false;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+  if (resetting) return;
+  saveTimer = setTimeout(saveNow, 300);
+}
+function saveNow() {
+  {
     const done = {};
     for (const [id] of Object.entries(tasks)) if (B.result(id)) done[id] = B.result(id);
     localStorage.setItem(STORE, JSON.stringify({
       md: B.toMarkdown(view), anchors: B.anchors(view), tasks, questions, done, seq,
-      agents: B.agentTexts(view).map((a) => a.id),
+      agents: B.agentTexts(view).map((a) => a.id), seen: B.seen(view),
     }));
-  }, 300);
+  }
 }
 
 function restore(saved) {
-  B.load(view, saved.md); // questions come back numbered q1..qn in document order
+  B.load(view, saved.md, saved.seen); // questions come back numbered q1..qn in document order
   B.agentTexts(view).forEach((a, i) => {
     const q = saved.questions[(saved.agents || [])[i]];
     if (q) questions[a.id] = { ...q, id: a.id };
@@ -481,10 +516,19 @@ function seed() {
   view.dispatch({ selection: { anchor: end } });
 }
 
-$("#reset").addEventListener("click", () => { localStorage.removeItem(STORE); location.reload(); });
+$("#reset").addEventListener("click", () => {
+  resetting = true;
+  clearTimeout(saveTimer);
+  localStorage.removeItem(STORE);
+  location.reload();
+});
+window.addEventListener("pagehide", () => { if (!resetting && saveTimer) { clearTimeout(saveTimer); saveTimer = null; saveNow(); } });
 
 const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)); } catch { return null; } })();
-if (saved && saved.md) restore(saved); else seed();
+if (saved && saved.md) {
+  restore(saved);
+  view.dispatch({ selection: { anchor: view.state.doc.length } }); // keep writing where the document ends
+} else seed();
 renderAll();
 new ResizeObserver(() => renderNotes()).observe($("#ed"));
 setInterval(renderNotes, 30_000);

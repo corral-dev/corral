@@ -151,7 +151,58 @@ function intersects(set, from, to) {
   return hit;
 }
 
-// ---- the core rule: user deletions become strikethrough ---------------------------------
+// ---- what X has seen -------------------------------------------------------------------------
+// Sorted, non-overlapping [from, to) ranges of text already submitted to X. Characters the
+// owner types are unseen until the next round submits them, even inside a seen sentence.
+const markSeen = StateEffect.define(); // { from, to }
+function addRange(ranges, from, to) {
+  const out = [];
+  for (const [f, t] of ranges) {
+    if (t < from || f > to) out.push([f, t]);
+    else { from = Math.min(from, f); to = Math.max(to, t); }
+  }
+  out.push([from, to]);
+  return out.sort((a, b) => a[0] - b[0]);
+}
+function subtractRange(ranges, from, to) {
+  const out = [];
+  for (const [f, t] of ranges) {
+    if (t <= from || f >= to) { out.push([f, t]); continue; }
+    if (f < from) out.push([f, from]);
+    if (t > to) out.push([to, t]);
+  }
+  return out;
+}
+const seenField = StateField.define({
+  create: () => [],
+  update(ranges, tr) {
+    if (tr.effects.some((e) => e.is(resetAll))) ranges = [];
+    else if (tr.docChanged) {
+      ranges = ranges.map(([f, t]) => [tr.changes.mapPos(f, 1), tr.changes.mapPos(t, -1)]).filter(([f, t]) => t > f);
+      if (!tr.annotation(system)) {
+        tr.changes.iterChangedRanges((_fa, _ta, fb, tb) => { if (tb > fb) ranges = subtractRange(ranges, fb, tb); });
+      }
+    }
+    for (const e of tr.effects) if (e.is(markSeen) && e.value.to > e.value.from) ranges = addRange(ranges, e.value.from, e.value.to);
+    return ranges;
+  },
+});
+// Split [from, to) into [from, to, seen] pieces.
+function seenPieces(ranges, from, to) {
+  const out = [];
+  let pos = from;
+  for (const [f, t] of ranges) {
+    if (t <= pos || f >= to) continue;
+    if (f > pos) out.push([pos, f, false]);
+    out.push([Math.max(f, pos), Math.min(t, to), true]);
+    pos = Math.min(t, to);
+  }
+  if (pos < to) out.push([pos, to, false]);
+  return out;
+}
+
+// ---- the core rule: deleting seen text becomes strikethrough -------------------------------
+// Text X has not seen yet is deleted normally; text X has seen is struck instead.
 // Composition (IME) may rewrite its own in-progress text; those deletions are exempt.
 const composeRange = StateField.define({
   create: () => null,
@@ -168,33 +219,50 @@ const strikeInsteadOfDelete = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || tr.annotation(system) || tr.isUserEvent("undo") || tr.isUserEvent("redo")) return tr;
   const start = tr.startState;
   const done = start.field(doneField);
+  const seen = start.field(seenField);
   const compose = tr.isUserEvent("input.type.compose") ? start.field(composeRange) : null;
+  const isExempt = (fromA, toA) => compose && fromA >= compose.from && toA <= compose.to;
   let blocked = false, needsRewrite = false;
   tr.changes.iterChanges((fromA, toA) => {
     if (toA > fromA && intersects(done, fromA, toA)) blocked = true;
-    if (toA > fromA && !(compose && fromA >= compose.from && toA <= compose.to)) needsRewrite = true;
+    if (toA > fromA && !isExempt(fromA, toA) && seenPieces(seen, fromA, toA).some((x) => x[2])) needsRewrite = true;
   });
   if (blocked) return [];
-  if (!needsRewrite) return tr;
+  if (!needsRewrite) return tr; // nothing X has seen is being removed: an ordinary edit
 
   const specs = [];
   const struck = [];
   let minFrom = Infinity, maxTo = -Infinity;
   tr.changes.iterChanges((fromA, toA, _fb, _tb, inserted) => {
     const text = inserted.toString();
-    const exempt = compose && fromA >= compose.from && toA <= compose.to;
     minFrom = Math.min(minFrom, fromA); maxTo = Math.max(maxTo, toA);
-    if (toA > fromA && !exempt) {
-      if (text) specs.push({ from: toA, insert: text }); // keep the old text; new text goes after it
-      if (!covered(start.field(strikeField), fromA, toA)) struck.push([fromA, toA]);
-    } else {
-      specs.push({ from: fromA, to: toA, insert: text });
-    }
+    if (toA === fromA || isExempt(fromA, toA)) { specs.push({ from: fromA, to: toA, insert: text }); return; }
+    const pieces = seenPieces(seen, fromA, toA);
+    pieces.forEach(([f, t, isSeen], i) => {
+      const last = i === pieces.length - 1;
+      if (isSeen) {
+        if (!covered(start.field(strikeField), f, t)) struck.push([f, t]);
+        if (last && text) specs.push({ from: t, insert: text }); // keep the old text; new text goes after it
+      } else {
+        specs.push({ from: f, to: t, insert: last ? text : "" }); // unseen text simply goes away
+      }
+    });
   });
   const changes = ChangeSet.of(specs, start.doc.length);
   const effects = struck.map(([f, t]) => addStrike.of({ from: changes.mapPos(f, 1), to: changes.mapPos(t, -1) }));
-  // caret: backspace lands left of the struck text; delete/cut/typing/paste land after it
-  const head = tr.isUserEvent("delete.backward") ? changes.mapPos(minFrom, -1) : changes.mapPos(maxTo, 1);
+  // caret: backspace lands left of the struck text; delete/cut/typing/paste land after it.
+  // A run that was already struck is skipped whole, so held backspace keeps moving.
+  const runs = merged(start.field(strikeField), start.doc.length).concat(struck).sort((a, b) => a[0] - b[0]);
+  const backward = tr.isUserEvent("delete.backward");
+  let pos = backward ? minFrom : maxTo;
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const [f, t] of runs) {
+      if (backward && f < pos && t >= pos) { pos = f; moved = true; }
+      if (!backward && tr.isUserEvent("delete.forward") && f <= pos && t > pos) { pos = t; moved = true; }
+    }
+  }
+  const head = changes.mapPos(pos, backward ? -1 : 1);
   return { changes, effects, selection: { anchor: head }, userEvent: tr.annotation(Transaction.userEvent), scrollIntoView: true };
 });
 
@@ -298,7 +366,7 @@ function create(parent, projects, initial = "", options = {}) {
       doc: "",
       extensions: [
         history(), keymap.of([...editorKeys, ...historyKeymap]), markdown(), markdownLook, EditorView.lineWrapping,
-        composeRange, strikeField, agentField, doneField, anchorField, taskMarks, ...(options.extensions || []),
+        composeRange, seenField, strikeField, agentField, doneField, anchorField, taskMarks, ...(options.extensions || []),
         strikeInsteadOfDelete, strikeUndo, lockDone, pasteMove, projectHighlighter(projects),
         EditorView.updateListener.of((u) => { for (const tr of u.transactions) if (tr.docChanged) log.push({ t: performance.now(), ev: tr.annotation(Transaction.userEvent) || (tr.annotation(system) ? "system" : "") }); }),
         EditorView.domEventHandlers({
@@ -350,12 +418,13 @@ function create(parent, projects, initial = "", options = {}) {
   return view;
 }
 const results = {};
-function load(view, md) {
+function load(view, md, seen = null) {
   const { text, strikes, agents } = fromMarkdown(md);
   view.dispatch({ effects: resetAll.of(null), annotations: system.of(true) });
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: system.of(true) });
   view.dispatch({
-    effects: [...strikes.map(([f, t]) => addStrike.of({ from: f, to: t })), ...agents.map(([f, t], i) => addAgent.of({ from: f, to: t, id: `q${i + 1}` }))],
+    effects: [...strikes.map(([f, t]) => addStrike.of({ from: f, to: t })), ...agents.map(([f, t], i) => addAgent.of({ from: f, to: t, id: `q${i + 1}` })),
+      ...(seen || [[0, text.length]]).map(([f, t]) => markSeen.of({ from: f, to: t }))],
     annotations: system.of(true),
   });
 }
@@ -365,7 +434,11 @@ window.butler = {
   text: (view) => view.state.doc.toString(),
   strikes: (view) => merged(view.state.field(strikeField), view.state.doc.length).map(([f, t]) => [f, t, view.state.sliceDoc(f, t)]),
   insertAgentText(view, pos, text, id) {
-    view.dispatch({ changes: { from: pos, insert: text }, effects: addAgent.of({ from: pos, to: pos + text.length, id }), annotations: system.of(true) });
+    view.dispatch({
+      changes: { from: pos, insert: text },
+      effects: [addAgent.of({ from: pos, to: pos + text.length, id }), markSeen.of({ from: pos, to: pos + text.length })],
+      annotations: system.of(true),
+    });
   },
   agentTexts(view) {
     const o = [];
@@ -374,6 +447,10 @@ window.butler = {
     });
     return o;
   },
+  markSeen(view, from = 0, to = view.state.doc.length) {
+    view.dispatch({ effects: markSeen.of({ from, to }), annotations: system.of(true) });
+  },
+  seen: (view) => view.state.field(seenField).map((r) => [...r]),
   setTaskState(view, id, state) { view.dispatch({ effects: setTaskState.of({ id, state }), annotations: system.of(true) }); },
   result: (id) => results[id],
   markDone(view, from, to, id, result) {
