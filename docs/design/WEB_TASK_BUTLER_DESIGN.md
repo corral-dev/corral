@@ -1,9 +1,9 @@
 # Web Task Butler (draft-driven dispatch) — requirements and analysis
 
-> Status: **analysis draft, awaiting owner decisions** (2026-09-29). No product code yet.
+> Status: **analysis draft; core decisions made, edge-case behaviour open** (2026-09-29). No product code yet.
 > Read before planning, implementing, or reviewing the local web idea editor, the
 > dispatcher agent (X), worker agents (Y), or Corral changes made for them.
-> Items marked *Proposed* are unadopted suggestions; §8 lists decisions still open.
+> Items marked *Proposed* are unadopted suggestions; §8 records owner decisions.
 
 ## 1. Owner requirements (2026-09-29)
 
@@ -136,18 +136,22 @@ Editor experience
 
 ## 7. Risks
 
-- Same-project parallel Y share one working tree (workspace rule: no branches/worktrees).
 - Steering interrupts a running Y; X must choose steer vs. queue vs. cancel-and-restart.
 - X token cost grows with edit frequency; block settling and merging bound it.
 - Project-name false positives; ambiguity must be resolvable by the owner.
 
-## 8. Open decisions
+## 8. Owner decisions (2026-09-29)
 
-1. Same-project parallelism: serialize per project (*Proposed default*) or allow parallel in
-   one working tree.
-2. Assistant for X and default assistant for Y; per-idea override syntax.
-3. Auto-dispatch after countdown (*Proposed*) vs. explicit confirm per idea.
-4. One draft document vs. several.
+1. **Parallel within one project is allowed.** Independent tasks run in parallel even in the
+   same project and working tree; no file-conflict handling or per-project serialization.
+   X still orders tasks only for real (semantic) dependencies.
+2. **Auto-dispatch.** Ideas are dispatched without a per-idea confirmation; the settle window
+   in §5 only prevents dispatching half-written text.
+3. **Assistant choice.** If the idea names an assistant, use it; otherwise X chooses. X
+   itself runs on whichever assistant runtime is available — no fixed requirement.
+4. **One draft document** per owner.
+
+Still open: exact behaviour for every §6 case.
 
 ## 9. References
 
