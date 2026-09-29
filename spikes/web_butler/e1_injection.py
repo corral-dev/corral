@@ -58,8 +58,6 @@ TIMEOUT = 300.0
 def _project(runtime_id: str) -> Path:
     root = Path("/tmp/butler-e1") / f"{runtime_id}-{int(time.time())}"
     root.mkdir(parents=True)
-    # Keep experiment sessions out of the user's Corral lists (SessKit CONTRACT "Listing modes").
-    (root.parent / ".sesskit-ignore").touch()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "README.md").write_text("disposable project for Corral web butler experiment E1\n")
     return root
@@ -69,6 +67,7 @@ def _project(runtime_id: str) -> Path:
 TRUST_GATES = (
     ("Yes, I trust this folder", ("Down", "Enter")),  # Claude Code: default is "No, exit"
     ("1. Trust and continue", ("Enter",)),  # Codex: default is trust
+    ("Trust this workspace", ("Enter",)),  # Cursor (assumed wording; verify)
 )
 
 
@@ -124,7 +123,7 @@ def run(runtime_id: str, keep: bool) -> dict:
         result["first_sent_s"] = round(time.monotonic() - t_start, 1)
         time.sleep(STEER_DELAY)
         try:
-            hub.send_text(key, STEER)
+            hub.send_turn(key, STEER, ready_timeout=30)
             result["steer_send"] = "ok"
         except Exception as exc:
             result["steer_send"] = f"{type(exc).__name__}: {exc}"
@@ -148,6 +147,14 @@ def run(runtime_id: str, keep: bool) -> dict:
                 if comp and f"completion:{comp}" not in seen:
                     seen[f"completion:{comp}"] = elapsed
                 result["session_id"] = session.get("id")
+                hist = str(session.get("path") or "")
+                result["history_path"] = hist
+                if hist and "steer_in_raw_history" not in seen:
+                    try:
+                        if "steer.txt" in Path(hist).read_text(errors="replace"):
+                            seen["steer_in_raw_history"] = elapsed
+                    except OSError:
+                        pass
                 result["attention"] = session.get("attention_kind")
             for fname in ("first.txt", "steer.txt"):
                 if f"file:{fname}" not in seen and (cwd / fname).exists():
@@ -189,5 +196,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     os.environ.setdefault("CORRAL_NO_UPDATE_CHECK", "1")
-    os.environ.setdefault("SESSKIT_INCLUDE_EPHEMERAL", "1")  # this process must still see its own sessions
     raise SystemExit(main())
