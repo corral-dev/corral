@@ -97,42 +97,85 @@
 - New ideas get a short visible dispatch countdown; continued editing restarts it, so
   half-written ideas are not dispatched.
 
-## 6. Edge cases that must each have a decided behavior
+## 6. Edge-case behavior
 
-The idea is simple to state; its quality is decided by these cases. Each needs an explicit
-behavior and an acceptance check before implementation.
+Status: behaviors below are **decided by the design owner (agent) 2026-09-29** unless marked
+*Owner to decide*; each still needs an acceptance check. Governing principle: the owner only
+writes; the system never asks when a safe default exists, and asks only for real decisions.
 
 Text ↔ task mapping
-- One sentence yields several tasks; several scattered sentences form one task.
-- A later sentence amends an earlier idea ("the thing above should also…").
-- Owner moves, cuts/pastes, or merges paragraphs: anchors must follow, not re-dispatch.
-- Undo/redo across a dispatch or a lock.
-- Owner deletes text whose task is running: cancel, ask, or keep? (Deletion may be tidying.)
-- Owner edits text whose task is waiting-to-dispatch vs. running vs. done (done is locked).
-- The same idea written twice; an idea that is already done by an earlier task.
-- Completion quote chosen by X no longer exists verbatim (text drifted): fall back and verify.
+- **One sentence, several tasks**: each task anchors to its own sub-phrase; if the words
+  cannot be split, tasks share the span. The span turns green only when all its tasks are
+  done; until then its popover shows per-task progress.
+- **Several scattered sentences, one task**: the task holds several anchors. On completion
+  all turn green; the check icon sits on the anchor X names as primary.
+- **Later sentence amends an earlier idea**: treated as a change to the existing task (update
+  if not started, steer if running, new linked follow-up task if done). The new sentence
+  becomes an extra anchor of that task.
+- **Move / cut-paste / merge paragraphs**: anchors follow the text. Identical text removed
+  and re-inserted within one settle window is a move, reported to X as "moved", never as
+  delete + new idea; no re-dispatch.
+- **Undo/redo** changes text only; it never undoes a dispatch. Undoing an idea's text is a
+  deletion; redoing it re-attaches the anchor. Undo steps that would alter locked text skip.
+- **Deleting text before dispatch** (inside the settle window): the pending idea is dropped
+  silently.
+- **Deleting text of a running task**: *Owner to decide* (§8).
+- **Editing text**: waiting-to-dispatch → countdown restarts; dispatched but blocked by a
+  dependency → task updated silently; running → X steers Y, or stops and restarts Y when the
+  direction reverses (X's call, never asks the owner); done → locked.
+- **Same idea written twice**: the second text is linked to the existing task, no duplicate
+  dispatch. If that task is already done: *Owner to decide* (§8).
+- **Completion quote drifted**: the system checks X's quote against the current text; if it
+  is gone, the task's stored anchor range is used as-is. Never guesses a different span.
 
 Project names
-- Ambiguous or common-word names, Chinese vs. English references, no project mentioned,
-  several projects in one idea, a project that does not exist yet (new repository).
+- **Highlight is a hint, not a decision.** Whole-word matches only; names of ≤4 letters or
+  common words match case-sensitively. Clicking a highlight offers "not a project"; that
+  choice is remembered for the phrase. X decides the actual project independently.
+- **Aliases** (e.g. a Chinese nickname) are learned when X resolves one and the owner has not
+  rejected it; learned aliases highlight too.
+- **No project mentioned**: X infers from nearby text and recent ideas; if not confident it
+  asks with a card listing the likely candidates.
+- **Several projects in one idea**: split into per-project tasks, with a dependency only if
+  one really needs the other.
+- **Project does not exist yet**: *Owner to decide* (§8).
 
 Dispatch and dependencies
-- A dependency discovered after both tasks already started.
-- A failed prerequisite: dependents stay blocked and surface to the owner.
-- Y quota exhausted / assistant unavailable / machine asleep; Corral restarted mid-task.
-- Y finishes a turn but the task is not actually complete; Y claims done while tests fail.
+- **Dependency found after both started**: X tells the dependent Y to stop at a safe point
+  and wait; when the prerequisite is done, the same Y session is resumed with the new facts.
+- **Failure**: X retries once, on another available assistant if the cause is the assistant.
+  A second failure marks the text red with a card: retry / change approach / drop.
+  Dependents stay blocked and say which prerequisite they wait for.
+- **Quota exhausted / assistant unavailable**: X continues the task on another available
+  assistant through Corral's cross-assistant handoff, without asking.
+- **Machine asleep / Corral or web service restarted**: the ledger is persisted; on start
+  the system reconciles ledger with live sessions and resumes. Nothing is re-dispatched
+  twice.
+- **"Done" means accepted, not a finished turn**: Y must end with a report (what changed,
+  where, how verified). X accepts it or sends Y back; missing or failed verification is not
+  done.
 
 Questions
-- Several open questions at once; a question whose text anchor was edited or deleted.
-- Owner answers in the draft text instead of the card; owner ignores a question.
-- Y asks a choice question that X can answer from the draft vs. a real owner decision.
+- **Several open questions**: each card sits under its own text; the top counter shows the
+  total; blocking questions first when jumping.
+- **Anchor edited**: the card stays; X re-reads the edit and closes the card if the edit
+  answered it. **Owner answers in the draft instead of the card**: same rule.
+- **Owner ignores a question**: that task waits; everything else continues; no nagging in
+  the editor. Phone push: *Owner to decide* (§8).
+- **Y's questions** go to X first; X answers from the draft and records its answer in the
+  task history; only real decisions reach the owner.
 
 Editor experience
-- Typing is never blocked or re-laid-out by background updates (cursor stability).
-- Decorations arriving while the owner is typing in the same block.
-- Result popover content: what changed, where, verification evidence, open the session.
-- Reopening done text, and what happens to its task history.
-- Offline / web service restarted: draft never lost; the page reconnects cleanly.
+- **Typing always wins**: background updates never move the cursor or re-layout the block
+  being edited; decorations for that block wait until it settles.
+- **Result popover**: plain-language summary, project, verification evidence, assistant
+  used, time taken, "open session in Corral", and "reopen".
+- **Reopen**: unlocks the text and returns it to normal color; task history is kept; later
+  edits become a linked follow-up task.
+- **Never lose the draft**: every change is saved locally in the page and to the service;
+  after a restart the page reconnects and reconciles by version. Only one tab edits; other
+  tabs are read-only with a "edit here" takeover.
+- **Y sessions** appear in Corral's normal session list, grouped under the butler.
 
 ## 7. Risks
 
@@ -151,7 +194,11 @@ Editor experience
    itself runs on whichever assistant runtime is available — no fixed requirement.
 4. **One draft document** per owner.
 
-Still open: exact behaviour for every §6 case.
+Still open (§6 *Owner to decide*):
+- Deleting the text of a running task.
+- Writing again an idea whose task is already done.
+- An idea for a project that does not exist yet.
+- Whether questions awaiting the owner also push to the phone.
 
 ## 9. References
 
