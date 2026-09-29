@@ -35,7 +35,10 @@ def _pane_accepts_input(plain: str) -> bool:
     """Finding F2: product readiness only knows the arrow prompt; Claude Code 2.1 shows '❯'."""
     if _product_ready(plain):
         return True
-    return any(line.strip() == "❯" or line.startswith("❯ ") for line in plain.splitlines())
+    if "Trust" in plain and "folder" in plain:
+        return False
+    return any(line.strip() in ("❯", "›") or line.startswith(("❯ ", "› "))
+               for line in plain.splitlines())
 
 
 _sessions._pane_accepts_input = _pane_accepts_input  # experiment-only patch
@@ -65,6 +68,7 @@ def _project(runtime_id: str) -> Path:
 # Startup dialogs seen in practice: (needle in pane text, keys that accept "trust").
 TRUST_GATES = (
     ("Yes, I trust this folder", ("Down", "Enter")),  # Claude Code: default is "No, exit"
+    ("1. Trust and continue", ("Enter",)),  # Codex: default is trust
 )
 
 
