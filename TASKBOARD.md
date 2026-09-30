@@ -29,3 +29,5 @@
 
 | Completion flood repair (implementation owner) | 进行中 | SessKit解析/status/completion_id（跨仓）、CLI消费端pin/push集成/tests/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md | 21:27 | 2026-09-30 21:27 | Native-finality + metadata-invariant id; preserve foreign CI/native rows; reports /tmp/corral-notify-20260930/flood-repair-report.md |
 | 默认关闭命令拦截并还原双机 shim | 发布中 | bootstrap/shim/install/dev-install/tests/MAINTAINER_GUIDE、双机 shell | 17:31 | 2026-09-30 17:37 | 准备发 v0.24.238 |
+
+| Repair mobile new-session project loading | 进行中 | remote/sessions.py projects payload, regression tests, REMOTE_KNOWLEDGE_BASE | 22:22 | 2026-09-30 22:22 | Codex; preserve foreign work; CLI .venv + generic iOS build + iPhone Max acceptance |

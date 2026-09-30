@@ -65,6 +65,27 @@ class SessionHubPayloadTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.hub.stop()
 
+    def test_projects_with_unknown_directory_can_cross_wire(self) -> None:
+        from corral.projects import project_entries
+        from corral.remote import protocol
+
+        entries = project_entries(
+            {"claude": [_session(cwd=""), _session(cwd="/workspace/example")]},
+            scan_filesystem=False,
+        )
+        with mock.patch.object(self.hub.store, "projects", return_value=entries):
+            payload = self.hub.projects()
+        decoded = protocol.loads(protocol.dumps(protocol.response(1, {"projects": payload})))
+        projects = decoded["d"]["projects"]
+        self.assertEqual(len(projects), 2)
+        unknown = next(item for item in projects if not item["path"])
+        self.assertIsInstance(unknown["name"], str)
+        self.assertTrue(unknown["name"])
+        self.assertEqual(unknown["name"], unknown["label"])
+        self.assertEqual(unknown["cwd"], "")
+        known = next(item for item in projects if item["path"])
+        self.assertEqual(known["name"], "example")
+
     def test_session_payload_coerces_id_and_mtime_for_ios_decoder(self) -> None:
         """手机端 id/short_id 按 String、mtime 按 Double 解码；类型错会整表空白。"""
         session = _session(sid=42, short_id=42, mtime="1700000000")

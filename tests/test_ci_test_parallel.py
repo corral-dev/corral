@@ -221,6 +221,36 @@ class CiTestParallelHelpers(unittest.TestCase):
             all(len(w) <= ci_test.GROUP_MAX_CLASSES for w in workers)
         )
 
+    def test_plan_split_honors_arbitrary_n(self) -> None:
+        # N-way regression: the planner must honor any B-proven chunk count,
+        # not just 2. Seven methods into 4 contiguous deterministic chunks.
+        ids = [f"test_ui.Whale.test_{i:02d}" for i in range(7)]
+        id_map = {"test_ui": {"test_ui.Whale": ids}}
+        _, workers, remainder = ci_test._plan_shards(
+            id_map, frozenset({"test_ui.Whale"}),
+            splittable={"test_ui.Whale": 4},
+        )
+        self.assertEqual([len(c) for c in workers], [2, 2, 2, 1])
+        flat = [t for w in workers for t in w]
+        self.assertEqual(sorted(flat), ids)
+        for chunk in workers:
+            self.assertEqual(chunk, sorted(chunk))
+        self.assertEqual(remainder, [])
+        ok, missing, extra = ci_test._audit_coverage(
+            id_map,
+            [self._shard(modules=(f"chunk{i}",), test_ids=tuple(c))
+             for i, c in enumerate(workers)],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+        self.assertEqual(extra, [])
+
+    def test_chunk_ids_caps_at_method_count(self) -> None:
+        ids = ["test_ui.W.test_1", "test_ui.W.test_2"]
+        chunks = ci_test._chunk_ids(ids, 5)
+        self.assertEqual(chunks, [["test_ui.W.test_1"], ["test_ui.W.test_2"]])
+        self.assertEqual(ci_test._chunk_ids(ids, 1), [ids])
+
     def test_plan_splits_heavyweight_class_into_method_chunks(self) -> None:
         ids = [f"test_ui.Whale.test_{i:02d}" for i in range(6)]
         id_map = {"test_ui": {"test_ui.Whale": ids}}

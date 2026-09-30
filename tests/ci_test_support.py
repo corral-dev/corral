@@ -314,10 +314,10 @@ UI_GROUPABLE_CLASSES: frozenset[str] = frozenset(
 #: module import and private resources, running the class's real async
 #: setUp/tearDown and asserts). Filled only after per-class semantic/resource
 #: proof; absent classes are never method-split. Proof:
-#: cloud-speed-isolation-proof.json (permitted_chunks; Navigation 31+31 and
-#: AppTheme 17+17 verified green as separate processes with disjoint ID sets
-#: covering the full class). Timing-sensitive classes are never listed here.
+#: cloud-speed-isolation-proof.json (permitted_chunks; Navigation 16+16+15+15
+#: and AppTheme 9+9+8+8 verified green as separate processes with disjoint ID
+#: sets covering the full class). Timing-sensitive classes are never listed here.
 UI_SPLITTABLE_CLASSES: dict[str, int] = {
-    "test_ui.MainScreenNavigationTests": 2,
-    "test_ui.AppThemeTests": 2,
+    "test_ui.MainScreenNavigationTests": 4,
+    "test_ui.AppThemeTests": 4,
 }

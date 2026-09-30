@@ -1116,8 +1116,8 @@ class SessionHub:
             {
                 "cwd": entry.get("cwd_key") or "",
                 "path": entry.get("cwd_key") or "",
-                "label": entry.get("label") or "",
-                "name": entry.get("label") or "",
+                "label": str(entry.get("label") or ""),
+                "name": str(entry.get("label") or ""),
                 "count": entry.get("count") or 0,
                 "mtime": entry.get("latest_mtime") or 0.0,
             }

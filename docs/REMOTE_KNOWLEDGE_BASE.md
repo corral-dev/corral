@@ -20,6 +20,8 @@
 
 ## Task execution reliability
 
+Project-list responses must contain plain JSON strings for names and paths, including the no-project entry. Resolve lazy desktop localization before crossing the remote boundary. The new-session form must distinguish loading from failure, offer explicit retry, and disable manual creation until assistant and project options are valid; a failed project request must never silently create in the default directory.
+
 - Execution state must agree across the host, mobile list, and open conversation. Opening or reconnecting during a running turn must immediately restore the current state; reading a conversation must not clear working. Process existence alone does not prove an active turn.
 
 
