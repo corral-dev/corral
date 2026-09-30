@@ -438,13 +438,6 @@ class ShimInstallTests(unittest.TestCase):
         self.assertEqual(rc_after_first, (self.home / ".bashrc").read_text(encoding="utf-8"))
         self.assertEqual(rc_after_first.count(shim.BLOCK_BEGIN), 1)
 
-    def test_auto_install_is_idempotent_and_swallows_environment_errors(self):
-        first = shim.auto_install()
-        self.assertEqual(first["status"], "installed")
-        second = shim.auto_install()
-        self.assertEqual(second["status"], "unchanged")
-        with mock.patch.object(shim, "install", side_effect=shim.ShimError("blocked", "不可写")):
-            self.assertIsNone(shim.auto_install())
 
     def test_repeated_stale_blocks_are_collapsed(self):
         rc = self.home / ".bashrc"

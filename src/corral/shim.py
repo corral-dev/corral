@@ -29,8 +29,8 @@
 
 生成物：一个受 corral 管理的脚本文件（`~/.cache/corral/shim/`），用户 shell 配置里
 只留一行 `source`。**不在配置里内联函数正文**——后续升级只需重写脚本文件，不必反复
-改用户的 shell 配置。写入发生在用户显式 `corral shim install`，以及交互式启动
-corral 时的幂等补齐（`auto_install`）。
+改用户的 shell 配置。**默认不安装**：只有用户显式 `corral shim install` 才写入；
+安装脚本与交互式启动 corral 都不得隐式补齐。
 """
 
 from __future__ import annotations
@@ -621,14 +621,6 @@ def install(shell: str | None = None, home: str | os.PathLike[str] | None = None
     """幂等安装/升级命令拦截。重复执行只会把块与脚本刷新到最新，不会叠加。"""
     return _apply(shell=shell, home=home, include=include, dry_run=dry_run, remove=False)
 
-
-def auto_install() -> dict[str, Any] | None:
-    """在交互入口静默补齐拦截；环境不适合时绝不阻断 corral 本身。"""
-    try:
-        return install()
-    except ShimError:
-        # 没有可拦截命令、未知 shell 或配置不可写都不影响 corral 正常启动。
-        return None
 
 
 def uninstall(shell: str | None = None, home: str | os.PathLike[str] | None = None,

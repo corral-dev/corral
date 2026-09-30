@@ -110,10 +110,6 @@ else
     "https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
 fi
 
-# 安装完成后立即补齐交互终端拦截。没有已安装的 Agent、未知 shell 或配置不可写时不影响安装成功；
-# 用户以后首次在交互终端运行 corral 时还会再自动尝试一次。
-python3 -m corral shim install >/dev/null 2>&1 || true
-
 SCRIPTS_DIR="$(python3 -m site --user-base)/bin"
 case ":${PATH}:" in
   *":${SCRIPTS_DIR}:"*)

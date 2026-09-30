@@ -36,6 +36,8 @@ i18n.set_lang("en")
 # split_layout 会去真实家目录找旧版 JSON 做一次性迁移。
 import tempfile
 
+import ci_test_support
+
 from corral import split_layout as _split_layout
 
 _SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="corral-test-sidebar-state-")
@@ -686,7 +688,7 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             card = app.screen.query_one(SessionCard)
             self.assertEqual(str(card.styles.pointer), "pointer")
             await pilot.hover(card)
@@ -708,7 +710,7 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             app._set_pointer_shape("pointer")
             app._set_pointer_shape("text")
             app._set_pointer_shape("default")
@@ -722,7 +724,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:ffff/ffff/ffff\x07")
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             self.assertEqual(app.theme, "corral-light")
 
     async def test_widget_css_survives_a_builtin_theme(self) -> None:
@@ -737,7 +739,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             app.theme = "textual-dark"  # 内置主题里没有 corral 自有变量
             await pilot.pause()
             await pilot.press("down")
@@ -770,14 +772,14 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             self.assertEqual(app.theme, "corral-dark")
 
     async def test_missing_report_falls_back_to_default_dark(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False, osc_report=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             self.assertEqual(app.theme, "corral-dark")
 
     async def test_running_app_switches_theme_when_terminal_background_changes(self) -> None:
@@ -785,7 +787,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         old_report = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:ffff/ffff/ffff\x07"
         app = CorralApp(store, embed_ok=True, osc_report=old_report)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             self.assertEqual(app.theme, "corral-light")
 
             area = app.screen.query_one(SplitPaneArea)
@@ -826,7 +828,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             osc_report=b"\x1b]11;rgb:ffff/ffff/ffff\x07",
         )
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             app.post_message(TerminalBackgroundReport(is_light=False))
             await pilot.pause(delay=0.1)
             self.assertEqual(app.theme, "corral-dark")
@@ -835,7 +837,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             top_bar = app.screen.query_one("#runtime-top-bar")
             footer = app.screen.query_one(Footer)
             # 左侧侧栏开关 + spacer 把助手 chip 顶到右侧；容器本身左对齐。
@@ -847,7 +849,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             self.assertEqual(area.styles.margin.left, 1)
             sessions = store.all_sessions()[:2]
@@ -877,7 +879,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             hint = Static("待选文本")
             await screen.mount(hint)
@@ -912,7 +914,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(160, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             self.assertTrue(area.can_add_pane())
             area.show_hosted_group(
@@ -931,7 +933,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             keys = {b.key for b in app.screen.BINDINGS}
             self.assertNotIn("n", keys)
             self.assertNotIn("a", keys)
@@ -968,7 +970,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             list_view = app.screen.query_one(SessionListView)
             key0 = corral.session_key(sessions[0])
@@ -1048,7 +1050,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key0 = corral.session_key(sessions[0])
             key1 = corral.session_key(sessions[1])
@@ -1235,7 +1237,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key0 = corral.session_key(sessions[0])
             # 阻止列表跟随在断言窗口内另行 remount
@@ -1297,7 +1299,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store.hosted[key] = "corral-claude-s0"
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             with mock.patch("corral.liveness.is_alive", return_value=False):
                 self.assertTrue(app.screen._is_session_active(key))  # noqa: SLF001
                 self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
@@ -1324,7 +1326,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         key = corral.session_key(sessions[0])
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             with mock.patch(
                 "corral.liveness.is_alive",
                 side_effect=AssertionError("live 命中时不得 fork has-session"),
@@ -1364,7 +1366,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         # 本测手动模拟一次扫描替换；禁止后台定时重扫把 fixture 又写回占位卡。
         with mock.patch.object(store, "refresh", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 app.screen._apply_layout_change(  # noqa: SLF001
                     lambda s: s.set_group(
@@ -1435,7 +1437,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         real_refresh = store.refresh
         with mock.patch.object(store, "refresh", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 app.screen._apply_layout_change(  # noqa: SLF001
                     lambda s: s.set_group(
@@ -1620,7 +1622,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 observe.init(debug=False)
                 app = CorralApp(store, embed_ok=False)
                 async with app.run_test(size=(100, 30)) as pilot:
-                    await pilot.pause(delay=0.2)
+                    await pilot.pause()
                     # 直接调 action，避免 Pilot 对 F12 键名在部分环境下不派发到 Screen。
                     app.screen.action_save_screenshot()
                     await pilot.pause(delay=0.2)
@@ -1643,7 +1645,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             pane = _primary_embed_pane(app.screen)
             self.assertEqual(pane.styles.background.rgb, (0x1e, 0x1e, 0x2e))
 
@@ -2069,7 +2071,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=[])
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
@@ -2080,7 +2082,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             search = app.screen.query_one("#project-search", Input)
             list_view = app.screen.query_one(SessionListView)
             items = list(list_view.list_children)
@@ -2111,7 +2113,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             card = next(iter(app.screen.query(SessionCard)))
 
             self.assertAlmostEqual(card.styles.color.a, 0.8, places=2)
@@ -2141,7 +2143,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             list_view._older_stack_expanded = True
             await list_view.rebuild()
@@ -2192,7 +2194,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view, _ = self._items(app)
             keys = await self._seed_group(list_view)
 
@@ -2240,7 +2242,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(160, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 area = app.screen.query_one(SplitPaneArea)
                 keys = [corral.session_key(s) for s in sessions]
@@ -2317,7 +2319,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 40)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [corral.session_key(s) for s in sessions]
             list_view.on_layout_change(
@@ -2374,7 +2376,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view, _ = self._items(app)
             keys = await self._seed_group(list_view)
             list_view.set_split_marks(keys[:2], keys[1])
@@ -2408,7 +2410,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view, items = self._items(app)
             keys = [corral.session_key(card.session) for _, card in items]
 
@@ -2426,7 +2428,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view, _ = self._items(app)
             keys = await self._seed_group(list_view)
             list_view.set_split_marks(keys[:2], keys[0])
@@ -2478,7 +2480,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [
                 corral.session_key(session) for session in store.all_sessions()
@@ -2494,7 +2496,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             group_keys = [
@@ -2519,7 +2521,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             group_keys = [
@@ -2547,7 +2549,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             pinned_key = corral.session_key(sessions[0])
@@ -2571,7 +2573,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             before = self._stripe_by_identity(list_view)
             store.all_sessions()[0]["mtime"] = time.time() + 10
@@ -2595,7 +2597,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             striped = next(
                 card
@@ -2618,7 +2620,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_collapsed_group_card_summarizes_member_attention(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             sessions[0]["attention_kind"] = "working"
@@ -2676,7 +2678,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_space_collapses_and_expands_selected_group(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [
                 corral.session_key(session)
@@ -2711,7 +2713,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             list_view = screen.query_one(SessionListView)
             keys = [
@@ -2739,7 +2741,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_filter_by_group_name_reveals_all_members(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [
                 corral.session_key(session)
@@ -2778,7 +2780,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             alpha = corral.session_key(sessions[0])
             beta = corral.session_key(sessions[1])
@@ -2802,7 +2804,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [
                 corral.session_key(session)
@@ -2816,7 +2818,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_p_pins_independent_session_and_whole_group(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             keys = [corral.session_key(session) for session in sessions[:2]]
@@ -2854,7 +2856,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         """组内成员按 p 不再拒绝，改为整组置顶（与手机端、Ctrl+P 一致）。"""
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [
                 corral.session_key(session)
@@ -2875,7 +2877,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         """先钉独立会话再进组：再按 p 必须取消整组置顶，不能弹出 Pinned 后钉回去。"""
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [
                 corral.session_key(session)
@@ -2905,7 +2907,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_ctrl_p_pins_selected_session_from_sidebar(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             independent_key = corral.session_key(store.all_sessions()[0])
             list_view.focus()
@@ -2919,7 +2921,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         """置顶与未置顶都非空时画蓝色横线分隔；仅一侧时不画。"""
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             self.assertGreaterEqual(len(sessions), 2)
@@ -3000,7 +3002,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 24)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             list_view.on_layout_change(
                 lambda s: s.toggle_session_pin("claude:pin-me")
@@ -3062,7 +3064,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 24)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             for i in range(8):
                 list_view.on_layout_change(
@@ -3171,7 +3173,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store.find_session("claude:old-c")["mtime"] = now - 3 * corral.TODAY_SECONDS
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             await list_view.rebuild()
             identities = [row.identity for row in list_view._sidebar_rows()]
@@ -3212,7 +3214,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             await list_view.rebuild()
             identities = [row.identity for row in list_view._sidebar_rows()]
@@ -3272,7 +3274,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_today_separator_absent_when_all_recent(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             identities = [row.identity for row in list_view._sidebar_rows()]
             self.assertNotIn(TODAY_SEP_ID, identities)
@@ -3290,7 +3292,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             session["mtime"] = age
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             await list_view.rebuild()
             identities = [row.identity for row in list_view._sidebar_rows()]
@@ -3311,7 +3313,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             await list_view.rebuild()
             identities = [row.identity for row in list_view._sidebar_rows()]
@@ -3353,7 +3355,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             store.find_session(key)["mtime"] = age
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = ["claude:g-new", "claude:g-old1", "claude:g-old2"]
             list_view.on_layout_change(
@@ -3389,7 +3391,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             list_view.on_layout_change(
                 lambda s: s.toggle_session_pin("claude:pin-me")
@@ -3438,7 +3440,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         try:
             app = CorralApp(store, embed_ok=False)
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 list_view.on_layout_change(
                     lambda s: s.toggle_session_pin("claude:pin-me")
@@ -3486,7 +3488,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = ["claude:old-a", "claude:old-b"]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -3528,7 +3530,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = ["claude:g1", "claude:g2"]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -3620,7 +3622,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             search = app.screen.query_one("#project-search", Input)
             self.assertEqual(list_view.index, len(STICKY_IDS))  # 默认落在第一条会话，跳过固定头
@@ -3683,7 +3685,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             search = app.screen.query_one("#project-search", Input)
             clear_btn = app.screen.query_one("#project-search-clear", _FilterClear)
@@ -3730,7 +3732,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.embed.open_channel", return_value=None), \
              mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 sessions = store.sessions["claude"]
                 first, second = sessions[0], sessions[1]
@@ -3777,7 +3779,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.embed.open_channel", return_value=None), \
              mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(160, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 mock.patch.object(app.screen, "_follow_current_selection").start()
                 self.addCleanup(mock.patch.stopall)
@@ -3856,7 +3858,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             # Wide enough that each of MAX_PANES cells stays >= embed.MIN_HOST_WIDTH;
             # otherwise desired_host_size withdraws the vote and production skips resize.
             async with app.run_test(size=(220, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 mock.patch.object(app.screen, "_follow_current_selection").start()
                 self.addCleanup(mock.patch.stopall)
@@ -3938,7 +3940,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             async with app.run_test(size=(160, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 mock.patch.object(app.screen, "_follow_current_selection").start()
                 self.addCleanup(mock.patch.stopall)
@@ -4150,7 +4152,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.embed.open_channel", return_value=None), \
              mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 screen = app.screen
                 screen._apply_layout_change(  # noqa: SLF001
                     lambda s: s.set_group("/tmp", keys[:2], focus_key=keys[0])
@@ -4236,7 +4238,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(EmbedPane, "focus_session", new=record),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 app.screen.query_one(SplitPaneArea).show_hosted_group(
                     "/tmp",
                     [(sessions[0], "corral-runtime-only", lambda: "不得闪现的消息预览")],
@@ -4267,7 +4269,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             list_view = screen.query_one(SessionListView)
             list_view.focus()
@@ -4303,7 +4305,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             list_view = screen.query_one(SessionListView)
             list_view.focus()
@@ -4359,7 +4361,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
         self.assertIsInstance(app.return_value, corral.LaunchRequest)
@@ -4384,7 +4386,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -4711,7 +4713,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("escape")
             await pilot.pause()
         self.assertIsNone(app.return_value)
@@ -4728,7 +4730,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             self.assertFalse(list_view.ALLOW_SELECT)
             self.assertTrue(
@@ -4755,7 +4757,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = [corral.session_key(session) for session in store.all_sessions()[:2]]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -4779,7 +4781,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
                 list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -4803,7 +4805,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards = list(app.screen.query(SessionCard))
             self.assertGreaterEqual(len(cards), 2)
@@ -4830,7 +4832,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards = list(app.screen.query(SessionCard))
             await pilot.click(cards[0], control=True)
@@ -4850,7 +4852,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             list_view.index = len(STICKY_IDS)
             await pilot.pause()
@@ -4865,7 +4867,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards = list(app.screen.query(SessionCard))
             await pilot.click(cards[0], control=True)
@@ -4884,7 +4886,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("margin-bottom:", CorralApp.CSS)
         self.assertNotIn("padding-bottom:", CorralApp.CSS)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards = list(app.screen.query(SessionCard))
             self.assertEqual(cards[0].region.height, 3)
@@ -4908,7 +4910,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards_before = list_view._session_cards()
             self.assertEqual(len(cards_before), 3)
@@ -4991,7 +4993,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             list_view = screen.query_one(SessionListView)
             pane = _primary_embed_pane(screen)
@@ -5026,7 +5028,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards_before = list_view._session_cards()
             self.assertEqual(len(cards_before), 3)
@@ -5094,7 +5096,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             cards_before = list_view._session_cards()
             keep_key = corral.session_key(cards_before[0].session)
@@ -5151,7 +5153,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             await asyncio.gather(screen._rebuild_list(), screen._rebuild_list())
 
@@ -5168,7 +5170,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             list_view = screen.query_one(SessionListView)
 
@@ -5202,7 +5204,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             list_view.index = len(STICKY_IDS) + 1  # 选中 s1（第二条）
             await pilot.pause()
@@ -5233,7 +5235,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             list_view.index = len(STICKY_IDS) + 1  # 选中 s1
             await pilot.pause(delay=0.2)
@@ -5267,7 +5269,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
 
                 self.assertTrue(list_view.has_focus, "浏览列表不得把焦点交给右栏")
@@ -5294,7 +5296,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
@@ -5319,7 +5321,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
@@ -5365,7 +5367,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.embed.should_resize_host", return_value=False),
         ):
             async with app.run_test(size=(160, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
                 area.show_hosted_group(
                     "/tmp", [(sessions[0], sessions[0]["keepalive_name"], None)],
@@ -5411,7 +5413,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
 
                 await pilot.press("enter")
@@ -5447,7 +5449,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
 
                 await pilot.press("enter")
@@ -5494,7 +5496,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
 
                 await pilot.press("enter")
@@ -5551,7 +5553,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 screen = app.screen
                 list_view = screen.query_one(SessionListView)
                 area = screen.query_one(SplitPaneArea)
@@ -5583,7 +5585,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 screen = app.screen
                 list_view = screen.query_one(SessionListView)
                 area = screen.query_one(SplitPaneArea)
@@ -5619,7 +5621,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         with mock.patch("corral.liveness.is_alive", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 screen = app.screen
                 list_view = screen.query_one(SessionListView)
                 area = screen.query_one(SplitPaneArea)
@@ -5668,7 +5670,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         ]
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             pane = _primary_embed_pane(app.screen)
             # 预览默认钉在最新（底部）；等末行可见后再上滚看更早内容
@@ -5706,7 +5708,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         with mock.patch("corral.embed.host_session", side_effect=delayed_host) as host_mock:
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 old_request_session = store.sessions["claude"][0]
 
                 await pilot.press("enter")
@@ -5739,7 +5741,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(corral, "_log_embed_error"),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: host_mock.call_count == 1)
                 await _wait_until(lambda: app.screen._host_pending == 0)
@@ -5760,7 +5762,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 app.screen._embed_open(
                     corral.NewSessionRequest("claude", "/tmp"),
                     add_pane=False,
@@ -5802,7 +5804,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
@@ -5879,7 +5881,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(CorralApp, "bell"),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
@@ -5915,7 +5917,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             session = app.screen.query_one(SessionListView).selected_session()
             self.assertIsNotNone(session)
             request = corral.LaunchRequest(
@@ -5952,7 +5954,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
@@ -6012,7 +6014,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
@@ -6057,7 +6059,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("ctrl+t")
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
@@ -6099,7 +6101,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.embed.close_channel") as close_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
@@ -6150,7 +6152,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         with mock.patch("corral.embed.host_session") as host_mock:
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
@@ -6449,14 +6451,20 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._hosted_names: list[str] = []
+        # 真实托管走一次性私有 tmux socket，永不碰产品 corral-keepalive：
+        # 并行分片与其他 agent 运行互不干扰，teardown 只杀私有 server。
+        self._private_tmux = ci_test_support.private_tmux(prefix="corral-ci-ui")
+        self._shard = self._private_tmux.__enter__()
+        self.addCleanup(self._private_tmux.__exit__, None, None, None)
         self.addCleanup(self._cleanup_hosted)
 
     def _cleanup_hosted(self) -> None:
+        base = list(self._shard.tmux_base_argv)
         for name in self._hosted_names:
             if not name:
                 continue
-            subprocess.run(["tmux", "-L", "corral-keepalive", "kill-session", "-t", name],
-                            stderr=subprocess.DEVNULL)
+            subprocess.run([*base, "kill-session", "-t", name],
+                           stderr=subprocess.DEVNULL)
 
     async def test_first_frame_never_exposes_connecting_state(self) -> None:
         """抓帧尚未完成时也要即时展示已有详情或空白终端，不能出现连接中间态。"""
@@ -6494,7 +6502,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
              mock.patch("corral.embed.should_resize_host", return_value=False), \
              mock.patch("corral.embed.capture", return_value=None):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 pane = _primary_embed_pane(app.screen)
                 await _wait_until(lambda: pane.size.height >= 10 and pane.size.width >= 40)
                 # 挡住列表跟随，避免 focus_session 后被盖回静态预览
@@ -6518,7 +6526,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             pane = await _wait_for_embed_pane(app.screen)
@@ -6566,7 +6574,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             pane = await _wait_for_embed_pane(app.screen)
@@ -6595,7 +6603,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             pane = _primary_embed_pane(app.screen)
             await _wait_for_session_name(pane)
@@ -6619,7 +6627,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             pane = _primary_embed_pane(app.screen)
             await _wait_for_session_name(pane)
@@ -6642,7 +6650,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             pane = _primary_embed_pane(app.screen)
             await _wait_for_session_name(pane)
@@ -6679,7 +6687,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         with (mock.patch("corral.embed.parse_screen_rows", side_effect=flaky_parse_screen),
               mock.patch("corral._log_embed_error") as log_error):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 pane = _primary_embed_pane(app.screen)
                 await _wait_for_session_name(pane)
@@ -6701,7 +6709,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -6736,7 +6744,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -6758,7 +6766,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -6789,7 +6797,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -6818,7 +6826,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             side_effect=__import__("corral.embed", fromlist=["EmbedError"]).EmbedError("boom"),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 # host_session 现在跑在后台 worker 里，失败结果要经 call_from_thread
                 # 回到主线程才会触发 bell；给够时间让这趟线程往返完成。
@@ -7615,14 +7623,20 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._hosted_names: list[str] = []
+        # 同 MainScreenEmbedFlowTests：真实托管走一次性私有 tmux socket，
+        # 永不碰产品 corral-keepalive。
+        self._private_tmux = ci_test_support.private_tmux(prefix="corral-ci-ui")
+        self._shard = self._private_tmux.__enter__()
+        self.addCleanup(self._private_tmux.__exit__, None, None, None)
         self.addCleanup(self._cleanup_hosted)
 
     def _cleanup_hosted(self) -> None:
+        base = list(self._shard.tmux_base_argv)
         for name in self._hosted_names:
             if not name:
                 continue
-            subprocess.run(["tmux", "-L", "corral-keepalive", "kill-session", "-t", name],
-                            stderr=subprocess.DEVNULL)
+            subprocess.run([*base, "kill-session", "-t", name],
+                           stderr=subprocess.DEVNULL)
 
     async def test_direct_launch_hosts_and_focuses_pane_without_stealing_focus_back(self) -> None:
         """直启托管成功后焦点应在右栏；且挂载时不能再调度列表 focus 把焦点抢回去。"""
@@ -7751,7 +7765,7 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             search = app.screen.query_one("#project-search", Input)
             list_view = app.screen.query_one(SessionListView)
             before = len(list_view.visible_sessions())
@@ -7925,7 +7939,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.embed.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
                 list_view.on_layout_change(
@@ -7956,7 +7970,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
@@ -8003,7 +8017,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
@@ -8030,7 +8044,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 list_view = app.screen.query_one(SessionListView)
                 keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
                 list_view.on_layout_change(
@@ -8185,7 +8199,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.pause(delay=0.3)
             pane = _primary_embed_pane(app.screen)
@@ -8202,7 +8216,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.press("space")
             await pilot.pause()
@@ -8218,7 +8232,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(extra_runtimes=(codex,))
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.press("ctrl+t")
             await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
@@ -8246,7 +8260,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         store.conversations.clear()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 24)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             pane = _primary_embed_pane(app.screen)
             await _wait_until(
@@ -8296,7 +8310,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         store.conversations.clear()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 24)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             pane = _primary_embed_pane(app.screen)
             await _wait_until(
@@ -8318,7 +8332,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8340,7 +8354,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
 
             async def _open():
                 await app.push_screen_wait(
@@ -8373,7 +8387,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8409,7 +8423,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
 
             async def _open():
                 await app.push_screen_wait(
@@ -8440,7 +8454,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
 
             async def _open():
                 await app.push_screen_wait(
@@ -8465,7 +8479,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8510,7 +8524,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             nav = app.screen.nav
             nav.project_query = "sidebar-seed"
 
@@ -8550,7 +8564,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
 
             async def _open():
                 await app.push_screen_wait(
@@ -8577,7 +8591,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8619,7 +8633,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         projects = [{"cwd_key": "/tmp", "label": "tmp", "count": 3, "latest_mtime": 0.0}]
         with mock.patch.object(store, "projects", return_value=projects):
             async with app.run_test(size=(110, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 app.screen.query_one(SessionListView).index = 0  # ＋ 新建会话
                 await pilot.press("enter")
                 await pilot.pause(delay=0.2)
@@ -8643,7 +8657,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(extra_runtimes=(kimi,))
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.press("ctrl+t")
             await pilot.pause()
@@ -8659,7 +8673,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8675,7 +8689,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8692,7 +8706,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8710,7 +8724,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             result_holder = {}
 
             async def _open():
@@ -8753,7 +8767,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = RuntimePickerModal("接力到", [RuntimeChoice("claude", "Claude", "", True)])
             holder = await self._open(app, pilot, modal)
             self.assertIsInstance(app.screen, RuntimePickerModal)
@@ -8766,7 +8780,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = RuntimePickerModal("接力到", [RuntimeChoice("claude", "Claude", "", True)])
             await self._open(app, pilot, modal)
             await pilot.click(modal.query_one(Label))  # 标题行：内容区，不是背景
@@ -8777,7 +8791,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             holder = await self._open(app, pilot, self._new_session_modal())
             self.assertIsInstance(app.screen, NewSessionModal)
             await pilot.click(offset=(0, 0))
@@ -8789,7 +8803,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = self._new_session_modal()
             await self._open(app, pilot, modal)
             # 点项目栏的边框内侧：命中的是 ListView 不是背景，弹窗必须留着
@@ -8801,7 +8815,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             holder = await self._open(app, pilot, ConfirmModal("确认？"))
             self.assertIsInstance(app.screen, ConfirmModal)
             await pilot.click(offset=(0, 0))
@@ -8813,7 +8827,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = ConfirmModal("确认？")
             await self._open(app, pilot, modal)
             await pilot.click(modal.query_one(Label))
@@ -8832,7 +8846,7 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("down")
                 list_view = app.screen.query_one(SessionListView)
                 card = list_view._session_cards()[0]
@@ -8869,7 +8883,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         claude_runtime = registry.get("claude")
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
@@ -8892,7 +8906,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         claude_runtime = registry.get("claude")
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)
@@ -8913,7 +8927,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("down")
                 await pilot.press("ctrl+x")
                 await pilot.pause(delay=0.3)
@@ -8945,7 +8959,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         try:
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("down")
                 await pilot.press("ctrl+x")
                 await pilot.pause(delay=0.3)
@@ -8971,7 +8985,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         claude_runtime.delete_session.side_effect = OSError("模拟磁盘删除失败")
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("down")
             await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)
@@ -9127,7 +9141,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         store, _registry = _make_store(sessions=self._external_sessions())
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             header = app.screen._detail_header(store.find_session("claude:s0")).plain
             self.assertIn(i18n.t("status.running_external"), header)
             self.assertIn(i18n.t("detail.running_external"), header)
@@ -9140,7 +9154,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             self.assertNotIsInstance(app.screen, ConfirmModal)
@@ -9151,7 +9165,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         store, _registry = _make_store(sessions=self._external_sessions())
         app = CorralApp(store, embed_ok=False)  # embed 不可用 → 确认后退出交外层接管
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             self.assertNotIsInstance(app.screen, ConfirmModal)
@@ -9214,7 +9228,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         store, _registry = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             self.assertNotIsInstance(app.screen, ConfirmModal)
@@ -9266,7 +9280,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_matches_conversation_body_and_shows_the_hit_line(self) -> None:
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             await self._type(pilot, modal, "红烧肉")
 
@@ -9283,7 +9297,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_hit_keyword_is_highlighted(self) -> None:
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             await self._type(pilot, modal, "红烧肉")
 
@@ -9304,7 +9318,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """搜到的会话被侧边栏筛选词挡在外面时，选中它必须先把筛选清掉。"""
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             search = app.screen.query_one("#project-search", Input)
             search.value = "LiveCaption"
@@ -9347,7 +9361,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """回归（2026-09-29）：三天前的命中项在收起的叠卡里，回车曾静默落回「＋ 新建」。"""
         app = CorralApp(self._dated_store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             self.assertIn(OLDER_STACK_ID, list_view._current_row_identities())
             self.assertNotIn("claude:old", list_view._current_row_identities())
@@ -9367,7 +9381,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """命中项在收起的会话组里：落到组卡，不能落回「＋ 新建」。"""
         app = CorralApp(self._dated_store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             keys = ["claude:today", "claude:old"]
             snapshot = list_view.on_layout_change(
@@ -9391,7 +9405,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_escape_closes_without_touching_the_sidebar(self) -> None:
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             await pilot.press("down")
             await pilot.pause()
@@ -9410,7 +9424,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """点框外空白＝Esc：关弹窗、不动侧边栏、不退出程序。"""
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             list_view = app.screen.query_one(SessionListView)
             await pilot.press("down")
             await pilot.pause()
@@ -9428,7 +9442,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """回归：Click 从输入框冒泡上来，不能被当成点在背景上。"""
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             await pilot.click(modal.query_one("#search-query", TextArea))
             await pilot.pause(delay=0.2)
@@ -9438,7 +9452,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_sidebar_filter_is_carried_into_the_modal(self) -> None:
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             app.screen.query_one("#project-search", Input).value = "字幕"
             await pilot.pause(delay=0.2)
 
@@ -9451,7 +9465,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_results_are_sorted_newest_first(self) -> None:
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             # 两个会话的项目路径都在 /Users/x 下，用它把两条都搜出来
             await self._type(pilot, modal, "/users/x")
@@ -9462,7 +9476,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """输入框全程持有焦点，↑↓ 只挪结果高亮——用户不用在两个控件间切焦点。"""
         app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             await self._type(pilot, modal, "/users/x")
             results = modal.query_one("#search-results", ListView)
@@ -9511,7 +9525,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """
         app = CorralApp(self._bulk_store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             await self._type(pilot, modal, "甲词")
             results = modal.query_one("#search-results", ListView)
@@ -9536,7 +9550,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         """
         app = CorralApp(self._bulk_store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             modal = await self._open_search(pilot, app)
             query = modal.query_one("#search-query", TextArea)
             results = modal.query_one("#search-results", ListView)
@@ -9566,7 +9580,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         store = self._store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             screen.search_index().refresh(store)  # 模拟首屏预热已经跑完
 
@@ -9596,7 +9610,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             screen = app.screen
             self.assertTrue(screen.check_action("search_content", ()))
             with mock.patch.object(type(screen), "_live_embed_focused", return_value=True):
@@ -10077,7 +10091,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         sessions = self._live_sessions(1)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key = corral.session_key(sessions[0])
             area.show_hosted_group(
@@ -10114,7 +10128,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         sessions = self._live_sessions(1)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key = corral.session_key(sessions[0])
             area.show_hosted_group(
@@ -10148,7 +10162,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             for i in range(6)
         ]
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key = corral.session_key(sessions[0])
             area.show_hosted_group(
@@ -10177,7 +10191,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         sessions = self._live_sessions(2)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(160, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key0 = corral.session_key(sessions[0])
             key1 = corral.session_key(sessions[1])
@@ -10213,7 +10227,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         sessions = self._live_sessions(2)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(160, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key0 = corral.session_key(sessions[0])
             key1 = corral.session_key(sessions[1])
@@ -10248,7 +10262,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.2)
+            await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             # 夹具默认选中已结束会话，右栏是静态对话预览。
             app.screen._sync_hud()  # noqa: SLF001
@@ -10382,7 +10396,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 chip = app.screen.query_one("#shell-chip")
                 from corral.i18n import t
                 self.assertIn(t("shell.chip_label"), chip.render().plain)
@@ -10402,7 +10416,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await self._open_shell_pane(pilot, app, keepalive_name="corral-shell-sidebar")
                 list_view = app.screen.query_one(SessionListView)
                 keys = {corral.session_key(s) for s in list_view.visible_sessions()}
@@ -10418,7 +10432,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.embed.close_channel") as close_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = await self._open_shell_pane(
                     pilot, app, keepalive_name="corral-shell-closeme",
                 )
@@ -10443,7 +10457,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.keepalive.kill", return_value=True) as kill_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
@@ -10481,7 +10495,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 area = await self._open_shell_pane(pilot, app, keepalive_name="corral-shell-grp1")
                 shell_key = next(
                     spec.session_key for spec in area.pane_specs() if spec.is_shell
@@ -10521,7 +10535,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.2)
+                await pilot.pause()
                 await self._open_shell_pane(pilot, app, keepalive_name="corral-shell-srch1")
                 await pilot.press("ctrl+f")
                 await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))

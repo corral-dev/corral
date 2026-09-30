@@ -118,7 +118,7 @@ wheels = [
 
 [[package]]
 name = "corral"
-version = "0.24.237"
+version = "0.24.238"
 source = { editable = "." }
 dependencies = [
     { name = "sesskit" },

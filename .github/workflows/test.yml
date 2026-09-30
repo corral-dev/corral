@@ -23,8 +23,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          # pip 缓存只加速下载：键绑定到固定依赖输入（pyproject + uv.lock +
-          # 权威 SessKit pin），命中与否都不改变实际安装的版本。
+          # pip cache only saves download time: the key is bound to pinned
+          # dependency inputs (pyproject + uv.lock + canonical SessKit pin).
+          # A cache hit or miss never changes the versions actually installed.
           cache: "pip"
           cache-dependency-path: |
             pyproject.toml
@@ -53,8 +54,9 @@ jobs:
           python3 -m pip install -q "$(python3 scripts/sesskit_dep.py wheel-requirement)"
           python3 -c "import sesskit; print('ok', getattr(sesskit, '__version__', '?'))"
       - name: Lint
-        # 唯一的 Ruff 门禁：版本固定（防规则集自行漂移），源码同一份在各矩阵
-        # job 里完全相同，不随 Python 版本变化，矩阵内不再重复跑。
+        # Single Ruff gate: pinned version (rule-set drift protection). The same
+        # sources run identically in every matrix job and do not vary with the
+        # Python runtime, so the matrix no longer repeats lint.
         run: |
           python3 -m pip install -q ruff==0.16.1
           ruff check src tests
@@ -84,7 +86,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          # 与 preflight 同一套固定依赖输入：缓存只省下载时间，不参与版本决策。
+          # Same pinned dependency inputs as preflight: cache saves download
+          # time only and takes no part in version decisions.
           cache: "pip"
           cache-dependency-path: |
             pyproject.toml

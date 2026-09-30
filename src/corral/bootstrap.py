@@ -62,11 +62,9 @@ def main() -> None:
         from corral.shim import cli_main as shim_main
 
         raise SystemExit(shim_main(argv[1:]))
-    # 只有真人正在终端里使用 corral 时才静默补齐拦截；Agent 只读接口、管道和版本查询不写配置。
+    # 命令拦截默认关闭：只有用户显式 `corral shim install` 才写 shell 配置。
+    # 交互启动仍可补齐旧 Pi 历史；Agent 只读接口、管道和版本查询不碰迁移。
     if sys.stdin.isatty() and sys.stdout.isatty():
-        from corral.shim import auto_install
-
-        auto_install()
         _migrate_pi_history()
     from corral.cli import main as cli_main
 

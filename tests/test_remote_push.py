@@ -75,10 +75,11 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             self.host_private,
             sender=self._capture,
             sent_path=Path(self._tmp.name) / "push-sent.json",
+            pending_path=Path(self._tmp.name) / "push-pending.json",
         )
 
-    def _capture(self, token: str, env: str, payload: bytes) -> None:
-        self.sent.append((token, env, payload))
+    def _capture(self, token: str, env: str, payload: bytes, push_id: str = "") -> None:
+        self.sent.append((token, env, payload, push_id))
 
     def _open(self, sealed_b64: bytes) -> dict:
         sealed = __import__("base64").b64decode(sealed_b64)
@@ -88,6 +89,16 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             sealed,
         )
         return json.loads(plain.decode("utf-8"))
+
+    def _ok(self, push_id: str, **fields) -> None:
+        receipt = {"ok": True, "code": "ok", "status": 200, "reason": "", "apns_id": "apns-1"}
+        receipt.update(fields)
+        self.notifier.on_push_receipt(push_id, receipt)
+
+    def _fail(self, push_id: str, code: str = "transport") -> None:
+        self.notifier.on_push_receipt(
+            push_id, {"ok": False, "code": code, "status": 0, "reason": "", "apns_id": ""}
+        )
 
     def test_pending_to_done_sends_completed(self) -> None:
         session = {
@@ -139,7 +150,7 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
 
     def test_same_round_does_not_resend(self) -> None:
-        """同一轮重复跃迁：已发集合挡住，不重推。"""
+        """同一轮重复跃迁：节流挡住；回执确认后即使清节流也不重推。"""
         session = {
             "key": "pi:s1",
             "title": "probe",
@@ -149,11 +160,67 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
         )
+        # 节流窗内重复跃迁被挡住（未清节流）。
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        # 回执确认后：按设备已记已发，清节流重推也不发。
+        self._ok(self.sent[0][3])
         self.notifier._last_sent.clear()
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
         )
         self.assertEqual(len(self.sent), 1)
+
+    def test_enqueue_alone_never_marks_sent(self) -> None:
+        """仅入队（无回执）不记已发：旧中继永不被当成功。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertFalse(self.notifier._already_sent(round_key, "d1"))
+
+    def test_receipt_ok_marks_per_device(self) -> None:
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self._ok(self.sent[0][3])
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertTrue(self.notifier._already_sent(round_key, "d1"))
+
+    def test_receipt_failure_retries_same_round(self) -> None:
+        """回执失败清节流：下次扫描同一轮可重推，不记已发。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self._fail(self.sent[0][3], "no_push_config")
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertFalse(self.notifier._already_sent(round_key, "d1"))
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 2)
+        self.assertNotEqual(self.sent[0][3], self.sent[1][3])
 
     def test_completed_pref_off_is_silent(self) -> None:
         self.notifier.state.devices[0].notify_completed = False
@@ -241,7 +308,32 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
 
     def test_restart_does_not_resend(self) -> None:
-        """重启后同一轮不重推：已发集合落盘，新实例读盘。"""
+        """重启后已确认的轮次不重推：已发集合按设备落盘，新实例读盘。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        self._ok(self.sent[0][3])
+        rebooted = PushNotifier(
+            self.notifier.state,
+            self.host_private,
+            sender=self._capture,
+            sent_path=Path(self._tmp.name) / "push-sent.json",
+            pending_path=Path(self._tmp.name) / "push-pending.json",
+        )
+        rebooted.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+
+    def test_restart_retries_unacked_round(self) -> None:
+        """重启前未回执的轮次：待确认落盘，新实例经 retry_due 重发。"""
         session = {
             "key": "pi:s1",
             "title": "probe",
@@ -257,11 +349,53 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             self.host_private,
             sender=self._capture,
             sent_path=Path(self._tmp.name) / "push-sent.json",
+            pending_path=Path(self._tmp.name) / "push-pending.json",
         )
-        rebooted.on_status_change(
+        self.assertEqual(len(rebooted._pending), 1)
+        # 回执超时：把待确认时间拨到过去，retry_due 应当重发同一轮。
+        for entry in rebooted._pending.values():
+            entry["ts"] -= 3600.0
+        rebooted.retry_due([dict(session, kind="completed")])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_partial_device_success_retries_only_failed(self) -> None:
+        """多设备部分成功：已接受设备不重发，只重试被拒设备。"""
+        second_private = crypto.generate_private_key_bytes()
+        self.notifier.state.devices.append(
+            PairedDevice(
+                id="d2",
+                name="iPad",
+                public_key=crypto.public_key_bytes(second_private).hex(),
+                paired_at=1.0,
+                push_token="b" * 64,
+                push_env="production",
+            )
+        )
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
         )
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.sent), 2)
+        first_id = self.sent[0][3]
+        second_id = self.sent[1][3]
+        # d1 接受、d2 被拒。
+        self._ok(first_id)
+        self._fail(second_id, "bad_token")
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertTrue(self.notifier._already_sent(round_key, "d1"))
+        self.assertFalse(self.notifier._already_sent(round_key, "d2"))
+        # 同一轮再推：只有 d2 出帧（d1 已记已发）。
+        self.notifier._last_sent.clear()
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 3)
+        self.assertEqual(self.sent[2][0], "b" * 64)
 
     def test_done_done_new_round_fires_through_hub(self) -> None:
         """SessionHub DONE→DONE 新一轮（completion_id 变）会调 hook 并推送。"""

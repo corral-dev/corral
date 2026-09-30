@@ -34,6 +34,7 @@ FRAME_PONG = 0x05
 FRAME_PUSH = 0x06          # 主机 → 中继：请中继代发一条推送（内容已加密）
 FRAME_REGISTERED = 0x07    # 中继 → 主机：注册成功，可以开始接客
 FRAME_LANE_ATTACHED = 0x08 # 中继 → 主机：附加 bulk 通道附着成功
+FRAME_PUSH_RECEIPT = 0x09  # 中继 → 主机：推送路由回执（只代表 APNs 已接受，不代表手机已展示）
 
 ZERO_CHANNEL = b"\x00" * 16
 
@@ -254,6 +255,56 @@ def session_channel(session_key: str) -> str:
 
 
 # --- 错误码 ---------------------------------------------------------------
+
+# 推送回执码（FRAME_PUSH_RECEIPT 载荷的 code 稳定词汇；reason 透传 Apple 原文）。
+PUSH_RECEIPT_CODES = frozenset({
+    "ok",
+    "no_push_config",
+    "bad_request",
+    "bad_token",
+    "rejected",
+    "throttled",
+    "transport",
+    "internal",
+})
+
+
+def push_receipt(
+    push_id: str,
+    ok: bool,
+    code: str,
+    *,
+    status: int = 0,
+    reason: str = "",
+    apns_id: str = "",
+) -> dict:
+    """构造推送回执的应用层表示（仅中继侧与测试使用；线上传输为帧载荷 JSON）。"""
+    return {
+        "id": push_id or "",
+        "ok": bool(ok),
+        "code": code if code in PUSH_RECEIPT_CODES else "internal",
+        "status": int(status or 0),
+        "reason": str(reason or ""),
+        "apns_id": str(apns_id or ""),
+    }
+
+
+def parse_push_receipt(raw: bytes) -> dict:
+    """解析回执帧载荷；非法时抛 ProtocolError，调用方按丢弃处理。"""
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ProtocolError("回执不是合法 JSON") from exc
+    if not isinstance(value, dict):
+        raise ProtocolError("回执顶层必须是对象")
+    return push_receipt(
+        str(value.get("id") or ""),
+        bool(value.get("ok")),
+        str(value.get("code") or "internal"),
+        status=value.get("status") or 0,
+        reason=value.get("reason") or "",
+        apns_id=value.get("apns_id") or "",
+    )
 #
 # 与 agent_api 的错误码保持同一套词汇，手机端和 Agent 侧的处理逻辑可以复用。
 

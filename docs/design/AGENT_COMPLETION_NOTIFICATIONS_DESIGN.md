@@ -126,18 +126,29 @@ SessKit 验收沿用其 `CONTRACT.md` “Verification”：fixture +
 - `hello` 的 `capabilities` 新增 `"completion_notify": True`；
   手机据此决定展不展示那两行 Toggle（老开发机不展，只保留系统授权行）。
 
-### 3.2 投递与重试
+### 3.2 投递与重试（2026-09-30 可靠性修订：enqueue ≠ APNs 接受）
 
 - `PushNotifier._emit` 发送前查设备偏好：`kind==completed` 看
   `notify_completed`，`aborted` 看 `notify_aborted`，`waiting` 不受此开关影响。
-- 已发集合落盘（与 `remote.json` 同目录，0600，原子写）：
-  `{(session_key, completion_id, kind) -> ts}`，有界（如 500 条，LRU）。
+- 已发集合落盘（与 `remote.json` 同目录，0600，原子写），键为
+  `(session_key, completion_id-or-status, kind, device_id)`（按设备去重；
+  无设备后缀的旧键只读兼容，避免升级后重推风暴）。
   进程重启后先读盘：盘里有就不重发；`_last_status` 快照仍只做启动基线。
-- 发送失败（`sender` 抛错 / 中继断开）：记 `observe.event` 并保留“待补发”
-  标记，下次 `_detect_status_changes` 同一 `completion_id` 仍在时重试；
-  `completion_id` 已变说明有新一轮，旧的不再补（只推最新的）。
-- 节流：保留 120 秒同 `(key, kind)` 节流防抖动；但同一 `completion_id`
-  只发一次，不同 `completion_id` 不受节流牵连（修掉“第二轮被吞”）。
+- **只把中继回执 `FRAME_PUSH_RECEIPT ok:true` 当成功**（APNs HTTP 200 = 已接受，
+  不是已送达手机——日志一律用 queued / accepted / failed 命名，禁止 delivered）。
+  `sender` 仅入队时记 `remote_push_queued`，不记已发；回执 `ok` 才记
+  `remote_push_accepted`（兼记 `remote_push_sent` 别名）并按设备落盘；
+  回执失败记 `remote_push_failed{ code, status, reason }` 且不落盘。
+  无回执（旧中继 / 回执丢失）按 60 秒超时视为未知失败，进入待重试。
+- 待确认集合（`push-pending.json`，0600，原子写，有界）记录
+  `push_id -> {round_key, device_id, kind, ts}`；`SessionHub` 每次扫描后经
+  `retry_due(当前已结束会话)` 重发仍是最新 `completion_id` 的轮次
+  （`completion_id` 已变则旧轮自然过期，只推最新；同 `push_id` 最多重试
+  5 次后挂起等新轮次）。发送失败（`sender` 抛错 / 中继断开）同理不记已发，
+  并清掉该设备节流以便下轮扫描重试（扫描间隔即退避）。
+- 节流：保留 120 秒同 `(key, kind)` 节流防抖动；回执失败清该设备节流；
+  但同一 `completion_id` 只发一次，不同 `completion_id` 不受节流牵连
+  （修掉“第二轮被吞”）。多设备部分成功只重试失败设备，已接受设备不重发。
 
 ### 3.3 推送内容（载荷已带 `kind`，NSE 侧按 `kind` 选分类）
 
@@ -150,12 +161,24 @@ SessKit 验收沿用其 `CONTRACT.md` “Verification”：fixture +
 - `userInfo` 沿用 `session_key` + `host_id`；点击通知按现有
   `PushRegistrar.didReceive` 路径进详情（无文本时不发 `input.text`）。
 
-### 3.4 中继（大概率不动）
+### 3.4 中继（2026-09-30 可靠性修订：回执 + 永不因推送杀主连接）
 
-- `FRAME_PUSH` / `forwardPush` / APNs 负载结构都不用改：偏好过滤在开发机
-  做，中继仍只做零知识转发。唯一要核的是多租户日推送配额
-  （`account.go` `Pushes`/`PushLimit`）：完成通知会增加推送量，
-  上线前确认配额够用，不够则先调配额再上线。
+- `FRAME_PUSH` 载荷加可选 `"id"`（客户端生成，旧中继忽略未知字段）；
+  新增 `FRAME_PUSH_RECEIPT (0x09)` 中继 → 开发机（interaction 面）：
+  `{"id","ok","code","status","reason","apns_id"}`，`code` 取
+  `ok / no_push_config / bad_request / bad_token / rejected / throttled /
+  transport / internal`，`reason` 透传 Apple `reason` 原文。
+  载荷密文仍 opaque，中继只做零知识转发 + 路由级回执。
+- 未配置推送（无 sender）必须回 `ok:false code:no_push_config`，禁止静默 `nil`
+  成功。`forwardPush` 及推送错误一律转成回执，**永不因此关闭开发机主连接**；
+  回执发送本身 best-effort（队列满则丢，不致命）。
+- `Sender.Send` 返回结构化结果（HTTP 状态 + Apple `reason` + `apns-id`），
+  空 token 按 `bad_request` 处理；4xx 按 Apple `reason` 映射
+  (`BadDeviceToken/Unregistered→bad_token`，429→throttled，其余→rejected)，
+  网络/超时/5xx→transport。偏好过滤仍在开发机做。
+- 多租户日推送配额（`account.go` `Pushes`/`PushLimit`）上线前确认够用部分不变。
+  旧开发机（无 `id`）与旧中继（无 `0x09`）互通：旧端忽略未知字段/帧；
+  新开发机对旧中继按回执超时重试（有界），旧中继永不被当成功。
 
 ## 4. 可选增强（不进首版，留口子）
 

@@ -1821,6 +1821,7 @@ class SessionHub:
             return
         layout = self._layout()
         now = time.time()
+        terminal_payloads: list[dict] = []
         for session in self.store.all_sessions():
             key = session_key(session)
             current = str(session.get("status_tag") or "")
@@ -1829,6 +1830,11 @@ class SessionHub:
             current_cid = str(session.get("completion_id") or "")
             previous_cid = self._last_completion.get(key)
             self._last_completion[key] = current_cid
+            if current in (
+                sesskit_titles.STATUS_DONE,
+                sesskit_titles.STATUS_ABORTED,
+            ):
+                terminal_payloads.append(self.session_payload(session, layout))
             if previous is not None and current == previous:
                 # 同标签但新一轮（completion_id 变了）：DONE→DONE 也推。
                 # 非终端态没有 completion_id，不在此列。
@@ -1857,6 +1863,14 @@ class SessionHub:
                 hook(self.session_payload(session, layout), previous or "", current)
             except Exception:
                 continue
+        # 有界重试：待确认回执超时/失败、且仍是最新轮次的，按设备重发。
+        # 新一轮/已消失会话的旧待确认在 retry_due 内丢弃，不补发 stale 轮次。
+        retry = getattr(hook, "retry_due", None)
+        if callable(retry):
+            try:
+                retry(terminal_payloads)
+            except Exception:
+                pass
 
     # -- 杂项 -------------------------------------------------------------
 

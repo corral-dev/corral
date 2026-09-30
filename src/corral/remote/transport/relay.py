@@ -75,6 +75,7 @@ class RelayClient:
         self._host_lane_attach: bool = False
         self._bulk_attached = asyncio.Event()
         self._bulk_task: asyncio.Task | None = None
+        self._receipt_handler = None  # 由推送层注册：(push_id, receipt_dict) -> None
 
     @property
     def url(self) -> str:
@@ -251,10 +252,32 @@ class RelayClient:
         finally:
             stopper.cancel()
 
+    def set_receipt_handler(self, handler) -> None:
+        """注册推送回执回调（PushNotifier.set_sender 在识别到本客户端时自动调用，
+        无需改 daemon 组装层）。"""
+        self._receipt_handler = handler
+
+    def _on_push_receipt(self, payload: bytes) -> None:
+        handler = self._receipt_handler
+        if handler is None:
+            return
+        try:
+            receipt = protocol.parse_push_receipt(payload)
+        except protocol.ProtocolError:
+            return
+        try:
+            handler(receipt.get("id") or "", receipt)
+        except Exception:
+            pass
+
     def _on_frame(self, raw: bytes, *, bulk: bool = False, on_registered=None) -> None:
         try:
             frame_type, channel_id, payload = protocol.decode_frame(raw)
         except protocol.ProtocolError:
+            return
+        if frame_type == protocol.FRAME_PUSH_RECEIPT:
+            # 回执走 interaction 面；bulk 面即使收到也按同样语义处理，不致命。
+            self._on_push_receipt(payload)
             return
         if frame_type == protocol.FRAME_REGISTERED and not bulk:
             self._on_registered(payload, on_registered)
@@ -370,12 +393,21 @@ class RelayClient:
         frame = protocol.encode_frame(frame_type, channel_id, payload)
         asyncio.run_coroutine_threadsafe(_safe_send(socket, frame), loop)
 
-    def send_push(self, token: str, env: str, payload: bytes) -> None:
-        """请中继代发一条推送。载荷已经是加密壳，中继读不懂里面写了什么。"""
+    def send_push(self, token: str, env: str, payload: bytes, push_id: str = "") -> None:
+        """请中继代发一条推送。载荷已经是加密壳，中继读不懂里面写了什么。
+
+        ``push_id`` 为本帧关联标识（可空，旧中继忽略未知字段）：新中继会回
+        ``FRAME_PUSH_RECEIPT``，推送层只凭回执记已发；仅入队永不算成功。
+        """
         if not token:
             return
         body = json.dumps(
-            {"token": token, "env": env or "production", "payload": payload.decode("ascii")},
+            {
+                "token": token,
+                "env": env or "production",
+                "payload": payload.decode("ascii"),
+                "id": push_id or "",
+            },
             ensure_ascii=False,
         ).encode("utf-8")
         self._write(protocol.FRAME_PUSH, protocol.ZERO_CHANNEL, body)

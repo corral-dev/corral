@@ -112,9 +112,5 @@ elif command -v pickup >/dev/null 2>&1; then
 fi
 
 echo ""
-echo "正在自动启用终端命令托管："
-"$CHECK_PY" -m corral shim install || true
-
-echo ""
-echo "完成。新开的终端会自动托管 Agent；已打开的终端执行一次 source 对应配置文件后也会生效。"
+echo "完成。命令拦截默认关闭；需要「敲原命令进托管」时再执行：corral shim install"
 echo "日常开发：改 src/ 后直接再跑 corral 即可，无需反复 force-reinstall。"
