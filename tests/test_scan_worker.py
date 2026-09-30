@@ -99,12 +99,17 @@ class ScanWorkerTests(unittest.TestCase):
             "live": False,
         }
 
-    def _write_heartbeat(self, pid: int, age_seconds: float = 0.0) -> None:
+    def _write_heartbeat(self, pid: int, age_seconds: float = 0.0, *, cohort: object = "current") -> None:
+        from corral.cache import provider_cohort
+
         path = self.cache / self.scan_worker.HEARTBEAT_FILENAME
+        payload: dict[str, object] = {"pid": pid, "updated_at": time.time() - age_seconds}
+        if cohort == "current":
+            payload["cohort"] = provider_cohort()
+        elif isinstance(cohort, str):
+            payload["cohort"] = cohort
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"pid": pid, "updated_at": time.time() - age_seconds}, handle,
-            )
+            json.dump(payload, handle)
 
     # -- heartbeat verdict --
 
@@ -122,6 +127,24 @@ class ScanWorkerTests(unittest.TestCase):
     def test_active_with_fresh_heartbeat_of_live_pid(self) -> None:
         self._write_heartbeat(os.getpid())
         self.assertTrue(self.scan_worker.is_active())
+
+    def test_inactive_with_cohortless_legacy_heartbeat(self) -> None:
+        # Pre-cohort workers carry no contract stamp: never reuse them.
+        self._write_heartbeat(os.getpid(), cohort=None)
+        self.assertFalse(self.scan_worker.is_active())
+
+    def test_inactive_with_obsolete_provider_cohort(self) -> None:
+        self._write_heartbeat(os.getpid(), cohort="2026-09-29.3+sesskit-0.2.3")
+        self.assertFalse(self.scan_worker.is_active())
+
+    def test_write_heartbeat_stamps_current_cohort(self) -> None:
+        from corral.cache import provider_cohort
+
+        self.scan_worker._write_heartbeat()
+        path = self.cache / self.scan_worker.HEARTBEAT_FILENAME
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        self.assertEqual(payload.get("cohort"), provider_cohort())
 
     # -- worker passes --
 

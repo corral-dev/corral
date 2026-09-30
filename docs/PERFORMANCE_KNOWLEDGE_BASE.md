@@ -381,6 +381,25 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 1. **快照严格限定在一轮扫描内。** 做成长期缓存会让同一进程里后续扫描看不到本轮新写入的会话。不在扫描期间的调用方（`store` / `titles`）继续走逐条查询，行为不变。
 2. **payload 解码必须保持惰性。** 快照装着该运行时的全部条目（Codex 2686 条 / 2.3 MB），本轮只用得到其中一小部分；建快照时就解码等于白做大量无用功，收益会被吃光。只有签名与解析器版本都校验通过才 `json.loads`。
 
+### 缓存版本绑定 provider 合约（2026-10-01 consumer-upgrade，别改回去）
+
+`session_meta` / `conversation` 的 `parser_version` = Corral `_PARSER_VERSION` +
+`sesskit-<本进程实际安装版>`（`cache.provider_cohort()`，单一起源），host-tag
+（SessKit 的 `host_cache_tag`）追加在后。SessKit 一升级，cohort 就变：旧行读
+直接未命中走新鲜解析，冷刷的 `prune_stale_sessions` 按 cohort 前缀清掉旧合约
+行。注意两处曾经写反的版本比较（2026-10-01 修好）：
+
+- **purge 必须按前缀比，不能按裸 `_PARSER_VERSION` 精确比。** host-tagged 行的
+  版本是 `cohort + tag`，精确比较会把当期有效行在每次冷刷都删掉；现在只删
+  `parser_version NOT LIKE <cohort>%` 的行（LIKE 转义后比较），当期裸行与
+  host-tagged 行都保留。读路径仍是精确比较（`_decode_session_row` 与
+  `get_conversation`），正确性不依赖 purge。
+- **共享快照与 worker 心跳同样带 cohort。** `scan-index.json` 的
+  `provider_cohort` 对不上（或缺失）就直接不消费，回退本地扫描；
+  `scan-worker.json` 心跳缺 cohort/对不上，本进程 `is_active()` 即为假——
+  旧合约的常驻 worker 永不被新合约复用，只等它退出后新 worker 占到单例槽
+  （期间消费者走本地扫描，不杀进程、不抢锁）。
+
 实测（同一进程内把行为还原成改动前做 A/B，n=15，本机 168 个会话）：`scan_all` 暖缓存中位 **251.9 ms → 203.3 ms**（−19%），最快 218.4 ms → 175.8 ms。验收差分：走快照与 `CORRAL_CACHE=0` 现解析，5 个运行时的扫描结果逐字段完全一致。
 
 ## 原生扩展与分发

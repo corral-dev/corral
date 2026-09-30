@@ -46,6 +46,11 @@ _MAX_WIRE_TOOLS = 32
 # 只驱动手机端「问题选项按钮」；词表与分类函数已下沉到 scan.common.classify_tool。
 QUESTION_KINDS = {"question"}
 
+# Codex async panel: asked and answered without blocking the turn. Unlike a
+# sync overlay, mid-turn commentary and unrelated tool activity must not settle
+# it; see pending_prompts_from_messages and request_user_input_async.rs.
+_ASYNC_QUESTION_TOOL = "request_user_input_async"
+
 classify = classify_tool
 
 
@@ -1858,6 +1863,8 @@ def _feed_typed_event(
             return prev, False
         host, is_new = _typed_host_for(groups, key, "assistant", ts, reader._next_seq)
         host.text = _clip(f"{host.text}\n\n{text}" if host.text else text, _MAX_TEXT)
+        if runtime == "codex":
+            _settle_async_on_turn_error(reader, event)
         return host, is_new
     if etype == "tool_call":
         tool = _codex_tool_card(event) if runtime == "codex" else _standard_tool_card(event)
@@ -1903,6 +1910,11 @@ def _feed_typed_event(
             call_id, output=getattr(event, "raw_output", None), failed=failed
         )
         return (host, False) if host is not None else (None, False)
+    if etype == "lifecycle" and runtime == "codex":
+        # Native turn-end boundary (task_complete / turn_aborted): settle this
+        # turn's async panels. Produces no phone card.
+        _settle_async_on_turn_end(reader, event)
+        return None, False
     if etype == "lifecycle" and runtime == "pi":
         # SessKit carries the error of a thinking-only failed turn on a
         # typed-only lifecycle event. Like the legacy parser, the error text
@@ -1962,6 +1974,56 @@ def _is_async_acceptance_receipt(value: object) -> bool:
     if isinstance(accepted, str):
         return accepted.strip().lower() == "true"
     return accepted is True
+
+
+def _settle_async_on_turn_error(reader: RichReader, event: object) -> None:
+    """Settle Codex async panels when their turn ends abnormally.
+
+    Mirrors the official TUI ``take_question_drafts`` on turn end
+    (``chatwidget/turn_runtime.rs`` + ``protocol.rs``): a turn-scoped native
+    error such as ``turn_aborted`` clears the async panel. The
+    ``{"accepted":true}`` routing receipt is not an error and never reaches
+    here; ordinary commentary carries no error and leaves the panel up
+    (``bottom_pane/async_questions/state.rs``).
+    """
+    error = getattr(event, "error", None)
+    if error is None or getattr(error, "scope", None) != "turn":
+        return
+    for call_id in [
+        call_id
+        for call_id, tool in reader._pending.items()
+        if tool.name == _ASYNC_QUESTION_TOOL
+    ]:
+        tool = reader._pending.pop(call_id, None)
+        if tool is not None:
+            tool.status = "error"
+
+
+def _settle_async_on_turn_end(reader: RichReader, event: object) -> None:
+    """Settle Codex async panels on the native turn-end lifecycle event.
+
+    SessKit emits one typed-only ``lifecycle`` per native turn end
+    (``task_complete`` always; ``turn_aborted`` already did): the final text
+    card alone cannot distinguish normal completion from mid-turn commentary.
+    Every pending async tool belongs to an ended turn here — events are
+    chronological, so no later turn exists yet — and an older completed turn's
+    tools were settled by their own boundary, so they stay settled. Clean
+    completion reads ``ok`` (the call itself returned); an error-carrying end
+    reads ``error``.
+    """
+    stop = str(getattr(event, "stop_reason", None) or "")
+    text = str(getattr(event, "text", None) or "")
+    if stop != "task_complete" and not text.startswith("turn_aborted:"):
+        return
+    failed = getattr(event, "error", None) is not None
+    for call_id in [
+        call_id
+        for call_id, tool in reader._pending.items()
+        if tool.name == _ASYNC_QUESTION_TOOL
+    ]:
+        tool = reader._pending.pop(call_id, None)
+        if tool is not None:
+            tool.status = "error" if failed else "ok"
 
 
 def _project_typed_batch(
@@ -2530,6 +2592,11 @@ def pending_prompts_from_messages(items: list[RichMessage]) -> list[dict]:
 
     手机端可直接渲染 ``options`` 为可点按钮；没有选项时仍返回摘要供自由输入。
     一次询问里的多道题拆成多条；后面已经有新回复或新工具时旧提问不再返回。
+    唯一的例外是 Codex ``request_user_input_async``：它是异步面板，官方在等答
+    期间继续推进回合（``state.rs``），所以等答中的 commentary 与非提问工具不
+    算 supersede；只有用户正文（steering 或原生信封回执）、更新的提问或回合
+    结束才结算——turn 级原生错误在投影期直接结算（见 ``_feed_typed_event``）。
+    只展示最新一个未答复的请求。
     """
     for message in reversed(items):
         running = [
@@ -2543,8 +2610,46 @@ def pending_prompts_from_messages(items: list[RichMessage]) -> list[dict]:
                 prompts.extend(_prompt_entries_for_tool(tool))
             return prompts
         if _message_supersedes_prompts(message):
+            break
+    else:
+        return []
+    # 新回复/新工具盖住了所有 running 提问：同步行为到此为止；异步面板若只是
+    # 被等答 commentary 或无关工具盖住，必须保留（2026-10-01 确认缺陷）。
+    return _retained_async_prompts(items)
+
+
+def _retained_async_prompts(items: list[RichMessage]) -> list[dict]:
+    """Return the newest running async panel hidden only by non-settling activity.
+
+    A newer user text settles the panel either way: ordinary steering submits a
+    real prompt (the official TUI calls ``clear_pending_questions`` on prompt
+    submit, ``chatwidget/input_submission.rs``), and a native
+    ``<send_user_message_question_reply>`` envelope answers it
+    (``resolve_answers``). Anything newer that is not user text — assistant
+    commentary, unrelated tool calls/results — leaves the panel up.
+    """
+    candidate: ToolCall | None = None
+    candidate_seq = -1
+    for message in items:
+        for tool in message.tools:
+            if (
+                tool.kind in QUESTION_KINDS
+                and tool.status == "running"
+                and tool.name == _ASYNC_QUESTION_TOOL
+                and message.seq >= candidate_seq
+            ):
+                candidate = tool
+                candidate_seq = message.seq
+    if candidate is None:
+        return []
+    for message in items:
+        if (
+            message.role == "user"
+            and (message.text or "").strip()
+            and message.seq > candidate_seq
+        ):
             return []
-    return []
+    return _prompt_entries_for_tool(candidate)
 
 
 def _prompt_entries_for_tool(tool: ToolCall) -> list[dict]:

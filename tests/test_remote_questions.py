@@ -476,5 +476,390 @@ class AsyncQuestionTests(unittest.TestCase):
         self.assertNotIn("call_async1", reader._pending)
 
 
+def _codex_user(text: str) -> dict:
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+        },
+    }
+
+
+def _codex_assistant(text: str) -> dict:
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        },
+    }
+
+
+def _codex_async_call(call_id: str, asked: list[dict]) -> dict:
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "request_user_input_async",
+            "call_id": call_id,
+            "arguments": json.dumps({"questions": asked}, ensure_ascii=False),
+        },
+    }
+
+
+def _codex_async_item(call_id: str, asked: list[dict], body: str) -> dict:
+    return {
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "item": {
+                "type": "AgentMessage",
+                "id": call_id,
+                "content": [{"type": "Text", "text": body}],
+                "phase": "final_answer",
+                "delivery": "async",
+                "questions": asked,
+            },
+        },
+    }
+
+
+def _codex_output(call_id: str, output: str) -> dict:
+    return {
+        "type": "response_item",
+        "payload": {"type": "function_call_output", "call_id": call_id, "output": output},
+    }
+
+
+def _codex_abort(message: str) -> dict:
+    return {
+        "type": "event_msg",
+        "payload": {
+            "type": "task_complete",
+            "last_agent_message": None,
+            "error": {"message": message, "codex_error_info": "turn_aborted"},
+        },
+    }
+
+
+def _codex_complete(text: str) -> dict:
+    return {
+        "type": "event_msg",
+        "payload": {
+            "type": "task_complete",
+            "last_agent_message": text,
+        },
+    }
+
+
+def _sesskit_emits_completion_lifecycle() -> bool:
+    """Capability probe: SessKit must surface native task_complete as a typed
+    turn-end lifecycle event (not just the final text card)."""
+    from sesskit import get_adapter
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "probe.jsonl"
+        _write_jsonl(path, [_codex_complete("Done.")])
+        reader = get_adapter("codex").open_reader(
+            {"source": "codex", "path": str(path), "id": "probe", "cwd": directory},
+            None,
+        )
+        return any(
+            getattr(e, "type", "") == "lifecycle"
+            and str(getattr(e, "stop_reason", "") or "") == "task_complete"
+            for e in list(reader.poll().events)
+        )
+
+
+_ASYNC_ASKED = [
+    {"title": "测试单选：你现在使用什么网络？", "options": ["Wi-Fi", "蜂窝网络", "其他网络"]},
+    {"title": "测试自由填写：请随便写一句话。", "options": None},
+    {"title": "测试多题提交：操作是否顺畅？", "options": ["顺畅", "遇到问题"]},
+]
+_ASYNC_BODY = "测试单选：你现在使用什么网络？\n- Wi-Fi\n- 蜂窝网络\n- 其他网络"
+
+
+def _async_history(*extra: dict, call_id: str = "call_async1") -> list[dict]:
+    """Real rollout shape: prompt, preface, async call, async panel, accepted receipt."""
+    return [
+        _codex_user("问我几个问题"),
+        _codex_assistant("我会发三个测试问题。"),
+        _codex_async_call(call_id, _ASYNC_ASKED),
+        _codex_async_item(call_id, _ASYNC_ASKED, _ASYNC_BODY),
+        _codex_output(call_id, '{"accepted":true}'),
+        *extra,
+    ]
+
+
+def _codex_pending(rows: list[dict]) -> tuple[list, list[dict]]:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "codex.jsonl"
+        _write_jsonl(path, rows)
+        session = {"source": "codex", "path": str(path), "id": "async", "cwd": directory}
+        messages = richmsg.RichReader(session).read_all()
+        return messages, questions.pending_prompts(session, messages)
+
+
+class AsyncSettlementTests(unittest.TestCase):
+    """Async panels stay up while the turn continues; only real settlement clears them.
+
+    Every case runs the real JSONL → SessKit typed-event → RichMessage path,
+    mirroring /tmp/corral-accept-20261001/{accepted,continued}.jsonl.
+    """
+
+    def test_commentary_after_accept_keeps_pending(self) -> None:
+        _, prompts = _codex_pending(
+            _async_history(_codex_assistant("Continuing the work while you answer."))
+        )
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual({p["request_id"] for p in prompts}, {"call_async1"})
+
+    def test_unrelated_tool_activity_keeps_pending(self) -> None:
+        rows = _async_history(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "exec_1",
+                    "arguments": json.dumps({"cmd": "ls"}),
+                },
+            },
+            _codex_output("exec_1", "ok"),
+            _codex_assistant("Still working on it."),
+        )
+        _, prompts = _codex_pending(rows)
+        self.assertEqual(len(prompts), 3)
+
+    def test_native_envelope_reply_settles(self) -> None:
+        question_id = '["request_user_input_async","call_async1",0]'
+        envelope = (
+            "<send_user_message_question_reply>\n"
+            + json.dumps(
+                [{"questionItemId": question_id, "question": "q", "answer": "Wi-Fi"}]
+            )
+            + "\n</send_user_message_question_reply>"
+        )
+        _, prompts = _codex_pending(_async_history(_codex_user(envelope)))
+        self.assertEqual(prompts, [])
+
+    def test_ordinary_steering_settles(self) -> None:
+        # Official TUI submits a prompt through clear_pending_questions
+        # (chatwidget/input_submission.rs); steering is settlement, not an answer.
+        _, prompts = _codex_pending(_async_history(_codex_user("先别问了，继续吧")))
+        self.assertEqual(prompts, [])
+
+    def test_turn_abort_settles(self) -> None:
+        messages, prompts = _codex_pending(_async_history(_codex_abort("acceptance interrupted")))
+        self.assertEqual(prompts, [])
+        statuses = [
+            tool.status
+            for message in messages
+            for tool in message.tools
+            if tool.name == "request_user_input_async"
+        ]
+        self.assertEqual(statuses, ["error"])
+
+    def test_replacement_request_shows_only_latest(self) -> None:
+        second = [{"title": "Second?", "options": ["Yes", "No"]}]
+        rows = _async_history(
+            _codex_assistant("One more thing while you answer."),
+            _codex_async_call("call_async2", second),
+            _codex_async_item("call_async2", second, "Second?\n- Yes\n- No"),
+            _codex_output("call_async2", '{"accepted":true}'),
+        )
+        _, prompts = _codex_pending(rows)
+        self.assertEqual([p["request_id"] for p in prompts], ["call_async2"])
+
+    def test_sync_question_still_cleared_by_commentary(self) -> None:
+        rows = [
+            _codex_user("Deploy?"),
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "request_user_input",
+                    "call_id": "ask-1",
+                    "arguments": json.dumps(
+                        {
+                            "questions": [
+                                {
+                                    "id": "q1",
+                                    "question": "Proceed?",
+                                    "header": "Deploy",
+                                    "options": [{"label": "Yes"}, {"label": "No"}],
+                                }
+                            ]
+                        }
+                    ),
+                },
+            },
+            _codex_assistant("Never mind, continuing."),
+        ]
+        _, prompts = _codex_pending(rows)
+        self.assertEqual(prompts, [])
+
+    def test_turn_error_event_settles_pending_tool(self) -> None:
+        from types import SimpleNamespace
+
+        reader = richmsg.RichReader({"source": "codex", "id": "s", "path": ""})
+        host = richmsg.RichMessage(seq=1, role="assistant", text="")
+        tool = richmsg.ToolCall(
+            call_id="call_async1",
+            name="request_user_input_async",
+            kind="question",
+            summary="q",
+            questions_meta=richmsg._question_meta(
+                "question", {"questions": [{"title": "Q?", "options": ["A", "B"]}]},
+            ),
+        )
+        reader._register_tool(host, tool)
+        host.tools.append(tool)
+        error_card = SimpleNamespace(
+            type="assistant_message",
+            text="acceptance interrupted",
+            error=SimpleNamespace(scope="turn"),
+            ts=None,
+            evidence=None,
+        )
+        richmsg._feed_typed_event(
+            reader, error_card, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertNotIn("call_async1", reader._pending)
+        self.assertEqual(tool.status, "error")
+        self.assertEqual(richmsg.pending_prompts_from_messages([host]), [])
+
+    def _register_live_async(self, reader, call_id="call_async1"):
+        host = richmsg.RichMessage(seq=1, role="assistant", text="")
+        tool = richmsg.ToolCall(
+            call_id=call_id,
+            name="request_user_input_async",
+            kind="question",
+            summary="q",
+            questions_meta=richmsg._question_meta(
+                "question", {"questions": [{"title": "Q?", "options": ["A", "B"]}]},
+            ),
+        )
+        reader._register_tool(host, tool)
+        host.tools.append(tool)
+        return host, tool
+
+    def test_turn_end_lifecycle_settles_clean_completion(self) -> None:
+        from types import SimpleNamespace
+
+        reader = richmsg.RichReader({"source": "codex", "id": "s", "path": ""})
+        host, tool = self._register_live_async(reader)
+        end = SimpleNamespace(type="lifecycle", text="task_complete",
+                              stop_reason="task_complete", error=None,
+                              ts=None, evidence=None)
+        host_out, is_new = richmsg._feed_typed_event(
+            reader, end, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertEqual((host_out, is_new), (None, False))
+        self.assertNotIn("call_async1", reader._pending)
+        self.assertEqual(tool.status, "ok")
+        self.assertEqual(richmsg.pending_prompts_from_messages([host]), [])
+
+    def test_turn_end_lifecycle_with_error_settles_as_error(self) -> None:
+        from types import SimpleNamespace
+
+        reader = richmsg.RichReader({"source": "codex", "id": "s", "path": ""})
+        host, tool = self._register_live_async(reader)
+        end = SimpleNamespace(type="lifecycle", text="task_complete",
+                              stop_reason="task_complete",
+                              error=SimpleNamespace(scope="turn"),
+                              ts=None, evidence=None)
+        richmsg._feed_typed_event(
+            reader, end, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertEqual(tool.status, "error")
+        self.assertEqual(richmsg.pending_prompts_from_messages([host]), [])
+
+    def test_native_turn_abort_lifecycle_settles(self) -> None:
+        from types import SimpleNamespace
+
+        reader = richmsg.RichReader({"source": "codex", "id": "s", "path": ""})
+        host, tool = self._register_live_async(reader)
+        # SessKit turn_aborted lifecycles carry a turn-scoped error.
+        end = SimpleNamespace(type="lifecycle", text="turn_aborted: interrupt",
+                              stop_reason="interrupt",
+                              error=SimpleNamespace(scope="turn"),
+                              ts=None, evidence=None)
+        richmsg._feed_typed_event(
+            reader, end, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertEqual(tool.status, "error")
+        self.assertEqual(richmsg.pending_prompts_from_messages([host]), [])
+
+    def test_unrelated_lifecycle_leaves_panel_up(self) -> None:
+        from types import SimpleNamespace
+
+        reader = richmsg.RichReader({"source": "codex", "id": "s", "path": ""})
+        host, tool = self._register_live_async(reader)
+        other = SimpleNamespace(type="lifecycle", text="compaction", stop_reason=None,
+                                error=None, ts=None, evidence=None)
+        richmsg._feed_typed_event(
+            reader, other, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertIn("call_async1", reader._pending)
+        self.assertEqual(
+            [p["request_id"] for p in richmsg.pending_prompts_from_messages([host])],
+            ["call_async1"],
+        )
+
+    def test_normal_completion_jsonl_settles(self) -> None:
+        if not _sesskit_emits_completion_lifecycle():
+            self.skipTest("requires SessKit task_complete turn-end lifecycle")
+        messages, prompts = _codex_pending(
+            _async_history(_codex_assistant("All done."), _codex_complete("All done."))
+        )
+        self.assertEqual(prompts, [])
+        statuses = [
+            tool.status
+            for message in messages
+            for tool in message.tools
+            if tool.name == "request_user_input_async"
+        ]
+        self.assertEqual(statuses, ["ok"])
+
+    def test_completed_turn_stays_settled_when_later_turn_begins(self) -> None:
+        if not _sesskit_emits_completion_lifecycle():
+            self.skipTest("requires SessKit task_complete turn-end lifecycle")
+        messages, prompts = _codex_pending(
+            _async_history(
+                _codex_assistant("All done."),
+                _codex_complete("All done."),
+                _codex_user("Thanks, next question"),
+                _codex_assistant("On it."),
+            )
+        )
+        self.assertEqual(prompts, [])
+        # Same answer through a fresh read (replay determinism).
+        session_messages = list(messages)
+        self.assertEqual(
+            richmsg.pending_prompts_from_messages(session_messages), []
+        )
+
+    def test_answer_on_settled_request_is_stale_without_paste(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(questions.embed, "paste") as paste, mock.patch.object(
+            questions.embed, "send_key"
+        ) as send_key:
+            result = questions.answer(
+                {"source": "codex", "id": "s"},
+                [],
+                "call_async1",
+                [{"question_id": "gone", "selected": ["0"], "text": ""}],
+                pane_name=lambda: "pane-1",
+            )
+        self.assertEqual(result["status"], "stale")
+        paste.assert_not_called()
+        send_key.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

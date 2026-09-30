@@ -88,7 +88,14 @@ def _paths() -> tuple[object, object]:
 
 
 def is_active(*, max_age: float = HEARTBEAT_MAX_AGE_SECONDS) -> bool:
-    """True when a live worker heartbeat is fresh (best-effort, never raises)."""
+    """True when a live worker heartbeat is fresh (best-effort, never raises).
+
+    The heartbeat's provider cohort must match this process's cohort: an
+    obsolete shared worker (older SessKit contract) is never treated as live
+    by a new provider cohort, so its snapshots can never become anyone's
+    baseline. Consumers fall back to local scans until a current worker owns
+    the singleton slot.
+    """
     if not _worker_enabled():
         return False
     try:
@@ -102,6 +109,13 @@ def is_active(*, max_age: float = HEARTBEAT_MAX_AGE_SECONDS) -> bool:
         if pid <= 0 or time.time() - updated_at > max_age:
             return False
         os.kill(pid, 0)
+        try:
+            from corral.cache import provider_cohort
+        except Exception:  # noqa: BLE001 — cohort module broken; scans are too
+            return False
+        cohort = payload.get("cohort")
+        if not isinstance(cohort, str) or cohort != provider_cohort():
+            return False
         return True
     except Exception:  # noqa: BLE001 — absence of a worker is normal
         return False
@@ -115,9 +129,18 @@ def _write_heartbeat() -> None:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / HEARTBEAT_FILENAME
         tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        try:
+            from corral.cache import provider_cohort
+
+            cohort: object = provider_cohort()
+        except Exception:  # noqa: BLE001 — cohort-less heartbeat reads as inactive
+            cohort = None
+        heartbeat_payload: dict[str, object] = {"pid": os.getpid(), "updated_at": time.time()}
+        if isinstance(cohort, str) and cohort:
+            heartbeat_payload["cohort"] = cohort
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(
-                {"pid": os.getpid(), "updated_at": time.time()},
+                heartbeat_payload,
                 handle,
             )
         os.replace(tmp, path)

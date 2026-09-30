@@ -92,6 +92,45 @@
   禁止用文件 mtime。）
 - 要求：同一轮重复扫描必须算出同一个值；新一轮结束必须变；
   进程重启后对同一份历史重算仍得同一个值（持久去重不靠内存）。
+- **窗口稳定的身份输入（2026-10-01 验收驳回，SessKit 0.2.4 已发布、消费端待安装）**：
+  滚动扫描窗口内用户/列表摘要“有没有”变化，不得改变同一原生终局事件的
+  id——锚点与参与哈希的尾料都必须是终局锚点事件自身的确定性函数，
+  不能取自窗口摘要。已验证失败（SessKit 0.2.3 实装复现）：
+  同一终局事件前后两次都是 DONE，64KB 尾部丢了用户摘要后 id 变化，
+  同一真实完成连推两条。验收缺口更新（2026-10-01 当日）：
+  SessKit 0.2.4 已把 Claude 身份尾料改成锚点终局事件自身正文
+  （窗口稳定；展示摘要回填不变），五处消费端 pin 已更新，待安装到运行进程；
+  在已发布版本到达用户机器之前，旧 id 仍可能因窗口边界换 id。
+  Corral 侧不做补偿、不改扫描，只按 `(session_key, completion_id)`
+  去重语义消费。
+- **Provider upgrade baseline (2026-10-01 acceptance correction)**: a new
+  SessKit completion-identity contract must invalidate older derived session
+  metadata and shared scanner snapshots before the remote service establishes
+  its baseline. Preserve native histories and per-device notification ledgers.
+  An upgrade or restart must not emit historical completions, and continued
+  metadata appends must not re-notify the same terminal event. The coordinator
+  reproduced SessKit 0.2.4 returning an old completion id from Corral's warm
+  metadata cache for an unchanged native file; fresh native parsing returned the
+  new id. Shared-worker upgrade behavior was verified in-tree this same day (see
+  implementation note below). A dependency pin alone does not establish that the
+  running consumer uses the new contract.
+- **Provider upgrade implementation (2026-10-01, in tree, pending coordinator
+  release/install/verification)**: `cache.provider_cohort()` qualifies every
+  cached row, shared snapshot (`provider_cohort` field, mismatch ⇒ local scan),
+  and worker heartbeat (missing/mismatch ⇒ `is_active()` false, no reuse);
+  cold-flush purge keeps current-cohort rows (bare or host-tagged) and drops
+  old-contract rows; pins cut to SessKit 0.2.4 in all five places. Per-device
+  ledgers and preferences unchanged; no compensating push logic.
+- **Independent acceptance (2026-10-01)**: the coordinator seeded the actual
+  previous cache contract (bare parser version plus host tag), then scanned an
+  unchanged native Claude history through SessKit 0.2.4 and the real Corral
+  cache. The stale row was rejected before baseline creation. Appending native
+  metadata past the 64 KB boundary added zero captured sends; a fresh hub with
+  reloaded ledgers added zero; a distinct native final event with identical text
+  added exactly one. These checks used the real hub and notifier with an
+  isolated sender, never a phone. Against the still-running old scanner, the new
+  consumer rejected both its live heartbeat and shared snapshot. Post-install
+  relay and physical notification acceptance remain separate evidence.
 - Cursor 收紧（二选一，SessKit 仓内定）：
   A. 无明确“助手最终答复 / 结构化完成”证据时宁可 `STATUS_NONE`
   也不给 `STATUS_DONE`；B. 维持现状但 `completion_id` 为空，

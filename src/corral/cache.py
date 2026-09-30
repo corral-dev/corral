@@ -27,6 +27,48 @@ DEFAULT_MAX_MB = 256
 # count as user messages in conversation/Your prompts).
 _PARSER_VERSION = "2026-09-29.3"
 
+# Installed SessKit build behind this process (memoized; import stays lazy so
+# this module never drags the provider in at package import time).
+_SESSKIT_VERSION_MEMO: str | None = None
+
+
+def sesskit_provider_version() -> str:
+    """Installed SessKit version driving native parsing in this process.
+
+    Never raises; "unknown" when the provider is missing or hides its version.
+    Memoized: an upgrade mid-process cannot change what this process parses
+    with, so the cohort it stamps stays the one it actually used.
+    """
+    global _SESSKIT_VERSION_MEMO
+    if _SESSKIT_VERSION_MEMO is None:
+        version = ""
+        try:
+            import sesskit
+
+            version = str(getattr(sesskit, "__version__", "") or "").strip()
+        except Exception:
+            version = ""
+        _SESSKIT_VERSION_MEMO = version or "unknown"
+    return _SESSKIT_VERSION_MEMO
+
+
+def provider_cohort() -> str:
+    """Derived-data contract cohort: consumer extraction semantics + provider build.
+
+    Every cached session row, shared snapshot, and worker heartbeat is stamped
+    with this. A provider upgrade (e.g. SessKit completion-identity contract
+    change) yields a different cohort, so older rows/snapshots miss instead of
+    serving stale semantics — the remote's cold baseline only ever consumes
+    the new contract. Never derive per-scan inputs (paths, mtimes, titles)
+    into this string.
+    """
+    return f"{_PARSER_VERSION}+sesskit-{sesskit_provider_version()}"
+
+
+def _like_escape(text: str) -> str:
+    """Escape a literal for a LIKE pattern (backslash escapes itself)."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 def enabled() -> bool:
     return (getenv("CACHE", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -239,7 +281,7 @@ class PerformanceCache:
         signature = file_signature(path)
         if signature is None:
             return None
-        version = _PARSER_VERSION + extra_version
+        version = provider_cohort() + extra_version
         snapshot = self._session_snapshot(runtime)
         if snapshot is not None:
             return self._decode_session_row(snapshot.get(path), signature, version)
@@ -263,7 +305,7 @@ class PerformanceCache:
             return
         with self._pending_lock:
             self._pending_sessions.append(
-                (runtime, path, *signature, _PARSER_VERSION + extra_version, encoded, time.time())
+                (runtime, path, *signature, provider_cohort() + extra_version, encoded, time.time())
             )
 
     def flush_pending(self) -> None:
@@ -305,7 +347,7 @@ class PerformanceCache:
                 "FROM conversation WHERE runtime=? AND session_key=?",
                 (runtime, session_key),
             ).fetchone()
-            if row is None or tuple(row[:4]) != signature or row[4] != _PARSER_VERSION:
+            if row is None or tuple(row[:4]) != signature or row[4] != provider_cohort():
                 return None
             try:
                 raw = json.loads(row[5])
@@ -333,7 +375,7 @@ class PerformanceCache:
                 "(runtime,session_key,path,dev,ino,size,mtime_ns,parser_version,payload,accessed_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
-                    runtime, session_key, path, *signature, _PARSER_VERSION,
+                    runtime, session_key, path, *signature, provider_cohort(),
                     encoded, time.time(),
                 ),
             )
@@ -379,7 +421,19 @@ class PerformanceCache:
     _last_stale_session_purge: float = 0.0
 
     def prune_stale_sessions(self, *, now: float | None = None) -> int:
-        """Delete bounded batches of dead session_meta rows; returns rows removed."""
+        """Delete bounded batches of dead session_meta rows; returns rows removed.
+
+        A row is stale when its history file is gone OR its parser_version no
+        longer belongs to the current provider cohort. The cohort check is a
+        prefix match (not bare equality): host-tagged rows carry
+        ``cohort + host_tag`` and are live entries, not stale ones — comparing
+        against the bare base deleted them at every cold flush (2026-10-01
+        consumer-upgrade fix). A provider upgrade therefore drops old-contract
+        rows from the purge set while current rows (bare or host-tagged)
+        survive. Reads stay exact-match, so even a prefix-colliding survivor
+        (e.g. a longer provider version string under a downgrade) can only
+        cost disk until a later cohort purges it — never a stale hit.
+        """
         now = time.time() if now is None else now
         if now - PerformanceCache._last_stale_session_purge < self._STALE_SESSION_MIN_INTERVAL:
             return 0
@@ -389,10 +443,11 @@ class PerformanceCache:
             with self._connect() as conn:
                 if conn is None:
                     return 0
+                cohort_prefix = _like_escape(provider_cohort()) + "%"
                 cursor = conn.execute(
                     "DELETE FROM session_meta WHERE rowid IN "
-                    "(SELECT rowid FROM session_meta WHERE parser_version != ? LIMIT ?)",
-                    (_PARSER_VERSION, self._STALE_SESSION_BATCH),
+                    "(SELECT rowid FROM session_meta WHERE parser_version NOT LIKE ? ESCAPE '\\' LIMIT ?)",
+                    (cohort_prefix, self._STALE_SESSION_BATCH),
                 )
                 removed += cursor.rowcount or 0
                 conn.commit()

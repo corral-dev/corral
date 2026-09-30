@@ -14,11 +14,14 @@ import threading
 import time
 from typing import Any
 
-from corral.cache import cache_dir
+from corral.cache import cache_dir, provider_cohort
 from corral.cache import enabled as cache_enabled
 from corral.legacy_names import getenv
 
 INDEX_VERSION = 1
+# Shared snapshots additionally carry the provider cohort (consumer extraction
+# semantics + SessKit build). A new cohort never adopts an older contract's
+# snapshot: the remote's cold baseline only consumes freshly parsed rows.
 # Covering indexes (publisher scanned at least as deep as the consumer) stay
 # usable this long. Consumers still force a local scan on their own cadence
 # (see SessionStore._FULL_MERGE_INTERVAL) so new sessions cannot stall forever.
@@ -72,6 +75,10 @@ def published_meta() -> tuple[float, int] | None:
         return None
     if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
         return None
+    if payload.get("provider_cohort") != provider_cohort():
+        # Older provider contract (or a cohort-less legacy publish): never
+        # establish a baseline from it.
+        return None
     try:
         return float(payload.get("published_at") or 0), int(payload.get("limit") or 0)
     except (TypeError, ValueError):
@@ -94,6 +101,10 @@ def try_consume(
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
     if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
+        return None
+    if payload.get("provider_cohort") != provider_cohort():
+        # An obsolete shared worker's snapshot must never be reused by a new
+        # provider cohort: fall through to a local scan instead.
         return None
     try:
         published_at = float(payload.get("published_at") or 0)
@@ -196,6 +207,7 @@ def publish(
             last["keys"] = fingerprint
         payload = {
             "version": INDEX_VERSION,
+            "provider_cohort": provider_cohort(),
             "published_at": time.time(),
             "limit": int(limit),
             "keep_ids": keep_payload,

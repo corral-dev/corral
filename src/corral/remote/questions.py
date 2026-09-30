@@ -221,7 +221,7 @@ def _answer_async(pane: str, questions: list[dict], answers: dict) -> None:
     No picker owns the keyboard here (the async panel is a bottom pane, not
     the sync ``request_user_input`` overlay), so there is no footer/prompt
     visibility gate — staleness is decided by ``session.prompts`` before this
-    is called (expired or turn-ended requests never reach here). Paste
+    is called (turn-ended or answered requests never reach here). Paste
     failures keep the phone draft (``unavailable``); a failed Enter after a
     successful paste is ``partial``.
     """
