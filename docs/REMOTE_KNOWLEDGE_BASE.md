@@ -89,9 +89,9 @@ normal completion is NOT indistinguishable from commentary — the rollout carri
 explicit native `task_complete` row with `turn_id` (see
 `/tmp/corral-accept-20261001/real-normal-completed.jsonl`: 25 rows ending in
 `task_complete`, no error). The first repair regressed it (v0.24.242 → 0 prompts,
-repaired source → 3) because SessKit's typed stream drops that row whenever final
-text exists (only the text card survives; bare completions already emit a typed-only
-`lifecycle`). Required correction: SessKit always emits the turn-end `lifecycle`
+repaired source → 3) because SessKit before 0.2.5 dropped that row whenever final
+text existed (only the text card survived; bare completions already emitted a typed-only
+`lifecycle`). SessKit 0.2.5 now always emits the turn-end `lifecycle`
 marker (`text="task_complete"`, native `turn_id`, error when present) — the proven
 lifecycle loss, application-neutral, mirroring the existing `turn_aborted` lifecycle;
 Corral settles that turn's async tools on it, so an unanswered question from a
@@ -100,21 +100,36 @@ wording is withdrawn for completion/abort. Expiry needs no wall-clock gate: v0.1
 has no expiry-removal code (countdown display only), so late answers on a live turn
 still resolve via `resolve_answers`.
 
-**Live TUI verification (2026-10-01, no quota):** fresh Codex 0.159.2 TUI against a local Responses-API stub (`model_catalog_json` advertises `request_user_input_async`, otherwise core rejects the call as `unsupported call`; `/models` alone is never fetched for custom providers). Receipts: 3 live prompts (`call_live1`) → stub commentary + `exec_command sleep` while the turn stayed active → still 3 → `input.question` path `delivered` (grouped choice + free text in one native envelope) → stub saw the envelope once, turn completed on final text → prompts empty; rollout shows the envelope as exactly one user message, no lone-label echo. Rig: stub+driver+report kept as a reproducible artifact (see acceptance report); isolated rollout files and the temp-dir trust entry were deleted afterwards. Still OPEN: encrypted-relay `session.prompts → input.question` hop (handlers are 3-line pass-throughs to the verified functions; service tests green) and real-phone clicks.
+**Live TUI verification (2026-10-01, no quota):** fresh Codex 0.159.2 TUI against a local Responses-API stub (`model_catalog_json` advertises `request_user_input_async`, otherwise core rejects the call as `unsupported call`; `/models` alone is never fetched for custom providers). Receipts: 3 live prompts (`call_live1`) → stub commentary + `exec_command sleep` while the turn stayed active → still 3 → `input.question` path `delivered` (grouped choice + free text in one native envelope) → stub saw the envelope once, turn completed on final text → prompts empty; rollout shows the envelope as exactly one user message, no lone-label echo. Rig: stub+driver+report kept as a reproducible artifact (see acceptance report); isolated rollout files and the temp-dir trust entry were deleted afterwards. The encrypted-relay hop subsequently passed the gate below. Real-phone clicks remain unverified.
 
 **Encrypted RPC gate (2026-10-01, no quota, phone locked):** isolated daemon from the
 current tree (own state dir/port 8741, no autostart/switch changes) + temp full-access
-probe identity (own key, unpaired afterwards; user pairings untouched) + fresh
-Codex 0.159.2 TUI on the local stub. Over the encrypted v2 channel on LAN loopback
-(identical handshake/framing to relay): `hello` → `pair` → `sessions.list` (80) →
-`input.text` → `session.prompts` 3 → commentary + `exec sleep` while active → still 3
-→ `input.question` `delivered` (grouped choice + free text, one envelope) → prompts 0
-within 2 s → normal `task_complete` → repeat `input.question` → `stale`, rollout keeps
-exactly one envelope user message → `input.text` steering starts a new turn and is
-answered. Same probe over the real relay (`wss://pickup-relay.caozc.top`): `hello`
-paired, `sessions.list` 80, `session.prompts` 0. Isolated state dir, rollouts, pane,
-and trust entry deleted afterwards; user daemon/pairings/sessions untouched. Rig:
-`rpc-accept/` next to the acceptance report.
+probe identity (own key, revoked by deleting the isolated state dir; user pairings
+untouched) + fresh Codex 0.159.2 TUI on the local stub. Full answer path over the
+configured relay (single channel): `hello` → `pair` →
+`sessions.list` (80, isolated session present) → `input.text` starts the test turn →
+`session.prompts` 3 → commentary + `exec` tool activity while active → still 3 →
+`input.question` `delivered` (grouped choice + free text, one native envelope) →
+prompts 0 → normal `task_complete` → repeat `input.question` → `stale` with the
+rollout keeping exactly one envelope user message and no lone-label echo →
+`input.text` steering starts a new turn and is answered. Stub lessons recorded in
+the rig: background title/memory turns must never consume ask rounds (exact-prompt
+matching); every tool call needs a unique id and every fco exactly one terminal
+response (no sleep chains — they self-perpetuate). Isolated state dir, rollouts,
+pane, processes, and trust entries deleted afterwards; user daemon/pairings/sessions
+untouched. Rig: `rpc-accept-rig/` next to the acceptance report.
+
+**Independent installed acceptance (2026-10-01):** Corral 0.24.244 loads the
+published SessKit 0.2.5 wheel from the actual pipx environment, without a source
+override. Replaying the fault records returns 3 questions after acceptance, 3
+after continued commentary, and 0 after either abort or normal completion. All
+38 question tests execute and pass without skips, including completion followed
+by a newer turn and stale submission without terminal injection. The complete
+2097-test gate has a matching source/environment stamp. The active user daemon
+started after both installed modules were updated and remains relay-connected;
+temporary probes did not change the user's six pairings. Physical phone rendering
+and taps remain open because the captured screen is black; backend and relay
+acceptance do not establish mobile visual acceptance.
 
 **How to verify without guessing:**
 
@@ -276,8 +291,8 @@ and trust entry deleted afterwards; user daemon/pairings/sessions untouched. Rig
 | 还按旧习惯以为 `corral remote start` 会占住终端 / 会打二维码 | 服务已是开关：`on` 后台打开并立刻返回，二维码只走 `pair`。`start`/`stop` 只是别名。要用前台调试加 `--foreground` |
 | 执行 `corral remote on` / `pair` 提示缺 `cryptography` / `websockets` / `segno`，或只显示手动配对码没有终端二维码 | 当前实际运行的 Corral 安装副本没有远程组件；打开服务或配对命令必须自动补齐。pipx 是隔离环境且默认不含 pip，必须走 `pipx inject corral …`，不能把包装到系统 Python；若自动补齐失败，才提示检查网络或软件源后重试 |
 | 单租户中继上执行 `corral login` | 登录并不适用；客户端必须立即说明该中继无需账号并继续可用，不得向不存在的设备码入口发请求后抛 404。主域名若返回 404，说明公共多租户尚未部署；若要启用，必须先在服务器配置数据库、会话密钥和 GitHub OAuth 应用，禁止把单租户实例伪装成已隔离的公共服务 |
-| 守护进程还是旧名 `pickup`（改名前起的），想换新名重启 | `corral remote off` 再 `corral remote on` 即可，`identity.key` 与手机配对都在 `~/.local/state/corral/remote/`，不会丢。**relay_url 保持在别名 `wss://pickup-relay.caozc.top`**：`is_public_relay()` 只认主域名，改成主域名反而会被要求先 `corral login`（多租户账号路径）；别名与主域名是同一服务（2026-08-25 实操验证） |
-| 新版 CLI 守护进程连中继报 `HTTP 404`（events.log `remote_relay_disconnected`） | 首尔中继二进制落后（只有 `/v1`，新版 CLI 走 `/v2/host`）。按 agentsync 基础设施知识库 `corral-relay.caozc.top` 节升级中继，升级后 v1/v2 并存；注意实际单元名是 `pickup-relay.service`，不是文档早年写的 `corral-relay.service`（2026-08-25 已升级） |
+| 守护进程还是旧名 `pickup`（改名前起的），想换新名重启 | Restart with `corral remote off` then `corral remote on`. Identity and phone pairings remain in `~/.local/state/corral/remote/`; retain the configured relay URL. Maintainer-specific domain and account-routing operations belong in the private infrastructure runbook. |
+| 新版 CLI 守护进程连中继报 `HTTP 404`（events.log `remote_relay_disconnected`） | Check whether the configured relay supports `/v2/host`; an older `/v1`-only binary needs an upgrade through that deployment's guide. Maintainer-specific hosts and service-unit names belong in the private infrastructure runbook. |
 | 手机 App 突然连不上、守护进程状态一切正常 | 手机 App 已升 v2 协议（`/v2/device`，路由 id 由主机 X25519 公钥派生），而守护进程还是旧版只登记 v1（旧路由 id 是十六进制老格式）。把守护进程升到当前版本即恢复；配对按设备公钥绑定，手机无需重扫。端到端验证用 `corral remote pair --readonly --json` 拿 `--code` 交给 `relay/scripts/device_probe.py`（探针钥匙若重新生成过，旧配对作废须重新配对） |
 | 空状态目录里 `corral remote` 测试或首次启动卡住 | `load_state` 持锁时会再进 `load_or_create_identity` / `host_key`；`config._lock` 必须是 `RLock`，改回普通 `Lock` 会在没有 `identity.key` 时死锁 |
 | 事件只到一个界面 | 客户端事件流做成了单消费者；必须按通道多播 |
@@ -304,17 +319,17 @@ New-session catalog repair acceptance (2026-09-30): after restarting the active 
 # 协议与加密单测（含在全量 ci-test）
 env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
 
-# 本机冒烟（另开终端）
-corral remote status   # 须见公网中继在线，勿长期 --no-relay
-corral remote pair --readonly --json   # 二维码须为 v=2 且含 r= 中继；仅有 l= 则换网必挂
-# 公共中继先 corral login
-# 按手机真实请求走公网中继：整表订阅 + 每个助手抽一条详情 + 20s 超时 + 空闲后再心跳
+# Relay acceptance, only when a user-configured relay is enabled.
+corral remote status   # Verify the configured relay is online.
+corral remote pair --readonly --json   # v=2; r= is required for this relay case.
+# Authenticate only when the configured relay requires an account.
+# Full subscription + one detail per active runtime + timeout + idle heartbeat.
 python3 scripts/phone_remote_acceptance.py \
-  --relay wss://pickup-relay.caozc.top \
+  --relay wss://relay.example.com \
   --key <hello/pair 输出的公钥> \
   --code <只读配对码>
 # 必须打用户正在连的那台开发机（本机和开发机公钥不同）。只抽一条 Codex 不算过。
-# 2026-08-30 17:11 本机 `dev`（0.24.150 常驻已重启）经 `wss://pickup-relay.caozc.top`：
+# 2026-08-30 17:11: development host 0.24.150, through its configured relay:
 # 整表首包 0.52s / 80 条；Cursor、Codex、Pi、OpenCode、Claude 详情均在 2s 内有正文；
 # 双连接竞速与空闲 25s 心跳通过。首包窗口里没有 Kimi 样本，不能据此说 Kimi 详情已验。
 # 可选：叠加蜂窝近似（额外往返 + 带宽上限）
