@@ -505,11 +505,48 @@ class OscProbeFlushTests(unittest.TestCase):
         bare = b"\x1b]10;rgb:1111/1111/1111\x07\x1b]11;rgb:2222/2222/2222\x07"
         late = b"\x1b]10;rgb:aaaa/aaaa/aaaa\x07\x1b]11;rgb:bbbb/bbbb/bbbb\x07"
 
+        # Event handshake between the probe (main thread) and the writer.
+        # Late must be queued only after the first real read consumed bare,
+        # so the stages can never coalesce and no wall-sleep timing is assumed.
+        raw_ready = threading.Event()
+        bare_read = threading.Event()
+        late_written = threading.Event()
+        writer_errors: list[BaseException] = []
+        orig_setraw = theme.tty.setraw
+        orig_read = theme.os.read
+        slave_seen = bytearray()
+
+        def _gated_setraw(fd, *args, **kwargs):
+            try:
+                return orig_setraw(fd, *args, **kwargs)
+            finally:
+                if fd == slave:
+                    raw_ready.set()
+
+        def _gated_read(fd, n):
+            chunk = orig_read(fd, n)
+            if fd == slave and not bare_read.is_set():
+                slave_seen.extend(chunk)
+                if bare in slave_seen:
+                    bare_read.set()
+                    if not late_written.wait(timeout=2.0):
+                        raise AssertionError(
+                            "late pair was never queued after bare was consumed"
+                        )
+            return chunk
+
         def _respond() -> None:
-            time.sleep(0.04)  # 等探测完成 setraw 并进入 select
-            os.write(master, bare)
-            time.sleep(0.05)  # 仍在 tmux settle(0.12s) 内
-            os.write(master, late)
+            try:
+                if not raw_ready.wait(timeout=2.0):
+                    raise AssertionError("probe never entered setraw on slave")
+                os.write(master, bare)
+                if not bare_read.wait(timeout=2.0):
+                    raise AssertionError("probe never consumed bare pair")
+                os.write(master, late)
+            except Exception as exc:
+                writer_errors.append(exc)
+            else:
+                late_written.set()
 
         writer = threading.Thread(target=_respond)
         try:
@@ -518,9 +555,13 @@ class OscProbeFlushTests(unittest.TestCase):
                 os.environ.pop("CORRAL_OSC_REPORT", None)
                 with mock.patch.object(theme.sys, "stdin", _FakeStd(slave)), \
                         mock.patch.object(theme.sys, "stdout", _FakeStd(slave)), \
+                        mock.patch.object(theme.tty, "setraw", _gated_setraw), \
+                        mock.patch.object(theme.os, "read", _gated_read), \
                         _draining_pty_master(master):
                     report = theme._probe_osc_colours(timeout=0.5)
             writer.join(timeout=2.0)
+            if writer_errors:
+                raise writer_errors[0]
 
             self.assertIsNotNone(report)
             self.assertIn(b"rgb:bbbb", report)

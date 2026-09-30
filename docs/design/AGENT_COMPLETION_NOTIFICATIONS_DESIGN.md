@@ -126,7 +126,8 @@ SessKit 验收沿用其 `CONTRACT.md` “Verification”：fixture +
 - `hello` 的 `capabilities` 新增 `"completion_notify": True`；
   手机据此决定展不展示那两行 Toggle（老开发机不展，只保留系统授权行）。
 
-### 3.2 投递与重试（2026-09-30 可靠性修订：enqueue ≠ APNs 接受）
+### 3.2 投递与重试（2026-09-30 可靠性修订：enqueue ≠ APNs 接受；
+### 2026-09-30 review 修正：显式重试接线、失败持久化、靶向重试、节流轮次规则）
 
 - `PushNotifier._emit` 发送前查设备偏好：`kind==completed` 看
   `notify_completed`，`aborted` 看 `notify_aborted`，`waiting` 不受此开关影响。
@@ -139,16 +140,60 @@ SessKit 验收沿用其 `CONTRACT.md` “Verification”：fixture +
   `sender` 仅入队时记 `remote_push_queued`，不记已发；回执 `ok` 才记
   `remote_push_accepted`（兼记 `remote_push_sent` 别名）并按设备落盘；
   回执失败记 `remote_push_failed{ code, status, reason }` 且不落盘。
-  无回执（旧中继 / 回执丢失）按 60 秒超时视为未知失败，进入待重试。
+  无回执（旧中继 / 回执丢失）按退避超时视为未知失败，进入待重试。
 - 待确认集合（`push-pending.json`，0600，原子写，有界）记录
-  `push_id -> {round_key, device_id, kind, ts}`；`SessionHub` 每次扫描后经
-  `retry_due(当前已结束会话)` 重发仍是最新 `completion_id` 的轮次
-  （`completion_id` 已变则旧轮自然过期，只推最新；同 `push_id` 最多重试
-  5 次后挂起等新轮次）。发送失败（`sender` 抛错 / 中继断开）同理不记已发，
-  并清掉该设备节流以便下轮扫描重试（扫描间隔即退避）。
-- 节流：保留 120 秒同 `(key, kind)` 节流防抖动；回执失败清该设备节流；
-  但同一 `completion_id` 只发一次，不同 `completion_id` 不受节流牵连
-  （修掉“第二轮被吞”）。多设备部分成功只重试失败设备，已接受设备不重发。
+  `push_id -> {round, device, kind, session, completion, ts, attempts,
+  last_code, parked}`，发送前先落盘（同步回执先到也不丢），发送异常
+  只更新 `ts/last_code` 不删除，可重试性永不因本地异常丢失。
+  瞬时失败（transport/throttled/no_push_config/local_send/未知超时）保留待重试，
+  退避 `min(60s × attempts, 600s)`；永久失败（bad_token/bad_request/rejected）
+  直接标记 `parked` 等新轮次，不空转。成功永不标记 parked。
+- `SessionHub` 每次扫描后经显式重试驱动重发仍是最新 `completion_id` 的轮次。
+  生产组装（`daemon.py`）注册的是绑定方法 `push.on_status_change`，
+  其上取不到 `retry_due`，因此驱动必须经绑定 `__self__` 解析
+  （`getattr(hook,"retry_due",None) or getattr(getattr(hook,"__self__",None),
+  "retry_due",None)`），回归须走真实 `RemoteDaemon/SessionHub` 组装验证，
+  禁止只直调 `retry_due` 冒充。
+  `completion_id` 已变则旧轮自然过期，只推最新；同一 (round, device) 发送
+  超过 5 次后 `parked`（持久化，重启后仍有效），等新轮次。
+- 重试是靶向单设备的：一次只重发到期的那一个 (round, device)，已接受的
+  同胞设备永不重发；在途（未到期）的同胞待确认抑制重复入队；
+  重试不重置同胞的 attempts。
+- 节流：`(key, kind)` 记录 `(ts, round)`。同轮 120 秒内重复跃迁抑制（防抖动）；
+  **新 `completion_id`（新轮）不受旧节流牵连**，节流窗内也必须发出；
+  跳过不落 pending（旧轮重放永不补发）。回执失败/本地发送失败清该键节流，
+  以便下轮扫描重试（扫描间隔本身即退避）。
+- 中继 wire 契约（`FRAME_PUSH` + `0x09` 回执）本次 review 不变，见 §3.4 与
+  `relay/docs/PROTOCOL_V2.md`；relay 侧仅做新增注释/错误文案英文化与 gofmt。
+
+### 3.2.1 Closure corrections (2026-09-30, final; sources before code)
+
+Apple provider rules (coordinator-fetched official source,
+https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns,
+search crawl 2026-09-30):
+
+- Retry Apple 5xx only AFTER 15 minutes: pending entries whose last receipt
+  has `status >= 500` use an earliest-retry floor of 900s
+  (`_APPLE_5XX_RETRY`), independent of the linear bounded backoff used for
+  network errors and missing receipts. Receipt `status` is persisted in
+  `push-pending.json` so the 900s rule survives restart. Attempt cap (5 sends
+  per round/device) still applies.
+- Never retry `BadDeviceToken / DeviceTokenNotForTopic / Forbidden /
+  ExpiredToken / Unregistered / PayloadTooLarge`: the existing
+  `_PERMANENT_CODES` (`bad_token/bad_request/rejected`) already parks all of
+  these deliberately — preserved, no behavior change.
+- Provider success is HTTP 200 only (relay `Sender.Send` maps `== 200` to ok;
+  any other 2xx is treated as rejected, with a regression test).
+- Persistence race: scanner sends and the asyncio receipt callback mutate the
+  sent/pending ledgers concurrently. Snapshots were taken under `_lock` but
+  written after releasing it to a SHARED `.tmp` path, so concurrent saves
+  could clobber each other's temp file or persist an older snapshot over newer
+  state (accepted dedupe lost after restart → duplicate push). Rule: mutate +
+  snapshot + write happen atomically under one lock, and every write uses a
+  UNIQUE temp path (`mkstemp`) before atomic `os.replace`. Lock order is flat
+  (single `_lock`, never held across `sender()`), so no deadlock. Regression
+  uses barrier/event sequencing (no flaky sleeps): newer accepted/pending state
+  must win on disk, no `.tmp` leftovers, reload-then-no-resend after accept.
 
 ### 3.3 推送内容（载荷已带 `kind`，NSE 侧按 `kind` 选分类）
 

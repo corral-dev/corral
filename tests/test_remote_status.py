@@ -35,6 +35,16 @@ class RemoteConfigEmptyDirTests(unittest.TestCase):
 
 
 class RemoteStatusRelayOnlineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Fixture LAN stub (same boundary as the service/receipt suites):
+        # status without snapshot hints resolves the hostname. Relay-online
+        # assertions never inspect hint content; LAN coverage is test_remote_lan.
+        self._lan_hints = mock.patch(
+            "corral.remote.lan.local_hints", return_value=[]
+        )
+        self._lan_hints.start()
+        self.addCleanup(self._lan_hints.stop)
+
     def test_login_on_single_tenant_relay_does_not_request_device_code(self) -> None:
         with mock.patch.object(remote_account, "_request") as request:
             ok, message = remote_account.login("wss://relay.example.com")

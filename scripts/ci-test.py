@@ -79,13 +79,13 @@ RUFF_VERSION = "0.16.1"
 
 # 子进程回报行前缀（stdout 最后一行）。
 _RESULT_PREFIX = "CORRAL_CI_TEST_RESULT:"
-# --list-ids 工序的回报行前缀；机器报告行前缀（父进程打印）。
+# --list-ids worker reply prefix; machine report prefix (parent prints).
 _IDS_PREFIX = "CORRAL_CI_TEST_IDS:"
 _REPORT_PREFIX = "CORRAL_CI_TEST_REPORT:"
-# worker 输出里附带的用例 id 数量上限：全量约 2000 条 id（~100KB），父进程
-# 消费后丢弃，不回显到日志。
+# Cap on test ids attached to worker output: ~2000 ids (~100KB) for a full
+# suite; the parent consumes and drops them, never echoing into logs.
 _MAX_IDS_PER_SHARD = 10000
-# 单个用例最慢 TopN（有界，不逐条记录全量耗时）。
+# Slowest-TopN per test (bounded; never records every test duration).
 _SLOWEST_TOP_N = 10
 
 # 共享真实 tmux 保活 socket，或驱动 Textual Pilot 的模块：彼此串行，
@@ -122,8 +122,16 @@ class _ShardResult:
     test_ids: tuple[str, ...] = ()
 
 
-class _TimingResult(unittest.TestResult):
-    """带跳过计数、类级耗时、最慢用例 TopN 的结果收集器（仍是标准 unittest）。"""
+class _TimingResult(unittest.TextTestResult):
+    """Result collector with skip counts, per-class seconds, slowest-TopN.
+
+    Must subclass ``unittest.TextTestResult`` (the runner's text result class),
+    never plain ``unittest.TestResult``: the latter's ``printErrors`` is an
+    empty no-op, and all ``FAIL:``/``ERROR:`` progress lines plus traceback
+    printing live on the TextTestResult side. The wrong base leaves failures
+    with only ``FAILED (failures=1)`` and zero diagnostics (seen on cloud
+    2026-09-30).
+    """
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
@@ -145,7 +153,7 @@ class _TimingResult(unittest.TestResult):
         super().stopTest(test)
         try:
             test_id = test.id()
-        except Exception:  # noqa: BLE001 — 计时绝不能破坏测试结果
+        except Exception:  # noqa: BLE001 - timing must never break results
             return
         cls = test_id.rpartition(".")[0] or test_id
         self.class_seconds[cls] = self.class_seconds.get(cls, 0.0) + elapsed
@@ -155,7 +163,7 @@ class _TimingResult(unittest.TestResult):
 
 
 def _iter_suite_ids(suite: unittest.TestSuite) -> list[str]:
-    """不运行、只枚举 suite 里的全部用例 id（覆盖审计用）。"""
+    """Enumerate every test id in a suite without running (coverage audit)."""
     ids: list[str] = []
     for item in suite:
         if isinstance(item, unittest.TestSuite):
@@ -165,7 +173,7 @@ def _iter_suite_ids(suite: unittest.TestSuite) -> list[str]:
             if callable(id_fn):
                 try:
                     ids.append(id_fn())
-                except Exception:  # noqa: BLE001 — 枚举失败由调用方判硬失败
+                except Exception:  # noqa: BLE001 - caller treats enum failure as hard fail
                     ids.append(f"<unlistable:{type(item).__name__}>")
     return ids
 
@@ -257,22 +265,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-classes",
         default=None,
-        help=argparse.SUPPRESS,  # 内部：串行余量工序（模块名/module.Class 逗号分隔，无隔离）
+        help=argparse.SUPPRESS,  # internal: serial-remainder worker (module or module.Class CSV, unisolated)
     )
     parser.add_argument(
         "--run-shard",
         default=None,
-        help=argparse.SUPPRESS,  # 内部：类粒度工序（module.Class 逗号分隔，需隔离）
+        help=argparse.SUPPRESS,  # internal: class-granularity worker (module.Class CSV, needs isolation)
     )
     parser.add_argument(
         "--run-tests",
         default=None,
-        help=argparse.SUPPRESS,  # 内部：精确 id 重跑工序
+        help=argparse.SUPPRESS,  # internal: exact-id retry worker
     )
     parser.add_argument(
         "--list-ids",
         action="store_true",
-        help=argparse.SUPPRESS,  # 内部：只枚举全量用例 id，不运行
+        help=argparse.SUPPRESS,  # internal: enumerate all test ids only, no run
     )
     return parser.parse_args(argv)
 
@@ -292,10 +300,11 @@ def _ensure_tests_on_path() -> None:
 def _run_names_in_process(
     names: list[str], *, isolated: bool = False
 ) -> _ShardResult:
-    """在当前进程跑若干 test 模块 / 类 / 用例 id，供子进程工序使用。
+    """Run test modules / classes / test ids in this process for workers.
 
-    调用方必须已进入隔离（UI 工序在 load 之前进 ``isolated_test_resources``，
-    因为 ``tests/test_ui.py`` 在 import 时就读 ``CORRAL_CACHE_DIR``）。
+    The caller must already hold isolation (UI workers enter
+    ``isolated_test_resources`` before load, because ``tests/test_ui.py``
+    reads ``CORRAL_CACHE_DIR`` at import time).
     """
     import io
 
@@ -304,7 +313,7 @@ def _run_names_in_process(
     loader = unittest.TestLoader()
     try:
         suite = loader.loadTestsFromNames(names)
-    except Exception as exc:  # noqa: BLE001 — 加载失败也要结构化回报
+    except Exception as exc:  # noqa: BLE001 - load failure still needs a structured report
         import traceback
 
         return _ShardResult(
@@ -318,7 +327,7 @@ def _run_names_in_process(
             isolated=isolated,
         )
     test_ids = tuple(_iter_suite_ids(suite))
-    # 子进程输出由父进程转发；verbosity=2 与旧入口一致。
+    # Worker output is forwarded by the parent; verbosity=2 matches the old entry.
     buf = io.StringIO()
     runner = unittest.TextTestRunner(stream=buf, verbosity=2, resultclass=_TimingResult)
     started = time.perf_counter()
@@ -401,14 +410,14 @@ def _worker_main(module_csv: str) -> int:
 
 
 def _enter_shard_isolation() -> tuple[object | None, bool]:
-    """进入 B 的 tests/ci_test_support 隔离；缺失时返回 (None, False)。
+    """Enter B's tests/ci_test_support isolation; (None, False) when absent.
 
-    调用方必须在任何 test 模块 import/discovery 之前调用。
+    Callers must invoke this before any test-module import/discovery.
     """
     _ensure_tests_on_path()
     try:
         import ci_test_support  # type: ignore[import-not-found]  # noqa: E402
-    except Exception as exc:  # noqa: BLE001 — 缺失或语法损坏都算不可用
+    except Exception as exc:  # noqa: BLE001 - missing or syntactically broken both count as unavailable
         print(f"隔离 helper 不可用：{exc}", file=sys.stderr)
         return None, False
     try:
@@ -420,11 +429,12 @@ def _enter_shard_isolation() -> tuple[object | None, bool]:
 
 
 def _worker_classes_main(spec_csv: str) -> int:
-    """串行余量工序：类/模块粒度 specs，单进程顺序执行，无隔离。
+    """Serial-remainder worker: class/module specs, sequential, unisolated.
 
-    语义即今日串行车道（CORRAL_ISOLATE_MANAGED_HOSTS 由 main 分支 setdefault），
-    专门承载未证明类：计时敏感的用例仍跑在串行语义下，且父进程将其与并行
-    shards 分相执行，不受并行负载抖动影响。
+    Same semantics as today's serial lane (CORRAL_ISOLATE_MANAGED_HOSTS via the
+    main-branch setdefault). Carries unproven classes: timing-sensitive tests
+    still run under serial semantics, and the parent phases them apart from
+    parallel shards so parallel load skew cannot reach them.
     """
     names = [part.strip() for part in spec_csv.split(",") if part.strip()]
     if not names:
@@ -434,7 +444,8 @@ def _worker_classes_main(spec_csv: str) -> int:
 
 
 def _worker_shard_main(spec_csv: str) -> int:
-    """类粒度 UI 工序：必须有隔离 helper，否则明确拒绝（不用无隔离并行冒充）。"""
+    """Class-granularity UI worker: requires the isolation helper, else refuse
+    outright (never fake it with unisolated parallelism)."""
     names = [part.strip() for part in spec_csv.split(",") if part.strip()]
     if not names:
         return _worker_main("")
@@ -458,7 +469,8 @@ def _worker_shard_main(spec_csv: str) -> int:
 
 
 def _worker_tests_main(spec_csv: str) -> int:
-    """精确 id 重跑工序：有 helper 则进隔离（UI id 同样被隔离），否则沿用旧语义。"""
+    """Exact-id retry worker: enters isolation when the helper exists (UI ids
+    isolated too), otherwise keeps the old semantics."""
     names = [part.strip() for part in spec_csv.split(",") if part.strip()]
     if not names:
         return _worker_main("")
@@ -477,7 +489,7 @@ def _worker_tests_main(spec_csv: str) -> int:
 
 
 def _worker_list_ids_main() -> int:
-    """只枚举全量用例 id，不运行（覆盖审计的基准）。"""
+    """Enumerate all test ids without running (coverage-audit baseline)."""
     faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
     _ensure_tests_on_path()
     loader = unittest.TestLoader()
@@ -491,7 +503,7 @@ def _worker_list_ids_main() -> int:
                 cls = test_id.rpartition(".")[0] or test_id
                 classes.setdefault(cls, []).append(test_id)
             out[module] = classes
-    except Exception as exc:  # noqa: BLE001 — 枚举失败即硬失败
+    except Exception as exc:  # noqa: BLE001 - enumeration failure is a hard fail
         import traceback
 
         sys.stdout.write(traceback.format_exc())
@@ -563,7 +575,7 @@ def _spawn_worker(mode_flag: str, spec: list[str], *, kind: str = "shard") -> _S
     )
     blob = (proc.stdout or "") + (proc.stderr or "")
     shard = _parse_worker_output(blob, spec, proc.returncode)
-    # 用父进程墙钟覆盖（含子进程启动开销），便于对照。
+    # Overwrite with the parent wall clock (includes spawn overhead) for comparison.
     shard = _ShardResult(
         modules=shard.modules,
         ok=shard.ok,
@@ -605,14 +617,16 @@ def _run_suite_serial() -> tuple[bool, list[str]]:
 
 
 def _load_safe_classes() -> frozenset[str] | None:
-    """读 B 的隔离证明名单；helper 缺失或名单为空时返回 None（走旧模块车道）。
+    """Read B's isolation-proof manifest; None when the helper is missing or the
+    manifest is empty (legacy module lane).
 
-    名单是 B 的证明结论，runner 只消费不推断：不在名单里的类一律进串行余量。
+    The manifest is B's proven conclusion; the runner consumes it without
+    inferring: any class absent from it goes to the serial remainder.
     """
     _ensure_tests_on_path()
     try:
         import ci_test_support  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001 — helper 缺失或损坏时退回旧车道
+    except Exception as exc:  # noqa: BLE001 - fall back to the legacy lane when the helper is missing or broken
         print(f"警告：tests/ci_test_support 不可用（{exc}），UI 类分片停用，走旧模块车道。")
         return None
     manifest = getattr(ci_test_support, "UI_SAFE_CLASSES", None)
@@ -622,7 +636,7 @@ def _load_safe_classes() -> frozenset[str] | None:
 
 
 def _list_all_ids() -> dict[str, dict[str, list[str]]]:
-    """起一次性子进程枚举全量 (module -> class -> ids)，不运行任何用例。"""
+    """Spawn a one-shot subprocess enumerating all (module -> class -> ids); runs nothing."""
     proc = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), "--list-ids"],
         cwd=ROOT,
@@ -648,16 +662,21 @@ def _plan_shards(
     id_map: dict[str, dict[str, list[str]]],
     safe: frozenset[str] | None,
 ) -> tuple[list[list[str]], list[list[str]], list[str]]:
-    """返回 (module_shards, class_shards, remainder_specs)。
+    """Return (module_shards, class_shards, remainder_specs).
 
-    - 非串行模块：沿用既有语义，一个模块一 shard（--run-modules）。
-    - 串行模块中、名单证明安全的类：类粒度 shard（--run-shard，需隔离）。
-    - 串行模块的未证明类：逐类进入 remainder_specs（`module.Class`），由单个
-      --run-classes 工序顺序执行（无隔离、即今日串行语义），保证恰一次。
-      整个模块无一类被证明时，用整模块名占位（loadTestsFromNames 同语义）。
-      名单里有、枚举里没有的条目（改名/删除残留）直接忽略，覆盖审计兜底。
-    - helper 缺失/名单为空时：串行模块整体进 remainder（整模块名），
-      行为与旧入口完全一致。
+    - Non-serial modules keep the existing semantic: one shard per module
+      (--run-modules).
+    - Serial-lane classes proven by the manifest: class shards (--run-shard,
+      needs isolation).
+    - Unproven classes of serial modules enter remainder_specs one class at a
+      time (``module.Class``), executed sequentially by a single --run-classes
+      worker (unisolated, i.e. today's serial semantics), exactly once. A
+      module with zero proven classes contributes its whole module name
+      (same loadTestsFromNames semantics). Manifest entries absent from the
+      enumeration (rename/delete leftovers) are ignored; the coverage audit
+      backstops drift.
+    - Helper missing/manifest empty: whole serial modules enter the remainder
+      (whole module names), behavior identical to the old entry.
     """
     modules = sorted(id_map)
     parallel = [name for name in modules if name not in _SERIAL_MODULES]
@@ -683,9 +702,10 @@ def _plan_shards(
 def _audit_coverage(
     id_map: dict[str, dict[str, list[str]]], shards: list[_ShardResult]
 ) -> tuple[bool, list[str], list[str]]:
-    """断言 shard 实际跑的 id 集合与枚举基准完全一致（不多不少、恰一次）。
+    """Assert the union of shard-run ids equals the enumeration baseline exactly
+    (no more, no less, exactly once).
 
-    返回 (ok, missing, extra)。计数相等但集合不等同样判失败。
+    Returns (ok, missing, extra). Equal counts with unequal sets still fail.
     """
     expected: list[str] = []
     for module in sorted(id_map):
@@ -759,7 +779,8 @@ def _emit_machine_report(
     return report
 
 
-# 首轮报告上下文：main 在重跑后据此补发 final 行（修正 retried/retry_ok）。
+# First-pass report context: main re-emits the final line from this after retry
+# (correcting retried/retry_ok).
 _LAST_FIRST_PASS: dict = {}
 
 
@@ -780,14 +801,16 @@ def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
         f"expected_tests={expected_total} ==="
     )
     shards: list[_ShardResult] = []
-    # Phase 1：串行余量独占整机先行。未证明类（含计时敏感的 settle/wall-budget
-    # 断言）跑在零并行负载下，与今日串行车道环境一致；余量仅约数十秒，
-    # 先行失败还能早暴露加载期错误。
+    # Phase 1: the serial remainder runs first, alone on the machine. Unproven
+    # classes (including timing-sensitive settle/wall-budget asserts) run under
+    # zero parallel load, matching today's serial-lane environment; the remainder
+    # costs only tens of seconds, and an early failure exposes load errors fast.
     if remainder_specs:
         shards.append(
             _spawn_worker("--run-classes", remainder_specs, kind="serial-remainder")
         )
-    # Phase 2：其余模块 shard 与隔离类 shard 并行；两者互不共享资源。
+    # Phase 2: remaining module shards and isolated class shards run in
+    # parallel; the two groups share no resources.
     parallel_workers = max(1, jobs - 1)
     if module_shards or class_shards:
         with concurrent.futures.ThreadPoolExecutor(
@@ -803,7 +826,7 @@ def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
             for future in concurrent.futures.as_completed(parallel_futures):
                 shards.append(future.result())
 
-    # 稳定打印汇总：串行车道最后已打印；这里给总数。
+    # Stable summary print: the serial lane already printed last; totals here.
     failed_ids: list[str] = []
     tests_run = 0
     any_hard_fail = False
@@ -812,7 +835,7 @@ def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
         if shard.failed_ids:
             failed_ids.extend(shard.failed_ids)
         elif not shard.ok:
-            # 加载期失败等拿不到 id：整轮判失败，不走偶发重跑。
+            # Load-time failures with no ids: fail the round, no flaky-retry path.
             any_hard_fail = True
     coverage_ok, missing, extra = _audit_coverage(id_map, shards)
     if not coverage_ok:
@@ -831,6 +854,7 @@ def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
     )
     _LAST_FIRST_PASS.update(
         {
+            "suite_start": wall0,
             "wall": time.perf_counter() - wall0,
             "jobs": jobs,
             "shards": shards,
@@ -861,6 +885,15 @@ def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
     return False, failed_ids
 
 
+def _final_wall_seconds(ctx: dict) -> float:
+    """Final-line wall clock: suite start (all first-pass phases) through the
+    end of retry.
+
+    Outer lint stays separately metered and excluded; retry elapsed is included.
+    """
+    return time.perf_counter() - ctx["suite_start"]
+
+
 def _retry_failed(failed_ids: list[str]) -> bool:
     if not failed_ids:
         return False
@@ -868,8 +901,9 @@ def _retry_failed(failed_ids: list[str]) -> bool:
     for test_id in failed_ids:
         print(f"  - {test_id}")
     faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
-    # 重跑走隔离 worker（有 helper 时 UI id 同样被隔离；无 helper 时语义与旧
-    # 单进程重跑一致，只是由子进程承载）。
+    # Retry runs through the isolated worker (UI ids isolated too when the
+    # helper exists; without it the semantics match the old single-process
+    # retry, only carried by a subprocess).
     shard = _spawn_worker("--run-tests", sorted(set(failed_ids)), kind="retry")
     if shard.ok and not shard.failed_ids:
         print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
@@ -911,7 +945,8 @@ def _maybe_use_checkout_env() -> None:
 
 
 def _fingerprints() -> tuple[str, str]:
-    """同一工作区源码指纹 + 环境指纹；stamp 前后对比，树在中途变了就不写戳。"""
+    """Same-workspace source + environment fingerprints; compared before/after
+    the tests so a mid-run tree change refuses the stamp."""
     return ci_stamp.worktree_fingerprint(ROOT), ci_stamp.environment_fingerprint(ROOT)
 
 
@@ -993,13 +1028,15 @@ def main(argv: list[str] | None = None) -> int:
 
     retried = len(set(failed_ids))
     retry_ok = _retry_failed(failed_ids)
-    # 补发 final 行：first-pass 行的 retried 恒为 0（重跑尚未发生），final 行
-    # 纠正为实际执行的重跑数。phase 键为新增；其余 schema 不变。
+    # Re-emit the final line: the first-pass line always carries retried=0
+    # (retry has not happened yet); the final line corrects it to the retry
+    # count actually executed. The phase key is the only addition; the rest
+    # of the schema is unchanged.
     if _LAST_FIRST_PASS:
         ctx = _LAST_FIRST_PASS
         _emit_machine_report(
             phase="final",
-            wall=ctx["wall"],
+            wall=_final_wall_seconds(ctx),
             jobs=ctx["jobs"],
             shards=ctx["shards"],
             expected_total=ctx["expected_total"],

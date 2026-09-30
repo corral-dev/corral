@@ -23,13 +23,22 @@ status 短时间抖动时，不加节流会把用户口袋里的手机震到没�
 回执失败 / 回执超时只记失败并保留待重试，同一轮下次扫描重发。
 APNs 接受不等于手机已展示——日志一律用 queued / accepted / failed 命名。
 旧中继（无回执）永不被当成功：超时后有界重试同一轮最新状态。
+
+Concurrency (2026-09-30 closure): the scanner thread and the asyncio receipt
+callback mutate the sent/pending ledgers concurrently. Mutation, snapshot, and
+file write are atomic under a single ``_lock`` (flat order — the lock is never
+held across ``sender()``), and every write goes through a UNIQUE temp path
+before atomic ``os.replace``, so concurrent saves cannot clobber each other or
+persist an older snapshot over newer accepted state.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import secrets
+import tempfile
 import threading
 import time
 
@@ -45,10 +54,20 @@ _SENT_LIMIT = 500
 # 待确认回执：push_id -> 记录。落盘，重启后仍可对同一轮最新状态重试。
 _PENDING_FILENAME = "push-pending.json"
 _PENDING_LIMIT = 200
-# 无回执即视为未知失败、可重试的等待秒数（覆盖旧中继与回执丢失）。
+# Base wait for a missing receipt (old relays, lost receipts): unknown failure,
+# retryable. Network errors share this linear bounded backoff.
 _RECEIPT_TIMEOUT = 60.0
-# 同一 (round, device) 最多重发次数；超限后挂起等新一轮，避免对旧中继空转。
+# Backoff cap: min(60s x attempts, 600s). Bounded linear backoff.
+_RECEIPT_BACKOFF_MAX = 600.0
+# Apple 5xx earliest retry floor (official provider rules: retry 5xx only after
+# 15 minutes). Receipt status is persisted so the rule survives restart.
+_APPLE_5XX_RETRY = 900.0
+# 同一 (round, device) 最多发送次数；超限后 parked 等新一轮，避免空转。
 _MAX_ATTEMPTS = 5
+# Permanent failure codes: retrying the same token is pointless, park for a new
+# round. Covers Apple's never-retry list (BadDeviceToken, DeviceTokenNotForTopic,
+# Forbidden, ExpiredToken, Unregistered, PayloadTooLarge) via relay code mapping.
+_PERMANENT_CODES = frozenset({"bad_token", "bad_request", "rejected"})
 
 _KIND_WAITING = "waiting"
 _KIND_COMPLETED = "completed"
@@ -69,15 +88,19 @@ class PushNotifier:
     ) -> None:
         self.state = state
         self.static_private = static_private
-        self.sender = None  # 经 set_sender 注入，附带回执自注册
+        self.sender = None  # Injected via set_sender, with receipt self-registration
         self._lock = threading.Lock()
-        self._last_sent: dict[str, float] = {}
-        # 已发集合：(session_key, completion_id, kind, device_id) -> 发送时间。
-        # 落盘，重启不重推。无 device 后缀的旧键只读兼容（升级后不重推风暴）。
-        # sent_path / pending_path 仅测试注入；生产默认走 remote_dir()。
+        # Throttle: throttle_key -> (ts, round_key). Same-round repeats within
+        # 120s are suppressed; a new completion (new round) escapes the old window.
+        self._last_sent: dict[str, tuple[float, str]] = {}
+        # Sent set: (session_key, completion_id, kind, device_id) -> timestamp.
+        # Persisted; no resend after restart. Legacy keys without a device suffix
+        # are honored read-only (no upgrade resend storm).
+        # sent_path / pending_path are test-only; production uses remote_dir().
         self._sent_path_override = sent_path
         self._sent_rounds: dict[str, float] = self._load_sent()
-        # 待确认：push_id -> {round, device, kind, session, completion, ts, attempts}。
+        # Pending acks: push_id -> {round, device, kind, session, completion,
+        # ts, attempts, last_code, status, parked}.
         self._pending_path_override = pending_path
         self._pending: dict[str, dict] = self._load_pending()
         if sender is not None:
@@ -85,8 +108,8 @@ class PushNotifier:
 
     def set_sender(self, sender) -> None:
         self.sender = sender
-        # 中继客户端自带回执分发时自动挂上，无需改 daemon 组装层；
-        # 普通函数型 sender（测试）没有该方法则跳过。
+        # A relay client with receipt dispatch registers itself, so the daemon
+        # assembly needs no change; plain function senders (tests) skip this.
         register = getattr(getattr(sender, "__self__", None), "set_receipt_handler", None)
         if callable(register):
             try:
@@ -138,19 +161,20 @@ class PushNotifier:
         with self._lock:
             if device_id and self._device_round_key(round_key, device_id) in self._sent_rounds:
                 return True
-            # 旧版全局键（无设备后缀）只读兼容：升级后不重推风暴。
+            # Legacy global keys (no device suffix) honored read-only: no resend
+            # storm after upgrade.
             return round_key in self._sent_rounds
 
     def _mark_sent(self, round_key: str, now: float, device_id: str = "") -> None:
         target = self._device_round_key(round_key, device_id) if device_id else round_key
         with self._lock:
             self._sent_rounds[target] = now
-            # 有界 LRU：只留最近 N 条，旧轮自然淘汰（新一轮 id 必变，不会误删）。
+            # Bounded LRU: keep the newest N entries; a new round always has a
+            # new id so eviction cannot delete the current round.
             if len(self._sent_rounds) > _SENT_LIMIT:
                 for old in sorted(self._sent_rounds, key=self._sent_rounds.get)[: len(self._sent_rounds) - _SENT_LIMIT]:
                     del self._sent_rounds[old]
-            snapshot = dict(self._sent_rounds)
-        self._save_sent(snapshot)
+            self._persist_sent_locked()
 
     def _sent_path(self):
         if self._sent_path_override is not None:
@@ -176,19 +200,55 @@ class PushNotifier:
             out = {key: out[key] for key in ordered}
         return out
 
-    def _save_sent(self, snapshot: dict[str, float]) -> None:
+    @staticmethod
+    def _write_atomic(path, text: str) -> None:
+        """Atomically replace path with text, mode 0600, via a UNIQUE temp file.
+
+        A unique temp path per call means concurrent writers can never truncate
+        or replace each other's temp file; the final os.replace is atomic, so
+        readers only ever see whole old or whole new content.
+        """
+        from pathlib import Path as _Path
+
+        path = _Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+        )
         try:
-            path = self._sent_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
             try:
-                tmp.chmod(0o600)
+                os.chmod(tmp, 0o600)
             except OSError:
                 pass
-            tmp.replace(path)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _persist_sent_locked(self) -> None:
+        """Write the CURRENT sent set. Call with _lock held (see class note)."""
+        try:
+            self._write_atomic(
+                self._sent_path(),
+                json.dumps(self._sent_rounds, ensure_ascii=False),
+            )
         except OSError as exc:
             observe.event("remote_push_sent_save_failed", error=str(exc))
+
+    def _persist_pending_locked(self) -> None:
+        """Write the CURRENT pending map. Call with _lock held (see class note)."""
+        try:
+            self._write_atomic(
+                self._pending_path(),
+                json.dumps(self._pending, ensure_ascii=False),
+            )
+        except OSError as exc:
+            observe.event("remote_push_pending_save_failed", error=str(exc))
 
     def _pending_path(self):
         if self._pending_path_override is not None:
@@ -215,6 +275,9 @@ class PushNotifier:
                     "completion": str(entry.get("completion") or ""),
                     "ts": float(entry.get("ts") or 0.0),
                     "attempts": int(entry.get("attempts") or 0),
+                    "last_code": str(entry.get("last_code") or ""),
+                    "status": int(entry.get("status") or 0),
+                    "parked": bool(entry.get("parked")),
                 }
             except (TypeError, ValueError):
                 continue
@@ -223,20 +286,6 @@ class PushNotifier:
             out = {key: out[key] for key in ordered}
         return out
 
-    def _save_pending(self, snapshot: dict[str, dict]) -> None:
-        try:
-            path = self._pending_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-            try:
-                tmp.chmod(0o600)
-            except OSError:
-                pass
-            tmp.replace(path)
-        except OSError as exc:
-            observe.event("remote_push_pending_save_failed", error=str(exc))
-
     def _track_pending(self, push_id: str, entry: dict) -> None:
         with self._lock:
             self._pending[push_id] = entry
@@ -244,26 +293,138 @@ class PushNotifier:
                 aged = sorted(self._pending, key=lambda k: self._pending[k]["ts"])
                 for old in aged[: len(self._pending) - _PENDING_LIMIT]:
                     del self._pending[old]
-            snapshot = dict(self._pending)
-        self._save_pending(snapshot)
+            self._persist_pending_locked()
 
     def _drop_pending(self, push_id: str) -> dict | None:
         with self._lock:
             entry = self._pending.pop(push_id, None)
-            snapshot = dict(self._pending)
-        if entry is not None:
-            self._save_pending(snapshot)
-        return entry
+            if entry is not None:
+                self._persist_pending_locked()
+            return entry
 
     def _clear_throttle(self, throttle_key: str) -> None:
         with self._lock:
             self._last_sent.pop(throttle_key, None)
 
-    def _emit(self, session: dict, *, kind: str, attempts_base: int = 0) -> None:
-        """入队一轮通知：只记 queued，永不记已发。
+    def _is_parked(self, round_key: str, device_id: str) -> bool:
+        with self._lock:
+            return any(
+                entry.get("parked")
+                and entry.get("round") == round_key
+                and entry.get("device") == device_id
+                for entry in self._pending.values()
+            )
 
-        已发只由 ``on_push_receipt(ok:true)`` 按设备标记；回执失败 / 超时 /
-        本地发送异常都不记，留待 ``retry_due`` 对同一轮最新状态重试。
+    def _inflight(self, round_key: str, device_id: str, exclude: str = "") -> bool:
+        """True when the same (round, device) has a fresh, unparked pending entry."""
+        now = time.time()
+        with self._lock:
+            for push_id, entry in self._pending.items():
+                if push_id == exclude or entry.get("parked"):
+                    continue
+                if entry.get("round") == round_key and entry.get("device") == device_id:
+                    if now - float(entry.get("ts") or 0.0) < self._backoff_for(entry):
+                        return True
+            return False
+
+    @staticmethod
+    def _backoff_for(entry: dict) -> float:
+        # Apple 5xx: earliest retry 900s per official provider rules (persisted
+        # status survives restart). Anything else: bounded linear backoff.
+        try:
+            if int(entry.get("status") or 0) >= 500:
+                return _APPLE_5XX_RETRY
+        except (TypeError, ValueError):
+            pass
+        attempts = max(1, int(entry.get("attempts") or 0))
+        return min(_RECEIPT_TIMEOUT * attempts, _RECEIPT_BACKOFF_MAX)
+
+    def _send_to_device(
+        self,
+        session: dict,
+        device,
+        body: bytes,
+        *,
+        kind: str,
+        round_key: str,
+        session_key: str,
+        completion: str,
+        attempts_base: int,
+        replace_push_id: str = "",
+        status_base: int = 0,
+    ) -> bool:
+        """Send one frame to one device: track pending BEFORE calling sender.
+
+        Returns True on enqueue (no exception); a synchronous receipt arriving
+        inline still matches the already-persisted pending entry. Send failures
+        bump the new entry's ts/last_code and return False. Seal failures
+        (deterministic local errors) track nothing and return False.
+        """
+        try:
+            sealed = crypto.seal_for_device(
+                self.static_private, bytes.fromhex(device.public_key), body
+            )
+        except Exception as exc:
+            observe.event("remote_push_seal_failed", error=str(exc), kind=kind)
+            return False
+        push_id = secrets.token_hex(8)
+        now = time.time()
+        try:
+            carried_status = int(status_base or 0)
+        except (TypeError, ValueError):
+            carried_status = 0
+        self._track_pending(push_id, {
+            "round": round_key,
+            "device": str(device.id or device.push_token),
+            "kind": kind,
+            "session": session_key,
+            "completion": completion,
+            "ts": now,
+            "attempts": int(attempts_base or 0) + 1,
+            "last_code": "",
+            "status": carried_status,
+            "parked": False,
+        })
+        if replace_push_id and replace_push_id != push_id:
+            self._drop_pending(replace_push_id)
+        try:
+            self.sender(
+                device.push_token,
+                device.push_env,
+                base64.b64encode(sealed),
+                push_id,
+            )
+        except TypeError:
+            # Legacy 3-arg senders (tests / old injections): fall back to
+            # receipt-less enqueue. Receipt-less never counts as success: the
+            # persisted pending entry is retried by retry_due on backoff.
+            try:
+                self.sender(device.push_token, device.push_env, base64.b64encode(sealed))
+            except Exception as exc:
+                self._note_send_error(push_id, kind, session_key, exc)
+                return False
+        except Exception as exc:
+            self._note_send_error(push_id, kind, session_key, exc)
+            return False
+        return True
+
+    def _note_send_error(self, push_id: str, kind: str, session_key: str, exc: Exception) -> None:
+        """Local send failure: keep pending (bump ts/last_code), retryable."""
+        with self._lock:
+            entry = self._pending.get(push_id)
+            if entry is not None:
+                entry["ts"] = time.time()
+                entry["last_code"] = "local_send"
+                self._persist_pending_locked()
+        observe.event("remote_push_send_failed", error=str(exc), kind=kind, session=session_key)
+
+    def _emit(self, session: dict, *, kind: str) -> None:
+        """Transition-path enqueue: records queued only, never sent.
+
+        Throttle is (ts, round): same-round repeats within 120s are suppressed;
+        a new completion (new round) escapes the old window. Devices already
+        sent, in-flight, or parked are skipped. Only ``on_push_receipt(ok:true)``
+        marks a device sent.
         """
         if self.sender is None:
             return
@@ -274,12 +435,16 @@ class PushNotifier:
             return
         round_key = self._round_key(session, kind)
         throttle_key = f"{key}:{kind}"
+        completion = str(session.get("completion_id") or "")
         now = time.time()
         with self._lock:
-            if now - self._last_sent.get(throttle_key, 0.0) < _THROTTLE_SECONDS:
-                # 节流只跳过本次发送，不记已发：同一轮下次扫描仍可推。
-                return
-            self._last_sent[throttle_key] = now
+            last = self._last_sent.get(throttle_key)
+            if last is not None:
+                last_ts, last_round = last
+                if now - last_ts < _THROTTLE_SECONDS and last_round == round_key:
+                    # 同轮抖动抑制；新轮不受牵连（下行更新本轮）。
+                    return
+            self._last_sent[throttle_key] = (now, round_key)
         body = self._render(session, kind=kind)
         queued = 0
         for device in self.state.devices:
@@ -290,64 +455,47 @@ class PushNotifier:
             device_id = str(device.id or device.push_token)
             if self._already_sent(round_key, device_id):
                 continue
-            try:
-                sealed = crypto.seal_for_device(
-                    self.static_private, bytes.fromhex(device.public_key), body
-                )
-            except Exception as exc:
-                observe.event("remote_push_seal_failed", error=str(exc), kind=kind)
+            if self._is_parked(round_key, device_id):
                 continue
-            push_id = secrets.token_hex(8)
-            try:
-                self.sender(
-                    device.push_token,
-                    device.push_env,
-                    base64.b64encode(sealed),
-                    push_id,
-                )
-            except TypeError:
-                # 旧式三参数 sender（测试 / 旧注入）：回退为无回执入队。
-                # 无回执永不算成功：记一条带回执超时的待确认，由 retry_due 重试。
-                try:
-                    self.sender(device.push_token, device.push_env, base64.b64encode(sealed))
-                except Exception as exc:
-                    observe.event("remote_push_send_failed", error=str(exc), kind=kind, session=key)
-                    continue
-            except Exception as exc:
-                # 发送失败不记已发：同一轮下次扫描仍可重试；轮次已变则自然过期。
-                observe.event("remote_push_send_failed", error=str(exc), kind=kind, session=key)
+            if self._inflight(round_key, device_id):
                 continue
-            self._track_pending(push_id, {
-                "round": round_key,
-                "device": device_id,
-                "kind": kind,
-                "session": key,
-                "completion": str(session.get("completion_id") or ""),
-                "ts": now,
-                "attempts": int(attempts_base or 0) + 1,
-            })
-            queued += 1
+            if self._send_to_device(
+                session, device, body,
+                kind=kind, round_key=round_key, session_key=key,
+                completion=completion, attempts_base=0,
+            ):
+                queued += 1
         if queued:
             observe.event("remote_push_queued", session=key, kind=kind, devices=queued)
 
     def on_push_receipt(self, push_id: str, receipt: dict) -> None:
-        """处理中继回执：ok 才按设备记已发；失败清节流留待重试。
+        """Handle a relay receipt: only ok marks the device sent.
 
-        ``receipt`` 形如 ``{"ok","code","status","reason","apns_id"}``。
-        未知 push_id（超时重发后的迟到回执等）只计数，不记不改。
+        Failures keep pending (bump ts/last_code/status, retry after backoff);
+        permanent codes (bad_token/bad_request/rejected) park for a new round.
+        ``receipt`` looks like ``{"ok","code","status","reason","apns_id"}``.
+        Unknown push_ids (late receipts after a timed-out resend) only count.
         """
         receipt = receipt or {}
-        entry = self._drop_pending(str(push_id or ""))
+        pid = str(push_id or "")
+        with self._lock:
+            entry = self._pending.get(pid)
+            snapshot_entry = dict(entry) if entry is not None else None
         if entry is None:
-            observe.event("remote_push_receipt_unknown", push_id=str(push_id or ""))
+            observe.event("remote_push_receipt_unknown", push_id=pid)
             return
-        round_key = entry["round"]
-        device_id = entry["device"]
-        kind = entry["kind"]
-        session_key = entry["session"]
-        throttle_key = f"{session_key}:{kind}"
+        round_key = snapshot_entry["round"]
+        device_id = snapshot_entry["device"]
+        kind = snapshot_entry["kind"]
+        session_key = snapshot_entry["session"]
         now = time.time()
+        status = 0
+        try:
+            status = int(receipt.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
         if receipt.get("ok"):
+            self._drop_pending(pid)
             self._mark_sent(round_key, now, device_id)
             observe.event(
                 "remote_push_accepted",
@@ -355,26 +503,55 @@ class PushNotifier:
                 kind=kind,
                 apns_id=str(receipt.get("apns_id") or ""),
             )
-            # 过渡别名：老看板仍在查 remote_push_sent 时不断流；语义已是 accepted。
+            # Transition alias: dashboards still querying remote_push_sent keep
+            # flowing; the semantics are accepted (see module docstring).
             observe.event("remote_push_sent", session=session_key, kind=kind, devices=1, accepted=True)
             return
         code = str(receipt.get("code") or "internal")
-        self._clear_throttle(throttle_key)
+        reason = str(receipt.get("reason") or "")
+        if code in _PERMANENT_CODES:
+            with self._lock:
+                parked = self._pending.get(pid)
+                if parked is not None:
+                    parked["parked"] = True
+                    parked["last_code"] = code
+                    parked["status"] = status
+                    self._persist_pending_locked()
+            observe.event(
+                "remote_push_failed",
+                session=session_key,
+                kind=kind,
+                code=code,
+                status=status,
+                reason=reason,
+            )
+            observe.event("remote_push_parked", session=session_key, kind=kind, code=code)
+            return
+        with self._lock:
+            kept = self._pending.get(pid)
+            if kept is not None:
+                kept["ts"] = now
+                kept["last_code"] = code
+                kept["status"] = status
+                self._persist_pending_locked()
+        self._clear_throttle(f"{session_key}:{kind}")
         observe.event(
             "remote_push_failed",
             session=session_key,
             kind=kind,
             code=code,
-            status=int(receipt.get("status") or 0),
-            reason=str(receipt.get("reason") or ""),
+            status=status,
+            reason=reason,
         )
 
     def retry_due(self, sessions: list[dict]) -> None:
-        """重发仍是最新轮次且回执超时/失败的待确认（SessionHub 每轮扫描后调用）。
+        """Resend due pending entries still on the newest round (called each scan).
 
-        只重发当前仍是已结束、且 ``completion_id`` 与待确认一致的轮次；
-        会话已消失或已有新一轮时旧待确认直接丢弃。同一 (round, device)
-        超过 ``_MAX_ATTEMPTS`` 后挂起等新轮次，避免对旧中继空转。
+        Targeted per device: each due (round, device) resends exactly one frame;
+        accepted siblings never resend, in-flight siblings suppress duplicates,
+        and sibling attempts are untouched. A vanished session or a changed
+        completion_id expires the old entry; sends beyond ``_MAX_ATTEMPTS`` per
+        (round, device) park for a new round (persisted, restart-proof).
         """
         if self.sender is None:
             return
@@ -383,7 +560,8 @@ class PushNotifier:
             due = [
                 (push_id, dict(entry))
                 for push_id, entry in self._pending.items()
-                if now - float(entry.get("ts") or 0.0) >= _RECEIPT_TIMEOUT
+                if not entry.get("parked")
+                and now - float(entry.get("ts") or 0.0) >= self._backoff_for(entry)
             ]
         if not due:
             return
@@ -394,25 +572,58 @@ class PushNotifier:
                 self._drop_pending(push_id)
                 continue
             if str(session.get("completion_id") or "") != entry["completion"]:
-                # 已有新一轮：旧待确认过期，新轮由正常跃迁路径推送。
+                # Superseded by a new round: the new round goes through the
+                # normal transition path.
                 self._drop_pending(push_id)
                 continue
-            if int(entry.get("attempts") or 0) >= _MAX_ATTEMPTS:
-                self._drop_pending(push_id)
+            attempts = int(entry.get("attempts") or 0)
+            if attempts >= _MAX_ATTEMPTS:
+                with self._lock:
+                    parked = self._pending.get(push_id)
+                    if parked is not None:
+                        parked["parked"] = True
+                        self._persist_pending_locked()
                 observe.event(
                     "remote_push_parked",
                     session=entry["session"],
                     kind=entry["kind"],
-                    attempts=int(entry.get("attempts") or 0),
+                    attempts=attempts,
                 )
                 continue
             if self._already_sent(entry["round"], entry["device"]):
                 self._drop_pending(push_id)
                 continue
-            self._drop_pending(push_id)
-            # 重试不受旧节流牵连（扫描间隔本身即退避；新轮次本就不受牵连）。
+            if self._inflight(entry["round"], entry["device"], exclude=push_id):
+                continue
+            device = self._find_device(entry["device"])
+            if device is None:
+                self._drop_pending(push_id)
+                continue
+            # Retries escape the old throttle (scan cadence is the backoff).
             self._clear_throttle(f"{entry['session']}:{entry['kind']}")
-            self._emit(session, kind=entry["kind"], attempts_base=int(entry.get("attempts") or 0))
+            body = self._render(session, kind=entry["kind"])
+            ok = self._send_to_device(
+                session, device, body,
+                kind=entry["kind"], round_key=entry["round"],
+                session_key=entry["session"], completion=entry["completion"],
+                attempts_base=attempts, replace_push_id=push_id,
+                status_base=int(entry.get("status") or 0),
+            )
+            if not ok:
+                # Seal failure (deterministic): no new entry was tracked, so
+                # count the attempt on the kept entry to stay bounded.
+                with self._lock:
+                    kept = self._pending.get(push_id)
+                    if kept is not None:
+                        kept["ts"] = time.time()
+                        kept["attempts"] = attempts + 1
+                        self._persist_pending_locked()
+
+    def _find_device(self, device_id: str):
+        for device in self.state.devices:
+            if str(device.id or device.push_token) == device_id:
+                return device
+        return None
 
     def _device_wants(self, session: dict, kind: str) -> bool:
         """任一有 token 且允许该类的设备存在才发；否则连已发都不记。"""

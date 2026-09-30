@@ -1865,7 +1865,13 @@ class SessionHub:
                 continue
         # 有界重试：待确认回执超时/失败、且仍是最新轮次的，按设备重发。
         # 新一轮/已消失会话的旧待确认在 retry_due 内丢弃，不补发 stale 轮次。
+        # 生产组装注册的是绑定方法 hook（daemon: set_status_hook(push.on_status_change)），
+        # 其上没有 retry_due 属性——必须经绑定 __self__ 解析到 PushNotifier，否则
+        # 真实生产链路的重试驱动永远不会被调用。
         retry = getattr(hook, "retry_due", None)
+        if retry is None:
+            owner = getattr(hook, "__self__", None)
+            retry = getattr(owner, "retry_due", None)
         if callable(retry):
             try:
                 retry(terminal_payloads)

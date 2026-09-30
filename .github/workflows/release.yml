@@ -17,7 +17,10 @@ jobs:
   # 工作流已成功；本机 publish-release.sh 另有同源 ci-test 门禁。
   require-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # test 工作流实测 10-12 分钟（v0.24.237 成功 10m41s、v0.24.238 失败 12m3s）；
+    # 内部等待 deadline 是 1500s（25 分钟）。job 超时必须大于两者之和，
+    # 否则每次都在 10 分钟被取消，Linux 轮子永远补不上（2026-09-30 连踩 6 版）。
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:

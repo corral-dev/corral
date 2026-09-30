@@ -59,14 +59,15 @@ class CiTestParallelHelpers(unittest.TestCase):
         self.assertTrue(shard.ok, shard.output[-500:])
         self.assertGreaterEqual(shard.tests_run, 1)
         self.assertEqual(shard.modules, ("test_i18n",))
-        # 新计时/覆盖字段：跑了多少 id 就回报多少 id。
+        # New timing/coverage fields: report exactly the ids that ran.
         self.assertEqual(len(shard.test_ids), shard.tests_run)
         self.assertTrue(shard.test_ids[0].startswith("test_i18n."))
         self.assertGreaterEqual(len(shard.class_seconds), 1)
 
     def test_run_names_load_failure_is_structured(self) -> None:
-        # unittest 把缺失模块变成 _FailedTest 占位用例：失败带确定性 id，
-        # 覆盖审计会把它判为 extra（相对枚举基准），整轮硬失败。
+        # unittest turns a missing module into a _FailedTest placeholder: the
+        # failure carries a deterministic id, and the coverage audit flags it
+        # as extra against the enumeration baseline (whole run hard-fails).
         shard = ci_test._run_names_in_process(["test_no_such_module_xyz"])
         self.assertFalse(shard.ok)
         self.assertEqual(
@@ -97,8 +98,9 @@ class CiTestParallelHelpers(unittest.TestCase):
         module_shards, class_shards, remainder = ci_test._plan_shards(
             id_map, frozenset({"test_ui.Safe", "test_other.Ghost"})
         )
-        # 部分证明：已证明类进隔离 shard，未证明类逐类进串行余量——
-        # 余量若用整模块名会与 shard 重复执行 Safe。
+        # Partial proof: proven classes go to isolated shards, unproven ones
+        # enter the serial remainder by class -- a whole-module remainder would
+        # re-run Safe a second time.
         self.assertEqual(module_shards, [])
         self.assertEqual(class_shards, [["test_ui.Safe"]])
         self.assertEqual(remainder, ["test_ui.Unproven"])
@@ -121,7 +123,7 @@ class CiTestParallelHelpers(unittest.TestCase):
         module_shards, class_shards, remainder = ci_test._plan_shards(
             id_map, frozenset({"test_ui.Safe"})
         )
-        # 模拟 shard 回报：隔离 shard 跑 Safe，余量工序跑 Unproven。
+        # Simulated shard reports: isolated shard runs Safe, remainder runs Unproven.
         safe_shard = self._shard(
             modules=("test_ui.Safe",),
             isolated=True,
@@ -138,7 +140,8 @@ class CiTestParallelHelpers(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(missing, [])
         self.assertEqual(extra, [])
-        # 若余量误用整模块名，Safe 会被跑两次 → audit 判 extra。
+        # If the remainder wrongly used the whole module name, Safe would run
+        # twice and the audit must flag extra.
         dup_shard = self._shard(
             modules=("test_ui",),
             test_ids=("test_ui.Safe.test_1", "test_ui.Unproven.test_1"),
@@ -249,6 +252,153 @@ class CiTestParallelHelpers(unittest.TestCase):
         self.assertEqual(shard.class_seconds, (("test_m.C", 0.4),))
         self.assertEqual(len(shard.test_ids), 2)
 
+    def test_final_wall_covers_retry_on_main_path(self) -> None:
+        # Main-path regression (no sleeps, fully stubbed clocks): with the
+        # first pass stashed at suite_start=900 and perf_counter reading 990
+        # at main's wall0, 995 at the first-pass print, then 1000 after the
+        # stubbed retry, the emitted
+        # final line must report wall 100.0 (retry included, not the
+        # first-pass reuse) with truthful retried/retry_ok.
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        failed = ["test_m.C.test_1"]
+        first_pass_ctx = {
+            "suite_start": 900.0,
+            "wall": 60.0,
+            "jobs": 6,
+            "shards": [self._shard()],
+            "expected_total": 1,
+            "coverage_ok": True,
+            "missing": [],
+            "extra": [],
+        }
+        with (
+            mock.patch.object(ci_test, "_maybe_use_checkout_env"),
+            mock.patch.object(ci_test, "_run_ruff", return_value=0),
+            mock.patch.object(ci_test, "_fingerprints", return_value=("fp", "env")),
+            mock.patch.object(
+                ci_test,
+                "_run_suite_parallel",
+                side_effect=lambda jobs: (
+                    ci_test._LAST_FIRST_PASS.update(first_pass_ctx),
+                    (False, failed),
+                )[1],
+            ),
+            mock.patch.object(ci_test, "_retry_failed", return_value=True) as retry,
+            mock.patch.object(ci_test, "_record_success") as record,
+            mock.patch.object(
+                ci_test.time, "perf_counter", side_effect=[990.0, 995.0, 1000.0]
+            ),
+        ):
+            ci_test._LAST_FIRST_PASS.clear()
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = ci_test.main([])
+            finally:
+                ci_test._LAST_FIRST_PASS.clear()
+        self.assertEqual(code, 0)
+        retry.assert_called_once_with(failed)
+        record.assert_called_once_with()
+        finals = [
+            json.loads(ln.split("CORRAL_CI_TEST_REPORT:")[1])
+            for ln in buf.getvalue().splitlines()
+            if "CORRAL_CI_TEST_REPORT:" in ln
+        ]
+        self.assertEqual(len(finals), 1)
+        final = finals[0]
+        self.assertEqual(final["phase"], "final")
+        self.assertEqual(final["retried"], 1)
+        self.assertTrue(final["retry_ok"])
+        self.assertEqual(final["wall_seconds"], 100.0)
+
+    def test_failure_output_contains_traceback(self) -> None:
+        import io
+
+        class _Fail(unittest.TestCase):
+            def test_boom(self) -> None:
+                raise AssertionError("synthetic diagnostic probe")
+
+        buf = io.StringIO()
+        result = unittest.TextTestRunner(
+            stream=buf, verbosity=2, resultclass=ci_test._TimingResult
+        ).run(unittest.TestLoader().loadTestsFromTestCase(_Fail))
+        self.assertFalse(result.wasSuccessful())
+        out = buf.getvalue()
+        self.assertIn("FAIL:", out)
+        self.assertIn("test_boom", out)
+        self.assertIn("AssertionError: synthetic diagnostic probe", out)
+        self.assertIn("Traceback", out)
+
+    def test_error_output_contains_traceback(self) -> None:
+        import io
+
+        class _Err(unittest.TestCase):
+            def test_kaboom(self) -> None:
+                raise ValueError("synthetic error probe")
+
+        buf = io.StringIO()
+        result = unittest.TextTestRunner(
+            stream=buf, verbosity=2, resultclass=ci_test._TimingResult
+        ).run(unittest.TestLoader().loadTestsFromTestCase(_Err))
+        self.assertFalse(result.wasSuccessful())
+        out = buf.getvalue()
+        self.assertIn("ERROR:", out)
+        self.assertIn("ValueError: synthetic error probe", out)
+
+    def test_emit_shard_failure_keeps_diagnostics_and_nonzero_exit(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        failing = self._shard(
+            ok=False,
+            failed_ids=("test_m.C.test_1",),
+            returncode=1,
+            output=(
+                "test_1 (test_m.C) ... FAIL\n"
+                "Traceback (most recent call last):\n"
+                "AssertionError: synthetic\n"
+            ),
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = ci_test._emit_shard(failing)
+        self.assertNotEqual(code, 0)
+        self.assertIn("Traceback", buf.getvalue())
+        self.assertIn("CORRAL_CI_TEST_RESULT:", buf.getvalue())
+
+    def test_final_wall_includes_retry_elapsed(self) -> None:
+        import time
+
+        ctx = {"suite_start": time.perf_counter() - 5.0, "wall": 4.0}
+        final_wall = ci_test._final_wall_seconds(ctx)
+        self.assertGreaterEqual(final_wall, 4.9)
+        # The final line must cover suite start through end of retry;
+        # reusing the first-pass wall clock is wrong.
+        self.assertGreaterEqual(final_wall, ctx["wall"])
+
+    def test_first_pass_report_phase_default(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            report = ci_test._emit_machine_report(
+                wall=10.0,
+                jobs=6,
+                shards=[self._shard()],
+                expected_total=1,
+                retried=0,
+                retry_ok=False,
+                coverage_ok=True,
+                missing=[],
+                extra=[],
+            )
+        self.assertEqual(report["phase"], "first-pass")
+        self.assertEqual(report["retried"], 0)
+
     def test_timing_result_counts_skips(self) -> None:
         import io
 
@@ -268,8 +418,9 @@ class CiTestParallelHelpers(unittest.TestCase):
         self.assertTrue(result.wasSuccessful())
         self.assertEqual(result.skipped_count, 1)
         self.assertEqual(result.testsRun, 2)
-        # 类键是 module.Class（一层剥离）；双层剥离会退化成模块名，
-        # 导致分片名单永远对不上（回归：2026-09-30 跟进修）。
+        # Class key must be module.Class (single strip); a double strip
+        # degrades to the module name and the shard manifest can never match
+        # (regression fixed 2026-09-30 follow-up).
         self.assertEqual(len(result.class_seconds), 1)
         self.assertIn("_Sample", next(iter(result.class_seconds)))
 

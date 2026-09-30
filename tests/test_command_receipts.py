@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from corral.remote import protocol, ratelimit
 from corral.remote.command_receipts import (
@@ -179,6 +180,14 @@ class CommandReceiptWireTests(unittest.TestCase):
         self.hub = FakeHub()
         self.service = RemoteService(self.hub)  # type: ignore[arg-type]
         self.sent: list[dict] = []
+        # Fixture LAN stub (same boundary as RemoteServiceTests): receipt flows
+        # call M_HELLO per pairing. Hint content is never asserted here;
+        # LAN coverage is test_remote_lan.
+        self._lan_hints = mock.patch(
+            "corral.remote.lan.local_hints", return_value=[]
+        )
+        self._lan_hints.start()
+        self.addCleanup(self._lan_hints.stop)
 
     def _restore_cache(self) -> None:
         if self._old_cache is None:

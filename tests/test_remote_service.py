@@ -11,6 +11,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from corral.remote import config as remote_config
 from corral.remote import crypto, protocol, ratelimit
@@ -138,6 +139,14 @@ class RemoteServiceTests(unittest.TestCase):
         self.hub = FakeHub()
         self.service = RemoteService(self.hub)  # type: ignore[arg-type]
         self.sent: list[dict] = []
+        # Fixture LAN stub: M_HELLO fills local_hints via hostname resolution,
+        # which stalls without timeout on some CI networks. Hint content is
+        # never asserted here; dedicated LAN coverage lives in test_remote_lan.
+        self._lan_hints = mock.patch(
+            "corral.remote.lan.local_hints", return_value=[]
+        )
+        self._lan_hints.start()
+        self.addCleanup(self._lan_hints.stop)
 
     def _restore_cache(self) -> None:
         if self._old_cache is None:

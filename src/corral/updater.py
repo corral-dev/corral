@@ -255,6 +255,63 @@ def is_updatable(channel: Channel | None = None) -> bool:
 # Release 已按平台附了 cp310-abi3 预编译包（与 install.sh 同一套匹配规则），
 # 自动更新必须走同一条路，否则一键更新在干净机器上必然编译失败。
 
+# ---- SessKit 预装：SessKit 尚未上 PyPI，任何 pip 解析路径都必须先给 pip
+# 一个直链来源，否则 `sesskit>=…` 在 PyPI 上永远找不到（2026-09-30 v0.24.237
+# Linux 更新实踩）。唯一权威是 scripts/sesskit_dep.py；updater 随包发到用户
+# 机器、手边没有 scripts/，只能在这里镜像 pin。升级 SessKit 时两处同步改，
+# 并同步 install.sh 的 curl|bash 硬编码 fallback。
+_SESSKIT_VERSION = "0.2.2"
+_SESSKIT_WHEEL_NAME = f"sesskit-{_SESSKIT_VERSION}-py3-none-any.whl"
+_SESSKIT_WHEEL_SHA256 = "aa89751b09906fe2549bcde45db36adb29c6fd8e068fb3a9a6e1f5870317a25c"
+_SESSKIT_WHEEL_URL = (
+    f"https://github.com/x0c/sesskit/releases/download/v{_SESSKIT_VERSION}/{_SESSKIT_WHEEL_NAME}"
+)
+
+
+def sesskit_wheel_requirement() -> str:
+    """pip 可直接安装的 SessKit 直链（含 digest，与 sesskit_dep.py 同源）。"""
+    return f"sesskit @ {_SESSKIT_WHEEL_URL}#sha256={_SESSKIT_WHEEL_SHA256}"
+
+
+def _ensure_sesskit_wheel() -> str | None:
+    """把 pin 住的 SessKit wheel 取到本地缓存并校验 digest，返回文件路径。
+
+    给更新子进程当 `PIP_FIND_LINKS` 用：pipx 1.0.0 会把 `--pip-args` 的值按
+    空格拆散，`sesskit @ <url>` 这类带空格的直链传进去会被切碎（2026-09-30
+    实踩 `@` 被当成独立 requirement），而本地路径无空格、两种拆分都安全。
+    任何失败（无网、校验不对）一律返回 None，由调用方降级为旧行为，绝不抛异常。
+    """
+    import hashlib
+
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        dest = os.path.join(CACHE_DIR, _SESSKIT_WHEEL_NAME)
+        if os.path.isfile(dest):
+            with open(dest, "rb") as fh:
+                if hashlib.sha256(fh.read()).hexdigest() == _SESSKIT_WHEEL_SHA256:
+                    return dest
+        req = urllib.request.Request(
+            _SESSKIT_WHEEL_URL, headers={"User-Agent": "corral-updater"}
+        )
+        with urllib.request.urlopen(req, timeout=_ASSET_TIMEOUT) as resp:
+            data = resp.read()
+        if hashlib.sha256(data).hexdigest() != _SESSKIT_WHEEL_SHA256:
+            return None
+        tmp_path = dest + f".tmp.{os.getpid()}"
+        try:
+            with open(tmp_path, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp_path, dest)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return None
+        return dest
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
 def _wheel_patterns(version: str) -> list[re.Pattern]:
     """按当前系统 / 架构给出候选包名正则，越靠前越优先。"""
     ver = re.escape(version)
@@ -316,6 +373,8 @@ def update_command(
         if channel == "pipx":
             # pipx 隔离环境里没有 pip，只能让 pipx 自己覆盖安装；--force 是覆盖
             # 已有同名应用的必需参数，pipx 会从包名推断应用名并重建 venv。
+            # SessKit 预装不走 --pip-args（pipx 1.0.0 会按空格拆散它的值，带空格
+            # 的直链会被切碎），而由 run_update 经 PIP_FIND_LINKS 给内部 pip 指路。
             return [shutil.which("pipx") or "pipx", "install", "--force", target]
         import corral
 
@@ -323,7 +382,9 @@ def update_command(
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
         if _is_user_site(pkg_dir):
             cmd.append("--user")
-        cmd.append(target)
+        # SessKit 不在 PyPI：同一条 pip 命令里把直链一起带上，pip 用直链满足
+        # `sesskit>=…`，不再去 PyPI 找（2026-09-30 v0.24.237 更新实踩）。
+        cmd += [sesskit_wheel_requirement(), target]
         return cmd
     return None
 
@@ -371,6 +432,15 @@ def run_update(latest_tag: str, channel: Channel | None = None) -> tuple[bool, s
     env = os.environ.copy()
     if channel == "brew":
         env.pop("HOMEBREW_NO_AUTO_UPDATE", None)
+    if channel in ("pipx", "pip") and "PIP_FIND_LINKS" not in env:
+        # SessKit 不在 PyPI：给 pip 系更新指一条本地 find-links，让内部 pip
+        # 用缓存 wheel 满足 `sesskit>=…`（pipx 通道不能用 --pip-args 传直链，
+        # 见 update_command 注释；2026-09-30 本机已用该办法从 0.24.232 升到
+        # 0.24.238）。取不到缓存就降级为旧行为，错误自然冒出。用户显式设过的
+        # PIP_FIND_LINKS 优先，不覆盖。
+        wheel = _ensure_sesskit_wheel()
+        if wheel:
+            env["PIP_FIND_LINKS"] = os.path.dirname(wheel)
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=300, env=env,

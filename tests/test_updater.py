@@ -121,7 +121,9 @@ class ChannelDetectionTests(unittest.TestCase):
             with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/corral"):
                 cmd = updater.update_command("0.21.0", "pip", spec="WHEEL_URL")
         self.assertIn("--user", cmd)
+        # SessKit 直链必须与 corral 目标同在一条 pip 命令里，否则 PyPI 找不到
         self.assertEqual(cmd[-1], "WHEEL_URL")
+        self.assertEqual(cmd[-2], updater.sesskit_wheel_requirement())
 
     def test_update_command_pipx_uses_pipx_not_pip(self) -> None:
         # pipx venv 里没有 pip：命令必须交给 pipx 自己，且带 --force 才能覆盖已装应用
@@ -130,6 +132,23 @@ class ChannelDetectionTests(unittest.TestCase):
         self.assertIn("pipx", os.path.basename(cmd[0]))
         self.assertEqual(cmd[1:], ["install", "--force", "WHEEL_URL"])
         self.assertNotIn("pip", cmd[1:])
+
+    def test_update_command_pipx_never_uses_pip_args(self) -> None:
+        # pipx 1.0.0 会把 --pip-args 的值按空格拆散，带空格的 SessKit 直链会被
+        # 切碎（`@` 成独立 requirement）。SessKit 预装走 PIP_FIND_LINKS，命令
+        # 里禁止出现 --pip-args。
+        cmd = updater.update_command("0.21.0", "pipx", spec="WHEEL_URL")
+        assert cmd is not None
+        self.assertNotIn("--pip-args", cmd)
+
+    def test_update_command_carries_sesskit_direct_url(self) -> None:
+        # pip 通道把 SessKit 直链（含 digest）与目标放在同一条命令里，不依赖 PyPI
+        req = updater.sesskit_wheel_requirement()
+        self.assertTrue(req.startswith("sesskit @ https://github.com/x0c/sesskit/"))
+        self.assertIn("#sha256=", req)
+        pip_cmd = updater.update_command("0.21.0", "pip", spec="WHEEL_URL")
+        assert pip_cmd is not None
+        self.assertIn(req, pip_cmd)
 
     def test_update_command_dev_returns_none(self) -> None:
         self.assertIsNone(updater.update_command("0.21.0", "dev"))
@@ -195,6 +214,83 @@ class InstallSpecTests(unittest.TestCase):
             )
 
 
+class SesskitPinSyncTests(unittest.TestCase):
+    """updater 里的 SessKit 镜像 pin 必须与 scripts/sesskit_dep.py 同源一致."""
+
+    def test_updater_pin_matches_sesskit_dep(self) -> None:
+        import pathlib
+        import sys as _sys
+
+        scripts = str(pathlib.Path(__file__).resolve().parent.parent / "scripts")
+        _sys.path.insert(0, scripts)
+        try:
+            import sesskit_dep
+
+            self.assertEqual(updater._SESSKIT_VERSION, sesskit_dep.VERSION)
+            self.assertEqual(
+                updater.sesskit_wheel_requirement(), sesskit_dep.wheel_requirement()
+            )
+        finally:
+            _sys.path.remove(scripts)
+            _sys.modules.pop("sesskit_dep", None)
+
+
+class EnsureSesskitWheelTests(unittest.TestCase):
+    """_ensure_sesskit_wheel：下载 + digest 校验，任何失败返回 None 且不抛异常."""
+
+    def _patch_cache(self, tmpdir: str):
+        return mock.patch.object(updater, "CACHE_DIR", tmpdir)
+
+    def _urlopen_with(self, payload: bytes):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload
+
+        return mock.patch.object(updater.urllib.request, "urlopen", return_value=_Resp())
+
+    def test_downloads_and_caches_verified_wheel(self) -> None:
+        import hashlib
+
+        payload = b"fake-wheel-bytes"
+        digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as td, \
+             self._patch_cache(td), \
+             self._urlopen_with(payload), \
+             mock.patch.object(updater, "_SESSKIT_WHEEL_SHA256", digest):
+            first = updater._ensure_sesskit_wheel()
+            self.assertIsNotNone(first)
+            assert first is not None
+            self.assertTrue(os.path.isfile(first))
+            # 第二次命中缓存，不再发网络请求
+            with mock.patch.object(
+                updater.urllib.request, "urlopen",
+                side_effect=AssertionError("must use cache"),
+            ):
+                self.assertEqual(updater._ensure_sesskit_wheel(), first)
+
+    def test_digest_mismatch_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td, \
+             self._patch_cache(td), \
+             self._urlopen_with(b"tampered-bytes"), \
+             mock.patch.object(updater, "_SESSKIT_WHEEL_SHA256", "0" * 64):
+            self.assertIsNone(updater._ensure_sesskit_wheel())
+
+    def test_network_error_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td, \
+             self._patch_cache(td), \
+             mock.patch.object(
+                 updater.urllib.request, "urlopen",
+                 side_effect=updater.urllib.error.URLError("boom"),
+             ):
+            self.assertIsNone(updater._ensure_sesskit_wheel())
+
+
 class RunUpdateTests(unittest.TestCase):
     """run_update：brew 渠道的假成功兜底——退出 0 不等于真的升级了。"""
 
@@ -253,14 +349,35 @@ class RunUpdateTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
             return self._completed(0, "installed package corral 0.21.0")
 
         with mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
              mock.patch.object(updater, "install_spec", return_value="WHEEL_URL"), \
+             mock.patch.object(
+                 updater, "_ensure_sesskit_wheel",
+                 return_value="/tmp/cached/sesskit-0.2.2-py3-none-any.whl",
+             ), \
              mock.patch.object(updater.subprocess, "run", side_effect=fake_run):
             ok, _ = updater.run_update("0.21.0", "pipx")
         self.assertTrue(ok)
-        self.assertEqual(captured["cmd"][1:], ["install", "--force", "WHEEL_URL"])
+        self.assertEqual(captured["cmd"], ["/usr/local/bin/pipx", "install", "--force", "WHEEL_URL"])
+        # SessKit 预装走 PIP_FIND_LINKS（不用 --pip-args，见上）
+        self.assertEqual(captured["env"].get("PIP_FIND_LINKS"), "/tmp/cached")
+
+    def test_pipx_respects_existing_pip_find_links(self) -> None:
+        def fake_run(cmd, **kwargs):
+            return self._completed(0, "ok")
+
+        with mock.patch.dict(updater.os.environ, {"PIP_FIND_LINKS": "/user/links"}, clear=False), \
+             mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
+             mock.patch.object(updater, "install_spec", return_value="WHEEL_URL"), \
+             mock.patch.object(updater.subprocess, "run", side_effect=fake_run) as spy, \
+             mock.patch.object(updater, "_ensure_sesskit_wheel") as ensure:
+            ok, _ = updater.run_update("0.21.0", "pipx")
+        self.assertTrue(ok)
+        ensure.assert_not_called()
+        self.assertEqual(spy.call_args.kwargs["env"].get("PIP_FIND_LINKS"), "/user/links")
 
 
 class FetchLatestTests(unittest.TestCase):

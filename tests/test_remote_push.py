@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -203,7 +204,7 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.assertTrue(self.notifier._already_sent(round_key, "d1"))
 
     def test_receipt_failure_retries_same_round(self) -> None:
-        """回执失败清节流：下次扫描同一轮可重推，不记已发。"""
+        """回执失败保留待确认：同 completion 下次扫描重试，不记已发（精确计数）。"""
         session = {
             "key": "pi:s1",
             "title": "probe",
@@ -213,14 +214,23 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
         )
-        self._fail(self.sent[0][3], "no_push_config")
+        self.assertEqual(len(self.sent), 1)
+        self._fail(self.sent[0][3], "transport")
         round_key = self.notifier._round_key(session, "completed")
         self.assertFalse(self.notifier._already_sent(round_key, "d1"))
+        self.assertEqual(len(self.notifier._pending), 1)
+        # 同一轮直接重调 hook 被在途抑制（不重复入队）。
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
         )
+        self.assertEqual(len(self.sent), 1)
+        # 退避到期后扫描驱动重试：恰好再发一帧。
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
         self.assertEqual(len(self.sent), 2)
         self.assertNotEqual(self.sent[0][3], self.sent[1][3])
+        self.assertFalse(self.notifier._already_sent(round_key, "d1"))
 
     def test_completed_pref_off_is_silent(self) -> None:
         self.notifier.state.devices[0].notify_completed = False
@@ -359,7 +369,7 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
 
     def test_partial_device_success_retries_only_failed(self) -> None:
-        """多设备部分成功：已接受设备不重发，只重试被拒设备。"""
+        """多设备部分成功：已接受设备不重发，只重试被拒设备（精确计数）。"""
         second_private = crypto.generate_private_key_bytes()
         self.notifier.state.devices.append(
             PairedDevice(
@@ -383,17 +393,23 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         first_id = self.sent[0][3]
         second_id = self.sent[1][3]
-        # d1 接受、d2 被拒。
+        # d1 接受、d2 被拒（transient，保留待确认）。
         self._ok(first_id)
-        self._fail(second_id, "bad_token")
+        self._fail(second_id, "transport")
         round_key = self.notifier._round_key(session, "completed")
         self.assertTrue(self.notifier._already_sent(round_key, "d1"))
         self.assertFalse(self.notifier._already_sent(round_key, "d2"))
-        # 同一轮再推：只有 d2 出帧（d1 已记已发）。
+        self.assertEqual(len(self.notifier._pending), 1)
+        # 同一轮直接重调 hook：d1 已发跳过，d2 在途抑制——零新帧。
         self.notifier._last_sent.clear()
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
         )
+        self.assertEqual(len(self.sent), 2)
+        # 退避到期后扫描驱动：只重发 d2 一帧（总数 3），d1 永不重发。
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
         self.assertEqual(len(self.sent), 3)
         self.assertEqual(self.sent[2][0], "b" * 64)
 
@@ -427,6 +443,145 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         hub._detect_status_changes()
         self.assertEqual(len(self.sent), 2)
 
+    def test_apple_5xx_earliest_retry_900s(self) -> None:
+        """Apple 5xx receipts retry no earlier than 900s, persist across restart."""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        self.notifier.on_push_receipt(
+            self.sent[0][3],
+            {"ok": False, "code": "transport", "status": 503,
+             "reason": "ServiceUnavailable", "apns_id": ""},
+        )
+        pending = list(self.notifier._pending.values())
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["status"], 503)
+        now = time.time()
+        for age in (60.0, 600.0):
+            for entry in self.notifier._pending.values():
+                entry["ts"] = now - age
+            self.notifier.retry_due([dict(session)])
+            self.assertEqual(len(self.sent), 1)
+        for entry in self.notifier._pending.values():
+            entry["ts"] = now - 901.0
+        self.notifier.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(
+            [e["attempts"] for e in self.notifier._pending.values()], [2]
+        )
+        # Restart keeps the 900s rule and the attempt count (same cap).
+        rebooted = PushNotifier(
+            self.notifier.state,
+            self.host_private,
+            sender=self._capture,
+            sent_path=Path(self._tmp.name) / "push-sent.json",
+            pending_path=Path(self._tmp.name) / "push-pending.json",
+        )
+        rebooted_pending = list(rebooted._pending.values())
+        self.assertEqual(len(rebooted_pending), 1)
+        self.assertEqual(rebooted_pending[0]["status"], 503)
+        self.assertEqual(rebooted_pending[0]["attempts"], 2)
+        for entry in rebooted._pending.values():
+            entry["ts"] = time.time() - 901.0
+        rebooted.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 3)
+
+    def test_concurrent_save_newer_state_wins(self) -> None:
+        """Barrier-sequenced race: serialized atomic saves, newer wins on disk.
+
+        Ordering is fully deterministic (events only, no sleeps): worker T1
+        blocks inside its gated write while HOLDING the ledger lock; main waits
+        for that gate, starts the accepting receipt on T2 (which must queue
+        behind the lock), then releases. T1's stale snapshot ({P1, P2}) always
+        lands first; T2's newer snapshot ({P2} + sent P1) always wins.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        orig_write = PushNotifier._write_atomic
+        calls = []
+
+        def gated(path, text):
+            calls.append(path.name)
+            if len(calls) == 2:
+                entered.set()
+                self.assertTrue(release.wait(timeout=10), "gate was never released")
+            return orig_write(path, text)
+
+        self.notifier._write_atomic = gated
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        # Phase 1: normal enqueue, write #1 completes. P1 id from sender frames.
+        self.notifier.on_status_change(
+            dict(session), sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        p1 = self.sent[0][3]
+        round_key = self.notifier._round_key(session, "completed")
+        # Phase 2: T1 tracks a second-round entry; its write #2 gates mid-lock.
+        p2_entry = {
+            "round": "pi:s1\x00200:20:done:bbbb\x00completed",
+            "device": "d1",
+            "kind": "completed",
+            "session": "pi:s1",
+            "completion": "200:20:done:bbbb",
+            "ts": time.time(),
+            "attempts": 1,
+            "last_code": "",
+            "status": 0,
+            "parked": False,
+        }
+        worker = threading.Thread(
+            target=self.notifier._track_pending, args=("p2-test", p2_entry)
+        )
+        worker.start()
+        self.assertTrue(entered.wait(timeout=10), "gated write never started")
+        accepter = threading.Thread(
+            target=self.notifier.on_push_receipt,
+            args=(p1, {"ok": True, "code": "ok", "status": 200,
+                       "reason": "", "apns_id": "x"}),
+        )
+        accepter.start()
+        release.set()
+        worker.join(timeout=10)
+        accepter.join(timeout=10)
+        self.assertFalse(worker.is_alive(), "worker did not finish")
+        self.assertFalse(accepter.is_alive(), "accepter did not finish")
+        final_pending = json.loads(
+            (Path(self._tmp.name) / "push-pending.json").read_text(encoding="utf-8")
+        )
+        final_sent = json.loads(
+            (Path(self._tmp.name) / "push-sent.json").read_text(encoding="utf-8")
+        )
+        # Newer wins: P1 accepted (gone from pending, in sent), P2 kept.
+        self.assertEqual(sorted(final_pending), ["p2-test"])
+        self.assertIn(self.notifier._device_round_key(round_key, "d1"), final_sent)
+        leftovers = [p.name for p in Path(self._tmp.name).iterdir() if p.suffix == ".tmp"]
+        self.assertEqual(leftovers, [])
+        # Reload: accepted round never resends.
+        reloaded = PushNotifier(
+            self.notifier.state,
+            self.host_private,
+            sender=self._capture,
+            sent_path=Path(self._tmp.name) / "push-sent.json",
+            pending_path=Path(self._tmp.name) / "push-pending.json",
+        )
+        sent_before = len(self.sent)
+        reloaded.on_status_change(
+            dict(session), sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), sent_before)
+
     def test_skips_device_without_token(self) -> None:
         self.notifier.state.devices[0].push_token = ""
         self.notifier.on_status_change(
@@ -440,6 +595,286 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             sesskit_titles.STATUS_DONE,
         )
         self.assertEqual(self.sent, [])
+
+    def test_permanent_failure_parks_without_retry(self) -> None:
+        """永久失败（bad_token）直接 parked：不记已发，后续扫描零重发。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        self._fail(self.sent[0][3], "bad_token")
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertFalse(self.notifier._already_sent(round_key, "d1"))
+        pending = list(self.notifier._pending.values())
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0]["parked"])
+        self.assertEqual(pending[0]["last_code"], "bad_token")
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.notifier._pending), 1)
+
+    def test_local_send_exception_keeps_retryable(self) -> None:
+        """sender 抛错：待确认保留（attempts 计次），不记已发，退避后重发。"""
+        calls: list[str] = []
+
+        def flaky_sender(token: str, env: str, payload: bytes, push_id: str = "") -> None:
+            calls.append(push_id)
+            raise RuntimeError("relay down")
+
+        self.notifier.set_sender(flaky_sender)
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(calls), 1)
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertFalse(self.notifier._already_sent(round_key, "d1"))
+        pending = list(self.notifier._pending.values())
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["attempts"], 1)
+        self.assertEqual(pending[0]["last_code"], "local_send")
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
+        self.assertEqual(len(calls), 2)
+        pending = list(self.notifier._pending.values())
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["attempts"], 2)
+        self.assertFalse(self.notifier._already_sent(round_key, "d1"))
+
+    def test_sync_success_receipt_marks_sent(self) -> None:
+        """sender 内同步回执 ok：先落 pending，故回执能对上；恰好一帧。"""
+        def inline_ok(token: str, env: str, payload: bytes, push_id: str = "") -> None:
+            self.sent.append((token, env, payload, push_id))
+            self.notifier.on_push_receipt(
+                push_id,
+                {"ok": True, "code": "ok", "status": 200, "reason": "", "apns_id": "x"},
+            )
+
+        self.notifier.set_sender(inline_ok)
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.notifier._pending, {})
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertTrue(self.notifier._already_sent(round_key, "d1"))
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 1)
+
+    def test_two_devices_no_receipt_exact_retry_each(self) -> None:
+        """双设备无回执：超时后各恰好重发一帧（总数 4），attempts 均为 2。"""
+        second_private = crypto.generate_private_key_bytes()
+        self.notifier.state.devices.append(
+            PairedDevice(
+                id="d2",
+                name="iPad",
+                public_key=crypto.public_key_bytes(second_private).hex(),
+                paired_at=1.0,
+                push_token="b" * 64,
+                push_env="production",
+            )
+        )
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 2)
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 4)
+        attempts = sorted(e["attempts"] for e in self.notifier._pending.values())
+        self.assertEqual(attempts, [2, 2])
+        self.assertEqual(len(self.notifier._pending), 2)
+        # d1 接受后：下次只重发 d2（总数 5），d1 永不重发。
+        d1_new = [pid for tok, _, _, pid in self.sent if tok == "a" * 64][-1]
+        self._ok(d1_new)
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 5)
+        self.assertEqual(self.sent[4][0], "b" * 64)
+        round_key = self.notifier._round_key(session, "completed")
+        self.assertTrue(self.notifier._already_sent(round_key, "d1"))
+
+    def test_new_round_within_throttle_sends(self) -> None:
+        """节流窗内新 completion 必须发出；旧轮重放抑制（精确计数）。"""
+        first = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "round one",
+            "completion_id": "100:10:done:aaaa",
+        }
+        second = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "round two",
+            "completion_id": "200:20:done:bbbb",
+        }
+        self.notifier.on_status_change(
+            first, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        # 节流窗内新一轮：第二帧必须出。
+        self.notifier.on_status_change(
+            second, sesskit_titles.STATUS_DONE, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 2)
+        # 旧轮重放（同 completion）：抑制，仍为 2。
+        self.notifier.on_status_change(
+            first, sesskit_titles.STATUS_DONE, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 2)
+
+    def test_restart_retry_cap_parks(self) -> None:
+        """重启后 attempts 已达上限：park，零新帧，跨重启仍有效。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        for entry in self.notifier._pending.values():
+            entry["attempts"] = 5
+            entry["ts"] -= 3600.0
+        with self.notifier._lock:
+            self.notifier._persist_pending_locked()
+        rebooted = PushNotifier(
+            self.notifier.state,
+            self.host_private,
+            sender=self._capture,
+            sent_path=Path(self._tmp.name) / "push-sent.json",
+            pending_path=Path(self._tmp.name) / "push-pending.json",
+        )
+        rebooted.retry_due([dict(session)])
+        self.assertEqual(len(self.sent), 1)
+        pending = list(rebooted._pending.values())
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0]["parked"])
+
+    def test_superseded_round_expires(self) -> None:
+        """新一轮出现后：旧待确认丢弃，retry 零新帧。"""
+        old = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "round one",
+            "completion_id": "100:10:done:aaaa",
+        }
+        new = dict(old, completion_id="200:20:done:bbbb", last_agent="round two")
+        self.notifier.on_status_change(
+            old, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        for entry in self.notifier._pending.values():
+            entry["ts"] -= 3600.0
+        self.notifier.retry_due([new])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.notifier._pending, {})
+
+
+@unittest.skipUnless(_HAS_CRYPTO, _SKIP)
+class ProductionAssemblyRetryTests(unittest.TestCase):
+    """真实生产组装回归：daemon 注册绑定方法 hook，扫描驱动必须经 __self__ 生效。"""
+
+    def setUp(self) -> None:
+        from corral.remote.daemon import RemoteDaemon
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._env = mock.patch.dict(
+            os.environ,
+            {
+                "CORRAL_STATE_DIR": self._tmp.name,
+                "CORRAL_CACHE_DIR": self._tmp.name,
+            },
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.device_private = crypto.generate_private_key_bytes()
+        self.host_private = crypto.generate_private_key_bytes()
+        state = RemoteState(
+            host_id="host",
+            host_name="Mac",
+            relay_url="wss://example.invalid",
+            relay_enabled=True,
+            local_enabled=False,
+            devices=[
+                PairedDevice(
+                    id="d1",
+                    name="iPhone",
+                    public_key=crypto.public_key_bytes(self.device_private).hex(),
+                    paired_at=1.0,
+                    push_token="a" * 64,
+                    push_env="sandbox",
+                )
+            ],
+        )
+        self.daemon = RemoteDaemon(state)
+
+    def test_bound_hook_retry_resolves_and_retries(self) -> None:
+        hub = self.daemon.hub
+        push = self.daemon.push
+        # 生产接线：绑定方法，没有 retry_due 属性——旧驱动在此永远取不到。
+        self.assertIs(hub._status_hook.__self__, push)
+        self.assertIsNone(getattr(hub._status_hook, "retry_due", None))
+        path = Path(self._tmp.name) / "pi.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(
+            status_tag=sesskit_titles.STATUS_PENDING, last_agent="working"
+        )
+        session["path"] = str(path)
+        session["mtime"] = 1_700_000_000.0
+        hub.store.sessions = {"pi": [session]}
+        hub._snapshot_status()
+        session["status_tag"] = sesskit_titles.STATUS_DONE
+        session["completion_id"] = "100:10:done:aaaa"
+        session["last_agent_msg"] = "round one done"
+        session["mtime"] = time.time()
+        hub._detect_status_changes()
+        # sender 为真实 RelayClient（无 loop，帧丢弃但无异常）：恰好一条待确认。
+        self.assertEqual(len(push._pending), 1)
+        first_id = next(iter(push._pending))
+        self.assertEqual(push._sent_rounds, {})
+        # 无跃迁再次扫描：只有经 __self__ 解析的重试驱动能动作；恰好替换一条。
+        for entry in push._pending.values():
+            entry["ts"] -= 3600.0
+        hub._detect_status_changes()
+        self.assertEqual(len(push._pending), 1)
+        second_id = next(iter(push._pending))
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(push._pending[second_id]["attempts"], 2)
+        self.assertEqual(push._sent_rounds, {})
 
 
 class SessionHubStatusHookTests(unittest.TestCase):
