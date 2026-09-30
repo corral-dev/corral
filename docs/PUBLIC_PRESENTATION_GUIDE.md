@@ -2,7 +2,9 @@
 
 ## Product identity
 
-The approved Corral icon is the colorful paper-cut unicorn on a blue background. Use the current iOS master at `../../ios/Corral/Assets.xcassets/AppIcon.appiconset/AppIcon.png` in the product workspace. The green arrow and the orange/sage horse artwork are retired; remove their files and generated packages rather than retaining competing masters. Do not replace the unicorn with a newly generated interpretation.
+The currently approved Corral icon is the colorful paper-cut unicorn on a blue background. Use the current iOS master at `../../ios/Corral/Assets.xcassets/AppIcon.appiconset/AppIcon.png` in the product workspace. The green arrow and the orange/sage horse artwork are retired; remove their files and generated packages rather than retaining competing masters.
+
+Redesign brief (owner direction, 2026-09-30): a complete visual redesign is authorized. Keep the new exploration connected to Corral's enclosure and equestrian imagery, gathering and tending independently running agents. Rework the motif, silhouette, palette, and visual style within that identity; generic unrelated objects do not satisfy this brief. This supersedes the earlier prohibition on generating a replacement interpretation. The current master remains the production identity until a new direction is selected and finished; concept boards are not production assets.
 
 The README display asset is `docs/screenshots/corral-unicorn.png`: a compact rounded clip of the approved master. Keep the application master square and opaque. Do not embed the 1024 master in an SVG for GitHub.
 
