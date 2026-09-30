@@ -213,7 +213,10 @@ class DevEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = self._corral_checkout(Path(temp))
             before = sorted(path.relative_to(repo).as_posix() for path in repo.rglob("*"))
-            with contextlib.redirect_stdout(io.StringIO()) as output:
+            with (
+                mock.patch.object(dev_env.shutil, "which", return_value="/usr/bin/uv"),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
                 status = dev_env.main(["--json", "prepare", "--repo", str(repo), "--dry-run"])
             result = json.loads(output.getvalue())
             after = sorted(path.relative_to(repo).as_posix() for path in repo.rglob("*"))

@@ -4681,6 +4681,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch("corral.embed.host_session", return_value="corral-shell-from-board"),
             mock.patch("corral.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.capture", return_value="Shell from board fixture"),
         ):
             app = CorralApp(store, embed_ok=True)
             async with app.run_test(size=(120, 30)) as pilot:
