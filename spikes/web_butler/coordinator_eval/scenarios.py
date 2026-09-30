@@ -9,8 +9,8 @@ PROJECTS = {
     "Notely": ["Notely/web", "Notely/backend", "Notely/app-ios"],
     "Beacon": ["Beacon/backend"],
 }
-ASSISTANTS = {"claude": "usable", "codex": "usable", "pi": "usable",
-              "cursor": "quota exhausted", "kimi": "not logged in"}
+# Kimi is out of scope for the task board (design doc §8.5), so it is never offered.
+ASSISTANTS = {"claude": "usable", "codex": "usable", "pi": "usable", "cursor": "quota exhausted"}
 
 
 def task(id, state, project, anchors, assistant="claude", report=None, deps=None):

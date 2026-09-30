@@ -205,6 +205,10 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 3. **Assistant choice.** If the idea names an assistant, use it; otherwise the coordinator chooses. The coordinator
    itself runs on whichever assistant runtime is available — no fixed requirement.
 4. **One draft document** per owner.
+5. **Kimi is out of scope** (owner, 2026-09-30). The coordinator and workers never run on
+   Kimi, and no butler work targets Kimi's signals. SessKit made the same call: Kimi stays
+   on its legacy parser and is left out of the unified activity model. Kimi findings below
+   (F4, F6) are kept as history; Corral's existing Kimi support is unchanged.
 
 Later decisions (same day): requirements 11–14 (agentic judgement, strikethrough,
 in-document agent questions, phone push). Strikethrough first covered all deletions,
@@ -596,7 +600,7 @@ behind no user-facing entry until slice 6 (unfinished features are not exposed).
 | Slice | What | Where | Acceptance |
 |---|---|---|---|
 | 0 | **Session control layer**: host, deliver-and-confirm, interrupt, stop, observe turn state. Extracted from `SessionHub` so the phone daemon and the butler share it. Per-assistant startup gates, input readiness, composer check and mid-turn mode become runtime-adapter methods (fixes F1/F2; follows the "runtime-private behaviour lives in `runtime/`" rule). | new `src/corral/control.py`; `runtime/*.py`; `remote/sessions.py` delegates | Unit tests per adapter from recorded pane text. Opt-in live E1 matrix per installed assistant: start in a new folder, first message, mid-turn message, delivery confirmed from history. Phone `send_turn` regression tests unchanged. |
-| 1 | **SessKit signals**: one completion id per turn (Codex), quota/limit and not-logged-in as their own states (Cursor, Kimi). | SessKit, then Corral pin | SessKit contract tests on recorded histories. |
+| 1 | **SessKit signals**: one completion id per turn (Codex), quota/limit and not-logged-in as their own states (Cursor). Kimi excluded (§8.5). | SessKit, then Corral pin | SessKit contract tests on recorded histories. |
 | 2 | **Ledger and command boundary**: tasks, questions, dependencies, anchors, results, audit log (actor, action, target, time; same transaction as the change). Boundary = the spike's `contract.py` + shape checks + `test_contract.py`. | new `src/corral/butler/` (`ledger.py`, `boundary.py`); SQLite under `~/.config/corral/butler/` | Deterministic tests: every action and state from §6.1; audit row for every mutation; replay of E6's 26 rounds against the ledger with recorded coordinator answers. |
 | 3 | **Document service and editor**: loopback-only server on `websockets` (already a dependency) serving the editor and a live channel. Random token, origin check, single editing tab, versioned saves, seen ranges persisted with the document. Editor source moves from the spike; the built bundle ships in the package. | `src/corral/butler/web.py`, `document.py`; editor source under `cli/web/butler/` | E2/E5 checks (25 + anchor) run against the served page; restart and two-tab tests; token/origin rejection tests. |
 | 4 | **Coordinator runner**: one hosted coordinator session, standing prompt from `coordinator_prompt.md`. Rounds are triggered per §5: block settle, idle delay, one round in flight. The payload sends finished tasks in compact form. Replies are parsed, validated with one retry, and applied to the ledger. The coordinator restarts from the ledger when its context grows (E6). | `src/corral/butler/coordinator.py` | Recorded-replay tests of trigger timing (E4 traces); E3 scenarios + new S17–S22 through the real runner with a cheap model; restart test. |
