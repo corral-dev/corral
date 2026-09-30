@@ -8690,12 +8690,12 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.return_value.cwd, "/tmp")
 
     async def test_runtime_picker_modal_bells_on_unavailable_choice(self) -> None:
-        kimi = mock.Mock()
-        kimi.id = "kimi"
-        kimi.display_name = "Kimi"
-        kimi.is_available.return_value = False
-        kimi.scan_sessions.return_value = []
-        store, _ = _make_store(extra_runtimes=(kimi,))
+        cursor = mock.Mock()
+        cursor.id = "cursor"
+        cursor.display_name = "Cursor"
+        cursor.is_available.return_value = False
+        cursor.scan_sessions.return_value = []
+        store, _ = _make_store(extra_runtimes=(cursor,))
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -8703,7 +8703,8 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+t")
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
-            await pilot.press("down")  # 移到未安装的 kimi
+            self.assertNotIn("kimi", {c.id for c in app.screen._choices})  # noqa: SLF001
+            await pilot.press("down")  # 移到未安装的 cursor
             with mock.patch.object(app, "bell") as bell:
                 await pilot.press("enter")
                 await pilot.pause()

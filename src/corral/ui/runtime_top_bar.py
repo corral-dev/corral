@@ -241,7 +241,11 @@ class RuntimeTopBar(Horizontal):
         yield _TopBarSpacer()
         if self._on_shell_pick is not None:
             yield _ShellChip(self._on_shell_pick, id="shell-chip")
+        from corral.runtime.registry import ACTIVE_RUNTIME_IDS
+
         for runtime in self._registry:
+            if runtime.id not in ACTIVE_RUNTIME_IDS:
+                continue
             if not runtime.is_available():
                 continue
             yield _RuntimeChip(

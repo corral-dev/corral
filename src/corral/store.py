@@ -1050,19 +1050,36 @@ class SessionStore:
 
         合并会话 cwd 与本机 git 根扫描（见 corral.projects），字段形状仍是
         cwd_key / label / count / latest_mtime。
+        展示层仅排除 dormant 兼容来源（kimi），shell 等非运行时来源同样要展示；
+        dormant 会话不进入项目候选，但保留于原始 self.sessions 供直接兼容调用。
         """
         with self.lock:
             if self._projects is None:
-                self._projects = project_entries(self.sessions)
+                from corral.runtime.registry import DORMANT_RUNTIME_IDS
+
+                filtered = {
+                    rid: bucket
+                    for rid, bucket in self.sessions.items()
+                    if rid not in DORMANT_RUNTIME_IDS
+                }
+                self._projects = project_entries(filtered)
             return self._projects
 
     def all_sessions(self) -> list[dict]:
-        """返回稳定展示顺序的会话快照：已有位置固定；近 2 天的新会话在前，更旧的复活会话在后。"""
+        """返回稳定展示顺序的会话快照：已有位置固定；近 2 天的新会话在前，更旧的复活会话在后。
+
+        展示/投影用：仅排除 dormant 来源（kimi），shell 等非运行时来源同样展示；
+        dormant 会话保留于原始 self.sessions 供直接兼容调用，但不在 UI /
+        远程列表中出现。运行时创建入口（新建/接力/顶栏）才按 ACTIVE 过滤。
+        """
         with self.lock:
+            from corral.runtime.registry import DORMANT_RUNTIME_IDS
+
             by_key = {
                 session_key(session): session
                 for bucket in self.sessions.values()
                 for session in bucket
+                if session.get("source") not in DORMANT_RUNTIME_IDS
             }
             ordered = [by_key[key] for key in self._order if key in by_key]
             if len(ordered) != len(by_key):

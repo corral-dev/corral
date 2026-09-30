@@ -229,8 +229,12 @@ def _default_jobs() -> int:
             )
             raise SystemExit(2) from None
     cpu = os.cpu_count() or 2
-    # 至少 2：一条串行车道 + 至少一条并行；上限避免本机 16GB 机器被测爆。
-    return max(2, min(cpu, 6))
+    # 固定 6：云端实测（run 36730914621，全绿 exact-once）6 工人在 4 核 ubuntu /
+    # 3 核 7GB mac 上安全，且比按 CPU 取 min(CPU,6) 快约 20s；单测以 tmux/Pilot
+    # 真实等待为主，超配 CPU 不堆内存（本机 16GB 跑 6 工人已是常态）。
+    # CORRAL_TEST_JOBS / --jobs 仍可覆盖。
+    _ = cpu
+    return 6
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -255,7 +259,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         metavar="N",
-        help="并行进程数（默认 CORRAL_TEST_JOBS 或 min(CPU,6) 且≥2；1=旧单进程）",
+        help="并行进程数（默认 CORRAL_TEST_JOBS 或固定 6；1=旧单进程）",
     )
     parser.add_argument(
         "--run-modules",

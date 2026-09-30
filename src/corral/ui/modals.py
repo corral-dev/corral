@@ -557,8 +557,11 @@ async def choose_target_runtime(app, store, source: str, restart_available: bool
     按原会话原地恢复，仅对 corral 正托管、非占位的会话可用）；其后每一个助手
     （含来源自身）都是「读取源历史后新建会话」--同助手另起用于原会话卡住 / 出 bug 时；
     真正的原生恢复走侧边栏回车，不走本入口。
+    仅展示 ACTIVE_RUNTIME_IDS 内的目标，dormant 兼容不出现在接力菜单。
     """
-    runtimes = list(store.registry)
+    from corral.runtime.registry import active_runtimes
+
+    runtimes = active_runtimes(store.registry)
     source_runtime = store.registry.get(source)
     source_name = source_runtime.display_name
     restart_action = t("modal.restart_session_action")
@@ -620,7 +623,9 @@ async def new_session_flow(app, store, nav, session: dict | None):
         (i for i, (cwd, _, _) in enumerate(entries) if preferred and cwd == preferred), 0
     )
 
-    runtimes = list(store.registry)
+    from corral.runtime.registry import active_runtimes
+
+    runtimes = active_runtimes(store.registry)
     choices = [
         RuntimeChoice(runtime.id, runtime.display_name, "", runtime.is_available())
         for runtime in runtimes

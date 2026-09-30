@@ -649,6 +649,53 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.require_session("claude:missing")
         self.assertEqual(raised.exception.code, "not_found")
 
+    def test_resolve_restart_alias_via_keepalive_name(self) -> None:
+        """重启丢迁移表后，旧临时键经精确托管名反查到正式会话。"""
+        native = _session(
+            source="codex",
+            sid="01a0f2c1-eac5-7292-acb8-ce6a5ecd1443",
+            short_id="01a0f2c1",
+            title="正式会话",
+        )
+        native["keepalive_name"] = "corral-codex-bbe7b248"
+        native["live"] = True
+        self.hub.store.sessions = {"codex": [native]}
+        self.hub.store._session_key_migrations = {}
+        resolved = self.hub.resolve_session_key("codex:bbe7b248")
+        self.assertEqual(resolved, "codex:01a0f2c1-eac5-7292-acb8-ce6a5ecd1443")
+        found = self.hub.require_session("codex:bbe7b248")
+        self.assertEqual(found["id"], "01a0f2c1-eac5-7292-acb8-ce6a5ecd1443")
+
+    def test_resolve_restart_alias_unknown_keeps_not_found(self) -> None:
+        """托管名对不上时仍报 not_found，禁止 cwd/标题兜底。"""
+        native = _session(source="codex", sid="some-other-id", short_id="some-oth")
+        native["keepalive_name"] = "corral-codex-aaaaaaaa"
+        native["cwd"] = "/Users/geraltgraham/Codes/Corral"
+        self.hub.store.sessions = {"codex": [native]}
+        self.hub.store._session_key_migrations = {}
+        self.assertEqual(self.hub.resolve_session_key("codex:bbe7b248"), "codex:bbe7b248")
+        with self.assertRaises(remote_sessions.ActionError) as raised:
+            self.hub.require_session("codex:bbe7b248")
+        self.assertEqual(raised.exception.code, "not_found")
+
+    def test_resolve_native_prefix_single_and_ambiguous(self) -> None:
+        """原生 id 前缀一对一才认领；多条共享前缀时不串台。"""
+        solo = _session(
+            source="codex",
+            sid="01a0f2c1-eac5-7292-acb8-ce6a5ecd1443",
+            short_id="01a0f2c1",
+        )
+        self.hub.store.sessions = {"codex": [solo]}
+        self.hub.store._session_key_migrations = {}
+        self.assertEqual(
+            self.hub.resolve_session_key("codex:01a0f2c1"),
+            "codex:01a0f2c1-eac5-7292-acb8-ce6a5ecd1443",
+        )
+        first = _session(source="codex", sid="01a0f11d-8af0-1111-1111-111111111111", short_id="01a0f11d")
+        second = _session(source="codex", sid="01a0f11d-6feb-2222-2222-222222222222", short_id="01a0f11d")
+        self.hub.store.sessions = {"codex": [first, second]}
+        self.assertEqual(self.hub.resolve_session_key("codex:01a0f11d"), "codex:01a0f11d")
+
     def test_conversation_watch_rebinding_keeps_phone_channel(self) -> None:
         """转正后实时订阅仍走手机原来的通道，但读取正式历史。"""
         old_path = Path(self._tmp.name) / "old.jsonl"

@@ -224,11 +224,31 @@ class RuntimeRegistry:
         return LaunchPlan(argv=runtime.compose_passthrough_argv(tuple(user_args)), cwd=None)
 
 
+ACTIVE_RUNTIME_IDS: frozenset[str] = frozenset({"claude", "codex", "opencode", "cursor", "pi"})
+"""活跃运行时 allowlist：仅这五个在 Corral 产品界面中可见/可新建。已有 Kimi
+适配保留于注册表处于 dormant，仅供直接程序化兼容，不在 UI 展示。"""
+
+DORMANT_RUNTIME_IDS: frozenset[str] = frozenset({"kimi"})
+"""Dormant 会话来源：展示/投影层（侧栏、搜索、项目候选）仅排除这些来源。
+注意不用 ACTIVE  allowlist 做会话过滤——shell 等非运行时来源（如终端窗格）
+同样要展示；运行时创建入口（新建/接力菜单、顶栏 chips）才按 ACTIVE 过滤。"""
+
+
 def default_registry() -> RuntimeRegistry:
-    """创建默认运行时注册表；新增运行时只需在这里注册一次。"""
+    """创建默认运行时注册表；新增运行时只需在这里注册一次。
+
+    完整注册仍包含 dormant 的 KimiRuntime 以保留兼容；界面与列表展示层按
+    ACTIVE_RUNTIME_IDS 过滤，不在 UI 暴露入口。新增活跃运行时需用户显式决策
+    后同时更新 ACTIVE_RUNTIME_IDS。
+    """
     return RuntimeRegistry(
         (ClaudeRuntime(), CodexRuntime(), OpenCodeRuntime(), KimiRuntime(), CursorRuntime(), PiRuntime())
     )
+
+
+def active_runtimes(registry: RuntimeRegistry) -> list:
+    """返回 registry 中属于 ACTIVE_RUNTIME_IDS 的运行时，保持注册顺序。"""
+    return [runtime for runtime in registry if runtime.id in ACTIVE_RUNTIME_IDS]
 
 
 def execute_launch(plan: LaunchPlan) -> None:

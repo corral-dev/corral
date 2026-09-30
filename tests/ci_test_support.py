@@ -316,8 +316,20 @@ UI_GROUPABLE_CLASSES: frozenset[str] = frozenset(
 #: proof; absent classes are never method-split. Proof:
 #: cloud-speed-isolation-proof.json (permitted_chunks; Navigation 16+16+15+15
 #: and AppTheme 9+9+8+8 verified green as separate processes with disjoint ID
-#: sets covering the full class). Timing-sensitive classes are never listed here.
+#: sets covering the full class) plus the 2026-09-30 coordinator proof below
+#: (same method: each new chunk run green via --run-shard, union == full class,
+#: no wall-budget/throttle-window asserts in these classes — only generous 5s
+#: correctness gates and printed perf numbers). Attempted but REJECTED:
+#: ModalTests — test_runtime_picker_modal_bells_on_unavailable_choice fails
+#: 2/2 when the class is method-split (bell never fires) while green in the
+#: full class, i.e. order-dependent; stays one-class-per-worker.
+#: Timing-sensitive classes are never listed here.
 UI_SPLITTABLE_CLASSES: dict[str, int] = {
-    "test_ui.MainScreenNavigationTests": 4,
+    "test_ui.MainScreenNavigationTests": 6,
     "test_ui.AppThemeTests": 4,
+    "test_ui.FullTextSearchModalTests": 3,
+    "test_ui.SessionGroupSidebarTests": 3,
+    "test_ui.MainScreenEmbedFlowTests": 2,
+    "test_ui.RestartEndedSessionTests": 2,
+    "test_ui.MainScreenHostWorkerTests": 2,
 }

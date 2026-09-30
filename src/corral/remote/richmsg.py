@@ -1875,6 +1875,18 @@ def _feed_typed_event(
         call_id = str(getattr(event, "call_id", None) or "")
         if not call_id or call_id not in reader._pending:
             return None, False
+        pending_tool = reader._pending.get(call_id)
+        if (
+            runtime == "codex"
+            and pending_tool is not None
+            and pending_tool.name == "request_user_input_async"
+            and _is_async_acceptance_receipt(getattr(event, "raw_output", None))
+        ):
+            # ``{"accepted":true}`` is the async routing receipt, not an
+            # answer: the AgentMessage (delivery=async) panel stays up until
+            # a native <send_user_message_question_reply> arrives or the
+            # live turn ends. Finishing here is what hid the phone form.
+            return None, False
         result = getattr(event, "result", None)
         if (
             result is not None
@@ -1903,6 +1915,53 @@ def _feed_typed_event(
         host.text = _clip(error_text, _MAX_TEXT)
         return host, is_new
     return None, False
+
+
+def _is_async_acceptance_receipt(value: object) -> bool:
+    """True when a Codex async tool output is only the routing receipt.
+
+    The handler answers ``{"accepted":true}`` immediately while the
+    ``delivery=async`` AgentMessage panel stays pending; only a native
+    ``<send_user_message_question_reply>`` envelope (or turn end) resolves
+    it. Anything else — answers, errors, empty — is not a bare receipt.
+    """
+    try:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "ignore")
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return False
+            parsed = json.loads(text)
+        elif isinstance(value, dict):
+            parsed = value
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and "accepted" in item:
+                    parsed = item
+                    break
+                if isinstance(item, str):
+                    try:
+                        maybe = json.loads(item.strip())
+                    except ValueError:
+                        continue
+                    if isinstance(maybe, dict) and "accepted" in maybe:
+                        parsed = maybe
+                        break
+            else:
+                return False
+        else:
+            return False
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    if "answers" in parsed or "questionItemId" in parsed:
+        return False
+    accepted = parsed.get("accepted")
+    if isinstance(accepted, str):
+        return accepted.strip().lower() == "true"
+    return accepted is True
 
 
 def _project_typed_batch(
@@ -2534,6 +2593,16 @@ def prompt_entries(
         options = [o for o in question.get("options") or [] if isinstance(o, dict)]
         prompt = str(question.get("prompt") or question.get("header") or name)
         custom = question.get("allow_custom", True) if allow_custom is None else allow_custom
+        question_id = str(question.get("id") or index)
+        if name == "request_user_input_async":
+            # Official per-question identity: JSON.stringify(
+            # ["request_user_input_async", <AgentMessage item id>, <index>]).
+            # The async AgentMessage id equals the function_call call_id,
+            # which is this request's ``request_id`` here.
+            question_id = json.dumps(
+                ["request_user_input_async", request_id, index],
+                separators=(",", ":"),
+            )
         entry: dict = {
             "id": f"{request_id}:{index}" if multi else request_id,
             "name": name,
@@ -2541,7 +2610,7 @@ def prompt_entries(
             "prompt": prompt,
             "options": [str(o.get("label") or "") for o in options],
             "request_id": request_id,
-            "question_id": str(question.get("id") or index),
+            "question_id": question_id,
             "multi_select": bool(question.get("multi_select")),
             "allow_custom": bool(custom),
             "is_secret": bool(question.get("is_secret")),

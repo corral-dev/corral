@@ -805,6 +805,12 @@ class SessionHub:
         """手机可能还拿着占位卡旧键；助手落下真实历史后换成正式键，旧键仍须能用。
 
         电脑侧栏会跟着迁编号，远程详情页不会。禁止把旧键当成「已经不在列表里」。
+
+        守护进程重启会丢掉内存里的占位→正式迁移表：重启后旧临时键经精确
+        ``keepalive_name``（``corral-<runtime>-<ident>`` 等全部前后缀）反查到
+        已 ``annotate`` 贴名的正式会话；原生 id 前缀/完整两种形态按同运行时
+        精确一对一认领。命中零条或多条时仍返回原键（上游报 ``not_found``），
+        禁止用 cwd/标题/任意旧卡兜底。
         """
         current = str(key or "")
         seen: set[str] = set()
@@ -816,7 +822,70 @@ class SessionHub:
             if not migrated or migrated == current:
                 break
             current = str(migrated)
+        aliased = self._resolve_restart_alias(str(key or ""))
+        if aliased is not None:
+            return aliased
         return str(key or "")
+
+    def _resolve_restart_alias(self, key: str) -> str | None:
+        """重启后旧键的精确别名：只认托管名与原生 id，不认 cwd/标题。"""
+        runtime, sep, sid = str(key or "").partition(":")
+        if not sep or not runtime or not sid:
+            return None
+        try:
+            sessions = self.store.all_sessions()
+        except Exception:
+            return None
+        from corral.legacy_names import ALL_SESSION_PREFIXES
+
+        candidate_names = {f"{prefix}{runtime}-{sid}" for prefix in ALL_SESSION_PREFIXES}
+        keepalive_hits: list[str] = []
+        for session in sessions:
+            try:
+                name = str(session.get("keepalive_name") or "")
+            except Exception:
+                continue
+            if name and name in candidate_names:
+                try:
+                    from corral.models import session_key as _session_key
+
+                    keepalive_hits.append(_session_key(session))
+                except Exception:
+                    continue
+        if len(keepalive_hits) == 1:
+            return keepalive_hits[0]
+        if keepalive_hits:
+            return None
+        # 原生 id 前缀/完整形态：同运行时下精确一对一才认领，避免串到相邻会话。
+        normalized = sid.replace("-", "").lower()
+        prefix_hits: list[str] = []
+        for session in sessions:
+            try:
+                if str(session.get("source") or "") != runtime:
+                    continue
+                native_id = str(session.get("id") or "")
+                short_id = str(session.get("short_id") or "")
+            except Exception:
+                continue
+            if not native_id:
+                continue
+            if native_id == sid or short_id == sid:
+                try:
+                    from corral.models import session_key as _session_key
+
+                    prefix_hits.append(_session_key(session))
+                except Exception:
+                    continue
+            elif normalized and native_id.replace("-", "").lower().startswith(normalized):
+                try:
+                    from corral.models import session_key as _session_key
+
+                    prefix_hits.append(_session_key(session))
+                except Exception:
+                    continue
+        if len(prefix_hits) == 1:
+            return prefix_hits[0]
+        return None
 
     def require_session(self, key: str) -> dict:
         session = self.store.find_session(self.resolve_session_key(key))

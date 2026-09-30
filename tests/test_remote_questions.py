@@ -352,5 +352,129 @@ class OpenCodeFormTests(unittest.TestCase):
         self.assertEqual(result["status"], "stale")
 
 
+ASYNC_META = [
+    {
+        "id": "0",
+        "prompt": "测试单选：你现在使用什么网络？",
+        "options": [
+            {"id": "0", "label": "Wi-Fi"},
+            {"id": "1", "label": "蜂窝网络"},
+            {"id": "2", "label": "其他网络"},
+        ],
+    },
+    {"id": "1", "prompt": "测试自由填写：请随便写一句话。", "options": []},
+]
+
+
+def _async_prompts(request_id: str = "call_async1") -> list[dict]:
+    return richmsg.prompt_entries(
+        request_id=request_id, name="request_user_input_async", questions=ASYNC_META
+    )
+
+
+class AsyncQuestionTests(unittest.TestCase):
+    def test_question_id_matches_official_stringify(self) -> None:
+        prompts = _async_prompts("call_l7S70bSuBBLtuQPbefDhoU70")
+        self.assertEqual(
+            [p["question_id"] for p in prompts],
+            [
+                '["request_user_input_async","call_l7S70bSuBBLtuQPbefDhoU70",0]',
+                '["request_user_input_async","call_l7S70bSuBBLtuQPbefDhoU70",1]',
+            ],
+        )
+        self.assertEqual({p["request_id"] for p in prompts}, {"call_l7S70bSuBBLtuQPbefDhoU70"})
+
+    def test_envelope_uses_native_reply_shape(self) -> None:
+        prompts = _async_prompts()
+        answers = questions._validated_answers(
+            prompts,
+            [
+                {"question_id": prompts[0]["question_id"], "selected": ["1"], "text": ""},
+                {"question_id": prompts[1]["question_id"], "selected": [], "text": "你好"},
+            ],
+        )
+        envelope = questions.async_envelope(prompts, answers)
+        self.assertTrue(envelope.startswith("<send_user_message_question_reply>"))
+        self.assertTrue(envelope.endswith("</send_user_message_question_reply>"))
+        body = envelope[len("<send_user_message_question_reply>") : -len("</send_user_message_question_reply>")]
+        replies = json.loads(body)
+        self.assertEqual(
+            replies,
+            [
+                {
+                    "questionItemId": prompts[0]["question_id"],
+                    "question": "测试单选：你现在使用什么网络？",
+                    "answer": "蜂窝网络",
+                },
+                {
+                    "questionItemId": prompts[1]["question_id"],
+                    "question": "测试自由填写：请随便写一句话。",
+                    "answer": "你好",
+                },
+            ],
+        )
+
+    def test_async_answer_sends_envelope_not_plain_chat(self) -> None:
+        prompts = _async_prompts()
+        with mock.patch.object(questions.embed, "paste", return_value=True) as paste, mock.patch.object(
+            questions.embed, "send_key", return_value=True
+        ) as send_key, mock.patch.object(questions.time, "sleep"):
+            result = questions.answer(
+                {"source": "codex", "id": "s"},
+                prompts,
+                "call_async1",
+                [
+                    {"question_id": prompts[0]["question_id"], "selected": ["0"], "text": ""},
+                    {"question_id": prompts[1]["question_id"], "selected": [], "text": "hi"},
+                ],
+                pane_name=lambda: "pane-1",
+            )
+        self.assertEqual(result, {"status": "delivered"})
+        paste.assert_called_once()
+        sent_pane, sent_text = paste.call_args.args
+        self.assertEqual(sent_pane, "pane-1")
+        self.assertIn("<send_user_message_question_reply>", sent_text)
+        self.assertNotEqual(sent_text.strip(), "Wi-Fi")
+        send_key.assert_called_once_with("pane-1", "Enter")
+
+    def test_async_acceptance_receipt_keeps_tool_pending(self) -> None:
+        from types import SimpleNamespace
+
+        reader = richmsg.RichReader({"source": "codex", "id": "s", "path": ""})
+        host = richmsg.RichMessage(seq=1, role="assistant", text="")
+        tool = richmsg.ToolCall(
+            call_id="call_async1",
+            name="request_user_input_async",
+            kind="question",
+            summary="q",
+            questions_meta=richmsg._question_meta(
+                "question", {"questions": [{"title": "Q?", "options": ["A", "B"]}]},
+            ),
+        )
+        reader._register_tool(host, tool)
+        host.tools.append(tool)
+        receipt = SimpleNamespace(
+            type="tool_result", call_id="call_async1", raw_output='{"accepted":true}', result=None
+        )
+        self.assertEqual(
+            richmsg._feed_typed_event(
+                reader, receipt, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+            ),
+            (None, False),
+        )
+        self.assertIn("call_async1", reader._pending)
+        self.assertEqual(
+            [p["request_id"] for p in richmsg.pending_prompts_from_messages([host])],
+            ["call_async1"],
+        )
+        real_result = SimpleNamespace(
+            type="tool_result", call_id="call_async1", raw_output="done", result=None
+        )
+        richmsg._feed_typed_event(
+            reader, real_result, runtime="codex", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertNotIn("call_async1", reader._pending)
+
+
 if __name__ == "__main__":
     unittest.main()

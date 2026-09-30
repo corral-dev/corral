@@ -83,7 +83,9 @@
   标题、队列元数据无关；元数据变更不得改变未变结束的 id；
   不同真实轮次的相同回答文本仍须不同 id（轮次/消息锚点不同）；
   拿不到精确终局锚点时返回空 id（unknown），不得伪造成功。
-  （Codex 取 `task_complete`/`turn_aborted` 那条记录的稳定字段；
+  （Codex 取 `task_complete`/`turn_aborted` 那条记录的稳定字段，
+  `user`/`agent` 文本锚点同样携带原生事件 id（`response_item` 必有，
+  旧 `event_msg` 缺失即空）——同文本不同真实轮次不得同 id；
   Pi 取分支叶子 `parentId` 链尾 + `stopReason`；
   Cursor 取 `updatedAtMs + prompt_history` 首条摘要；
   其余沿用“尾部事件时间 + 尾文本哈希”，但事件时间必须是原生记录时间，
@@ -109,9 +111,9 @@ SessKit 验收沿用其 `CONTRACT.md` “Verification”：fixture +
   `(session_key, completion_id or status_tag, kind)`，持久化已发集合
   （见 §3），内存 120 秒节流保留（防抖动），但**节流只跳过发送，
   不跳过去重记账**。
-- `STATUS_DONE` + 空 `completion_id`（老 SessKit / Cursor 弱证据）：
-  默认不推完成通知，只记日志；SessKit 升级且字段齐后自动恢复。
-  这是上线初期的安全闸，不是永久分支。
+- `STATUS_DONE` + 空 `completion_id`（无精确终局锚点的弱证据）：
+  默认不推完成通知，只记日志。这是永久安全闸（SessKit 以空 id 表达
+  unknown，Corral 永不据此推完成通知），不是上线初期的临时分支。
 
 ## 3. 开关与投递（Corral + iOS + 中继，不动 SessKit）
 
