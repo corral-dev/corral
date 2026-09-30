@@ -23,6 +23,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # pip 缓存只加速下载：键绑定到固定依赖输入（pyproject + uv.lock +
+          # 权威 SessKit pin），命中与否都不改变实际安装的版本。
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+            scripts/sesskit_dep.py
       - name: Verify SessKit pin and package metadata
         run: |
           set -euo pipefail
@@ -46,6 +53,8 @@ jobs:
           python3 -m pip install -q "$(python3 scripts/sesskit_dep.py wheel-requirement)"
           python3 -c "import sesskit; print('ok', getattr(sesskit, '__version__', '?'))"
       - name: Lint
+        # 唯一的 Ruff 门禁：版本固定（防规则集自行漂移），源码同一份在各矩阵
+        # job 里完全相同，不随 Python 版本变化，矩阵内不再重复跑。
         run: |
           python3 -m pip install -q ruff==0.16.1
           ruff check src tests
@@ -75,6 +84,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          # 与 preflight 同一套固定依赖输入：缓存只省下载时间，不参与版本决策。
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+            scripts/sesskit_dep.py
       - name: Install tmux
         # Linux runners do not guarantee tmux; without it hosted-pane tests stay on
         # the static "Press Enter to restart" frame and fail after 6s waits.
@@ -160,12 +175,6 @@ jobs:
           PY
       - name: Compile
         run: python -m compileall -q src/corral tests
-      - name: Lint
-        # 固定版本号，避免 ruff 自行升级后规则集变化在 CI 上悄悄多出新的拦截项。
-        # preflight 已跑过一遍；矩阵再跑一次挡住「只改某 Python 路径」的回归。
-        run: |
-          python -m pip install ruff==0.16.1
-          ruff check src tests
       - name: Test
         # 走 scripts/ci-test.py 而不是裸 unittest：挂死时自动打印全部线程栈，
         # 已知 Pilot 偶发自动重跑一次再判定。说明见该脚本头部注释。

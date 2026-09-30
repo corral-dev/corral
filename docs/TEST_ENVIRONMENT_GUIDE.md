@@ -44,6 +44,20 @@ replacement test framework.
   and resources. Reuse existing isolation switches and maintained fixture
   capture paths where appropriate; do not import a large test module as an
   undocumented public fixture API.
+- Real-terminal `selftest.sh` must use the same selected Python interpreter for
+  its `sys.path` capture and for every isolated TUI launch inside tmux. The
+  script replaces `PATH` inside the fixture environment, so a bare `python3`
+  there can resolve to a different installation than the one that produced
+  `PYTHONPATH`; versioned standard-library entries (for example a 3.12
+  `lib/python3.12` tree) loaded by another interpreter (for example 3.14)
+  abort before startup with `AssertionError: SRE module mismatch`.
+  `PYTHONPATH` entries apply to every interpreter on the machine (see
+  <https://docs.python.org/3/library/sys_path_init.html> and
+  <https://docs.python.org/3/using/cmdline.html#envvar-PYTHONPATH>), so the
+  only safe shape is one absolute interpreter path, shell-quoted, reused for
+  all three launches (main/direct/cursor). Do not hardcode a
+  machine-specific interpreter or reintroduce bare `python3` in a tmux
+  launch line.
 
 ## Running the isolated acceptance
 

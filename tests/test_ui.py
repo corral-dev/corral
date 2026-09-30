@@ -8062,7 +8062,17 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 "corral.embed.host_session", return_value="corral-claude-s1",
             ) as host,
             mock.patch("corral.embed.open_channel", return_value=None),
-            mock.patch("corral.liveness.is_alive", return_value=False),
+            # The previous process is gone; only the synthetic pane created by
+            # the restart should be considered alive by its fake tmux name.
+            mock.patch(
+                "corral.liveness.is_alive",
+                side_effect=lambda name, **_kwargs: name == "corral-claude-s1",
+            ),
+            mock.patch(
+                "corral.embed.is_alive",
+                side_effect=lambda name, **_kwargs: name == "corral-claude-s1",
+            ),
+            mock.patch("corral.embed.capture", return_value="Restarted fixture"),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)

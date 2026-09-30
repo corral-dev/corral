@@ -12,6 +12,18 @@ KEEPALIVE="corral-keepalive"
 TMP="$(mktemp -d /tmp/corral-selftest.XXXXXX)"
 PASS=0
 
+# One interpreter for the whole run: PYWORKAROUND_PATH below captures this
+# interpreter's sys.path into PYTHONPATH, while the fixture PATH built later
+# no longer contains the venv bin dir — a bare `python3` inside tmux could
+# then resolve to a different installation (e.g. Homebrew 3.14 reading a 3.12
+# stdlib tree) and abort before startup with `SRE module mismatch`.
+if [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python3" ]]; then
+  SELFTEST_PYTHON="$VIRTUAL_ENV/bin/python3"
+else
+  SELFTEST_PYTHON="$(command -v python3)"
+fi
+SELFTEST_PYTHON_Q="$(printf '%q' "$SELFTEST_PYTHON")"
+
 ok() { PASS=$((PASS + 1)); echo "PASS  $1"; }
 cap() { tmux -L "$OUTER" capture-pane -p -t tui 2>/dev/null; }
 sessions() { tmux -L "$KEEPALIVE" list-sessions -F '#{session_name}' 2>/dev/null; }
@@ -38,7 +50,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-FIXTURE_TIMESTAMP="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
+FIXTURE_TIMESTAMP="$("$SELFTEST_PYTHON" -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
 mkdir -p "$TMP/home/.claude/projects/demo" "$TMP/workA" "$TMP/workB" "$TMP/fakebin" "$TMP/home/.cache/corral"
 cat > "$TMP/home/.cache/corral/titles.json" <<'EOF'
 {"claude:aaaa1111":{"title":"修复切换体验","fp":"seed"},"claude:bbbb2222":{"title":"第二个会话","fp":"seed"}}
@@ -76,11 +88,11 @@ TMUX_DIR="$(dirname "$(command -v tmux)")"
 # 路径会跟着 HOME 走而失效（真机排查过的坑，不是猜测）。这里把当前解释器实际
 # 能看到的 sys.path 原样透传，绕开这个问题；真正 pip install 到系统/venv 的
 # 用户不受影响。
-PYWORKAROUND_PATH="$(python3 -c 'import sys; print(":".join(p for p in sys.path if p))')"
+PYWORKAROUND_PATH="$("$SELFTEST_PYTHON" -c 'import sys; print(":".join(p for p in sys.path if p))')"
 ENVV="HOME=$TMP/home PYTHONPATH=$REPO/src:$PYWORKAROUND_PATH PATH=$TMP/fakebin:$TMUX_DIR:/usr/local/bin:/usr/bin:/bin TERM=xterm-256color CORRAL_TITLE_GENERATOR=none CORRAL_LANG=zh CORRAL_ISOLATE_MANAGED_HOSTS=1"
 tmux -L "$OUTER" new-session -d -s tui -x 180 -y 42
 tmux -L "$OUTER" set-option -t tui mouse on
-tmux -L "$OUTER" send-keys -t tui "cd $REPO && env $ENVV python3 -m corral --limit 5" Enter
+tmux -L "$OUTER" send-keys -t tui "cd $REPO && env $ENVV ${SELFTEST_PYTHON_Q} -m corral --limit 5" Enter
 
 wait_for "workA 修复切换体验" 60
 wait_for "workB 第二个会话" 60
@@ -160,7 +172,7 @@ ok "Ctrl+Q 退出界面，后台托管会话继续存活"
 # 不能假设成 corral-claude-<--resume 的参数>。
 before_direct="$(sessions | grep '^corral-claude-' || true)"
 tmux -L "$OUTER" new-window -t tui -n direct
-tmux -L "$OUTER" send-keys -t direct "cd $REPO && env $ENVV python3 -m corral claude --resume directcccc" Enter
+tmux -L "$OUTER" send-keys -t direct "cd $REPO && env $ENVV ${SELFTEST_PYTHON_Q} -m corral claude --resume directcccc" Enter
 wait_for_direct() {
   local text="$1" tries="${2:-40}"
   local i
@@ -191,7 +203,7 @@ ok "直启场景键盘输入真实转发进托管会话"
 # 不是产品的 bug）。
 before_cursor="$(sessions | grep '^corral-claude-' || true)"
 tmux -L "$OUTER" new-window -t tui -n cursor
-tmux -L "$OUTER" send-keys -t cursor "cd $REPO && env $ENVV python3 -m corral claude --resume cursortest" Enter
+tmux -L "$OUTER" send-keys -t cursor "cd $REPO && env $ENVV ${SELFTEST_PYTHON_Q} -m corral claude --resume cursortest" Enter
 wait_for_cursor() {
   local text="$1" tries="${2:-40}"
   local i
