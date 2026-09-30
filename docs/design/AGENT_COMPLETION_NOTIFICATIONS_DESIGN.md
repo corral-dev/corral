@@ -75,13 +75,19 @@
 新增 `SessionInfo` 可选字段 `completion_id: str`（`total=False`，
 不进 `required`，旧 Corral 忽略未知字段仍可读）：
 
-- 定义：同一会话里“一轮结束”的稳定标识。建议
-  `f"{file_mtime_ns}:{size_bytes}:{status_tag}:{tail_hash}"`，
-  其中 `tail_hash` 取该会话“本轮最后一组事件”的短哈希
+- 定义：同一会话里“一轮结束”的稳定标识。**2026-09-30 洪水修正：
+  禁止再用 `file_mtime_ns:size_bytes` 做身份成分**——元数据追加/触碰会改
+  mtime 与 size，导致同一真实结束不断换 id、同一会话连推几十条。
+  身份只能来自稳定的原生结束/轮次/消息证据（终端记录标识、轮次/消息 id、
+  原生 stop/finish 标记、终局文本哈希），与文件/DB 聚合 mtime、大小、
+  标题、队列元数据无关；元数据变更不得改变未变结束的 id；
+  不同真实轮次的相同回答文本仍须不同 id（轮次/消息锚点不同）；
+  拿不到精确终局锚点时返回空 id（unknown），不得伪造成功。
   （Codex 取 `task_complete`/`turn_aborted` 那条记录的稳定字段；
   Pi 取分支叶子 `parentId` 链尾 + `stopReason`；
   Cursor 取 `updatedAtMs + prompt_history` 首条摘要；
-  其余沿用“尾部事件时间 + 尾文本哈希”)。
+  其余沿用“尾部事件时间 + 尾文本哈希”，但事件时间必须是原生记录时间，
+  禁止用文件 mtime。）
 - 要求：同一轮重复扫描必须算出同一个值；新一轮结束必须变；
   进程重启后对同一份历史重算仍得同一个值（持久去重不靠内存）。
 - Cursor 收紧（二选一，SessKit 仓内定）：

@@ -658,45 +658,188 @@ def _list_all_ids() -> dict[str, dict[str, list[str]]]:
     raise RuntimeError(f"--list-ids 枚举失败 (exit={proc.returncode})：{blob[-2000:]}")
 
 
+# Ordinary-module batching: tiny modules share one worker to cut cold starts.
+# Sequential co-location is a subset of legacy --jobs=1 semantics, so no
+# isolation proof is needed for these (B/C retain veto).
+MODULE_BATCH_SIZE = 8
+# Grouped proven-UI workers: caps per worker (B proved 21 classes / 96 cases
+# together; subsets of a jointly-proven set stay safe by running sequentially).
+GROUP_MAX_CLASSES = 25
+GROUP_MAX_TESTS = 120
+
+
+def _load_batch_manifest() -> tuple[frozenset[str] | None, dict[str, int] | None]:
+    """Read B's grouping/splitting manifests from the helper (validated).
+
+    Returns (groupable, splittable); either is None when absent or malformed.
+    Grouping/splitting additionally require UI_SAFE_CLASSES membership, checked
+    by the planner, so a stray entry can never widen proven scope by itself.
+    """
+    _ensure_tests_on_path()
+    try:
+        import ci_test_support  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001 - missing or broken counts as absent
+        print(f"Batch manifest unavailable: {exc}")
+        return None, None
+    groupable = getattr(ci_test_support, "UI_GROUPABLE_CLASSES", None)
+    splittable = getattr(ci_test_support, "UI_SPLITTABLE_CLASSES", None)
+    if groupable is not None and not (
+        isinstance(groupable, (frozenset, set))
+        and all(isinstance(x, str) for x in groupable)
+    ):
+        print("Warning: UI_GROUPABLE_CLASSES malformed, ignoring.")
+        groupable = None
+    if splittable is not None and not (
+        isinstance(splittable, dict)
+        and all(isinstance(k, str) and isinstance(v, int) and v >= 2 for k, v in splittable.items())
+    ):
+        print("Warning: UI_SPLITTABLE_CLASSES malformed, ignoring.")
+        splittable = None
+    return (
+        frozenset(groupable) if groupable is not None else None,
+        dict(splittable) if splittable is not None else None,
+    )
+
+
+def _chunk_ids(ids: list[str], n: int) -> list[list[str]]:
+    """Split sorted ids into at most n contiguous deterministic chunks."""
+    if n < 2 or len(ids) <= 1:
+        return [list(ids)]
+    n = min(n, len(ids))
+    base, rem = divmod(len(ids), n)
+    chunks: list[list[str]] = []
+    start = 0
+    for i in range(n):
+        size = base + (1 if i < rem else 0)
+        chunks.append(ids[start : start + size])
+        start += size
+    return [c for c in chunks if c]
+
+
 def _plan_shards(
     id_map: dict[str, dict[str, list[str]]],
     safe: frozenset[str] | None,
+    *,
+    groupable: frozenset[str] | None = None,
+    splittable: dict[str, int] | None = None,
 ) -> tuple[list[list[str]], list[list[str]], list[str]]:
-    """Return (module_shards, class_shards, remainder_specs).
+    """Return (module_batches, ui_workers, remainder_specs).
 
-    - Non-serial modules keep the existing semantic: one shard per module
-      (--run-modules).
-    - Serial-lane classes proven by the manifest: class shards (--run-shard,
-      needs isolation).
-    - Unproven classes of serial modules enter remainder_specs one class at a
-      time (``module.Class``), executed sequentially by a single --run-classes
-      worker (unisolated, i.e. today's serial semantics), exactly once. A
-      module with zero proven classes contributes its whole module name
-      (same loadTestsFromNames semantics). Manifest entries absent from the
-      enumeration (rename/delete leftovers) are ignored; the coverage audit
-      backstops drift.
-    - Helper missing/manifest empty: whole serial modules enter the remainder
-      (whole module names), behavior identical to the old entry.
+    - Non-serial modules: deterministic contiguous batches of at most
+      MODULE_BATCH_SIZE (--run-modules each). Same env and sequential
+      in-process semantics as the legacy lane.
+    - Serial-lane classes proven by the manifest: --run-shard workers, where a
+      worker spec is one class, one B-allowlisted group of small classes, or
+      one method-ID chunk of a B-allowlisted heavyweight class. Every worker
+      still enters isolation once and runs sequentially.
+    - Unproven classes: remainder_specs as before (quiet serial phase).
+    - Stale manifest entries (absent from the live enumeration, or not in the
+      safe set) are ignored; the coverage audit backstops drift.
+    - Helper missing/manifests empty: one module per batch, one class per
+      worker, whole serial modules in the remainder — identical to before.
     """
     modules = sorted(id_map)
     parallel = [name for name in modules if name not in _SERIAL_MODULES]
     serial = [name for name in modules if name in _SERIAL_MODULES]
-    module_shards = [[name] for name in parallel]
-    class_shards: list[list[str]] = []
+    module_batches = [parallel[i : i + MODULE_BATCH_SIZE] for i in range(0, len(parallel), MODULE_BATCH_SIZE)]
+    groupable_eff = (groupable or frozenset()) & (safe or frozenset())
+    splittable_eff = {
+        cls: n
+        for cls, n in (splittable or {}).items()
+        if cls in (safe or frozenset()) and n >= 2
+    }
+    ui_workers: list[list[str]] = []
+    group_classes: list[str] = []
+
     remainder_specs: list[str] = []
     if safe:
         for name in serial:
             classes = sorted(id_map.get(name, {}))
             proven = sorted(c for c in classes if c in safe)
             unproven = [c for c in classes if c not in safe]
-            class_shards.extend([[cls] for cls in proven])
+            for cls in proven:
+                ids = sorted(id_map[name][cls])
+                if cls in splittable_eff and len(ids) > 1:
+                    for chunk in _chunk_ids(ids, splittable_eff[cls]):
+                        ui_workers.append(chunk)
+                elif cls in groupable_eff:
+                    # Collected separately and batched after the loop: proven
+                    # singles interleaved in name order must not fragment the
+                    # group into many tiny workers.
+                    group_classes.append(cls)
+                else:
+                    ui_workers.append([cls])
             if unproven and not proven:
                 remainder_specs.append(name)
             else:
                 remainder_specs.extend(unproven)
     else:
         remainder_specs = serial
-    return module_shards, class_shards, remainder_specs
+    for block, _ in _group_blocks(group_classes, id_map):
+        ui_workers.append(block)
+    return module_batches, ui_workers, remainder_specs
+
+
+def _group_blocks(
+    group_classes: list[str], id_map: dict[str, dict[str, list[str]]]
+) -> list[tuple[list[str], int]]:
+    """Pack allowlisted group classes into workers within both caps.
+
+    Returns (block, test_count) pairs, preserving manifest order.
+    """
+    blocks: list[tuple[list[str], int]] = []
+    block: list[str] = []
+    tests = 0
+    for cls in group_classes:
+        n = len(id_map.get(cls.split(".")[0], {}).get(cls, []))
+        if block and (len(block) + 1 > GROUP_MAX_CLASSES or tests + n > GROUP_MAX_TESTS):
+            blocks.append((block, tests))
+            block = []
+            tests = 0
+        block.append(cls)
+        tests += n
+    if block:
+        blocks.append((block, tests))
+    return blocks
+
+
+def _order_phase2(
+    module_batches: list[list[str]],
+    ui_workers: list[list[str]],
+    id_map: dict[str, dict[str, list[str]]],
+) -> list[tuple[str, list[str]]]:
+    """Order phase-2 submissions heavier-first for load balance.
+
+    Weight is the live test count within each tier (deterministic; correlates
+    with UI duration), tie-broken by spec name. UI workers always submit before
+    module batches: a whole ordinary module costs at most seconds (measured
+    max ~2 s), while one UI class can cost a minute, so cross-kind
+    count comparison would misfire. Returns (mode_flag, spec) pairs.
+    """
+    def module_count(name: str) -> int:
+        return sum(len(ids) for ids in id_map.get(name, {}).values())
+
+    def worker_count(spec: list[str]) -> int:
+        total = 0
+        for item in spec:
+            parts = item.split(".")
+            if len(parts) == 1:
+                total += module_count(item)
+            elif len(parts) == 2:
+                total += len(id_map.get(parts[0], {}).get(item, []))
+            else:
+                total += 1  # a method-ID spec runs exactly one test
+        return total
+
+    ordered: list[tuple[int, int, str, str, list[str]]] = []
+    for spec in ui_workers:
+        ordered.append((0, -worker_count(spec), spec[0], "--run-shard", spec))
+    for batch in module_batches:
+        ordered.append(
+            (1, -sum(module_count(m) for m in batch), ",".join(batch), "--run-modules", batch)
+        )
+    ordered.sort()
+    return [(flag, spec) for _, _, _, flag, spec in ordered]
 
 
 def _audit_coverage(
@@ -784,20 +927,32 @@ def _emit_machine_report(
 _LAST_FIRST_PASS: dict = {}
 
 
+def _kind_for(flag: str, spec: list[str]) -> str:
+    """Short worker label for logs: chunk (method IDs), group, or class."""
+    if flag != "--run-shard" or not spec:
+        return "shard"
+    if len(spec) == 1:
+        return "ui-chunk" if spec[0].count(".") >= 2 else "ui-shard"
+    return "ui-group"
+
+
 def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
     wall0 = time.perf_counter()
     id_map = _list_all_ids()
     expected_total = sum(len(ids) for classes in id_map.values() for ids in classes.values())
     safe = _load_safe_classes()
-    module_shards, class_shards, remainder_specs = _plan_shards(id_map, safe)
+    groupable, splittable = _load_batch_manifest()
+    module_batches, ui_workers, remainder_specs = _plan_shards(
+        id_map, safe, groupable=groupable, splittable=splittable
+    )
     serial_desc = (
         f"{len(remainder_specs)} specs" if safe else f"{len(remainder_specs)} modules"
     )
-    parallel = [m for group in module_shards for m in group]
+    parallel = [m for group in module_batches for m in group]
     print(
         f"=== parallel unittest: jobs={jobs} "
         f"serial_remainder=[{serial_desc}] parallel_modules={len(parallel)} "
-        f"ui_class_shards={len(class_shards)} isolated={'yes' if safe else 'no'} "
+        f"ui_workers={len(ui_workers)} isolated={'yes' if safe else 'no'} "
         f"expected_tests={expected_total} ==="
     )
     shards: list[_ShardResult] = []
@@ -809,20 +964,24 @@ def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
         shards.append(
             _spawn_worker("--run-classes", remainder_specs, kind="serial-remainder")
         )
-    # Phase 2: remaining module shards and isolated class shards run in
-    # parallel; the two groups share no resources.
-    parallel_workers = max(1, jobs - 1)
-    if module_shards or class_shards:
+    # Phase 2: module batches and isolated UI workers run heavier-first in
+    # parallel; the groups share no resources. The full jobs budget applies
+    # here (see parallel_workers): Phase 1 already finished, so nothing needs
+    # reserving.
+    parallel_workers = max(1, jobs)  # Phase 1 already finished; no slot reserve.
+    submissions = _order_phase2(module_batches, ui_workers, id_map)
+    if submissions:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=parallel_workers
         ) as parallel_pool:
             parallel_futures = [
-                parallel_pool.submit(_spawn_shard, group) for group in module_shards
+                parallel_pool.submit(_spawn_shard, spec)
+                if flag == "--run-modules"
+                else parallel_pool.submit(
+                    _spawn_worker, flag, spec, kind=_kind_for(flag, spec)
+                )
+                for flag, spec in submissions
             ]
-            parallel_futures.extend(
-                parallel_pool.submit(_spawn_worker, "--run-shard", cls, kind="ui-shard")
-                for cls in class_shards
-            )
             for future in concurrent.futures.as_completed(parallel_futures):
                 shards.append(future.result())
 

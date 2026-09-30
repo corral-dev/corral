@@ -83,9 +83,9 @@ class CiTestParallelHelpers(unittest.TestCase):
             "test_ui": {"test_ui.A": ["test_ui.A.test_1"]},
             "test_fast": {"test_fast.B": ["test_fast.B.test_1"]},
         }
-        module_shards, class_shards, remainder = ci_test._plan_shards(id_map, None)
-        self.assertEqual(module_shards, [["test_fast"]])
-        self.assertEqual(class_shards, [])
+        batches, workers, remainder = ci_test._plan_shards(id_map, None)
+        self.assertEqual(batches, [["test_fast"]])
+        self.assertEqual(workers, [])
         self.assertEqual(remainder, ["test_ui"])
 
     def test_plan_shards_partial_proof_splits_remainder_by_class(self) -> None:
@@ -95,22 +95,22 @@ class CiTestParallelHelpers(unittest.TestCase):
                 "test_ui.Unproven": ["test_ui.Unproven.test_1"],
             },
         }
-        module_shards, class_shards, remainder = ci_test._plan_shards(
+        batches, workers, remainder = ci_test._plan_shards(
             id_map, frozenset({"test_ui.Safe", "test_other.Ghost"})
         )
         # Partial proof: proven classes go to isolated shards, unproven ones
         # enter the serial remainder by class -- a whole-module remainder would
         # re-run Safe a second time.
-        self.assertEqual(module_shards, [])
-        self.assertEqual(class_shards, [["test_ui.Safe"]])
+        self.assertEqual(batches, [])
+        self.assertEqual(workers, [["test_ui.Safe"]])
         self.assertEqual(remainder, ["test_ui.Unproven"])
 
     def test_plan_shards_stale_manifest_entries_ignored(self) -> None:
         id_map = {"test_ui": {"test_ui.Safe": ["test_ui.Safe.test_1"]}}
-        _, class_shards, remainder = ci_test._plan_shards(
+        _, workers, remainder = ci_test._plan_shards(
             id_map, frozenset({"test_ui.Safe", "test_ui.Renamed", "test_gone.C"})
         )
-        self.assertEqual(class_shards, [["test_ui.Safe"]])
+        self.assertEqual(workers, [["test_ui.Safe"]])
         self.assertEqual(remainder, [])
 
     def test_split_module_audit_exactly_once(self) -> None:
@@ -123,6 +123,9 @@ class CiTestParallelHelpers(unittest.TestCase):
         module_shards, class_shards, remainder = ci_test._plan_shards(
             id_map, frozenset({"test_ui.Safe"})
         )
+        self.assertEqual(module_shards, [])
+        self.assertEqual(class_shards, [["test_ui.Safe"]])
+        self.assertEqual(remainder, ["test_ui.Unproven"])
         # Simulated shard reports: isolated shard runs Safe, remainder runs Unproven.
         safe_shard = self._shard(
             modules=("test_ui.Safe",),
@@ -166,6 +169,208 @@ class CiTestParallelHelpers(unittest.TestCase):
             sorted(class_shards), [["test_ui.Safe1"], ["test_ui.Safe2"]]
         )
         self.assertEqual(remainder, ["test_embed"])
+
+    def test_plan_batches_ordinary_modules_deterministically(self) -> None:
+        mods = {f"test_m{i:02d}": {f"test_m{i:02d}.C": [f"test_m{i:02d}.C.test_1"]}
+                for i in range(10)}
+        batches, workers, remainder = ci_test._plan_shards(mods, None)
+        self.assertEqual(workers, [])
+        self.assertEqual(remainder, [])
+        flat = [m for b in batches for m in b]
+        self.assertEqual(flat, sorted(mods))
+        self.assertTrue(all(len(b) <= ci_test.MODULE_BATCH_SIZE for b in batches))
+        # Stable across calls (deterministic input order, no hashing).
+        again, _, _ = ci_test._plan_shards(mods, None)
+        self.assertEqual(again, batches)
+
+    def test_plan_groups_only_manifest_allowlisted_classes(self) -> None:
+        id_map = {
+            "test_ui": {
+                "test_ui.G1": ["test_ui.G1.test_1", "test_ui.G1.test_2"],
+                "test_ui.G2": ["test_ui.G2.test_1"],
+                "test_ui.Solo": ["test_ui.Solo.test_1"],
+            },
+        }
+        safe = frozenset({"test_ui.G1", "test_ui.G2", "test_ui.Solo"})
+        _, workers, remainder = ci_test._plan_shards(
+            id_map, safe, groupable=frozenset({"test_ui.G1", "test_ui.G2"})
+        )
+        self.assertEqual(workers, [["test_ui.Solo"], ["test_ui.G1", "test_ui.G2"]])
+        self.assertEqual(remainder, [])
+
+    def test_plan_groupable_requires_safe_membership(self) -> None:
+        id_map = {
+            "test_ui": {"test_ui.G1": ["test_ui.G1.test_1"]},
+        }
+        # G1 allowlisted for grouping but NOT proven safe: must stay serial.
+        _, workers, remainder = ci_test._plan_shards(
+            id_map, frozenset(), groupable=frozenset({"test_ui.G1"})
+        )
+        self.assertEqual(workers, [])
+        self.assertEqual(remainder, ["test_ui"])
+
+    def test_plan_group_cap_splits_large_groups(self) -> None:
+        classes = {f"test_ui.G{i:02d}": [f"test_ui.G{i:02d}.test_1"] for i in range(30)}
+        id_map = {"test_ui": classes}
+        safe = frozenset(classes)
+        _, workers, _ = ci_test._plan_shards(id_map, safe, groupable=safe)
+        self.assertEqual(len(workers), 2)
+        flat = sorted(c for w in workers for c in w)
+        self.assertEqual(flat, sorted(classes))
+        self.assertTrue(
+            all(len(w) <= ci_test.GROUP_MAX_CLASSES for w in workers)
+        )
+
+    def test_plan_splits_heavyweight_class_into_method_chunks(self) -> None:
+        ids = [f"test_ui.Whale.test_{i:02d}" for i in range(6)]
+        id_map = {"test_ui": {"test_ui.Whale": ids}}
+        _, workers, remainder = ci_test._plan_shards(
+            id_map, frozenset({"test_ui.Whale"}),
+            splittable={"test_ui.Whale": 3},
+        )
+        self.assertEqual(len(workers), 3)
+        flat = sorted(t for w in workers for t in w)
+        self.assertEqual(flat, ids)
+        for chunk in workers:
+            self.assertEqual(chunk, sorted(chunk))
+        self.assertEqual(remainder, [])
+        # Chunks audit exactly-once against the class method set.
+        ok, missing, extra = ci_test._audit_coverage(
+            id_map,
+            [self._shard(modules=(f"chunk{i}",), test_ids=tuple(c))
+             for i, c in enumerate(workers)],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+        self.assertEqual(extra, [])
+
+    def test_plan_split_ignored_without_safe_or_when_stale(self) -> None:
+        id_map = {"test_ui": {"test_ui.Whale": ["test_ui.Whale.test_1"]}}
+        # Not proven safe: no split, serial remainder.
+        _, workers, remainder = ci_test._plan_shards(
+            id_map, frozenset(), splittable={"test_ui.Whale": 2}
+        )
+        self.assertEqual(workers, [])
+        self.assertEqual(remainder, ["test_ui"])
+        # Stale manifest class: ignored, remainder keeps the whole module.
+        _, workers, remainder = ci_test._plan_shards(
+            id_map,
+            frozenset({"test_ui.Whale"}),
+            splittable={"test_ui.Ghost": 2},
+        )
+        self.assertEqual(workers, [["test_ui.Whale"]])
+        self.assertEqual(remainder, [])
+
+    def test_order_phase2_heavier_first(self) -> None:
+        id_map = {
+            "test_big": {"test_big.C": [f"test_big.C.test_{i}" for i in range(10)]},
+            "test_small": {"test_small.C": ["test_small.C.test_1"]},
+            "test_ui": {"test_ui.W": [f"test_ui.W.test_{i}" for i in range(5)]},
+        }
+        ordered = ci_test._order_phase2(
+            [["test_small"], ["test_big"]], [["test_ui.W"]], id_map
+        )
+        # UI workers submit before module batches (a UI class can cost a
+        # minute; a whole ordinary module costs seconds), each tier heavier
+        # first by live test count.
+        self.assertEqual(
+            ordered,
+            [
+                ("--run-shard", ["test_ui.W"]),
+                ("--run-modules", ["test_big"]),
+                ("--run-modules", ["test_small"]),
+            ],
+        )
+
+    def test_group_blocks_respect_caps(self) -> None:
+        id_map = {
+            "test_ui": {f"test_ui.G{i:02d}": [f"test_ui.G{i:02d}.test_1"] for i in range(30)}
+        }
+        blocks = ci_test._group_blocks(sorted(id_map["test_ui"]), id_map)
+        self.assertEqual(len(blocks), 2)
+        flat = sorted(c for b, _ in blocks for c in b)
+        self.assertEqual(flat, sorted(id_map["test_ui"]))
+        self.assertTrue(all(len(b) <= ci_test.GROUP_MAX_CLASSES for b, _ in blocks))
+        self.assertTrue(all(t <= ci_test.GROUP_MAX_TESTS for _, t in blocks))
+
+    def test_kind_for_labels(self) -> None:
+        self.assertEqual(
+            ci_test._kind_for("--run-shard", ["test_ui.Whale.test_01"]), "ui-chunk"
+        )
+        self.assertEqual(ci_test._kind_for("--run-shard", ["test_ui.W"]), "ui-shard")
+        self.assertEqual(
+            ci_test._kind_for("--run-shard", ["test_ui.A", "test_ui.B"]), "ui-group"
+        )
+        self.assertEqual(ci_test._kind_for("--run-modules", ["test_x"]), "shard")
+
+    def test_phase2_uses_full_jobs_budget_after_serial_remainder(self) -> None:
+        # Phase 1 (serial remainder) is a blocking call that finishes before
+        # the Phase-2 pool exists, so Phase 2 must use the full jobs budget
+        # (regression: an obsolete jobs-1 reserve left one slot idle).
+        import concurrent.futures as real_futures
+        from unittest import mock
+
+        events: list[tuple[str, tuple[str, ...]]] = []
+        pools: list[int] = []
+        real_pool = real_futures.ThreadPoolExecutor
+
+        def pool_factory(max_workers: int) -> object:
+            pools.append(max_workers)
+            return real_pool(max_workers=max_workers)
+
+        def fake_spawn_worker(
+            flag: str, spec: list[str], kind: str = "shard"
+        ) -> object:
+            events.append((kind, tuple(spec)))
+            return self._shard(modules=tuple(spec), tests_run=0, test_ids=())
+
+        id_map = {
+            "test_ui": {
+                "test_ui.W": ["test_ui.W.test_1", "test_ui.W.test_2"],
+                "test_ui.U": ["test_ui.U.test_1"],
+            },
+            "test_fast": {"test_fast.C": ["test_fast.C.test_1"]},
+        }
+        with (
+            mock.patch.object(ci_test, "_list_all_ids", return_value=id_map),
+            mock.patch.object(
+                ci_test, "_load_safe_classes", return_value=frozenset({"test_ui.W"})
+            ),
+            mock.patch.object(
+                ci_test, "_load_batch_manifest", return_value=(None, None)
+            ),
+            mock.patch.object(ci_test, "_spawn_worker", side_effect=fake_spawn_worker),
+            mock.patch.object(
+                ci_test,
+                "_spawn_shard",
+                side_effect=lambda spec: fake_spawn_worker("--run-modules", spec),
+            ),
+            mock.patch.object(
+                ci_test.concurrent.futures,
+                "ThreadPoolExecutor",
+                side_effect=pool_factory,
+            ),
+            mock.patch.object(
+                ci_test, "_audit_coverage", return_value=(True, [], [])
+            ),
+            mock.patch.object(ci_test, "_emit_machine_report", return_value={}),
+        ):
+            ok, failed = ci_test._run_suite_parallel(jobs=3)
+        self.assertTrue(ok)
+        self.assertEqual(failed, [])
+        # Serial remainder ran to completion before any Phase-2 submission.
+        self.assertEqual(events[0], ("serial-remainder", ("test_ui.U",)))
+        self.assertEqual(
+            sorted(events[1:]),
+            sorted(
+                [
+                    ("shard", ("test_fast",)),
+                    ("ui-shard", ("test_ui.W",)),
+                ]
+            ),
+        )
+        # Exactly one pool, sized to the full jobs budget.
+        self.assertEqual(pools, [3])
 
     def test_machine_report_counts_retry(self) -> None:
         import io

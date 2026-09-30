@@ -27,4 +27,5 @@
 
 | CI cloud two-minute speed (ongoing phase) | 进行中 | .github/workflows/test.yml, docs/MAINTAINER_GUIDE.md CI section (C scope only) | 2026-09-30 20:06 | 2026-09-30 20:06 | Cloud ci-test command-wall ≤120 on free standard runners; v0.24.239 seven jobs ALL SUCCESS (Linux 139/151/154/166/161s, macOS ~204/248s) but >120 — local 100.41s is not cloud closure. Dispatch-only jobs=6 bench vehicle; batching/grouping only after B proof + A audit; serial lane remains. |
 
+| Completion flood repair (implementation owner) | 进行中 | SessKit解析/status/completion_id（跨仓）、CLI消费端pin/push集成/tests/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md | 21:27 | 2026-09-30 21:27 | Native-finality + metadata-invariant id; preserve foreign CI/native rows; reports /tmp/corral-notify-20260930/flood-repair-report.md |
 | 默认关闭命令拦截并还原双机 shim | 发布中 | bootstrap/shim/install/dev-install/tests/MAINTAINER_GUIDE、双机 shell | 17:31 | 2026-09-30 17:37 | 准备发 v0.24.238 |

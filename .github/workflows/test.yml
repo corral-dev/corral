@@ -6,6 +6,16 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Manual benchmark vehicle only (jobs=3 vs 6 on cloud runners). Push/PR runs
+  # never set test_jobs, so their environment is byte-identical to before.
+  # Official syntax: https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_dispatchinputs
+  workflow_dispatch:
+    inputs:
+      test_jobs:
+        description: 'Benchmark only: override ci-test worker count (empty = runner default max(2, min(CPU,6)))'
+        required: false
+        default: ''
+        type: string
 
 # 同一分支上后推的提交作废前一轮：连续发版时旧提交的矩阵还在排队就已经没有意义，
 # 继续占着 runner 只会让新提交等更久。
@@ -178,6 +188,11 @@ jobs:
           PY
       - name: Compile
         run: python -m compileall -q src/corral tests
+      - name: Benchmark worker override (workflow_dispatch only)
+        # Push/PR runs skip this step by the `if` below, so CORRAL_TEST_JOBS
+        # stays unset and the runner default applies exactly as before.
+        if: github.event_name == 'workflow_dispatch' && inputs.test_jobs != ''
+        run: echo "CORRAL_TEST_JOBS=${{ inputs.test_jobs }}" >> "$GITHUB_ENV"
       - name: Test
         # 走 scripts/ci-test.py 而不是裸 unittest：挂死时自动打印全部线程栈，
         # 已知 Pilot 偶发自动重跑一次再判定。说明见该脚本头部注释。

@@ -277,3 +277,47 @@ UI_SAFE_CLASSES: frozenset[str] = frozenset(
         "test_ui.SidebarSnapshotTests",
     }
 )
+
+#: Small proven-safe classes the runner may co-locate SEQUENTIALLY in one
+#: isolated worker (one isolation entry per worker, unchanged). Filled only
+#: with classes proven green as a group in a single process; absent classes
+#: stay one-class-per-worker. Proof: cloud-speed-isolation-proof.json
+#: (permitted_groups, 21 classes / 96 cases green in 9.3s on current tree).
+UI_GROUPABLE_CLASSES: frozenset[str] = frozenset(
+    {
+        "test_ui.KittyKeyboardProtocolTests",
+        "test_ui.InterruptTerminalRestoreTests",
+        "test_ui.RuntimeThemeParserTests",
+        "test_ui.PointerShapeSequenceTests",
+        "test_ui.PointerShapeUiTests",
+        "test_ui.SessionStoreFailureTests",
+        "test_ui.SessionStoreRemoveSessionTests",
+        "test_ui.SessionCardVisualTests",
+        "test_ui.PaneCellHeaderSyncTests",
+        "test_ui.FooterActionGatingTests",
+        "test_ui.SidebarToggleTests",
+        "test_ui.InputMaskFilterTests",
+        "test_ui.EmbedPaneWheelTests",
+        "test_ui.EmbedPaneSelectionSpanTests",
+        "test_ui.EmbedPaneSelectionStyleTests",
+        "test_ui.SessionHudSummaryTests",
+        "test_ui.SessionHudRenderTests",
+        "test_ui.SessionHudGatingTests",
+        "test_ui.PreviewSustainWarmTests",
+        "test_ui.SidebarSnapshotTests",
+        "test_ui.FooterVersionTests",
+    }
+)
+
+#: Heavyweight proven classes the runner may split into N contiguous method-ID
+#: batches (sorted IDs, deterministic; each batch runs sequentially with fresh
+#: module import and private resources, running the class's real async
+#: setUp/tearDown and asserts). Filled only after per-class semantic/resource
+#: proof; absent classes are never method-split. Proof:
+#: cloud-speed-isolation-proof.json (permitted_chunks; Navigation 31+31 and
+#: AppTheme 17+17 verified green as separate processes with disjoint ID sets
+#: covering the full class). Timing-sensitive classes are never listed here.
+UI_SPLITTABLE_CLASSES: dict[str, int] = {
+    "test_ui.MainScreenNavigationTests": 2,
+    "test_ui.AppThemeTests": 2,
+}
