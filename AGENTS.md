@@ -75,8 +75,8 @@
 
 ## 文档导航
 
-- [docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md) (planned): Development/runtime readiness and declared local dependencies; verify command integration against the finished guide before use.
-- [docs/TEST_ENVIRONMENT_GUIDE.md](docs/TEST_ENVIRONMENT_GUIDE.md) (planned): Isolated test setup and reusable behavioral acceptance; verify real-terminal command integration against the finished guide before use.
+- [docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md): Development/runtime readiness via `scripts/dev_env.py` (`doctor`/`check`/`prepare`/`run`, `--repo` required, `--json` envelope, `--dry-run` for `prepare`/`run`); native `uv lock --check`, `--locked` sync, and pinned SessKit handoff.
+- [docs/TEST_ENVIRONMENT_GUIDE.md](docs/TEST_ENVIRONMENT_GUIDE.md): Isolated acceptance via `scripts/acceptance.py` (`--json`, read-only `--dry-run`, unique `corral-accept` socket, real tmux capture with enforced close-scroll assertions); focused probe only, never a replacement for the full suite, `selftest.sh`, or clean-install checks.
 
 - `docs/PUBLIC_PRESENTATION_GUIDE.md`: **must read** before rewriting/reviewing README, GitHub presentation, or Corral icon assets; otherwise retired arrow/horse artwork and implementation-heavy copy can return.
 
@@ -133,15 +133,16 @@
 ## 验证要求
 
 - 耗时检查前，先读 [开发环境指南](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md) 做依赖与运行环境就绪检查，再读 [测试环境指南](docs/TEST_ENVIRONMENT_GUIDE.md) 选择隔离验收入口。开发、测试、构建依赖须有明确来源；将环境/安装失败与产品断言或真实 UI/终端失败分开记录。重复失败要根据日志、夹具前置条件和环境证据复核策略，不得无限原样重跑或因此跳过完整验证。
-- 完整验证结果只有在相关源码 / 构建输入与环境、解释器、依赖版本指纹都一致时才能复用。Corral 现有 `ci-test.py` / `ci_stamp.py` 是唯一完整套件戳机制；其戳扩展到环境指纹前，不能仅凭源码戳跳过完整验证。保留全部 UI、真实终端和干净安装门禁，细节见 `docs/MAINTAINER_GUIDE.md`「Readiness and dependency handoff」。
-- 改动代码、界面或运行时适配器后至少执行：
+- 完整验证结果只有在相关源码 / 构建输入与环境、解释器、依赖版本指纹都一致时才能复用。`ci-test.py` / `ci_stamp.py` 是唯一完整套件戳机制：戳文件同时绑定源码指纹与环境指纹（`uv.lock` 字节 + checkout `.venv` 解释器版本与已装分发集合）；旧的纯源码戳永不匹配，任一变化即重跑全套。保留全部 UI、真实终端和干净安装门禁，细节见 `docs/MAINTAINER_GUIDE.md`「Readiness and dependency handoff」。
+- 改动代码、界面或运行时适配器后至少执行（先确认环境就绪，未就绪时先 `prepare`）：
 
   ```bash
+  python3 scripts/dev_env.py check --repo .
   python3 -m compileall -q src/corral tests
   env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
   ```
 
-  该脚本与 CI 一样先跑 Ruff 再跑全量单测。不要用单测子集、跳过 UI / 终端集成或手动跳过标记替代发布门禁。
+  `ci-test.py` 在 checkout `.venv` 已存在且就绪时自动重进该解释器跑全套（CI 无 `.venv` 路径不变；`.venv` 存在但未就绪则直接失败并指引 `prepare`，不在错误依赖上跑）。该脚本与 CI 一样先跑 Ruff 再跑全量单测。不要用单测子集、跳过 UI / 终端集成或手动跳过标记替代发布门禁。
 - 改动扫描、标题或界面代码后，仍须独立测量首屏扫描耗时并如实记录（该指标不再是阻断线）：
 
   ```bash

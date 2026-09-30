@@ -444,9 +444,12 @@ class EmbedPane(Widget):
         self._capture_thread.start()
 
     def on_unmount(self) -> None:
+        # Invalidate in-flight queries before withdrawing this viewer's size vote.
+        self._capture_generation += 1
+        self._stop.set()
+        self._cancel_pending_tmux_resize()
         self._set_real_cursor(False)  # 卸载时收起我们打开的真实光标，别把它漏给退出后的终端
         self._release_claimed_host_view()
-        self._stop.set()
         self._request_immediate_capture()
         if self.session_name:
             embed.close_channel(self.session_name)
@@ -475,6 +478,7 @@ class EmbedPane(Widget):
         `clear_stale_screen()` 丢掉可能残留的旧画面。新托管挂回同一格时
         `focus_session` 会再次提升代次并抓新帧，画面无缝替换。"""
         self._capture_generation += 1
+        self._cancel_pending_tmux_resize()
         self.dead = False
         self.detail_offset = 0
         self.history_offset = 0
@@ -529,11 +533,12 @@ class EmbedPane(Widget):
             or self._grid is None
             or discard_stale_screen
         )
-        if self.session_name and self.session_name != name:
-            self._release_claimed_host_view()
         if reset_capture:
-            self._stash_screen()
             self._capture_generation += 1
+            self._cancel_pending_tmux_resize()
+            if self.session_name and self.session_name != name:
+                self._release_claimed_host_view()
+            self._stash_screen()
             self._grid = None
             self._strips = None
             self._cursor = None
@@ -619,6 +624,7 @@ class EmbedPane(Widget):
         """
         self._stash_screen()
         self._capture_generation += 1
+        self._cancel_pending_tmux_resize()
         self._release_claimed_host_view()
         self.session_name = None
         self._grid = None
@@ -638,6 +644,7 @@ class EmbedPane(Widget):
     def clear(self) -> None:
         self._stash_screen()
         self._capture_generation += 1
+        self._cancel_pending_tmux_resize()
         old_name = self.session_name
         self._release_claimed_host_view()
         self.session_name = None
@@ -744,7 +751,9 @@ class EmbedPane(Widget):
         """这一格希望托管窗变成的尺寸：预测优先，否则用控件当前尺寸。"""
         return self._capture_size_override or self._pane_size()
 
-    def _heal_host_size_if_needed(self, name: str, real: tuple[int, int]) -> None:
+    def _heal_host_size_if_needed(
+        self, name: str, real: tuple[int, int], *, generation: int | None = None,
+    ) -> None:
         """tmux 真实尺寸与有效尺寸不符时，带退避重发 resize-window。
 
         必须在抓帧线程调用：fork/控制通道不能进 Textual 主线程。
@@ -753,6 +762,8 @@ class EmbedPane(Widget):
         本格更窄就 crop，不得把共享窗压到自己的 1/3。被较窄方或控制通道 80 列
         打窄之后，只要本格仍是最宽观看方，就必须拉回来。
         """
+        if generation is not None and not self._capture_is_current(generation, name):
+            return
         expected = self._expected_host_size()
         if self._heal_layout != expected:
             self._heal_layout = expected
@@ -760,6 +771,12 @@ class EmbedPane(Widget):
             self._heal_count = 0
             self._heal_last_at = 0.0
         effective = embed.desired_host_size(name, self._viewer_id, expected[0], expected[1])
+        if generation is not None and not self._capture_is_current(generation, name):
+            # The registry call may have finished after a rebind/unmount released it.
+            # Do not remove a replacement vote when the same name was rebound.
+            if self.session_name != name or self._stop.is_set():
+                embed.release_host_view(name, self._viewer_id)
+            return
         self._claimed_session = name
         if real == effective:
             self._heal_count = 0
@@ -899,6 +916,8 @@ class EmbedPane(Widget):
                 capture_t0 = time.perf_counter()
                 text = embed.capture(name, history_offset, pane_h)
                 last_capture = time.monotonic()
+                if not self._capture_is_current(generation, name):
+                    continue
 
                 if text is None:
                     misses += 1
@@ -917,6 +936,8 @@ class EmbedPane(Widget):
                     polled_state = False
                     if now - last_state_at >= STATE_POLL_INTERVAL:
                         state = embed.pane_state(name)
+                        if not self._capture_is_current(generation, name):
+                            continue
                         last_state_at = now  # 无论成败都按 5Hz 限速，失败时沿用旧缓存
                         polled_state = True
                         if state is not None:
@@ -930,7 +951,9 @@ class EmbedPane(Widget):
                     ):
                         real = (int(state[6]), int(state[7]))
                         self._tmux_pane_size = real
-                        self._heal_host_size_if_needed(name, real)
+                        self._heal_host_size_if_needed(name, real, generation=generation)
+                        if not self._capture_is_current(generation, name):
+                            continue
                         if self._capture_size_override is None:
                             pane_w, pane_h = real
                     frame_key = (generation, history_offset, pane_w, pane_h, text)
@@ -1000,7 +1023,11 @@ class EmbedPane(Widget):
                 self._poke.clear()
 
     def _capture_is_current(self, generation: int, name: str) -> bool:
-        return self._capture_generation == generation and self.session_name == name
+        return (
+            not self._stop.is_set()
+            and self._capture_generation == generation
+            and self.session_name == name
+        )
 
     def _apply_capture(self, generation: int, name: str, grid, cursor, state) -> None:
         if not self._capture_is_current(generation, name):
@@ -1069,6 +1096,7 @@ class EmbedPane(Widget):
         # 会话确认结束，缓存的最后一屏必须丢掉：留着的话下次选中这条会话会先
         # 摆出一屏「像还在跑」的旧画面，比直接显示已结束更误导人。
         forget_cached_screen(name)
+        self._cancel_pending_tmux_resize()
         self._release_claimed_host_view()
         self.dead = True
         self.input_masked = False  # 已结束的画面不再压暗，否则像"还能输入只是没聚焦"
@@ -1648,6 +1676,13 @@ class EmbedPane(Widget):
             _RESIZE_TMUX_DEBOUNCE,
             self._apply_pending_tmux_resize,
         )
+
+    def _cancel_pending_tmux_resize(self) -> None:
+        """A deferred resize must not survive a change of pane binding."""
+        if self._resize_tmux_timer is not None:
+            self._resize_tmux_timer.stop()
+            self._resize_tmux_timer = None
+        self._pending_tmux_size = None
 
     def _apply_pending_tmux_resize(self) -> None:
         """防抖到期：把托管会话窗口调到最后一次目标尺寸并唤醒抓帧。"""

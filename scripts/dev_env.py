@@ -17,6 +17,7 @@ from typing import Any
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 RUFF_VERSION = "0.16.1"
 PYTEST_VERSION = "9.1.1"
+_RECEIPT_NAME = "sesskit-install-receipt.json"
 _PROJECTS = {
     "corral": {"package": "corral", "runtime": ("textual", "websockets", "sesskit")},
     "sesskit": {"package": "sesskit", "runtime": ()},
@@ -224,7 +225,9 @@ def _probe_code(package: str, runtime_packages: tuple[str, ...]) -> str:
             "import importlib, importlib.metadata, json, sys",
             f"package = {package!r}",
             f"runtime_names = {runtime_packages!r}",
-            "result = {'executable': sys.executable, 'python_version': sys.version.split()[0], 'prefix': sys.prefix, 'base_prefix': sys.base_prefix, 'packages': {}}",
+            "result = {'executable': sys.executable, 'prefix': sys.prefix,",
+            "          'base_prefix': sys.base_prefix, 'packages': {}}",
+            "result['python_version'] = sys.version.split()[0]",
             "try:",
             "    module = importlib.import_module(package)",
             "    result['source'] = getattr(module, '__file__', None)",
@@ -235,12 +238,53 @@ def _probe_code(package: str, runtime_packages: tuple[str, ...]) -> str:
             "    try:",
             "        dist = importlib.metadata.distribution(name)",
             "        raw = dist.read_text('direct_url.json')",
-            "        result['packages'][name] = {'version': dist.version, 'direct_url': json.loads(raw) if raw else None}",
+            "        result['packages'][name] = {",
+            "            'version': dist.version, 'direct_url': json.loads(raw) if raw else None}",
             "    except importlib.metadata.PackageNotFoundError:",
             "        result['packages'][name] = None",
             "json.dump(result, sys.stdout)",
         )
     )
+
+
+def _artifact_verdict(
+    pin: dict[str, str] | None,
+    sesskit: dict[str, Any] | None,
+    receipt: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Judge the pinned SessKit artifact on real digest evidence only.
+
+    Two evidence paths, no invention:
+    - installed metadata already stores the exact pinned sha256, or
+    - a prepare-time receipt records a verified installer success for the
+      current pin and the installed distribution still matches it.
+    A no-op audit of an already present same-version package is not evidence.
+    """
+    pin_match = bool(pin and sesskit and sesskit.get("version") == pin["version"])
+    direct_url = (sesskit or {}).get("direct_url") or {}
+    url_match = bool(pin_match and direct_url.get("url", "") == (pin or {}).get("url"))
+    installed_hashes = ((direct_url.get("archive_info", {}) or {}).get("hashes", {}) or {})
+    metadata_hash_match = bool(pin and installed_hashes.get("sha256") == pin["sha256"])
+    receipt_match = bool(
+        receipt
+        and pin
+        and receipt.get("installer_verified") is True
+        and receipt.get("pin_version") == pin["version"]
+        and receipt.get("pin_url") == pin["url"]
+        and receipt.get("pin_sha256") == pin["sha256"]
+        and receipt.get("installed_version") == (sesskit or {}).get("version")
+    )
+    digest_verified = metadata_hash_match or receipt_match
+    return {
+        "expected_version": pin["version"] if pin else None,
+        "expected_sha256": pin["sha256"] if pin else None,
+        "version_matches": pin_match,
+        "source_url_matches": url_match,
+        "digest_in_install_metadata": metadata_hash_match,
+        "digest_verified_by_installer_receipt": receipt_match,
+        "digest_verified": digest_verified,
+        "published_artifact_matches": url_match and digest_verified,
+    }
 
 
 def _probe_environment(repo: Path, project_name: str) -> dict[str, Any] | None:
@@ -294,7 +338,22 @@ def _tool_version(repo: Path, module: str) -> str | None:
     return version.group(0) if version else output[:120]
 
 
+def _missing_tools(tools: dict[str, Any]) -> list[str]:
+    return [
+        name
+        for name, item in tools.items()
+        if item.get("expected") and (not item["available"] or item["version"] != item["expected"])
+    ]
+
+
 def _lock_status(repo: Path, project_name: str, uv_path: str | None) -> dict[str, Any]:
+    """Native uv resolution state only: `uv lock --check` must succeed.
+
+    No homemade version or marker logic stands in for the resolver. A stale or
+    missing lock blocks readiness; preparation regenerates it from the declared
+    metadata (`uv lock`) and then syncs with `--locked`.
+    """
+    _ = project_name
     lock = repo / "uv.lock"
     if not lock.is_file():
         return {"state": "missing", "path": "uv.lock"}
@@ -315,7 +374,48 @@ def _lock_status(repo: Path, project_name: str, uv_path: str | None) -> dict[str
         )
     except (OSError, subprocess.TimeoutExpired):
         return {"state": "unverified", "path": "uv.lock"}
-    return {"state": "current" if result.returncode == 0 else "stale_or_unresolvable", "path": "uv.lock"}
+    if result.returncode == 0:
+        return {"state": "current", "path": "uv.lock"}
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    return {"state": "stale", "path": "uv.lock", "detail": " ".join(detail)[-300:]}
+
+
+def _receipt_path(repo: Path) -> Path:
+    return _log_dir(repo) / _RECEIPT_NAME
+
+
+def _read_receipt(repo: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(_receipt_path(repo).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_receipt(
+    repo: Path, pin: dict[str, str], installed_version: str | None, direct_url: dict[str, Any] | None
+) -> Path:
+    path = _receipt_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pin_version": pin["version"],
+                "pin_url": pin["url"],
+                "pin_sha256": pin["sha256"],
+                "installed_version": installed_version,
+                "installed_source_url": (direct_url or {}).get("url"),
+                "installer": "uv pip install --force-reinstall --no-deps with #sha256 fragment",
+                "installer_verified": True,
+                "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
@@ -325,7 +425,12 @@ def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
     if uv_path:
         try:
             result = subprocess.run(
-                [uv_path, "--version"], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10, check=False
+                [uv_path, "--version"],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
             )
             if result.returncode == 0:
                 uv_version = result.stdout.strip()[:120]
@@ -357,44 +462,30 @@ def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
             runtime_ok = runtime_ok and found is not None
         pin = _sesskit_pin()
         sesskit = runtime_packages.get("sesskit")
-        pin_match = bool(pin and sesskit and sesskit.get("version") == pin["version"])
-        artifact_match = False
-        installed_sha256 = None
-        if pin_match and sesskit:
-            direct_url = sesskit.get("direct_url") or {}
-            archive = direct_url.get("archive_info", {})
-            hashes = archive.get("hashes", {})
-            installed_sha256 = hashes.get("sha256")
-            # uv validates the supplied #sha256 during prepare but omits it
-            # from PEP 610 metadata. If a tool records a digest, require an
-            # exact match; otherwise the exact source URL plus the prepare log
-            # proves which digest-checked artifact was installed.
-            artifact_match = (
-                direct_url.get("url", "") == pin["url"]
-                and installed_sha256 in (None, pin["sha256"])
-            )
-        package_checks["sesskit_pin"] = {
-            "expected_version": pin["version"] if pin else None,
-            "expected_sha256": pin["sha256"] if pin else None,
-            "version_matches": pin_match,
-            "published_artifact_matches": artifact_match,
-            "digest_recorded_in_install_metadata": bool(installed_sha256) if sesskit else False,
-        }
-        runtime_ok = runtime_ok and pin_match and artifact_match
+        verdict = _artifact_verdict(pin, sesskit, _read_receipt(repo))
+        package_checks["sesskit_pin"] = verdict
+        runtime_ok = runtime_ok and verdict["version_matches"] and verdict["published_artifact_matches"]
 
     lock = _lock_status(repo, project_name, uv_path)
     warnings: list[str] = []
-    if lock["state"] not in {"current", "missing"}:
-        warnings.append("uv.lock is stale or cannot be resolved without network; prepare uses the existing pinned resolution")
+    blockers: list[str] = []
+    if lock["state"] != "current":
+        blockers.append(
+            f"uv.lock is {lock['state']}: {lock.get('detail', 'run prepare to reconcile the declared dependencies')}"
+        )
 
     tmux_path = shutil.which("tmux") if project_name == "corral" else None
     if project_name == "corral":
         tools["tmux"] = {"available": bool(tmux_path), "path": Path(tmux_path).name if tmux_path else None}
     pip_check_ok: bool | None = None
     if venv_python.is_file():
+        if uv_path:
+            pip_check_argv: list[str] = [str(uv_path), "pip", "check", "--python", str(venv_python)]
+        else:
+            pip_check_argv = [str(venv_python), "-m", "pip", "check"]
         try:
             pip_check = subprocess.run(
-                [str(uv_path), "pip", "check", "--python", str(venv_python)] if uv_path else [str(venv_python), "-m", "pip", "check"],
+                pip_check_argv,
                 cwd=repo,
                 env=_uv_env(repo),
                 stdin=subprocess.DEVNULL,
@@ -414,8 +505,16 @@ def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
     )
     if project_name == "corral":
         tools_ok = tools_ok and bool(tmux_path)
-    ready = bool(venv_python.is_file() and env_info and source_matches and runtime_ok and tools_ok and pip_check_ok)
-    blockers: list[str] = []
+    lock_ok = lock["state"] == "current"
+    ready = bool(
+        venv_python.is_file()
+        and env_info
+        and source_matches
+        and runtime_ok
+        and tools_ok
+        and pip_check_ok
+        and lock_ok
+    )
     if not uv_path:
         blockers.append("uv is unavailable")
     if not venv_python.is_file():
@@ -426,15 +525,17 @@ def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
         blockers.append("imported package does not resolve to this checkout's src tree")
     if not runtime_ok:
         blockers.append("one or more declared runtime packages or SessKit artifact pins mismatch")
-    missing_tools = [name for name, item in tools.items() if item.get("expected") and (not item["available"] or item["version"] != item["expected"])]
-    if missing_tools:
-        blockers.append("required development tools missing or version-mismatched: " + ", ".join(missing_tools))
+    if project_name == "corral" and not package_checks.get("sesskit_pin", {}).get("digest_verified"):
+        blockers.append("no verified SessKit digest for the pin; rerun prepare for one verified install")
+    for name in _missing_tools(tools):
+        blockers.append(f"required development tool missing or version-mismatched: {name}")
     if project_name == "corral" and not tmux_path:
         blockers.append("tmux is unavailable for Corral integration tests")
     if pip_check_ok is False:
         blockers.append("installed package requirements are inconsistent")
+    state = "environment ready" if ready else "dependencies or tools missing/mismatched"
     data = {
-        "summary": f"{'Ready' if ready else 'Needs preparation'}: {project_name} {project_version} ({'environment ready' if ready else 'dependencies or tools missing/mismatched'}).",
+        "summary": f"{'Ready' if ready else 'Needs preparation'}: {project_name} {project_version} ({state}).",
         "repo": repo.name,
         "project": project_name,
         "project_version": project_version,
@@ -471,10 +572,12 @@ def _build_parser() -> argparse.ArgumentParser:
         command.add_argument("--repo", required=True, help="explicit Corral or SessKit checkout path")
         command.json_requested = False
         if action == "prepare":
-            command.add_argument("--python", help="interpreter used to create a new .venv (default: this CLI interpreter)")
+            command.add_argument("--python", help="interpreter for a new .venv (default: this one)")
+            command.add_argument("--dry-run", action="store_true", help="plan without creating or modifying anything")
     run = subparsers.add_parser("run", help="run a command with this checkout's source and .venv")
     run.add_argument("--json", action="store_true", dest="json_command", help=argparse.SUPPRESS)
     run.add_argument("--repo", required=True, help="explicit Corral or SessKit checkout path")
+    run.add_argument("--dry-run", action="store_true", help="print the resolved command without executing it")
     run.add_argument("command", nargs=argparse.REMAINDER, help="command and arguments, after --")
     run.json_requested = False
     return parser
@@ -484,7 +587,9 @@ def _json_mode(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "json", False) or getattr(args, "json_command", False))
 
 
-def _error(code: str, message: str, *, log_path: str | None = None, next_commands: list[str] | None = None) -> dict[str, Any]:
+def _error(
+    code: str, message: str, *, log_path: str | None = None, next_commands: list[str] | None = None
+) -> dict[str, Any]:
     details: dict[str, Any] = {"code": code, "message": message}
     if log_path:
         details["log_path"] = log_path
@@ -502,7 +607,7 @@ def _prepare(repo: Path, project_name: str, python: str | None) -> tuple[bool, P
     if venv.is_symlink():
         return False, None, ".venv is a symlink; refusing to modify an environment outside this checkout"
     if venv.exists() and not venv_python.is_file():
-        return False, None, ".venv exists but is not a recognized virtual environment; move it yourself before preparing"
+        return False, None, ".venv is not a recognized virtual environment; move it yourself before preparing"
     env = _uv_env(repo, python=python)
     logs: list[str] = []
     if not venv_python.is_file():
@@ -521,16 +626,27 @@ def _prepare(repo: Path, project_name: str, python: str | None) -> tuple[bool, P
             failure_log.write_text(
                 f"uv venv exited {create.returncode}\n{create.stdout}{create.stderr}", encoding="utf-8"
             )
-            return False, failure_log, f"uv could not create the checkout environment: {(create.stderr or create.stdout).strip()[:300]}"
+            detail = (create.stderr or create.stdout).strip()[:300]
+            return False, failure_log, f"uv could not create the checkout environment: {detail}"
         initial_log = _new_log_path(repo, "venv")
         initial_log.parent.mkdir(parents=True, exist_ok=True)
         initial_log.write_text(f"argv0=uv argc=4\ncwd={repo}\n\n{create.stdout}{create.stderr}", encoding="utf-8")
         logs.append(_relative_log(initial_log, repo))
 
     if project_name == "sesskit":
+        refresh = _lock_status(repo, project_name, uv_path)
+        if refresh["state"] != "current":
+            refresh_argv = [uv_path, "--no-config", "lock", "--project", str(repo)]
+            code, log_path, tail = _run_logged(refresh_argv, repo=repo, env=env)
+            logs.append(_relative_log(log_path, repo))
+            if code:
+                return False, log_path, f"uv lock refresh failed (exit {code}); {tail[-400:]}"
         sync = [uv_path, "--no-config", "sync", "--locked", "--group", "dev", "--project", str(repo)]
     else:
-        sync = [uv_path, "--no-config", "sync", "--frozen", "--extra", "remote", "--no-install-project", "--project", str(repo)]
+        sync = [
+            uv_path, "--no-config", "sync", "--locked", "--group", "dev",
+            "--extra", "remote", "--no-install-project", "--project", str(repo),
+        ]
     code, log_path, tail = _run_logged(sync, repo=repo, env=env)
     logs.append(_relative_log(log_path, repo))
     if code:
@@ -540,14 +656,82 @@ def _prepare(repo: Path, project_name: str, python: str | None) -> tuple[bool, P
         pin = _sesskit_pin()
         if not pin:
             return False, log_path, "the repository-pinned SessKit artifact could not be read"
-        requirement = f"sesskit @ {pin['url']}#sha256={pin['sha256']}"
-        install = [uv_path, "pip", "install", "--python", str(_venv_python(repo)), f"ruff=={RUFF_VERSION}", requirement]
-        code, log_path, tail = _run_logged(install, repo=repo, env=env)
-        logs.append(_relative_log(log_path, repo))
-        if code:
-            return False, log_path, f"pinned lint/SessKit artifact install failed (exit {code}); {tail[-400:]}"
+        # Digest evidence, exactly once: if the installed distribution already
+        # carries the pinned digest (or a valid receipt exists), the installer
+        # must not run again. Only a missing-evidence state earns one forced,
+        # digest-checked install of that single package.
+        probe = _probe_environment(repo, project_name) or {}
+        installed_sesskit = (probe.get("packages", {}) or {}).get("sesskit") or {}
+        if _artifact_verdict(pin, installed_sesskit, _read_receipt(repo))["digest_verified"]:
+            logs.append("sesskit digest evidence already held; installer skipped (no churn)")
+        else:
+            requirement = f"sesskit @ {pin['url']}#sha256={pin['sha256']}"
+            install = [
+                uv_path, "pip", "install", "--python", str(_venv_python(repo)),
+                "--force-reinstall", "--no-deps", requirement,
+            ]
+            code, log_path, tail = _run_logged(install, repo=repo, env=env)
+            logs.append(_relative_log(log_path, repo))
+            if code:
+                return False, log_path, f"verified SessKit install failed (exit {code}); {tail[-400:]}"
+            probe = _probe_environment(repo, project_name) or {}
+            installed_sesskit = (probe.get("packages", {}) or {}).get("sesskit") or {}
+            fresh = _artifact_verdict(pin, installed_sesskit, None)
+            if not (fresh["version_matches"] and fresh["source_url_matches"]):
+                return False, log_path, "install succeeded but metadata does not match the pin"
+            receipt_path = _write_receipt(
+                repo, pin, installed_sesskit.get("version"), installed_sesskit.get("direct_url")
+            )
+            logs.append(_relative_log(receipt_path, repo))
     summary = f"Prepared {project_name} using its locked dependencies and checkout .venv. Logs: {', '.join(logs)}"
     return True, log_path, summary
+
+
+def _plan_prepare(repo: Path, project_name: str, python: str | None) -> tuple[list[str], list[str]]:
+    """Describe what prepare would do without running or writing anything."""
+    steps: list[str] = []
+    reasons: list[str] = []
+    venv_python = _venv_python(repo)
+    if venv_python.is_file():
+        steps.append(f"reuse checkout venv at {_venv_dir(repo).name}")
+    else:
+        steps.append(f"create checkout venv with {python or sys.executable}")
+        reasons.append("checkout .venv is missing")
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        reasons.append("uv is unavailable")
+        return steps, reasons
+    if project_name == "sesskit":
+        if _lock_status(repo, project_name, uv_path)["state"] != "current":
+            steps.append("refresh uv.lock from the declared metadata (uv lock)")
+        steps.append("sync locked dependencies including the dev group (uv sync --locked --group dev)")
+    else:
+        steps.append("sync locked dependencies with --locked (dev group, remote extra, no-install-project)")
+        pin = _sesskit_pin()
+        if pin:
+            steps.append(
+                f"one digest-checked install of the pinned SessKit {pin['version']} wheel "
+                "only when no digest evidence exists, then record an install receipt"
+            )
+        else:
+            reasons.append("the repository-pinned SessKit artifact could not be read")
+    return steps, reasons
+
+
+def _resolve_run(repo: Path, project_name: str, command: list[str]) -> tuple[list[str], dict[str, str]]:
+    python = str(_venv_python(repo))
+    resolved = list(command)
+    if resolved[0] in {"python", "python3"}:
+        resolved[0] = python
+    elif resolved[0] in {"ruff", "pytest"}:
+        bindir = _venv_dir(repo) / ("Scripts" if os.name == "nt" else "bin")
+        tool_path = bindir / (resolved[0] + (".exe" if os.name == "nt" else ""))
+        if tool_path.exists():
+            resolved[0] = str(tool_path)
+    env = _python_env(repo)
+    if project_name == "corral":
+        env["CORRAL_ISOLATE_MANAGED_HOSTS"] = "1"
+    return resolved, env
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -571,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
                 "summary": data["summary"],
                 "project": data["project"],
                 "ready": data["ready"],
-                "missing_tools": [name for name, info in data["tools"].items() if info.get("expected") and not info["available"]],
+                "missing_tools": _missing_tools(data["tools"]),
                 "dependency_check": data["dependency_check"],
                 "lock_state": data["lock"]["state"],
                 "warnings": data["warnings"],
@@ -580,14 +764,32 @@ def main(argv: list[str] | None = None) -> int:
         return emit(envelope(data), 0 if ready else 1, json_mode=json_mode)
 
     if args.action == "prepare":
+        if args.dry_run:
+            steps, reasons = _plan_prepare(repo, project_name, args.python)
+            data = {
+                "summary": f"Dry run: prepare would run {len(steps)} step(s), no changes made.",
+                "project": project_name,
+                "steps": steps,
+                "blocking_reasons": reasons,
+            }
+            result = envelope(data)
+            result["meta"]["dry_run"] = True
+            return emit(result, 0, json_mode=json_mode)
         ok, log_path, summary = _prepare(repo, project_name, args.python)
         if not ok:
-            return emit(_error("prepare_failed", summary, log_path=_relative_log(log_path, repo) if log_path else None), 1, json_mode=json_mode)
+            details = _relative_log(log_path, repo) if log_path else None
+            return emit(_error("prepare_failed", summary, log_path=details), 1, json_mode=json_mode)
         data, ready = doctor(str(repo))
         data["summary"] = summary if ready else f"Prepared {project_name}, but readiness checks still fail."
         data["log_path"] = _relative_log(log_path, repo) if log_path else None
         if not ready:
-            return emit(envelope(error={"code": "not_ready", "message": data["summary"], "log_path": data["log_path"], "diagnostics": data}), 1, json_mode=json_mode)
+            failure = {
+                "code": "not_ready",
+                "message": data["summary"],
+                "log_path": data["log_path"],
+                "diagnostics": data,
+            }
+            return emit(envelope(error=failure), 1, json_mode=json_mode)
         return emit(envelope(data), 0, json_mode=json_mode)
 
     command = list(args.command)
@@ -595,24 +797,29 @@ def main(argv: list[str] | None = None) -> int:
         command.pop(0)
     if not command:
         return emit(_error("usage_error", "run requires a command after --"), 2, json_mode=json_mode)
+    resolved, env = _resolve_run(repo, project_name, command)
+    if args.dry_run:
+        data = {
+            "summary": "Dry run: command resolved, nothing executed.",
+            "project": project_name,
+            "argv": [Path(part).name for part in resolved],
+            "cwd": repo.name,
+            "pythonpath": env.get("PYTHONPATH"),
+            "virtual_env": env.get("VIRTUAL_ENV"),
+        }
+        result = envelope(data)
+        result["meta"]["dry_run"] = True
+        return emit(result, 0, json_mode=json_mode)
     readiness, ready = doctor(str(repo))
     if not ready:
-        return emit(
-            _error("not_ready", "prepare this checkout and resolve the reported dependency/tool mismatches before running tests", next_commands=[f"python {SCRIPT_ROOT / 'scripts' / 'dev_env.py'} prepare --repo {shlex.quote(str(repo))}"]),
-            1,
-            json_mode=json_mode,
+        hint = f"python {SCRIPT_ROOT / 'scripts' / 'dev_env.py'} prepare --repo {shlex.quote(str(repo))}"
+        err = _error(
+            "not_ready",
+            "prepare this checkout and resolve the reported mismatches before running tests",
+            next_commands=[hint],
         )
-    python = str(_venv_python(repo))
-    if command[0] in {"python", "python3"}:
-        command[0] = python
-    elif command[0] in {"ruff", "pytest"}:
-        tool_path = _venv_dir(repo) / ("Scripts" if os.name == "nt" else "bin") / (command[0] + (".exe" if os.name == "nt" else ""))
-        if tool_path.exists():
-            command[0] = str(tool_path)
-    env = _python_env(repo)
-    if project_name == "corral":
-        env["CORRAL_ISOLATE_MANAGED_HOSTS"] = "1"
-    code, log_path, tail = _run_logged(command, repo=repo, env=env)
+        return emit(err, 1, json_mode=json_mode)
+    code, log_path, tail = _run_logged(resolved, repo=repo, env=env)
     data = {
         "summary": f"Command {'passed' if code == 0 else f'failed with exit {code}'}; full output is in the log.",
         "project": project_name,
@@ -621,7 +828,14 @@ def main(argv: list[str] | None = None) -> int:
         "tail": tail,
     }
     if code:
-        return emit(envelope(error={"code": "command_failed", "message": data["summary"], "log_path": data["log_path"], "exit_code": code, "tail": tail}), 1, json_mode=json_mode)
+        failure = {
+            "code": "command_failed",
+            "message": data["summary"],
+            "log_path": data["log_path"],
+            "exit_code": code,
+            "tail": tail,
+        }
+        return emit(envelope(error=failure), 1, json_mode=json_mode)
     return emit(envelope(data), 0, json_mode=json_mode)
 
 

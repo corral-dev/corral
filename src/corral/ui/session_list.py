@@ -36,6 +36,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING
 
 from rich.style import Style
@@ -2538,9 +2539,15 @@ class SessionListView(Vertical):
         # 首铺分片：只同步挂首批（可视区+缓冲），剩余行空闲帧补齐--一次性挂
         # 200+ 卡实测冻结主线程约 1 秒，分片后首帧几十毫秒、期间可交互。
         sticky_items, scroll_items = self._partition_items(items)
+        first_count = _MOUNT_CHUNK
+        if previous_identity in new_identities:
+            # ListView clamps its index to mounted rows. Include the selected
+            # row before applying highlight so visible and logical selection
+            # cannot point to different sessions while the tail is mounting.
+            first_count = max(first_count, new_identities.index(previous_identity) + 1)
         first_batch, tail_items = (
-            scroll_items[:_MOUNT_CHUNK],
-            scroll_items[_MOUNT_CHUNK:],
+            scroll_items[:first_count],
+            scroll_items[first_count:],
         )
         with self.app.batch_update():
             await self._replace_list_items(sticky_items, first_batch)
@@ -2582,20 +2589,25 @@ class SessionListView(Vertical):
         self._tail_items = items
         self._tail_rows = rows
         self._tail_token = token
-        self.set_timer(_TAIL_MOUNT_INTERVAL, self._mount_tail_batch)
+        self.set_timer(_TAIL_MOUNT_INTERVAL, partial(self._mount_tail_batch, token))
 
-    async def _mount_tail_batch(self) -> None:
+    async def _mount_tail_batch(self, token: int | None = None) -> None:
         """空闲帧补挂一批尾部行；任何新重建请求（seq 变化）立即让位。
 
         DOM 变更必须持 `_rebuild_lock`（与 rebuild 同一把闸门，防两条消息泵
         交错）；持锁后还要再验一次 token，排队期间可能已进来新重建。
         """
-        token = self._tail_token
+        if token is None:
+            token = self._tail_token
+        if token != self._tail_token:
+            return
         if token != self._rebuild_seq or self._sticky_list is None:
             self._tail_items = []
             return
         rows = self._tail_rows
         async with self._rebuild_lock:
+            if token != self._tail_token:
+                return
             if token != self._rebuild_seq or self._sticky_list is None:
                 self._tail_items = []
                 return
@@ -2616,5 +2628,5 @@ class SessionListView(Vertical):
             self._apply_split_marks()
             if rows is not None:
                 self._apply_stripes(rows)
-        if self._tail_items:
-            self.set_timer(_TAIL_MOUNT_INTERVAL, self._mount_tail_batch)
+        if token == self._tail_token and self._tail_items:
+            self.set_timer(_TAIL_MOUNT_INTERVAL, partial(self._mount_tail_batch, token))

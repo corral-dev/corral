@@ -36,6 +36,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done
 
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}src"
+# checkout .venv 就绪时优先用其中锁定的 ruff；缺席时保持旧 PATH 行为。
+if [ -x "$ROOT/.venv/bin/ruff" ]; then
+  export PATH="$ROOT/.venv/bin:$PATH"
+fi
 # 复现 CI：清掉本机常驻的 Kitty 开关，避免掩盖真实失败
 run_ci() {
   env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py "$@"

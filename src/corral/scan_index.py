@@ -59,6 +59,25 @@ def index_path():
     return cache_dir() / "scan-index.json"
 
 
+def published_meta() -> tuple[float, int] | None:
+    """``(published_at, limit)`` of the current index file, or ``None``.
+
+    Lets publishers tell their own keep-alive republishes apart from fresher
+    foreign ones without paying for a full consume. Never raises.
+    """
+    try:
+        with open(index_path(), encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
+        return None
+    try:
+        return float(payload.get("published_at") or 0), int(payload.get("limit") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def try_consume(
     limit: int,
     keep_ids_by_runtime: dict[str, set[str]] | None = None,

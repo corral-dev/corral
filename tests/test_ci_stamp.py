@@ -63,9 +63,8 @@ class CiStampTests(unittest.TestCase):
 
     def test_check_stamp_cli_uses_fingerprint_not_commit(self):
         repo = SCRIPT_PATH.resolve().parents[1]
-        digest = ci_stamp.worktree_fingerprint(repo)
-        self.stamp.write_text(f"fingerprint={digest}\n", encoding="utf-8")
         script = repo / "scripts" / "ci-test.py"
+        ci_stamp.write_stamp(repo)
         matched = subprocess.run(
             [sys.executable, str(script), "--check-stamp"],
             cwd=repo,
@@ -73,7 +72,7 @@ class CiStampTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(matched.returncode, 0)
-        self.stamp.write_text("fingerprint=deadbeef\n", encoding="utf-8")
+        self.stamp.write_text("fingerprint=deadbeef\nenv=deadbeef\n", encoding="utf-8")
         stale = subprocess.run(
             [sys.executable, str(script), "--check-stamp"],
             cwd=repo,
@@ -81,3 +80,23 @@ class CiStampTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(stale.returncode, 1)
+
+    def test_fingerprint_only_stamp_does_not_match(self):
+        ci_stamp.write_stamp(self.root)
+        self.stamp.write_text(
+            f"fingerprint={ci_stamp.worktree_fingerprint(self.root)}\n", encoding="utf-8"
+        )
+        self.assertFalse(ci_stamp.stamp_matches(self.root))
+
+    def test_env_change_invalidates_stamp(self):
+        ci_stamp.write_stamp(self.root)
+        self.assertTrue(ci_stamp.stamp_matches(self.root))
+        _write(self.root, "uv.lock", "version = 1\n")
+        self.assertFalse(ci_stamp.stamp_matches(self.root))
+
+    def test_missing_env_invalidates_stamp(self):
+        ci_stamp.write_stamp(self.root)
+        self.assertTrue(ci_stamp.stamp_matches(self.root))
+        (self.root / ".venv" / "bin").mkdir(parents=True)
+        (self.root / ".venv" / "bin" / "python").write_text("not a python\n", encoding="utf-8")
+        self.assertFalse(ci_stamp.stamp_matches(self.root))

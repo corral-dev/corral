@@ -41,7 +41,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 
 - `diagnose` 的 `package_file` / `install_channel` / `stale_source_warning` 告诉你当前跑的是哪份拷贝；源码树里开发却加载了别处副本时会有告警，以告警为准换入口。
 - `diagnose` 的 `keepalive_server` 报告保活 tmux server 的调度档（`priority`、`interactive_job`、`clamped`）。`clamped: true` 表示托管助手整体被 macOS 限流（新会话起得慢、同样的活比 Corral 外慢数倍）；只能重启一次 server 解决，见 `docs/MAINTAINER_GUIDE.md`「Keepalive server scheduling class」。
-- 源码树 editable 安装用于维护和开发，不会替代环境准备。跑耗时检查前先用 [开发环境指南](DEVELOPMENT_ENVIRONMENT_GUIDE.md) 确认依赖和解释器，再按 [测试环境指南](TEST_ENVIRONMENT_GUIDE.md) 做隔离验收；focused acceptance 不代替完整 UI/终端及干净安装门禁。安装/依赖失败应先按环境问题处理，不要误判成会话查询结果为空。
+- 源码树 editable 安装用于维护和开发，不会替代环境准备。跑耗时检查前先用 `python3 scripts/dev_env.py check --repo .` 确认就绪（未就绪时跑 `python3 scripts/dev_env.py prepare --repo .`；只诊断用 `doctor --repo . --json`，命令经 `run --repo . -- <cmd>` 走 checkout `.venv`），再按 [测试环境指南](TEST_ENVIRONMENT_GUIDE.md)（`python3 scripts/acceptance.py --json`，只演练用 `--dry-run`）做隔离验收；focused acceptance 不代替完整 UI/终端及干净安装门禁。安装/依赖失败应先按环境问题处理，不要误判成会话查询结果为空。
 
 ## 命令
 

@@ -1212,8 +1212,8 @@ class MainScreen(
         area = self._split_area()
         if key is not None and key not in area.ordered_session_keys():
             return
-        if area.any_embed_focused():
-            return
+        # Static previews still need their loading cache invalidated while the
+        # user reads them. The area excludes hosted panes and preserves focus.
         area.invalidate_visible_previews()
 
     # ---- 右上角会话小窗：每个实时托管格各自一份 ----

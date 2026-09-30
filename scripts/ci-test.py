@@ -91,6 +91,9 @@ _SERIAL_MODULES = frozenset(
         "test_dragon_splash",
         "test_update_toast",
         "test_main_screen_update",
+        "test_tui_sidebar_review",
+        "test_tui_preview_review",
+        "test_tui_embed_review",
     }
 )
 
@@ -419,6 +422,38 @@ def _retry_failed(failed_ids: list[str]) -> bool:
     return False
 
 
+def _maybe_use_checkout_env() -> None:
+    """完整套件使用已就绪的 checkout .venv 解释器。
+
+    CI runner 没有 checkout .venv，原样走旧路径。本地存在 .venv 但未就绪时
+    直接失败并给出 prepare 指引，不把完整套件跑在错误的依赖上（曾导致数十个
+    用例因 SessKit 副本不一致而误报）。
+    """
+    if os.environ.get("CORRAL_CI_TEST_REEXEC") == "1":
+        return
+    venv_python = ROOT / ".venv" / "bin" / "python"
+    if os.name == "nt":
+        venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
+    if not venv_python.is_file():
+        return
+    try:
+        if Path(sys.executable).resolve() == venv_python.resolve():
+            return
+    except OSError:
+        return
+    import dev_env  # noqa: E402 — scripts/ 目录已在 sys.path（见顶部）
+
+    data, ready = dev_env.doctor(str(ROOT))
+    if not ready:
+        print("错误：checkout .venv 未就绪，拒绝在错误依赖下跑完整套件：", file=sys.stderr)
+        for blocker in data.get("blockers", ()):
+            print(f"  - {blocker}", file=sys.stderr)
+        print(f"先跑：python3 scripts/dev_env.py prepare --repo {ROOT}", file=sys.stderr)
+        raise SystemExit(1)
+    os.environ["CORRAL_CI_TEST_REEXEC"] = "1"
+    os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.run_modules is not None:
@@ -435,6 +470,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.lint_only and args.skip_lint:
         print("错误：--lint-only 与 --skip-lint 不能同时使用", file=sys.stderr)
         return 2
+
+    if not args.lint_only:
+        _maybe_use_checkout_env()
 
     if not args.skip_lint:
         lint_code = _run_ruff()

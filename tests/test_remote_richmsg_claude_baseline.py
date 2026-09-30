@@ -58,6 +58,19 @@ def _result(call_id: str, content: object, ts: str, *, is_error: bool | None = N
     }
 
 
+def _queued_command(
+    prompt: str, ts: str, *, origin_kind: str | None, human_turn: bool = False
+) -> dict:
+    """Mid-turn `attachment`/`queued_command` row; human evidence lives on the
+    attachment itself (P1c parity finding: entry-level origin is None)."""
+    attachment: dict = {"type": "queued_command", "prompt": prompt}
+    if origin_kind is not None:
+        attachment["origin"] = {"kind": origin_kind}
+    if human_turn:
+        attachment["humanTurn"] = True
+    return {"type": "attachment", "timestamp": ts, "attachment": attachment}
+
+
 def _sig(messages: list[richmsg.RichMessage]) -> list:
     out = []
     for item in messages:
@@ -385,6 +398,57 @@ class ClaudeRichmsgCompatibilityBaselineTests(unittest.TestCase):
             legacy_wire = _legacy_wire(path)
 
         self.assertEqual(new_wire, legacy_wire)
+
+    def test_human_queued_command_surfaces_as_user_card(self) -> None:
+        """P1c: genuine mid-turn prompts (attachment origin human) are phone
+        user cards; hook-injected task-notification rows stay hidden.
+
+        Real-history parity: every novel new-path user card matches a
+        SessKit-admitted queued_command (67/67 sessions); legacy drops them
+        all because the entry type is not "user". No content/paths recorded.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            _write(
+                path,
+                [
+                    _user("Start the task.", "2026-09-01T00:00:01Z"),
+                    _assistant(
+                        [{"type": "text", "text": "Working on it."}],
+                        "2026-09-01T00:00:02Z",
+                    ),
+                    _queued_command(
+                        "Also verify the edge cases.",
+                        "2026-09-01T00:00:03Z",
+                        origin_kind="human",
+                        human_turn=True,
+                    ),
+                    _queued_command(
+                        "Routine background sync note.",
+                        "2026-09-01T00:00:04Z",
+                        origin_kind="task-notification",
+                    ),
+                    _assistant(
+                        [{"type": "text", "text": "Done."}], "2026-09-01T00:00:05Z"
+                    ),
+                ],
+            )
+            messages = richmsg.RichReader(_session(path)).read_all()
+            legacy_wire = _legacy_wire(path)
+
+        self.assertEqual(
+            [(item.role, item.text) for item in messages],
+            [
+                ("user", "Start the task."),
+                ("assistant", "Working on it."),
+                ("user", "Also verify the edge cases."),
+                ("assistant", "Done."),
+            ],
+        )
+        self.assertNotIn(
+            ("user", "Also verify the edge cases.", ()),
+            legacy_wire,
+        )
 
 
 if __name__ == "__main__":

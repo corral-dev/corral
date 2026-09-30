@@ -1657,12 +1657,16 @@ class MainScreenWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
 
         started_at = time.monotonic()
+        # This lifecycle test verifies worker cancellation, not host memory
+        # pressure. Keep its polling cadence deterministic; pressure cadence
+        # behavior is covered separately in test_history_watch.py.
         with (
             mock.patch("corral.ui.main_screen.REFRESH_MIN_GAP", 0.01),
             mock.patch("corral.ui.main_screen.REFRESH_RECONCILE", 0.02),
             mock.patch("corral.ui.main_screen.REFRESH_RECONCILE_FALLBACK", 0.02),
             mock.patch("corral.ui.main_screen.REFRESH_INTERVAL", 0.01),
             mock.patch("corral.ui.main_screen.REFRESH_INTERVAL_MAX", 0.02),
+            mock.patch("corral.history_watch.memory_pressured", return_value=False),
         ):
             async with app.run_test(size=(100, 30)) as pilot:
                 await _wait_until(lambda: store.refresh.call_count > 0)
@@ -4584,10 +4588,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             BoardCandidate(key="claude:s1", kind="working", updated_at=1),
         ]
         only_s0 = [BoardCandidate(key="claude:s0", kind="waiting", updated_at=2)]
-        with mock.patch(
-            "corral.ui.controllers.board_controller.collect_candidates",
-            return_value=both,
-        ) as candidates_mock:
+        with (
+            mock.patch(
+                "corral.ui.controllers.board_controller.collect_candidates",
+                return_value=both,
+            ) as candidates_mock,
+            mock.patch("corral.embed.capture", return_value="Activity board fixture"),
+            mock.patch("corral.embed.is_alive", return_value=True),
+        ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
@@ -7912,6 +7920,8 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 "corral.embed.host_session", return_value="corral-claude-s0",
             ) as host,
             mock.patch("corral.liveness.is_alive", return_value=False),
+            mock.patch("corral.embed.capture", return_value="Restarted fixture"),
+            mock.patch("corral.embed.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)

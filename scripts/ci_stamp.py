@@ -7,9 +7,15 @@ import subprocess
 from pathlib import Path
 
 FINGERPRINT_DIRS = ("src", "tests", "scripts", ".githooks", "rust")
-FINGERPRINT_FILES = ("pyproject.toml", "Cargo.toml", "Cargo.lock")
+FINGERPRINT_FILES = ("pyproject.toml", "Cargo.toml", "Cargo.lock", "uv.lock")
 _SKIP_DIR_NAMES = {"__pycache__", "target", ".egg-info"}
 _SKIP_SUFFIXES = {".pyc", ".so", ".dylib"}
+_ENV_FINGERPRINT_PROBE = (
+    "import importlib.metadata, sys;",
+    "names = [(str(d.metadata['Name'] or '').lower(), d.version) for d in importlib.metadata.distributions()];",
+    "print(sys.version.split()[0]);",
+    "print('\\n'.join(sorted(f'{n}=={v}' for n, v in names)))",
+)
 
 
 def stamp_path(root: Path) -> Path:
@@ -60,24 +66,83 @@ def path_key(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
 
+def environment_fingerprint(root: Path) -> str:
+    """Identify the checkout venv's interpreter plus installed distribution set.
+
+    Local-only and offline: hashes the uv.lock bytes (or a missing marker) plus
+    the venv interpreter version and its installed distributions, probed with
+    stdlib only. A stale, deleted, or missing environment yields a different
+    digest, so it can never reuse a full-pass stamp.
+    """
+    hasher = hashlib.sha256()
+    lock = root / "uv.lock"
+    try:
+        hasher.update(b"lock:")
+        hasher.update(lock.read_bytes())
+    except OSError:
+        hasher.update(b"lock:missing")
+    hasher.update(b"\n")
+    python = root / ".venv" / "bin" / "python"
+    if os.name == "nt":
+        python = root / ".venv" / "Scripts" / "python.exe"
+    if not python.is_file():
+        hasher.update(b"venv:missing")
+        return hasher.hexdigest()
+    # Hermetic probe: ambient PYTHONPATH (e.g. ci-test prepending src/) must
+    # not leak stale egg-info such as src/pickup.egg-info into the listing.
+    probe_env = os.environ.copy()
+    for key in ("PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "__PYVENV_LAUNCHER__"):
+        probe_env.pop(key, None)
+    probe_env["PYTHONNOUSERSITE"] = "1"
+    try:
+        result = subprocess.run(
+            [str(python), "-c", "\n".join(_ENV_FINGERPRINT_PROBE)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=probe_env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        hasher.update(b"venv:unreadable")
+        return hasher.hexdigest()
+    if result.returncode != 0:
+        hasher.update(b"venv:unreadable")
+        return hasher.hexdigest()
+    hasher.update(b"venv:")
+    hasher.update(result.stdout.encode())
+    return hasher.hexdigest()
+
+
 def write_stamp(root: Path, fingerprint: str | None = None) -> Path:
     path = stamp_path(root)
     digest = fingerprint if fingerprint is not None else worktree_fingerprint(root)
-    path.write_text(f"fingerprint={digest}\n", encoding="utf-8")
+    path.write_text(
+        f"fingerprint={digest}\nenv={environment_fingerprint(root)}\n",
+        encoding="utf-8",
+    )
     return path
 
 
-def read_stamp(path: Path) -> str | None:
+def read_stamp(path: Path) -> tuple[str | None, str | None]:
     if not path.is_file():
-        return None
+        return None, None
+    fingerprint: str | None = None
+    env: str | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("fingerprint="):
-            return line.split("=", 1)[1].strip()
-    return None
+            fingerprint = line.split("=", 1)[1].strip()
+        elif line.startswith("env="):
+            env = line.split("=", 1)[1].strip()
+    return fingerprint, env
 
 
 def stamp_matches(root: Path) -> bool:
-    recorded = read_stamp(stamp_path(root))
-    if not recorded:
+    recorded, recorded_env = read_stamp(stamp_path(root))
+    if not recorded or not recorded_env:
+        # Fingerprint-only stamps from before the environment binding predate
+        # this contract; they never match, so one full run re-baselines.
         return False
-    return recorded == worktree_fingerprint(root)
+    if recorded != worktree_fingerprint(root):
+        return False
+    return recorded_env == environment_fingerprint(root)

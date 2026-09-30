@@ -341,6 +341,38 @@ class CodexRichmsgCompatibilityBaselineTests(unittest.TestCase):
 
         self.assertEqual(new_wire, legacy_wire)
 
+    def test_same_text_user_repeat_across_nontext_rows_is_preserved(self) -> None:
+        """P1c: a repeated user prompt separated by non-text rows yields two
+        phone cards instead of collapsing into one.
+
+        Real-history parity: the only new-path user extras over legacy are
+        such repeats (54/2051 Codex sessions, all dup-count, zero novel text);
+        the shared SessKit contract preserves same-text repeats separated by
+        non-text rows per event, while the legacy parser dedups against its
+        last message regardless of what came between. No content/paths here.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            _write(
+                path,
+                [
+                    _user_item("Ping."),
+                    {"type": "event_msg", "payload": {"type": "task_complete"}},
+                    _user_item("Ping."),
+                ],
+            )
+            messages = richmsg.RichReader(_session(path)).read_all()
+            legacy_wire = _legacy_wire(path)
+
+        self.assertEqual(
+            [(item.role, item.text) for item in messages],
+            [("user", "Ping."), ("user", "Ping.")],
+        )
+        self.assertEqual(
+            [(role, text) for role, text, _tools in legacy_wire],
+            [("user", "Ping.")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

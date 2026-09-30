@@ -17,7 +17,7 @@ import sys
 import urllib.request
 
 # --- single source of truth -------------------------------------------------
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 TAG = f"v{VERSION}"
 REPO = "x0c/sesskit"
 WHEEL_NAME = f"sesskit-{VERSION}-py3-none-any.whl"
@@ -25,8 +25,8 @@ SDIST_NAME = f"sesskit-{VERSION}.tar.gz"
 WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{WHEEL_NAME}"
 SDIST_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{SDIST_NAME}"
 # sha256 of the published assets (verified 2026-09-30 against the GitHub Release).
-WHEEL_SHA256 = "9f73ace5c7c10a2a2abd041ec7cd254be86ce3faab5c19b3a9557e4199cc5237"
-SDIST_SHA256 = "c1d49fba6a11ff57b637e5ea093446e33fac86dbb096762720a8b8e10953ec00"
+WHEEL_SHA256 = "aa89751b09906fe2549bcde45db36adb29c6fd8e068fb3a9a6e1f5870317a25c"
+SDIST_SHA256 = "86c7f1dec949b46512d4cab321360a514c2ae48a3217c0a08960211114f4647c"
 # Minimum version declared in Corral's pyproject.toml dependencies.
 REQUIRES = f"sesskit>={VERSION}"
 
@@ -44,6 +44,16 @@ def homebrew_resource_block() -> str:
         f'    sha256 "{SDIST_SHA256}"\n'
         "  end"
     )
+
+
+def uv_source_table() -> str:
+    """``[tool.uv.sources]`` block derived from this pin for Corral's pyproject.
+
+    Canonical direction: this module owns the pin (VERSION / WHEEL_URL);
+    ``pyproject.toml`` mirrors the generated block verbatim. uv-only metadata:
+    published install paths keep using the plain ``sesskit>=…`` range.
+    """
+    return f'[tool.uv.sources]\nsesskit = {{ url = "{WHEEL_URL}" }}\n'
 
 
 def _sha256_url(url: str) -> str:
@@ -84,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             "sdist-url",
             "sdist-sha256",
             "wheel-requirement",
+            "uv-source-table",
             "json",
             "verify",
         ),
@@ -105,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         print(SDIST_SHA256)
     elif args.field == "wheel-requirement":
         print(wheel_requirement())
+    elif args.field == "uv-source-table":
+        print(uv_source_table(), end="")
     elif args.field == "json":
         json.dump(
             {
