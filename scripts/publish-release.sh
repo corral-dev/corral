@@ -193,6 +193,31 @@ else
   rm -rf "$WORK"
 fi
 
+# The installed `corral` (usually a pipx venv) keeps its own SessKit copy; a
+# release that raises the pin does nothing for this machine until that copy
+# matches (2026-09-30: two releases shipped while the local install and the
+# phone daemon still ran an older SessKit without the incremental readers).
+sync_local_sesskit() {
+  command -v corral >/dev/null 2>&1 || return 0
+  local py want have
+  py=$(corral --version 2>/dev/null | sed -n 's/^ *python: *//p' | head -1)
+  [ -n "$py" ] && [ -x "$py" ] || return 0
+  want=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import sesskit_dep; print(sesskit_dep.VERSION)')
+  have=$("$py" -c 'import sesskit; print(sesskit.__version__)' 2>/dev/null || echo none)
+  if [ "$have" = "$want" ]; then
+    echo "==> 本机 corral 的 SessKit 已是 ${want}"
+    return 0
+  fi
+  echo "==> 本机 corral 的 SessKit ${have} → ${want}"
+  "$py" -m pip install -q --upgrade "$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import sesskit_dep; print(sesskit_dep.wheel_requirement())')" \
+    || { echo "!!  本机 SessKit 升级失败，请按 docs/MAINTAINER_GUIDE.md 手动安装"; return 0; }
+  if corral remote status 2>/dev/null | grep -q '^Status: on'; then
+    corral remote off >/dev/null 2>&1 && corral remote on >/dev/null 2>&1 \
+      && echo "==> 手机远程服务已重启，加载新 SessKit"
+  fi
+}
+sync_local_sesskit
+
 echo
 echo "==> 收尾核对"
 gh release view "$TAG" --json tagName,assets \
