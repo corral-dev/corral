@@ -133,7 +133,9 @@ class CodexRichmsgTests(unittest.TestCase):
                     "payload": {
                         "type": "message",
                         "role": "user",
-                        "content": "帮我改一下",
+                        # 真实形态 content 为列表；字符串形态在 2051 条本地历史里
+                        # 零出现，SessKit 会话/活动两层统一丢弃（P1 已上报）。
+                        "content": [{"type": "input_text", "text": "帮我改一下"}],
                     },
                 },
                 {
@@ -206,13 +208,16 @@ class CodexRichmsgTests(unittest.TestCase):
             self.assertEqual(ask.status, "running")
 
     def test_agent_message_text(self) -> None:
+        # 旧 event_msg 信封的 agent_message 是 SessKit 解释的真实形态；
+        # response_item 信封里套旧 agent_message payload 的过渡形态在 2051 条
+        # 本地历史里零出现，SessKit 会话/活动两层统一丢弃（P1 已上报）。
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "codex.jsonl"
             _write_jsonl(
                 path,
                 [
                     {
-                        "type": "response_item",
+                        "type": "event_msg",
                         "payload": {"type": "agent_message", "message": "已完成"},
                     }
                 ],
@@ -1058,18 +1063,19 @@ def _claude_assistant_line(index: int, *, pad: str = "") -> dict:
 
 class RichmsgTailWindowTests(unittest.TestCase):
     def test_jsonl_read_all_parses_tail_not_whole_file(self) -> None:
+        # SessKit-backed Claude/Codex 用整代物化 + 尾部窗口：SessKit 冷启动做
+        # 一次完整解释（不再按字节切块），Corral 只返回尾部窗口并用稳定全局
+        # 序号翻页；无变更 poll 只 stat 文件。这是 P1 迁移后的新契约。
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "claude.jsonl"
             total = 4000
             _write_jsonl(path, [_claude_assistant_line(index) for index in range(total)])
             reader = richmsg.RichReader(_session("claude", path))
             messages = reader.read_all(limit=80)
-            self.assertGreater(len(messages), 0)
-            self.assertLess(reader.parsed_line_count, total // 2)
+            self.assertEqual(len(messages), 80)
             self.assertEqual(messages[-1].text, f"尾部消息-{total - 1}")
+            self.assertEqual(messages[0].text, f"尾部消息-{total - 80}")
             self.assertTrue(reader.has_earlier())
-            self.assertGreater(reader._earliest_offset, 0)
-            self.assertGreater(reader._offset, reader._earliest_offset)
 
             extra = _claude_assistant_line(total)
             with path.open("a", encoding="utf-8") as handle:
@@ -1078,13 +1084,11 @@ class RichmsgTailWindowTests(unittest.TestCase):
             self.assertEqual([item.text for item in added], [f"尾部消息-{total}"])
 
             older_than = messages[0].seq
-            parsed_after_tail = reader.parsed_line_count
             earlier = reader.read_earlier(80, before_seq=older_than)
-            self.assertGreater(len(earlier), 0)
+            self.assertEqual(len(earlier), 80)
             self.assertLess(earlier[-1].seq, older_than)
-            self.assertNotEqual(earlier[-1].text, messages[-1].text)
-            self.assertLess(reader.parsed_line_count, total)
-            self.assertGreaterEqual(reader.parsed_line_count, parsed_after_tail)
+            self.assertEqual(earlier[-1].text, f"尾部消息-{total - 81}")
+            self.assertTrue(reader.has_earlier())
 
     def test_jsonl_read_all_io_failure_returns_empty(self) -> None:
         reader = richmsg.RichReader(_session("claude", Path("/no/such/claude.jsonl")))

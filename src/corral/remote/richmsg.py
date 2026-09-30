@@ -1747,45 +1747,58 @@ def _standard_tool_card(event: object) -> ToolCall:
     )
 
 
-def _codex_custom_summary(raw: object) -> tuple[str, str] | None:
-    """Legacy custom-tool summary over the SessKit-coerced input.
+def _codex_custom_card(name: str, call_id: str, summary: str, detail: str) -> ToolCall:
+    """Legacy custom-tool card: no ``name:`` prefix, no question fields."""
+    kind = classify(name)
+    if kind == "other":
+        kind = "shell"
+    return ToolCall(
+        call_id=call_id,
+        name=name,
+        kind=kind,
+        summary=summary or name,
+        detail=detail,
+    )
 
-    Coerced ``{"cmd": ...}`` is the documented custom shape; a raw string
-    matching the ``exec_command`` pattern is custom evidence too. Anything
-    else follows the function-call path below, exactly like the retired
-    native parser distinguished the two payload kinds.
+
+def _codex_tool_card(event: object) -> ToolCall:
+    """Tool card from a typed Codex call, preserving the custom/function split.
+
+    The typed event no longer carries the native payload kind, so the split
+    is recovered from the coerced input shape, verified against all 2051
+    local Codex histories (counts are snapshots, not prevalence claims):
+
+    - ``str`` input is always a custom ``custom_tool_call`` whose text is not
+      JSON (37,849 cases); unparseable ``function_call`` argument strings
+      never occur (all 78,435 function argument strings parse, always to a
+      dict). Custom semantics: no ``name:`` prefix.
+    - ``{"cmd": ...}`` is ambiguous: custom inputs matching the
+      ``exec_command`` pattern coerce to it, but so do the 1,177
+      ``function_call`` payloads literally named ``exec_command``. The two
+      sets are name-disjoint in the sample (customs are only ``exec`` /
+      ``apply_patch``), so that name takes the function path with its
+      noise-skipping command summary; every other ``{"cmd"}`` dict is custom.
+    - Every other dict is function arguments (custom inputs that are valid
+      non-``cmd`` JSON never occur); lists fall through to the function path.
     """
+    name = str(getattr(event, "name", None) or "tool")
+    call_id = str(getattr(event, "call_id", None) or "")
+    raw = getattr(event, "raw_input", None)
+    if isinstance(raw, str):
+        return _codex_custom_card(
+            name, call_id, _first_line(raw, 160), _clip(raw, _MAX_DETAIL)
+        )
     if (
         isinstance(raw, dict)
         and set(raw) == {"cmd"}
         and isinstance(raw.get("cmd"), str)
+        and name != "exec_command"
     ):
         command = raw["cmd"]
-        return _first_line(command, 160), _clip(command, _MAX_DETAIL)
-    if isinstance(raw, str) and _EXEC_CMD_RE.search(raw):
-        return _codex_custom_input(raw)
-    return None
-
-
-def _codex_tool_card(event: object) -> ToolCall:
-    """Tool card from a typed Codex call, preserving the custom/function split."""
-    name = str(getattr(event, "name", None) or "tool")
-    call_id = str(getattr(event, "call_id", None) or "")
-    raw = getattr(event, "raw_input", None)
-    custom = _codex_custom_summary(raw)
-    if custom is not None:
-        summary, detail = custom
-        kind = classify(name)
-        if kind == "other":
-            kind = "shell"
-        return ToolCall(
-            call_id=call_id,
-            name=name,
-            kind=kind,
-            summary=summary or name,
-            detail=detail,
+        return _codex_custom_card(
+            name, call_id, _first_line(command, 160), _clip(command, _MAX_DETAIL)
         )
-    args = raw if isinstance(raw, (dict, str, list)) else {}
+    args = raw if isinstance(raw, (dict, list)) else {}
     kind = classify(name)
     summary, detail = summarize(name, kind, args)
     options, groups = _question_fields(kind, args) if isinstance(args, dict) else ([], [])

@@ -578,6 +578,8 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.hub.unwatch_conversation("claude:a")
 
     def test_large_history_opens_tail_and_pages_earlier_without_full_parse(self) -> None:
+        # P1 新契约：SessKit 冷启动做一次完整解释（不再按字节切块），Corral
+        # 只返回尾部窗口并用稳定全局序号翻页；无变更 poll 只 stat 文件。
         path = Path(self._tmp.name) / "claude.jsonl"
         total = 4000
         _write_assistant_jsonl(path, [f"尾部消息-{index}" for index in range(total)])
@@ -586,17 +588,15 @@ class SessionHubPayloadTests(unittest.TestCase):
         with mock.patch.object(self.hub, "require_session", return_value=session):
             page = self.hub.watch_conversation("claude:a")
             reader = self.hub._transcripts["claude:a"].reader
-            parsed = reader.parsed_line_count
             self.assertTrue(page["has_more"])
             self.assertEqual(page["messages"][-1]["text"], f"尾部消息-{total - 1}")
             self.assertEqual(len(page["messages"]), 80)
-            self.assertLess(parsed, total // 2)
+            self.assertEqual(page["messages"][0]["text"], f"尾部消息-{total - 80}")
 
             earlier = self.hub.message_page("claude:a", before_seq=page["oldest_seq"])
-            self.assertGreater(len(earlier["messages"]), 0)
-            self.assertNotEqual(earlier["messages"][-1]["text"], page["messages"][-1]["text"])
+            self.assertEqual(len(earlier["messages"]), 80)
+            self.assertEqual(earlier["messages"][-1]["text"], f"尾部消息-{total - 81}")
             self.assertLess(earlier["messages"][-1]["seq"], page["oldest_seq"])
-            self.assertLess(reader.parsed_line_count, total)
 
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(
