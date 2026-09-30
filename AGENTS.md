@@ -2,7 +2,7 @@
 <!-- source: /Users/geraltgraham/Codes/Corral/AGENTS.md -->
 # Corral
 
-终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Kimi Code / Cursor / Pi 会话恢复与接力。
+终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Cursor / Pi 会话恢复与接力（另有 Kimi 兼容实现 dormant：保留、不维护、无界面入口）。
 
 通用工程规范：[Python 规范](/Users/geraltgraham/Codes/_standards/python.md)
 
