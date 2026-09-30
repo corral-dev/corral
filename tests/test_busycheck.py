@@ -393,6 +393,9 @@ class MigrationScriptTests(unittest.TestCase):
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        # The real `log` appends to ~/.cache/corral/keepalive-migration.log and
+        # events.log; tests must not leave fake migration records there.
+        module.log = lambda event, **fields: None
         return module
 
     def test_busy_covers_working_and_background_process(self) -> None:
