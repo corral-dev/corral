@@ -75,6 +75,9 @@
 
 ## 文档导航
 
+- [docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md) (planned): Development/runtime readiness and declared local dependencies; verify command integration against the finished guide before use.
+- [docs/TEST_ENVIRONMENT_GUIDE.md](docs/TEST_ENVIRONMENT_GUIDE.md) (planned): Isolated test setup and reusable behavioral acceptance; verify real-terminal command integration against the finished guide before use.
+
 - `docs/PUBLIC_PRESENTATION_GUIDE.md`: **must read** before rewriting/reviewing README, GitHub presentation, or Corral icon assets; otherwise retired arrow/horse artwork and implementation-heavy copy can return.
 
 

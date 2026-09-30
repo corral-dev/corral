@@ -459,6 +459,15 @@ class MainScreen(
     def _split_area(self) -> SplitPaneArea:
         return self.query_one(SplitPaneArea)
 
+    def _on_app_focus_changed(self, focused: bool) -> None:
+        """失焦窗口降速抓帧的唯一钩子：先走关注已读原逻辑，再下发取样档位。"""
+        super()._on_app_focus_changed(focused)
+        if self.embed_ok:
+            try:
+                self._split_area().set_window_focused(bool(focused))
+            except Exception:  # noqa: BLE001 挂载窗口期缺件时静默跳过
+                pass
+
     def update_terminal_background(self, osc_report: bytes) -> None:
         """同步运行中终端的新背景，供现有面板和后续托管会话共同使用。
 
@@ -675,7 +684,7 @@ class MainScreen(
         import time as _time
 
         import corral
-        from corral.history_watch import HistoryWatcher
+        from corral.history_watch import HistoryWatcher, memory_pressured, pressure_cadence
 
         worker = get_current_worker()
         watcher = HistoryWatcher()
@@ -683,7 +692,7 @@ class MainScreen(
         watcher.start()
         # Give the watch thread a moment to pick fsevents/inotify vs none.
         worker.cancelled_event.wait(0.05)
-        reconcile = (
+        base_reconcile = (
             REFRESH_RECONCILE
             if watcher.backend != "none"
             else REFRESH_RECONCILE_FALLBACK
@@ -691,6 +700,11 @@ class MainScreen(
         last_refresh = 0.0
         try:
             while not worker.is_cancelled:
+                # Back off the polling floor under memory pressure (once per
+                # pass; FS-event wakes still fire). Normal cadence unchanged.
+                reconcile, min_gap = pressure_cadence(
+                    base_reconcile, REFRESH_MIN_GAP, memory_pressured(),
+                )
                 deadline = _time.monotonic() + reconcile
                 while not worker.is_cancelled:
                     left = deadline - _time.monotonic()
@@ -703,7 +717,7 @@ class MainScreen(
                 if worker.is_cancelled:
                     return
                 if last_refresh > 0:
-                    gap = REFRESH_MIN_GAP - (_time.monotonic() - last_refresh)
+                    gap = min_gap - (_time.monotonic() - last_refresh)
                     if gap > 0 and worker.cancelled_event.wait(gap):
                         return
                 # 托管刚成功（新建/重启）：pid 快照变化让签名必穿，紧接着的

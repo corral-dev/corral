@@ -59,6 +59,7 @@ flowchart TD
 | F12 绑定与用户提示 | `ui/main_screen.py` 的 `MainScreen.action_save_screenshot` | 调用截图观测并在成功后提示保存位置 |
 | 抓帧/重扫错误桥接 | `observe.log_embed_error` / `corral._log_embed_error` | 将后台异常同时写成事件与 traceback 文件 |
 | 致命闪退落盘 | `observe.install_crash_hooks`、`ui/app.py` 的 `_handle_exception` | 进程/线程未捕获与 TUI 退出前双写 |
+| 按需栈转储 | `observe.install_stack_dumps`（TUI 经 `cli.py main`、常驻服务经 `remote/cli.py` 的 `_run_daemon_foreground` 各调一行） | SIGUSR1 时全线程栈追加到 `stacks.log`，触发只用 `kill -USR1` |
 | 后台会话重扫观测 | `store.py` 的 `SessionStore.load` / `refresh` 与 `ui/main_screen.py` 的刷新 worker | 记录 `scan_all`，异常后保留后台循环 |
 | 内嵌会话托管观测 | `ui/main_screen.py` 的 `_host_and_focus` / `_host_direct_worker` | 记录 `host_session` 的耗时、运行时和成功状态 |
 | 抓帧异常与慢帧观测 | `ui/embed_pane.py`、`embed.py` | 记录 `capture_slow`，异常写入异常日志并继续抓帧 |
@@ -94,6 +95,7 @@ flowchart TD
 | `corral diagnose` → `last_error` | 只读解析 `embed-error.log` 末条 | `ts`/`where`/`exc_type`/`exc_msg`/`traceback`；无记录为 null |
 | 远程 RPC 服务端耗时（Slice0） | 每个成功 RPC 在 `RemoteService.handle` 计业务耗时 | audit 条目 `method` / `duration_ms` / `plane`（control/data）/ `ok` / `req_id`；失败请求不记耗时，由 `remote_method_failed` / `remote_response_send_failed` 覆盖。不记会话 key、正文与参数 |
 | `corral remote status` 最近操作 | 运行快照 `recent` + 人读输出 | 每行 `时间 设备 方法 耗时ms [平面]`；旧条目（无耗时字段）只显示前三段 |
+| 按需栈转储（SIGUSR1） | 任何运行中的 Corral 进程（TUI、`corral remote _serve`）收到 SIGUSR1 时 | 经 `observe.install_stack_dumps()` 安装的处理器写头行（ISO 时间 + pid）再 `faulthandler.dump_traceback(all_threads=True)`，追加到 `~/.cache/corral/stacks.log`；超 1MB 则轮转保留一代（`stacks.log.1`）。触发只用 shell `kill -USR1 <pid>`，pid 取自只读 `list --live` 可见性；不新增 `agent_api` 子命令（发信号属进程控制副作用，违只读约束） |
 
 `timed` 在操作结束时补充 `duration_ms`，使“发生了什么”和“是否变慢”可在同一事件日志中关联。事件日志默认只记录低基数名称和状态；会话文本、提示词、命令参数、令牌等不应作为诊断字段。
 
@@ -109,6 +111,7 @@ flowchart TD
 8. **F12 与验收截图不能混用。** F12 是真实用户现场截图，可能含隐私；`docs/screenshots/capture.py` 用虚构夹具生成仓库验收图。不能用后者替代现场取证，也不能把前者提交到仓库。
 9. **SVG 不能证明真彩色。** F12/Textual 的 SVG 导出可能把真彩色压成灰阶；排查 runtime 配色需以真实终端或界面样式验证为准。
 10. **界面异常后后台循环应继续。** 抓帧或重扫发生未预料异常时记录错误后继续下一轮，不能因为观测或单次失败让后台线程静默死亡。
+11. **活进程卡死时用信号取栈，不加新命令。** `observe.install_stack_dumps()` 在 TUI 与 `remote _serve` 启动时安装 SIGUSR1 处理器（无该信号的平台上为无操作）；诊断时用 `kill -USR1 <pid>` 把全线程栈追加到 `stacks.log`（带时间与 pid 头行，超 1MB 轮转一代）。`agent_api` 保持只读：不得为此新增“向某 pid 发信号”的子命令；取 pid 用既有只读可见性（`list --live` 的 `pid` 字段）。栈文件只作本地排查，不提交仓库。
 
 ## §7 验证路径
 
@@ -123,6 +126,7 @@ flowchart TD
 | TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，再读 `events.log` 最近几分钟的 `scan_all` / `list_rebuild` / `capture_slow`；对照 `corral --version` | 无远程遥测。卡顿时常见：`scan_all` 约每 3–4s、`session_count`≈界面深度、`duration_ms` 经常 ≥300。v0.24.185+ 在签名命中时应看到 `reason=refresh_live`、`cache_hit=true`；只有 `refresh` 且尖峰很大 → 先核是否未重启旧进程，再进 `PERFORMANCE_KNOWLEDGE_BASE.md`。**`cache_hit=true` 却零条 `refresh_live`**：v0.24.212 前占位卡会挡住轻量合并；升到该版并重启 TUI 后再看 |
 | 远程 RPC 服务端耗时取证 | `corral remote status` 看最近操作行的 `耗时ms [平面]`，或读运行快照 `recent` 的 `duration_ms` / `plane` / `req_id` | 成功 RPC 必带耗时与平面；`session.*` 走 data 说明数据面生效，走 control 说明未附着或回落。失败请求无耗时条目，查 `events.log` 的 `remote_method_failed` |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/corral/screenshots/tui-*.svg`，并只作本地排查使用 |
+| 按需栈转储 | 对活进程 `kill -USR1 <pid>` 后读 `~/.cache/corral/stacks.log`（`test_observe_stacks.py` 覆盖头行/追加/轮转） | 头行含 ISO 时间与 pid，其后为全线程栈；超 1MB 时上一段仍在 `stacks.log.1` 可查 |
 | 验收截图消歧 | `python3 docs/screenshots/capture.py` | 生成虚构数据的验收图；不读取真实历史，不替代 F12 现场截图 |
 
 ## §8 关联文档

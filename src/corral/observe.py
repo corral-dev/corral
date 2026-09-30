@@ -9,9 +9,11 @@ CORRAL_DEBUG=1 / CORRAL_LOG=debug 或 init(debug=True) 才写 debug 级。
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -27,7 +29,10 @@ from corral.legacy_names import getenv
 CACHE_DIR = str(product_cache_dir())
 EVENTS_LOG = os.path.join(CACHE_DIR, "events.log")
 EMBED_ERROR_LOG = os.path.join(CACHE_DIR, "embed-error.log")
+STACKS_LOG = os.path.join(CACHE_DIR, "stacks.log")
 _MAX_LOG_BYTES = 256 * 1024
+# 按需栈转储的容量上限：单次转储数十 KB，1MB 约容纳几十次现场；超限轮转一代。
+_STACKS_LOG_MAX_BYTES = 1 * 1024 * 1024
 
 _REDACT_KEYS = frozenset({
     "text", "prompt", "messages", "message", "content", "body",
@@ -44,14 +49,42 @@ _lock = threading.Lock()
 _debug = False
 _inited = False
 _hooks_installed = False
+_stacks_installed = False
+_stacks_file = None
+_stacks_previous_handler = None
 
 
 def reset_for_tests() -> None:
-    """单测专用：清掉进程内开关状态。不卸载已安装的 crash hook（hook 读模块全局路径）。"""
-    global _debug, _inited
+    """单测专用：清掉进程内开关状态。不卸载已安装的 crash hook（hook 读模块全局路径）。
+
+    按需栈转储的 SIGUSR1 处理器会被复原（避免跨用例互相发信号），已打开的
+    转储文件会被关闭；下次 install_stack_dumps() 会重新打开。
+    """
+    global _debug, _inited, _stacks_installed, _stacks_file, _stacks_previous_handler
     with _lock:
         _debug = False
         _inited = False
+        was_stacks = _stacks_installed
+        _stacks_installed = False
+    if was_stacks:
+        signum = getattr(signal, "SIGUSR1", None)
+        if signum is not None:
+            try:
+                previous = _stacks_previous_handler
+                signal.signal(
+                    signum,
+                    previous if previous is not None else signal.SIG_DFL,
+                )
+            except (OSError, ValueError, RuntimeError):
+                pass
+        _stacks_previous_handler = None
+    fh = _stacks_file
+    _stacks_file = None
+    if fh is not None:
+        try:
+            fh.close()
+        except Exception:
+            pass
 
 
 def init(*, debug: bool | None = None) -> None:
@@ -281,6 +314,74 @@ def install_crash_hooks() -> None:
             previous_thread(args)
 
         threading.excepthook = _thread_excepthook
+
+
+def _stacks_handler(signum, frame) -> None:  # noqa: ANN001
+    """SIGUSR1 处理器：头行（时间 + pid）后追加全线程栈。
+
+    只写转储专用文件（平时无其它写者），失败一律吞掉：诊断能力不得
+    影响被观测进程。轮转在处理器内就地做（关→改名→下次写时重开）。
+    """
+    global _stacks_file
+    try:
+        path = STACKS_LOG
+        try:
+            oversized = os.path.getsize(path) > _STACKS_LOG_MAX_BYTES
+        except OSError:
+            oversized = False
+        if oversized:
+            fh = _stacks_file
+            _stacks_file = None
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+            try:
+                os.replace(path, path + ".1")
+            except OSError:
+                pass
+        if _stacks_file is None:
+            try:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            except OSError:
+                pass
+            _stacks_file = open(path, "a", encoding="utf-8", buffering=1)
+        _stacks_file.write(
+            f"\n=== stacks {datetime.now().isoformat(timespec='seconds')} "
+            f"pid={os.getpid()} ===\n"
+        )
+        _stacks_file.flush()
+        faulthandler.dump_traceback(file=_stacks_file, all_threads=True)
+        _stacks_file.flush()
+    except Exception:
+        pass
+
+
+def install_stack_dumps() -> bool:
+    """安装按需栈转储：活进程收到 SIGUSR1 时把全线程栈追加到 stacks.log。
+
+    用自有处理器调 ``faulthandler.dump_traceback`` 而不用
+    ``faulthandler.register``：后者无法在每次转储前写入时间 + pid 头行。
+    幂等；必须在主线程调用（非主线程时 signal.signal 会抛 ValueError，
+    此时返回 False）。无 SIGUSR1 的平台直接返回 False。
+    """
+    global _stacks_installed, _stacks_previous_handler
+    signum = getattr(signal, "SIGUSR1", None)
+    if signum is None:
+        return False
+    with _lock:
+        if _stacks_installed:
+            return True
+        _stacks_installed = True
+    try:
+        _stacks_previous_handler = signal.getsignal(signum)
+        signal.signal(signum, _stacks_handler)
+    except (OSError, ValueError, RuntimeError):
+        with _lock:
+            _stacks_installed = False
+        return False
+    return True
 
 
 SCREENSHOTS_DIR_NAME = "screenshots"

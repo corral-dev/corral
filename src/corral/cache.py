@@ -283,6 +283,12 @@ class PerformanceCache:
             )
             conn.commit()
         self.prune()
+        # Hourly-bounded stale-row purge rides along the per-scan flush so the
+        # session_meta table cannot grow without bound between size prunes.
+        try:
+            self.prune_stale_sessions()
+        except Exception:  # noqa: BLE001 — purge is optional acceleration hygiene
+            pass
 
     def get_conversation(
         self, runtime: str, session_key: str, path: str,
@@ -363,6 +369,50 @@ class PerformanceCache:
                     break
                 conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    # Stale list-metadata rows (superseded parser version or vanished history
+    # file) only cost misses, but tens of thousands of them bloat the db and
+    # its WAL. Purged in bounded batches, at most once an hour per process;
+    # any failure degrades to "kept", never to a scan error.
+    _STALE_SESSION_BATCH = 500
+    _STALE_SESSION_MIN_INTERVAL = 3600.0
+    _last_stale_session_purge: float = 0.0
+
+    def prune_stale_sessions(self, *, now: float | None = None) -> int:
+        """Delete bounded batches of dead session_meta rows; returns rows removed."""
+        now = time.time() if now is None else now
+        if now - PerformanceCache._last_stale_session_purge < self._STALE_SESSION_MIN_INTERVAL:
+            return 0
+        PerformanceCache._last_stale_session_purge = now
+        removed = 0
+        try:
+            with self._connect() as conn:
+                if conn is None:
+                    return 0
+                cursor = conn.execute(
+                    "DELETE FROM session_meta WHERE rowid IN "
+                    "(SELECT rowid FROM session_meta WHERE parser_version != ? LIMIT ?)",
+                    (_PARSER_VERSION, self._STALE_SESSION_BATCH),
+                )
+                removed += cursor.rowcount or 0
+                conn.commit()
+                rows = conn.execute(
+                    "SELECT rowid, path FROM session_meta "
+                    "ORDER BY accessed_at LIMIT ?",
+                    (self._STALE_SESSION_BATCH,),
+                ).fetchall()
+                dead = [row[0] for row in rows if not os.path.exists(row[1])]
+                if dead:
+                    cursor = conn.execute(
+                        f"DELETE FROM session_meta WHERE rowid IN "
+                        f"({','.join('?' * len(dead))})",
+                        dead,
+                    )
+                    removed += cursor.rowcount or 0
+                    conn.commit()
+        except (OSError, sqlite3.Error):
+            pass
+        return removed
 
     def status(self) -> dict:
         from corral.native import available as native_available

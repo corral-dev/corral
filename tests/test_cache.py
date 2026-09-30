@@ -86,6 +86,55 @@ class PerformanceCacheTests(unittest.TestCase):
         self.assertEqual(broken.status()["session_count"], 0)
 
 
+class StaleSessionPurgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "cache.sqlite3"
+        self.cache = PerformanceCache(self.path)
+        self.env = mock.patch.dict(os.environ, {"CORRAL_CACHE": "1"}, clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        PerformanceCache._last_stale_session_purge = 0.0
+        self.addCleanup(setattr, PerformanceCache, "_last_stale_session_purge", 0.0)
+
+    def test_purge_drops_stale_parser_rows_and_vanished_paths(self):
+        live = Path(self.temp.name) / "live.jsonl"
+        live.write_text("{}\n", encoding="utf-8")
+        gone = Path(self.temp.name) / "gone.jsonl"
+        gone.write_text("{}\n", encoding="utf-8")
+        self.cache.put_session("claude", str(live), {"id": "live"})
+        self.cache.put_session("claude", str(gone), {"id": "gone"})
+        self.cache.flush_pending()
+        gone.unlink()
+        with self.cache._connect() as conn:
+            assert conn is not None
+            conn.execute(
+                "UPDATE session_meta SET parser_version='ancient' WHERE path=?",
+                (str(live),),
+            )
+            conn.commit()
+        # flush_pending above already ran the hourly-bounded purge; reset so the
+        # explicit call below exercises the real path.
+        PerformanceCache._last_stale_session_purge = 0.0
+        removed = self.cache.prune_stale_sessions()
+        self.assertEqual(removed, 2)
+        with self.cache._connect() as conn:
+            assert conn is not None
+            self.assertEqual(
+                conn.execute("SELECT count(*) FROM session_meta").fetchone()[0], 0,
+            )
+        # Hourly throttle: immediate second call is a noop.
+        self.assertEqual(self.cache.prune_stale_sessions(), 0)
+
+    def test_purge_failure_degrades_silently(self):
+        broken = PerformanceCache(Path(self.temp.name) / "no-such-dir" / "c.sqlite3")
+        with mock.patch.object(
+            PerformanceCache, "_connect", side_effect=OSError("disk gone"),
+        ):
+            self.assertEqual(broken.prune_stale_sessions(), 0)
+
+
 class CacheCliTests(unittest.TestCase):
     def _run(self, *args: str):
         env = dict(os.environ)

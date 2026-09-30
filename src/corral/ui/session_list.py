@@ -1181,6 +1181,11 @@ class _SidebarList(ListView):
     def focus_on_click(self) -> bool:
         return self._owner.focus_on_click()
 
+    def scroll_to_widget(self, widget: Widget, **kwargs) -> bool:
+        if self._owner._preserve_scroll_depth:
+            return False
+        return super().scroll_to_widget(widget, **kwargs)
+
     def action_select_cursor(self) -> None:
         self._owner._selected_by_key = True
         super().action_select_cursor()
@@ -1306,6 +1311,8 @@ class SessionListView(Vertical):
         self._index: int | None = None
         self._index_gen = 0
         self._syncing_index = False
+        self._preserve_scroll_depth = 0
+        self._preserved_scroll_y = 0.0
         self._sticky_list: _SidebarList | None = None
         self._scroll_list: _SidebarList | None = None
         self.store = store
@@ -1332,6 +1339,19 @@ class SessionListView(Vertical):
         self._scroll_list = _SidebarList(self, sticky=False, id="sidebar-scroll")
         yield self._sticky_list
         yield self._scroll_list
+
+    def begin_preserve_scroll(self) -> None:
+        """Hold the viewport through group removal, selection and deferred focus."""
+        if not self._preserve_scroll_depth and self._scroll_list is not None:
+            self._preserved_scroll_y = self._scroll_list.scroll_y
+        self._preserve_scroll_depth += 1
+
+    def end_preserve_scroll(self) -> None:
+        self._preserve_scroll_depth = max(0, self._preserve_scroll_depth - 1)
+        if not self._preserve_scroll_depth and self._scroll_list is not None:
+            self._scroll_list.scroll_to(
+                y=self._preserved_scroll_y, animate=False, immediate=True,
+            )
 
     def _list_items(self) -> list[ListItem]:
         items: list[ListItem] = []

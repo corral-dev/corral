@@ -252,7 +252,10 @@ def _print_on_status(state: remote_config.RemoteState, pid: int | None) -> None:
 
 
 def _run_daemon_foreground(state: remote_config.RemoteState) -> int:
+    from corral import observe
     from corral.remote.daemon import RemoteDaemon
+
+    observe.install_stack_dumps()  # 活进程诊断：kill -USR1 <pid> 取全线程栈到 stacks.log。
 
     daemon = RemoteDaemon(state)
     try:

@@ -12,12 +12,22 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from corral.legacy_names import env_is_set
 
 _LABEL = "com.x0c.corral.remote"
 _SYSTEMD_UNIT = "corral-remote.service"
+# Phone requests are user-facing: the user waits on the phone for list /
+# detail / input echo, so the daemon runs unthrottled like an app. Adaptive
+# is not an option: launchd only lifts Adaptive jobs on XPC-connection
+# activity, and this daemon serves over websockets/relay with no XPC, so it
+# would stay Background-clamped. Same call as the keepalive server job
+# (tmux_server.py). Background scanning still yields via
+# schedprio.demote_background() (thread QoS + nice), which the process class
+# does not override.
+_PROCESS_TYPE = "Interactive"
 
 
 def autostart_allowed() -> bool:
@@ -38,7 +48,7 @@ def is_installed() -> bool:
     if not autostart_allowed():
         return False
     if sys.platform == "darwin":
-        return _darwin_plist_path().is_file()
+        return _darwin_plist_path().is_file() and _darwin_plist_is_fresh()
     if sys.platform.startswith("linux"):
         return _linux_unit_path().is_file()
     return False
@@ -104,6 +114,21 @@ def _darwin_plist_path() -> Path:
     return _home() / "Library" / "LaunchAgents" / f"{_LABEL}.plist"
 
 
+def _darwin_plist_is_fresh() -> bool:
+    """A pre-ProcessType plist is stale: report not-installed so status nudges
+    a re-`on`, whose enable() rewrites the plist and rebootstraps the job.
+    Unreadable files keep the old answer (installed) — never break the
+    switch display over a hand-edited plist."""
+    try:
+        with _darwin_plist_path().open("rb") as fh:
+            payload = plistlib.load(fh)
+    except Exception:  # noqa: BLE001 - unreadable plist keeps the old answer
+        return True
+    if not isinstance(payload, dict):
+        return True
+    return payload.get("ProcessType", "Standard") == _PROCESS_TYPE
+
+
 def _darwin_domain() -> str:
     return f"gui/{os.getuid()}"
 
@@ -115,6 +140,7 @@ def _darwin_write_plist() -> Path:
     payload = {
         "Label": _LABEL,
         "ProgramArguments": serve_argv(),
+        "ProcessType": _PROCESS_TYPE,
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 5,
@@ -153,7 +179,14 @@ def _darwin_enable() -> str:
     target = f"{domain}/{_LABEL}"
     # Replace any prior registration so the plist on disk is what runs.
     _darwin_run(["launchctl", "bootout", target])
+    # bootout returns before the job finishes unloading; bootstrapping too
+    # soon fails and (on the already-running `on` path, where the caller
+    # ignores our return) leaves no job loaded at all.
+    _wait_for_unload(target)
     boot = _darwin_run(["launchctl", "bootstrap", domain, str(path)])
+    if boot.returncode != 0:
+        time.sleep(2.0)
+        boot = _darwin_run(["launchctl", "bootstrap", domain, str(path)])
     if boot.returncode != 0:
         # Older macOS / non-gui sessions: fall back to load.
         loaded = _darwin_run(["launchctl", "load", "-w", str(path)])
@@ -166,6 +199,16 @@ def _darwin_enable() -> str:
         # Some domains reject kickstart when RunAtLoad already started the job.
         pass
     return ""
+
+
+def _wait_for_unload(target: str, timeout: float = 5.0) -> None:
+    """Poll until bootout's teardown is visible; never raises or blocks long."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        probe = _darwin_run(["launchctl", "print", target])
+        if probe.returncode != 0:
+            return
+        time.sleep(0.2)
 
 
 def _darwin_disable() -> str:

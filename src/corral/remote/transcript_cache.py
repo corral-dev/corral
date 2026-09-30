@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-09-29.1"  # question tools keep native per-question metadata
+PARSER_VERSION = "2026-09-30.3"  # Cursor/OpenCode phone cards project SessKit typed activity
 _SCHEMA_VERSION = 1
 
 

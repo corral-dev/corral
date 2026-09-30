@@ -512,6 +512,38 @@ class RichReader:
         self._read_until: int | None = None
         self.parsed_line_count = 0
         self._pi_fps: dict[int, tuple] = {}
+        # SessKit-backed Pi projection state. The opaque cursor is persisted
+        # via export/restore without interpreting its bytes; the event reader
+        # itself is process-local and reopened on demand.
+        self._pi_cursor: str | None = None
+        self._pi_reader: object | None = None
+        self._pi_by_mid: dict[str, RichMessage] = {}
+        self._pi_live = False
+        # SessKit-backed Cursor/OpenCode projection state (P2). Same cursor
+        # discipline as the Pi/Claude/Codex paths: the opaque cursor is
+        # persisted without interpreting its bytes; the event reader is
+        # process-local and reopened on demand. One runtime per RichReader,
+        # so Cursor and OpenCode share this slot. `_co_full` is the
+        # materialized full message list with stable global seqs; tail and
+        # earlier windows slice it. Projection itself goes through P1's
+        # shared `_project_typed_batch` (P1-owned, not modified here).
+        self._co_cursor: str | None = None
+        self._co_reader: object | None = None
+        self._co_gen: str | None = None
+        self._co_fps: dict[int, tuple] = {}
+        self._co_full: list[RichMessage] | None = None
+        self._co_floor: int | None = None
+        # SessKit-backed Claude/Codex projection state (P1). Same cursor
+        # discipline as Pi: the opaque cursor is persisted without
+        # interpreting its bytes; the event reader is process-local and
+        # reopened on demand. `_cc_full` is the materialized full message
+        # list with stable global seqs; tail/earlier windows slice it.
+        self._cc_cursor: str | None = None
+        self._cc_reader: object | None = None
+        self._cc_gen: str | None = None
+        self._cc_fps: dict[int, tuple] = {}
+        self._cc_full: list[RichMessage] | None = None
+        self._cc_floor: int | None = None
 
     def reset(self) -> None:
         self._offset = 0
@@ -527,6 +559,22 @@ class RichReader:
         self._read_until = None
         self.parsed_line_count = 0
         self._pi_fps = {}
+        self._pi_cursor = None
+        self._pi_reader = None
+        self._pi_by_mid = {}
+        self._pi_live = False
+        self._co_cursor = None
+        self._co_reader = None
+        self._co_gen = None
+        self._co_fps = {}
+        self._co_full = None
+        self._co_floor = None
+        self._cc_cursor = None
+        self._cc_reader = None
+        self._cc_gen = None
+        self._cc_fps = {}
+        self._cc_full = None
+        self._cc_floor = None
 
     def has_earlier(self) -> bool:
         """尾部窗口左侧是否还有未解析的历史。"""
@@ -576,6 +624,14 @@ class RichReader:
         self.reset()
         target = limit if limit is not None else _DEFAULT_WINDOW
         try:
+            if self.runtime_id in _CC_SESSKIT_RUNTIMES and _sesskit_reader_available(
+                self.runtime_id
+            ):
+                return _read_cc_tail(self, target)
+            if self.runtime_id in _CO_SESSKIT_RUNTIMES and _sesskit_reader_available(
+                self.runtime_id
+            ):
+                return _read_co_tail(self, target)
             if self.runtime_id in _JSONL_RUNTIMES:
                 return self._read_jsonl_tail(target)
             if self.runtime_id == "cursor":
@@ -590,6 +646,16 @@ class RichReader:
             return []
         target = max(1, limit or _DEFAULT_WINDOW)
         try:
+            if self.runtime_id in _CC_SESSKIT_RUNTIMES and _sesskit_reader_available(
+                self.runtime_id
+            ):
+                # SessKit-backed windows carry stable global seqs; the slice
+                # already ends before ``before_seq`` — no shifting needed.
+                return _read_cc_earlier(self, target, before_seq=before_seq)
+            if self.runtime_id in _CO_SESSKIT_RUNTIMES and _sesskit_reader_available(
+                self.runtime_id
+            ):
+                return _read_co_earlier(self, target, before_seq=before_seq)
             if self.runtime_id in _JSONL_RUNTIMES:
                 messages = self._read_jsonl_earlier(target)
             elif self.runtime_id == "cursor":
@@ -613,6 +679,20 @@ class RichReader:
             "earliest_rowid": self._earliest_rowid,
             "has_earlier": self._has_earlier,
             "pi_fps": getattr(self, "_pi_fps", {}) or {},
+            "pi_cursor": getattr(self, "_pi_cursor", None),
+            # SessKit-backed Claude/Codex projection: opaque cursor plus the
+            # generation and message fingerprints needed for reset diffing.
+            "cc_cursor": getattr(self, "_cc_cursor", None),
+            "cc_gen": getattr(self, "_cc_gen", None),
+            "cc_fps": getattr(self, "_cc_fps", {}) or {},
+            "cc_floor": getattr(self, "_cc_floor", None),
+            # SessKit-backed Cursor/OpenCode projection (P2): opaque cursor
+            # plus the generation, fingerprints, and tail floor for reset
+            # diffing and earlier paging.
+            "co_cursor": getattr(self, "_co_cursor", None),
+            "co_gen": getattr(self, "_co_gen", None),
+            "co_fps": getattr(self, "_co_fps", {}) or {},
+            "co_floor": getattr(self, "_co_floor", None),
         }
 
     def restore_state(self, state: dict, messages: list[RichMessage]) -> None:
@@ -640,6 +720,64 @@ class RichReader:
         if not restored_fps and messages and self.runtime_id == "pi":
             restored_fps = {item.seq: _pi_fingerprint(item) for item in messages}
         self._pi_fps = restored_fps
+        # The SessKit cursor resumes incrementally; the remounted pending tools
+        # below keep tool-result pairing working across the restart. Message
+        # grouping for already-pushed turns is not needed again: one native
+        # entry carries all of its parts, so post-restore polls only open new
+        # message ids. A cursor mismatch still rebuilds via fingerprint diff.
+        raw_cursor = state.get("pi_cursor")
+        self._pi_cursor = raw_cursor if isinstance(raw_cursor, str) and raw_cursor else None
+        self._pi_reader = None
+        self._pi_by_mid = {}
+        self._pi_live = self.runtime_id == "pi"
+        raw_cc_cursor = state.get("cc_cursor")
+        self._cc_cursor = (
+            raw_cc_cursor if isinstance(raw_cc_cursor, str) and raw_cc_cursor else None
+        )
+        raw_cc_gen = state.get("cc_gen")
+        self._cc_gen = raw_cc_gen if isinstance(raw_cc_gen, str) and raw_cc_gen else None
+        raw_cc_fps = state.get("cc_fps") if isinstance(state.get("cc_fps"), dict) else {}
+        restored_cc_fps: dict[int, tuple] = {}
+        for key, value in raw_cc_fps.items():
+            try:
+                restored_cc_fps[int(key)] = _normalize_pi_fp(value)
+            except (TypeError, ValueError):
+                continue
+        if not restored_cc_fps and messages and self.runtime_id in _CC_SESSKIT_RUNTIMES:
+            restored_cc_fps = {item.seq: _pi_fingerprint(item) for item in messages}
+        self._cc_fps = restored_cc_fps
+        try:
+            self._cc_floor = (
+                int(state["cc_floor"]) if state.get("cc_floor") is not None else None
+            )
+        except (TypeError, ValueError):
+            self._cc_floor = None
+        self._cc_reader = None
+        self._cc_full = None
+        raw_co_cursor = state.get("co_cursor")
+        self._co_cursor = (
+            raw_co_cursor if isinstance(raw_co_cursor, str) and raw_co_cursor else None
+        )
+        raw_co_gen = state.get("co_gen")
+        self._co_gen = raw_co_gen if isinstance(raw_co_gen, str) and raw_co_gen else None
+        raw_co_fps = state.get("co_fps") if isinstance(state.get("co_fps"), dict) else {}
+        restored_co_fps: dict[int, tuple] = {}
+        for key, value in raw_co_fps.items():
+            try:
+                restored_co_fps[int(key)] = _normalize_pi_fp(value)
+            except (TypeError, ValueError):
+                continue
+        if not restored_co_fps and messages and self.runtime_id in _CO_SESSKIT_RUNTIMES:
+            restored_co_fps = {item.seq: _pi_fingerprint(item) for item in messages}
+        self._co_fps = restored_co_fps
+        try:
+            self._co_floor = (
+                int(state["co_floor"]) if state.get("co_floor") is not None else None
+            )
+        except (TypeError, ValueError):
+            self._co_floor = None
+        self._co_reader = None
+        self._co_full = None
         by_seq = {item.seq: item for item in messages}
         pending_raw = state.get("pending") if isinstance(state.get("pending"), dict) else {}
         host_seq_raw = state.get("host_seq") if isinstance(state.get("host_seq"), dict) else {}
@@ -964,7 +1102,13 @@ def _codex_custom_input(raw: str) -> tuple[str, str]:
     return _first_line(command, 160), _clip(command, _MAX_DETAIL)
 
 
-def _parse_codex(reader: RichReader) -> list[RichMessage]:
+def _parse_codex_legacy(reader: RichReader) -> list[RichMessage]:
+    """Fallback for SessKit builds without ``open_reader``; marked for removal.
+
+    Only reached when ``_sesskit_reader_available("codex")`` is false. Do not
+    extend: all new Codex phone behavior goes through the SessKit projection.
+    Remove once the minimum SessKit version provides the reader API.
+    """
     from corral.scan.codex import (
         assistant_message_text,
         task_complete_error_text,
@@ -1091,7 +1235,13 @@ def _codex_injected(text: str) -> bool:
 
 # --- Claude ---------------------------------------------------------------
 
-def _parse_claude(reader: RichReader) -> list[RichMessage]:
+def _parse_claude_legacy(reader: RichReader) -> list[RichMessage]:
+    """Fallback for SessKit builds without ``open_reader``; marked for removal.
+
+    Only reached when ``_sesskit_reader_available("claude")`` is false. Do not
+    extend: all new Claude phone behavior goes through the SessKit projection.
+    Remove once the minimum SessKit version provides the reader API.
+    """
     from corral.scan.claude import INTERRUPTED_MARKER, entry_time, extract_text
     try:
         from corral.scan.claude import system_error_text
@@ -1264,6 +1414,19 @@ def _cursor_consume_rows(reader: RichReader, rows: list) -> list[RichMessage]:
 
 
 def _parse_cursor(reader: RichReader) -> list[RichMessage]:
+    """Cursor: project SessKit typed activity; legacy native path is the fallback."""
+    if _sesskit_reader_available("cursor"):
+        return _co_sync(reader, "cursor")
+    return _parse_cursor_legacy(reader)
+
+
+def _parse_cursor_legacy(reader: RichReader) -> list[RichMessage]:
+    """Fallback for SessKit builds without ``open_reader``; marked for removal.
+
+    Only reached when `_sesskit_reader_available("cursor")` is false. Do not
+    extend: all new Cursor phone behavior goes through the SessKit projection
+    above. Remove once the minimum SessKit version provides the reader API.
+    """
     from corral.scan.cursor import connect_store_ro
 
     db_path = _cursor_db_path(reader.path)
@@ -1493,8 +1656,362 @@ def _normalize_pi_fp(value: object) -> tuple:
     return (str(role or ""), str(text or ""), tuple(tool_fps))
 
 
+# --- Pi via SessKit -------------------------------------------------------
+
+_PI_SESSKIT_READER: bool | None = None
+
+
+def _pi_reader_available() -> bool:
+    """Feature-detect the SessKit incremental Pi reader.
+
+    False on SessKit builds without ``get_adapter("pi").open_reader``; the
+    legacy native path below stays as the fallback until the minimum SessKit
+    version provides the reader API.
+    """
+    global _PI_SESSKIT_READER
+    if _PI_SESSKIT_READER is None:
+        try:
+            from sesskit import get_adapter
+
+            adapter = get_adapter("pi")
+            _PI_SESSKIT_READER = callable(getattr(adapter, "open_reader", None))
+        except Exception:
+            _PI_SESSKIT_READER = False
+    return _PI_SESSKIT_READER
+
+
+def _pi_host_for(reader: RichReader, mid: str, role: str, ts: float | None) -> tuple[RichMessage, bool]:
+    """Return the grouped host for one native message, creating it if needed."""
+    return _typed_host_for(reader._pi_by_mid, mid, role, ts, reader._next_seq)
+
+
+class _TypedBatch:
+    """One projection batch: ordered hosts plus the batch-local tail.
+
+    A batch is one poll window, one backward page, or one full rebuild —
+    the same span the legacy native parsers consumed in a single call, so
+    batch-local rules (Codex attach-to-previous, text dedup) behave exactly
+    like the retired per-slice parsing.
+    """
+
+    def __init__(self) -> None:
+        self.out: list[RichMessage] = []
+        self.seen: set[int] = set()
+        self.last: RichMessage | None = None
+
+
+def _typed_group_key(event: object, runtime: str) -> str:
+    """Grouping key for one native message: SessKit ``message_id`` for Pi,
+    the native ``line:N`` record for Claude/Codex (their events carry no
+    message id, but one native line's events always arrive in one batch)."""
+    if runtime == "pi":
+        return str(getattr(event, "message_id", None) or "")
+    record = getattr(getattr(event, "evidence", None), "record", None)
+    return str(record or "")
+
+
+def _typed_host_for(
+    groups: dict[str, RichMessage],
+    key: str,
+    role: str,
+    ts: float | None,
+    next_seq,
+) -> tuple[RichMessage, bool]:
+    """Return the grouped host for one native message, creating it if needed."""
+    if key:
+        host = groups.get(key)
+        if host is not None and host.role == role:
+            return host, False
+    host = RichMessage(next_seq(), role, "", ts)
+    if key:
+        groups[key] = host
+    return host, True
+
+
+def _standard_tool_card(event: object) -> ToolCall:
+    """Tool card from a typed call's raw input (Pi + Claude shape)."""
+    name = str(getattr(event, "name", None) or "tool")
+    kind = classify(name)
+    args = _tool_args(getattr(event, "raw_input", None))
+    summary, detail = summarize(name, kind, args)
+    options, groups = _question_fields(kind, args)
+    return ToolCall(
+        call_id=str(getattr(event, "call_id", None) or ""),
+        name=name,
+        kind=kind,
+        summary=summary,
+        detail=detail,
+        options=options,
+        question_groups=groups,
+        questions_meta=_question_meta(kind, args),
+    )
+
+
+def _codex_custom_summary(raw: object) -> tuple[str, str] | None:
+    """Legacy custom-tool summary over the SessKit-coerced input.
+
+    Coerced ``{"cmd": ...}`` is the documented custom shape; a raw string
+    matching the ``exec_command`` pattern is custom evidence too. Anything
+    else follows the function-call path below, exactly like the retired
+    native parser distinguished the two payload kinds.
+    """
+    if (
+        isinstance(raw, dict)
+        and set(raw) == {"cmd"}
+        and isinstance(raw.get("cmd"), str)
+    ):
+        command = raw["cmd"]
+        return _first_line(command, 160), _clip(command, _MAX_DETAIL)
+    if isinstance(raw, str) and _EXEC_CMD_RE.search(raw):
+        return _codex_custom_input(raw)
+    return None
+
+
+def _codex_tool_card(event: object) -> ToolCall:
+    """Tool card from a typed Codex call, preserving the custom/function split."""
+    name = str(getattr(event, "name", None) or "tool")
+    call_id = str(getattr(event, "call_id", None) or "")
+    raw = getattr(event, "raw_input", None)
+    custom = _codex_custom_summary(raw)
+    if custom is not None:
+        summary, detail = custom
+        kind = classify(name)
+        if kind == "other":
+            kind = "shell"
+        return ToolCall(
+            call_id=call_id,
+            name=name,
+            kind=kind,
+            summary=summary or name,
+            detail=detail,
+        )
+    args = raw if isinstance(raw, (dict, str, list)) else {}
+    kind = classify(name)
+    summary, detail = summarize(name, kind, args)
+    options, groups = _question_fields(kind, args) if isinstance(args, dict) else ([], [])
+    return ToolCall(
+        call_id=call_id,
+        name=name,
+        kind=kind,
+        summary=summary,
+        detail=detail,
+        options=options,
+        question_groups=groups,
+        questions_meta=_question_meta(kind, args) if isinstance(args, dict) else [],
+    )
+
+
+def _feed_typed_event(
+    reader: RichReader,
+    event: object,
+    *,
+    runtime: str,
+    groups: dict[str, RichMessage],
+    batch: _TypedBatch,
+) -> tuple[RichMessage | None, bool]:
+    """Project one SessKit typed event onto phone cards.
+
+    Returns (host message, is_new_host). Shared by the Pi/Claude/Codex
+    projections; per-runtime hooks cover only genuine legacy wire
+    differences: Codex attaches tool calls to the batch-local previous
+    assistant card and dedups repeated text; Claude dedups the flushed
+    upstream-error card; Pi owns the thinking-only error card below.
+    ``thinking`` / ``compaction`` events never reach the phone.
+    """
+    etype = getattr(event, "type", "")
+    ts = getattr(event, "ts", None)
+    key = _typed_group_key(event, runtime)
+    if etype == "user_message":
+        if (getattr(event, "origin", None) or "unknown") == "injected":
+            return None, False
+        clipped = _clip(getattr(event, "text", None) or "", _MAX_TEXT)
+        if not clipped or _phone_injected_user(clipped):
+            return None, False
+        host = RichMessage(reader._next_seq(), "user", clipped, ts)
+        if key:
+            groups[key] = host
+        return host, True
+    if etype == "assistant_message":
+        text = str(getattr(event, "text", None) or "").strip()
+        if not text:
+            return None, False
+        clipped = _clip(text, _MAX_TEXT)
+        prev = batch.last
+        if prev is not None and prev.role == "assistant" and prev.text == clipped and (
+            runtime == "codex" or getattr(event, "error", None) is not None
+        ):
+            # Codex adjacent-repeat rule, and the Claude flushed-error rule:
+            # never show the same card text twice in a row.
+            return prev, False
+        host, is_new = _typed_host_for(groups, key, "assistant", ts, reader._next_seq)
+        host.text = _clip(f"{host.text}\n\n{text}" if host.text else text, _MAX_TEXT)
+        return host, is_new
+    if etype == "tool_call":
+        tool = _codex_tool_card(event) if runtime == "codex" else _standard_tool_card(event)
+        if runtime == "codex":
+            prev = batch.last
+            if prev is not None and prev.role == "assistant":
+                prev.tools.append(tool)
+                reader._register_tool(prev, tool)
+                return prev, False
+        host, is_new = _typed_host_for(groups, key, "assistant", ts, reader._next_seq)
+        host.tools.append(tool)
+        reader._register_tool(host, tool)
+        return host, is_new
+    if etype == "tool_result":
+        call_id = str(getattr(event, "call_id", None) or "")
+        if not call_id or call_id not in reader._pending:
+            return None, False
+        result = getattr(event, "result", None)
+        if (
+            result is not None
+            and getattr(result, "status", None) == "error"
+            and getattr(getattr(result, "evidence", None), "origin", None) == "native"
+        ):
+            # Explicit native failure (old ``isError: true``): always an error.
+            # Otherwise the existing text heuristic decides, exactly like the
+            # legacy parsers did for ``isError: false`` / absent.
+            failed: bool | None = True
+        else:
+            failed = None
+        host = reader._finish_tool(
+            call_id, output=getattr(event, "raw_output", None), failed=failed
+        )
+        return (host, False) if host is not None else (None, False)
+    if etype == "lifecycle" and runtime == "pi":
+        # SessKit carries the error of a thinking-only failed turn on a
+        # typed-only lifecycle event. Like the legacy parser, the error text
+        # owns the card only when the turn produced no text and no tools.
+        error_text = str(getattr(getattr(event, "error", None), "message", "") or "").strip()
+        existing = groups.get(key) if key else None
+        if not error_text or (existing is not None and (existing.text or existing.tools)):
+            return None, False
+        host, is_new = _typed_host_for(groups, key, "assistant", ts, reader._next_seq)
+        host.text = _clip(error_text, _MAX_TEXT)
+        return host, is_new
+    return None, False
+
+
+def _project_typed_batch(
+    reader: RichReader,
+    runtime: str,
+    events: object,
+    groups: dict[str, RichMessage],
+) -> list[RichMessage]:
+    """Project one event batch, collecting each touched host once in order."""
+    batch = _TypedBatch()
+    for event in events or ():
+        host, _is_new = _feed_typed_event(
+            reader, event, runtime=runtime, groups=groups, batch=batch
+        )
+        if host is None:
+            continue
+        batch.last = host
+        if host.seq in batch.seen:
+            continue
+        batch.seen.add(host.seq)
+        batch.out.append(host)
+    return batch.out
+
+
+def _pi_feed_event(reader: RichReader, event: object) -> tuple[RichMessage | None, bool]:
+    """Project one SessKit typed event onto phone cards.
+
+    Thin wrapper over the shared projector with Pi's persistent grouping
+    map; batch-local rules are unused on this path (callers batch hosts
+    themselves, as before).
+    """
+    return _feed_typed_event(
+        reader, event, runtime="pi", groups=reader._pi_by_mid, batch=_TypedBatch()
+    )
+
+
 def _parse_pi(reader: RichReader) -> list[RichMessage]:
-    """Pi: full active-branch rebuild; emit new turns and updated tool hosts.
+    """Pi: project SessKit typed activity; legacy native path is the fallback."""
+    if not _pi_reader_available():
+        return _parse_pi_legacy(reader)
+    path = reader.path
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        from sesskit import get_adapter
+
+        wire_reader = reader._pi_reader
+        if wire_reader is None:
+            session = dict(reader.session)
+            session.setdefault("source", "pi")
+            wire_reader = get_adapter("pi").open_reader(session, reader._pi_cursor)
+            reader._pi_reader = wire_reader
+        result = wire_reader.poll()
+        reader._pi_cursor = result.cursor
+        try:
+            reader._size = os.path.getsize(path)
+        except OSError:
+            pass
+    except (OSError, ValueError):
+        return []
+
+    if getattr(result, "state", "available") == "unavailable" and not getattr(
+        result, "events", ()
+    ):
+        # History briefly unreadable: report no news, keep fingerprints/cursor
+        # so the next poll diffs instead of re-pushing everything.
+        return []
+
+    if getattr(result, "reset", False) or not reader._pi_live:
+        return _pi_rebuild_from_events(reader, result.events)
+    out: list[RichMessage] = []
+    seen: set[int] = set()
+    for event in result.events:
+        host, _is_new = _pi_feed_event(reader, event)
+        if host is None or host.seq in seen:
+            continue
+        seen.add(host.seq)
+        out.append(host)
+    for message in out:
+        reader._pi_fps[message.seq] = _pi_fingerprint(message)
+    return out
+
+
+def _pi_rebuild_from_events(reader: RichReader, events: object) -> list[RichMessage]:
+    """Rebuild all Pi phone cards, emitting only new/changed tails.
+
+    Same observable behavior as the legacy full-branch rebuild: stable seqs
+    are reused, tool-result updates re-emit their earlier card, and
+    abandoned-branch content never appears.
+    """
+    prev_raw = getattr(reader, "_pi_fps", {}) or {}
+    prev_fps = {int(key): _normalize_pi_fp(value) for key, value in prev_raw.items()}
+    already = reader._seq
+    reader._pending = {}
+    reader._host_by_call = {}
+    reader._pi_by_mid = {}
+    reader._seq = 0
+    fresh: list[RichMessage] = []
+    for event in events or ():
+        host, is_new = _pi_feed_event(reader, event)
+        if host is not None and is_new:
+            fresh.append(host)
+    new_fps = {message.seq: _pi_fingerprint(message) for message in fresh}
+    out = [
+        message
+        for message in fresh
+        if message.seq > already or prev_fps.get(message.seq) != new_fps[message.seq]
+    ]
+    reader._pi_fps = new_fps
+    reader._seq = fresh[-1].seq if fresh else already
+    reader._pi_live = True
+    return out
+
+
+def _parse_pi_legacy(reader: RichReader) -> list[RichMessage]:
+    """Fallback for SessKit builds without ``open_reader``; marked for removal.
+
+    Only reached when `_pi_reader_available()` is false. Do not extend: all
+    new Pi phone behavior goes through the SessKit projection above.
+    Remove once the minimum SessKit version provides the reader API.
+
+    Pi: full active-branch rebuild; emit new turns and updated tool hosts.
 
     Pi history is a parent-linked tree. Byte-offset JSONL reads would mix in
     abandoned forks, so each poll rebuilds the active leaf path (same as share
@@ -1538,18 +2055,389 @@ def _parse_pi(reader: RichReader) -> list[RichMessage]:
     return out
 
 
+# --- Claude/Codex via SessKit ---------------------------------------------
+
+_CC_SESSKIT_RUNTIMES = frozenset({"claude", "codex"})
+_SESSKIT_READER_AVAILABLE: dict[str, bool] = {}
+_CC_PAGE_LIMIT = 200
+
+
+def _sesskit_reader_available(runtime: str) -> bool:
+    """Feature-detect the SessKit incremental reader for one runtime.
+
+    False on SessKit builds without ``get_adapter(runtime).open_reader``;
+    the legacy native path stays as the fallback until the minimum SessKit
+    version provides the reader API.
+    """
+    available = _SESSKIT_READER_AVAILABLE.get(runtime)
+    if available is None:
+        try:
+            from sesskit import get_adapter
+
+            adapter = get_adapter(runtime)
+            available = callable(getattr(adapter, "open_reader", None))
+        except Exception:
+            available = False
+        _SESSKIT_READER_AVAILABLE[runtime] = available
+    return available
+
+
+def _cc_open_reader(reader: RichReader, runtime: str) -> object:
+    from sesskit import get_adapter
+
+    session = dict(reader.session)
+    session.setdefault("source", runtime)
+    return get_adapter(runtime).open_reader(session, reader._cc_cursor)
+
+
+def _cc_collect_all(wire_reader: object) -> tuple[list, str]:
+    """Walk the current SessKit generation oldest-first via backward pages."""
+    chunks = []
+    page = wire_reader.page(before=None, limit=_CC_PAGE_LIMIT)  # type: ignore[union-attr]
+    chunks.append(page)
+    while page.has_more and page.before:
+        page = wire_reader.page(before=page.before, limit=_CC_PAGE_LIMIT)  # type: ignore[union-attr]
+        chunks.append(page)
+    events: list = []
+    for chunk in reversed(chunks):
+        events.extend(chunk.events)
+    return events, chunks[0].generation
+
+
+def _cc_note_floor(reader: RichReader) -> None:
+    floor = reader._cc_floor
+    full = reader._cc_full or []
+    reader._has_earlier = (
+        False if floor is None else any(item.seq < floor for item in full)
+    )
+
+
+def _cc_rebuild(
+    reader: RichReader, runtime: str, wire_reader: object, result: object
+) -> list[RichMessage]:
+    """Full materialization after open/reset/generation change.
+
+    Projects every event of the current generation as one batch (the same
+    span the legacy full-file parse consumed), then emits only new or
+    changed cards with stable seqs, exactly like the Pi rebuild.
+    """
+    try:
+        events, generation = _cc_collect_all(wire_reader)
+    except (OSError, ValueError):
+        return []
+    already = reader._seq
+    prev_fps = dict(reader._cc_fps)
+    reader._pending = {}
+    reader._host_by_call = {}
+    reader._seq = 0
+    fresh = _project_typed_batch(reader, runtime, events, {})
+    new_fps = {item.seq: _pi_fingerprint(item) for item in fresh}
+    out = [
+        item
+        for item in fresh
+        if item.seq > already or prev_fps.get(item.seq) != new_fps[item.seq]
+    ]
+    reader._cc_full = fresh
+    reader._cc_fps = new_fps
+    reader._cc_gen = generation
+    reader._cc_cursor = getattr(result, "cursor", None)
+    reader._seq = fresh[-1].seq if fresh else already
+    reader.parsed_line_count += len(events)
+    _cc_note_floor(reader)
+    return out
+
+
+def _cc_sync(reader: RichReader, runtime: str) -> list[RichMessage]:
+    """Poll the SessKit reader, rebuilding only on reset/generation change."""
+    wire_reader = reader._cc_reader
+    if wire_reader is None:
+        try:
+            wire_reader = _cc_open_reader(reader, runtime)
+        except (OSError, ValueError):
+            return []
+        reader._cc_reader = wire_reader
+    try:
+        result = wire_reader.poll()  # type: ignore[union-attr]
+    except (OSError, ValueError):
+        return []
+    if getattr(result, "state", "available") == "unavailable" and not getattr(
+        result, "events", ()
+    ):
+        # History briefly unreadable: report no news, keep fingerprints/cursor
+        # so the next poll diffs instead of re-pushing everything.
+        return []
+    try:
+        reader._size = os.path.getsize(reader.path)
+    except OSError:
+        pass
+    if (
+        getattr(result, "reset", False)
+        or result.generation != reader._cc_gen
+        or reader._cc_full is None
+    ):
+        return _cc_rebuild(reader, runtime, wire_reader, result)
+    reader._cc_cursor = result.cursor
+    if not result.events:
+        return []
+    batch = _project_typed_batch(reader, runtime, result.events, {})
+    full = reader._cc_full or []
+    by_seq = {item.seq: index for index, item in enumerate(full)}
+    for item in batch:
+        index = by_seq.get(item.seq)
+        if index is None:
+            by_seq[item.seq] = len(full)
+            full.append(item)
+        else:
+            # Same seq with updated tool status (result fill-in).
+            full[index] = item
+        reader._cc_fps[item.seq] = _pi_fingerprint(item)
+    reader._cc_full = full
+    reader.parsed_line_count += len(result.events)
+    return batch
+
+
+def _parse_claude(reader: RichReader) -> list[RichMessage]:
+    """Claude: project SessKit typed activity; legacy native path is the fallback."""
+    if _sesskit_reader_available("claude"):
+        return _cc_sync(reader, "claude")
+    return _parse_claude_legacy(reader)
+
+
+def _parse_codex(reader: RichReader) -> list[RichMessage]:
+    """Codex: project SessKit typed activity; legacy native path is the fallback."""
+    if _sesskit_reader_available("codex"):
+        return _cc_sync(reader, "codex")
+    return _parse_codex_legacy(reader)
+
+
+def _read_cc_tail(reader: RichReader, limit: int) -> list[RichMessage]:
+    """Cold open: materialize once, return only the tail window."""
+    take = max(1, limit or _DEFAULT_WINDOW)
+    _cc_sync(reader, reader.runtime_id)
+    full = reader._cc_full or []
+    tail = full[-take:] if len(full) > take else list(full)
+    reader._cc_floor = tail[0].seq if tail else None
+    _cc_note_floor(reader)
+    return tail
+
+
+def _read_cc_earlier(reader: RichReader, limit: int, *, before_seq: int) -> list[RichMessage]:
+    """Backward page over the materialized list; seqs are already global.
+
+    Never polls here: older cards are immutable within a generation, and
+    consuming a poll delta inside a page read would strand it outside the
+    transcript. The next poll/reset still rebuilds and diffs as usual.
+    """
+    take = max(1, limit or _DEFAULT_WINDOW)
+    full = reader._cc_full
+    if full is None:
+        _cc_sync(reader, reader.runtime_id)
+        full = reader._cc_full or []
+    older = [item for item in full if item.seq < before_seq][-take:]
+    if not older:
+        reader._has_earlier = False
+        return []
+    if reader._cc_floor is None:
+        reader._cc_floor = older[0].seq
+    else:
+        reader._cc_floor = min(reader._cc_floor, older[0].seq)
+    _cc_note_floor(reader)
+    return older
+
+
+# --- Cursor/OpenCode via SessKit (P2) ---------------------------------------
+
+_CO_SESSKIT_RUNTIMES = frozenset({"cursor", "opencode"})
+
+
+def _co_open_reader(reader: RichReader, runtime: str) -> object:
+    from sesskit import get_adapter
+
+    session = dict(reader.session)
+    session.setdefault("source", runtime)
+    return get_adapter(runtime).open_reader(session, reader._co_cursor)
+
+
+def _co_filter_events(runtime: str, events: object) -> list:
+    """Runtime hook: drop phone-invisible error-only turns before projection.
+
+    Plain conversation hides an assistant turn whose text only surfaces a
+    native error (`sesskit.visibility.visible_in_conversation`, default
+    `include_errors=False`; same rule in CONTRACT.md). OpenCode's previous
+    phone path fell back to that plain text, so the projected cards must
+    hide those turns too. Cursor never carries typed errors: identity.
+    This is a pre-projection event filter — the shared projector itself is
+    untouched (P1-owned).
+    """
+    items = list(events or ())
+    if runtime != "opencode":
+        return items
+    visible = []
+    for event in items:
+        if getattr(event, "type", "") == "assistant_message":
+            error = getattr(event, "error", None)
+            if (
+                error is not None
+                and (getattr(event, "text", "") or "")
+                == (getattr(error, "message", "") or "")
+            ):
+                continue
+        visible.append(event)
+    return visible
+
+
+def _co_note_floor(reader: RichReader) -> None:
+    floor = reader._co_floor
+    full = reader._co_full or []
+    reader._has_earlier = (
+        False if floor is None else any(item.seq < floor for item in full)
+    )
+
+
+def _co_rebuild(
+    reader: RichReader, runtime: str, wire_reader: object, result: object
+) -> list[RichMessage]:
+    """Full materialization after open/reset/generation change.
+
+    Walks the current SessKit generation oldest-first through backward
+    pages (reusing P1's page-walk helper), projects every event as one
+    batch through the shared projector, then emits only new or changed
+    cards with stable seqs, exactly like the Pi/CC rebuilds.
+    """
+    try:
+        events, generation = _cc_collect_all(wire_reader)
+    except (OSError, ValueError):
+        return []
+    already = reader._seq
+    prev_fps = dict(reader._co_fps)
+    reader._pending = {}
+    reader._host_by_call = {}
+    reader._seq = 0
+    fresh = _project_typed_batch(reader, runtime, _co_filter_events(runtime, events), {})
+    new_fps = {item.seq: _pi_fingerprint(item) for item in fresh}
+    out = [
+        item
+        for item in fresh
+        if item.seq > already or prev_fps.get(item.seq) != new_fps[item.seq]
+    ]
+    reader._co_full = fresh
+    reader._co_fps = new_fps
+    reader._co_gen = generation
+    reader._co_cursor = getattr(result, "cursor", None)
+    reader._seq = fresh[-1].seq if fresh else already
+    _co_note_floor(reader)
+    return out
+
+
+def _co_sync(reader: RichReader, runtime: str) -> list[RichMessage]:
+    """Poll the SessKit Cursor/OpenCode reader, rebuilding on reset/change."""
+    wire_reader = reader._co_reader
+    if wire_reader is None:
+        try:
+            wire_reader = _co_open_reader(reader, runtime)
+        except (OSError, ValueError):
+            return []
+        reader._co_reader = wire_reader
+    try:
+        result = wire_reader.poll()  # type: ignore[union-attr]
+    except (OSError, ValueError):
+        return []
+    if getattr(result, "state", "available") == "unavailable" and not getattr(
+        result, "events", ()
+    ):
+        # History briefly unreadable: report no news, keep fingerprints/cursor
+        # so the next poll diffs instead of re-pushing everything.
+        return []
+    try:
+        reader._size = os.path.getsize(reader.path)
+    except OSError:
+        pass
+    if (
+        getattr(result, "reset", False)
+        or result.generation != reader._co_gen
+        or reader._co_full is None
+    ):
+        return _co_rebuild(reader, runtime, wire_reader, result)
+    reader._co_cursor = result.cursor
+    if not result.events:
+        return []
+    batch = _project_typed_batch(
+        reader, runtime, _co_filter_events(runtime, result.events), {}
+    )
+    full = reader._co_full or []
+    by_seq = {item.seq: index for index, item in enumerate(full)}
+    for item in batch:
+        index = by_seq.get(item.seq)
+        if index is None:
+            by_seq[item.seq] = len(full)
+            full.append(item)
+        else:
+            # Same seq with updated tool status (result fill-in).
+            full[index] = item
+        reader._co_fps[item.seq] = _pi_fingerprint(item)
+    reader._co_full = full
+    return batch
+
+
+def _parse_opencode(reader: RichReader) -> list[RichMessage]:
+    """OpenCode: project SessKit typed activity; plain text is the fallback.
+
+    The fallback keeps Kimi behavior (still on `_parse_plain`) working and
+    covers SessKit builds without the reader. Unlike the fallback, the
+    SessKit path emits tool cards, so OpenCode gains them on the phone.
+    """
+    if _sesskit_reader_available("opencode"):
+        return _co_sync(reader, "opencode")
+    return _parse_plain(reader)
+
+
+def _read_co_tail(reader: RichReader, limit: int) -> list[RichMessage]:
+    """Cold open: materialize once, return only the tail window."""
+    take = max(1, limit or _DEFAULT_WINDOW)
+    _co_sync(reader, reader.runtime_id)
+    full = reader._co_full or []
+    tail = full[-take:] if len(full) > take else list(full)
+    reader._co_floor = tail[0].seq if tail else None
+    _co_note_floor(reader)
+    return tail
+
+
+def _read_co_earlier(reader: RichReader, limit: int, *, before_seq: int) -> list[RichMessage]:
+    """Backward page over the materialized list; seqs are already global.
+
+    Never polls here: older cards are immutable within a generation, and
+    consuming a poll delta inside a page read would strand it outside the
+    transcript. The next poll/reset still rebuilds and diffs as usual.
+    """
+    take = max(1, limit or _DEFAULT_WINDOW)
+    full = reader._co_full
+    if full is None:
+        _co_sync(reader, reader.runtime_id)
+        full = reader._co_full or []
+    older = [item for item in full if item.seq < before_seq][-take:]
+    if not older:
+        reader._has_earlier = False
+        return []
+    if reader._co_floor is None:
+        reader._co_floor = older[0].seq
+    else:
+        reader._co_floor = min(reader._co_floor, older[0].seq)
+    _co_note_floor(reader)
+    return older
+
+
 _PARSERS = {
     "codex": _parse_codex,
     "claude": _parse_claude,
     "cursor": _parse_cursor,
     "kimi": _parse_plain,
-    "opencode": _parse_plain,
+    "opencode": _parse_opencode,
     "pi": _parse_pi,
 }
 
 
 def supports_tool_calls(runtime_id: str) -> bool:
-    return runtime_id in ("codex", "claude", "cursor", "pi")
+    return runtime_id in ("codex", "claude", "cursor", "opencode", "pi")
 
 
 def _tool_args(raw: object) -> dict:

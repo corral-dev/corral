@@ -829,6 +829,20 @@ class SplitPaneArea(Vertical):
         for cell in self._cells():
             cell.update_terminal_background(osc_report)
 
+    def set_window_focused(self, focused: bool) -> None:
+        """整扇窗口失焦/聚焦：全部格子慢抓或恢复全速（见 EmbedPane.set_window_focused）。
+
+        只调取样间隔，不改尺寸/通道/镜像；分栏重建中间态缺件时静默跳过。
+        """
+        try:
+            cells = self._pool_cells()
+        except Exception:  # noqa: BLE001 分栏重建中间态查不到 #pane-row
+            return
+        for cell in cells:
+            pane = cell.embed_pane()
+            if pane is not None:
+                pane.set_window_focused(focused)
+
     def host_pane_size(self) -> tuple[int, int]:
         """新建托管会话用的单格尺寸（主线程调用）。
 

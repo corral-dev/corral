@@ -184,6 +184,10 @@ AUTO_OUTPUT_CAPTURE_INTERVAL = 0.1
 # 焦点不在本格时不必按持焦节奏抓：分屏里另外几路助手仍在刷，但用户正在看的
 # 是当前格或侧栏。250ms 仍能看出「还在动」，比 100ms 再少一半以上读屏。
 BACKGROUND_CAPTURE_INTERVAL = 0.25
+# 整扇窗口失焦（终端切到别的 App / 别的窗口）时，用户根本看不见这一屏：
+# 全部格子按 1fps 抓，只为别漏掉最终帧和保持关注态新鲜。聚焦回来经即时窗口
+# 立刻恢复全速（见 set_window_focused）。收回格池的闲置格本来就不抓，不在此列。
+UNFOCUSED_WINDOW_CAPTURE_INTERVAL = 1.0
 _INTERACTIVE_CAPTURE_GRACE = 0.25
 # pane_state 降频查询间隔：光标位置/鼠标标志/回滚量都是慢变状态，但它每次也是
 # 一次 tmux fork（约 10ms）。输出风暴期若每帧都查，抓帧循环的 fork 频率直接
@@ -386,6 +390,9 @@ class EmbedPane(Widget):
         self._interactive_capture_until = 0.0
         # 抓帧线程只读这个布尔，避免跨线程碰 Textual 的 has_focus reactive。
         self._capture_hot = False
+        # 本窗口是否被终端聚焦（MainScreen 经 app_focus 下发）。失焦时整格按
+        # UNFOCUSED_WINDOW_CAPTURE_INTERVAL 慢抓；只由后台抓帧线程读取。
+        self._window_focused = True
         # 每次切换展示对象都提升版本。抓帧线程不能只比较 session_name：主线程可能
         # 在它醒来前经历“实时会话 → 详情 → 同一个实时会话”，最终名字虽然没变，
         # 旧帧缓存却已经失效；版本号能让这种快速往返也强制重抓，并拦住旧回调回写。
@@ -800,10 +807,22 @@ class EmbedPane(Widget):
         )
         self._poke.set()
 
+    def set_window_focused(self, focused: bool) -> None:
+        """整扇窗口失焦/聚焦：慢抓或立刻恢复全速。
+
+        只改本格自己的取样间隔，不碰托管窗尺寸、通道与手机镜像。聚焦时打开
+        即时窗口并唤醒抓帧线程，下一帧即按全速补抓，不会漏掉最终帧。
+        """
+        self._window_focused = bool(focused)
+        if focused:
+            self._request_immediate_capture()
+
     def _minimum_capture_interval(self, channel, now: float) -> float:
         """本轮抓帧的最小间隔：自动输出降载，交互操作优先回显。"""
         if channel is None or now < self._interactive_capture_until:
             return MIN_CAPTURE_INTERVAL
+        if not self._window_focused:
+            return UNFOCUSED_WINDOW_CAPTURE_INTERVAL
         if not self._capture_hot:
             return BACKGROUND_CAPTURE_INTERVAL
         return AUTO_OUTPUT_CAPTURE_INTERVAL

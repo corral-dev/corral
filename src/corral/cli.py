@@ -410,6 +410,8 @@ def main() -> None:
 
     # 尽早挂崩溃钩子：TUI 闪退后 stderr 常被清掉，必须先落盘才能事后 diagnose。
     observe.install_crash_hooks()
+    # 活进程诊断：TUI 收到 SIGUSR1 时把全线程栈追加到 stacks.log（kill -USR1 取栈）。
+    observe.install_stack_dumps()
 
     # list/search/show/export/share/context/plan/describe 是面向 Agent 的机器可读子命令，整体转发给
     # agent_api，不与下面的 TUI/--json 旧参数共用同一个 parser。

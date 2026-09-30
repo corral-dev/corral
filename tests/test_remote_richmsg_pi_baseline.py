@@ -402,6 +402,49 @@ class PiRichmsgCompatibilityBaselineTests(unittest.TestCase):
             ],
         )
 
+    def test_thinking_only_error_turn_shows_error_card(self) -> None:
+        # 58/188 real sessions differed before SessKit carried this error on a
+        # typed-only lifecycle event (2026-09-30); a tool-call turn keeps no text.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            _write(
+                path,
+                [
+                    _header(),
+                    _entry("u1", None, "user", [{"type": "text", "text": "Continue."}], "2026-09-01T00:00:01Z"),
+                    _entry(
+                        "a-think",
+                        "u1",
+                        "assistant",
+                        [{"type": "thinking", "thinking": "Planning the next step."}],
+                        "2026-09-01T00:00:02Z",
+                        stopReason="error",
+                        errorMessage="Synthetic provider error.",
+                    ),
+                    _entry("u2", "a-think", "user", [{"type": "text", "text": "Retry."}], "2026-09-01T00:00:03Z"),
+                    _entry(
+                        "a-tool",
+                        "u2",
+                        "assistant",
+                        [{"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "ls"}}],
+                        "2026-09-01T00:00:04Z",
+                        stopReason="error",
+                        errorMessage="Second synthetic error.",
+                    ),
+                ],
+            )
+            wire = _wire(richmsg.RichReader(_session(path)).read_all())
+
+        self.assertEqual(
+            [(item["role"], item.get("text") or "", len(item.get("tools") or [])) for item in wire],
+            [
+                ("user", "Continue.", 0),
+                ("assistant", "Synthetic provider error.", 0),
+                ("user", "Retry.", 0),
+                ("assistant", "", 1),
+            ],
+        )
+
     def test_pi_ask_parent_is_not_a_phone_question(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "session.jsonl"

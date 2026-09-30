@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from corral.history_watch import HistoryWatcher, default_history_roots
+from corral.history_watch import (
+    HistoryWatcher,
+    default_history_roots,
+    memory_pressured,
+    pressure_cadence,
+)
 
 
 class HistoryWatcherTests(unittest.TestCase):
@@ -109,6 +114,22 @@ class SessionStoreFreshnessTests(unittest.TestCase):
         self.assertLess(age, 2.0)
         store.refresh()
         self.assertIsNotNone(store.last_refresh_at)
+
+
+class PressureCadenceTests(unittest.TestCase):
+    def test_normal_cadence_unchanged(self) -> None:
+        self.assertEqual(pressure_cadence(60.0, 3.0, False), (60.0, 3.0))
+        self.assertEqual(pressure_cadence(15.0, 15.0, False), (15.0, 15.0))
+
+    def test_pressured_cadence_backs_off(self) -> None:
+        # TUI: reconcile 60->180, min gap 3->12. Remote: 15/15->60/60.
+        self.assertEqual(pressure_cadence(60.0, 3.0, True), (180.0, 12.0))
+        self.assertEqual(pressure_cadence(15.0, 15.0, True), (60.0, 60.0))
+
+    def test_memory_pressured_never_raises(self) -> None:
+        with mock.patch("corral.reclaim.memory_pressure", side_effect=RuntimeError("boom")):
+            self.assertFalse(memory_pressured())
+        self.assertIsInstance(memory_pressured(), bool)
 
 
 if __name__ == "__main__":

@@ -488,12 +488,18 @@ class SessionHub:
     # -- 后台循环 ---------------------------------------------------------
 
     def _refresh_loop(self) -> None:
+        from corral.history_watch import memory_pressured, pressure_cadence
         from corral.schedprio import demote_background
 
         demote_background()
         watcher = self._history_watcher
         last_scan = 0.0
         while not self._stop.is_set():
+            # Back off the polling floor under memory pressure (evaluated once
+            # per pass; FS-event wakes still fire). Normal cadence unchanged.
+            reconcile, min_gap = pressure_cadence(
+                _REFRESH_RECONCILE, _REFRESH_MIN_GAP, memory_pressured(),
+            )
             # Title updates are independent of history mtimes — poll them on the
             # short slice even when the full scan sleeps until FSEvents / reconcile.
             title_only = True
@@ -502,7 +508,7 @@ class SessionHub:
                     return
                 title_only = False
             else:
-                deadline = time.monotonic() + _REFRESH_RECONCILE
+                deadline = time.monotonic() + reconcile
                 while not self._stop.is_set():
                     left = deadline - time.monotonic()
                     if left <= 0:
@@ -518,7 +524,7 @@ class SessionHub:
                 if self._stop.is_set():
                     return
                 if last_scan > 0:
-                    gap = _REFRESH_MIN_GAP - (time.monotonic() - last_scan)
+                    gap = min_gap - (time.monotonic() - last_scan)
                     if gap > 0 and self._stop.wait(gap):
                         return
                 watcher.clear()

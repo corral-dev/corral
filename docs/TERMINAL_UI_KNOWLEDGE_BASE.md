@@ -206,7 +206,7 @@ stateDiagram-v2
 | “＋ 新建会话”或 `Ctrl+N` | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
 | 右栏顶栏点助手 | 当前项目目录已知且未满四格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | 右栏顶栏点「终端」 | 当前项目目录已知且未满四格 | `_on_shell_pick` → `_embed_open_shell` 加一格交互式 shell | 不进侧栏列表；关格或 shell 退出即结束 tmux 会话 |
-| 分屏格 ✕ 关格 | 右栏至少有一格，且**不是**活跃会话看板 | `_PaneClose` → `SplitPaneArea._close_spec` | 该格退出当前分屏（托管会话继续在后台跑，可再打开）；右栏留在剩余格，不得切到刚被关掉的那条会话；不绑单字母 `c`。活跃会话看板右栏只被动展示，不提供 ✕ / 关格快捷键 |
+| 分屏格 ✕ 关格 | 右栏至少有一格，且**不是**活跃会话看板 | `_PaneClose` → `SplitPaneArea._close_spec` | 该格退出当前分屏（托管会话继续在后台跑，可再打开）；右栏留在剩余格，不得切到刚被关掉的那条会话； **Closing a pane in a group preserves the sidebar scroll offset; rebuilding the group or selecting the surviving pane must not scroll its row into view (2026-09-30). Clamp only when the shortened list no longer supports the old offset.**不绑单字母 `c`。活跃会话看板右栏只被动展示，不提供 ✕ / 关格快捷键 |
 | `Ctrl+T` | 右栏正对着某个会话（筛选框持焦时让路） | 弹窗：导出会话 / 复制会话 / 重启卡住的托管 / 对各运行时读历史后新建 | 与 `Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+X` 同级的全局键；不绑单字母 `a`。**不要绑回 `Ctrl+A`**：那是行首，必须透传给助手 |
 | `Ctrl+X` | 右栏正对着某个会话（筛选框持焦时让路） | 确认弹窗（确认键为 `x`）确认的瞬间摘卡；结束托管进程与抹磁盘在后台完成 | 与 `Ctrl+T` 同级的全局键；不绑单字母 `x`。无右栏且侧栏高亮在组卡上时删整组 |
 | `Ctrl+P` | 任意主界面焦点（含右栏实时格） | 置顶当前窗口或其所在会话组 | 框架命令面板已关闭，不再占用此键 |
@@ -296,7 +296,7 @@ stateDiagram-v2
 | 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 有右栏时焦点默认在会话窗口；单击会话卡 / 托管成功把输入交给对应格。筛选框或弹窗持焦时不抢。**禁止**再把焦点交回列表 |
 | 点击会话卡 | 侧边栏 → 右栏 | `SessionListView.focus_on_click()` 有右栏时必须返回 False | 点任何会话卡都只改选中并打开，**不得**把焦点切到列表；再点当前卡也不是撤回焦点的开关 |
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
-| 关格后的剩余焦点 | 右栏 ✕ | `SplitPaneArea._close_spec` / `_remaining_focus_key`、`LayoutControllerMixin._on_pane_close`、`_rebuild_sidebar_projection` | 关格后钉死剩余焦点键并聚焦剩余会话窗口；过期 `DescendantFocus` 与已排队的选择跟随都不得把右栏切到被关会话 |
+| 关格后的剩余焦点 | 右栏 ✕ | `SplitPaneArea._close_spec` / `_remaining_focus_key`、`LayoutControllerMixin._on_pane_close`、`_rebuild_sidebar_projection` | Preserve the sidebar viewport across removal, group rebuild and surviving-pane selection; keep ordinary keyboard navigation scrolling enabled. 关格后钉死剩余焦点键并聚焦剩余会话窗口；过期 `DescendantFocus` 与已排队的选择跟随都不得把右栏切到被关会话 |
 | 按键路由 | 搜索、置顶、新建、高级操作、删除与焦点 | `MainScreen.on_key()`、`on_input_submitted()`、`action_toggle_pin()`、`action_new_session()`、`action_advanced()`、`action_delete_session()` | 点筛选框打字收窄列表；`Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+T` / `Ctrl+X` 右栏实时格持焦时仍归 corral；筛选框持焦时 `Ctrl+T` / `Ctrl+X` 让路。`Ctrl+A` 必须透传给助手（行首）。筛选框 Down/Enter 把输入交回当前会话窗口，不聚焦列表。`Esc` 只关弹窗（筛选框上先清空查询），不退出应用 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项 / 会话组 / 当前会话分流；组成员只在还活着时走「展示组合」，已结束的照常重启 |
 | 已结束会话重启 | 右栏 → 启动 | `EmbedPane._is_restart_target()`、`PaneCell._restart_self()`、`MainScreen._restart_session_from_pane()` | 静态预览格与「会话已结束」格上的回车 = 重启；与侧边栏回车共用 `_open_or_exit()`；**顶栏/底栏 chrome 常驻 Enter 重启提示**（详情头同款文案会随钉底滚动滚出视野，`_PaneHeader`/`_PaneFooter` 不滚；占位格与托管中不显示） |
@@ -307,6 +307,11 @@ stateDiagram-v2
 | 中国龙横飞彩蛋 | 右栏顶栏 | `#dragon-chip` → `MainScreen._play_dragon()` → `DragonOverlay.play()` | 触发前 compositor 抓一帧快照；动画 ≤1.5s、约 10fps（`_TICK_INTERVAL=0.1`）；期间底层 TUI 定格不刷新；`embed_ok=False` 无入口 |
 
 ## §6 核心业务规则与隐性约束
+
+- **Group pane close and sidebar scroll (2026-09-30):** `ListView.watch_index` calls `scroll_to_widget` when highlight changes, including a deferred call after rebuilding rows. See the [upstream ListView implementation](https://github.com/Textualize/textual/blob/main/src/textual/widgets/_list_view.py) and [scroll API](https://textual.textualize.io/api/widget/#textual.widget.Widget.scroll_to_widget). Hold automatic row scrolling from `_on_pane_close` until the sidebar projection has refreshed, then restore the original offset within the new valid range. Do not disable normal list navigation. Regression: `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll` covers focused/unfocused close, 3-to-2 and 2-to-1 transitions, and top/middle/bottom offsets. A real isolated tmux/Pilot click probe held offset 45 throughout focused close and offset 0 throughout unfocused close; before/after frames retained the same sidebar rows.
+- **Live-pane unit fixtures:** tests of cached live/hosted evidence must supply successful capture frames for their synthetic tmux names. Otherwise the capture worker correctly announces the nonexistent host as ended before assertions, clearing the evidence the test intends to exercise. Keep fake captures scoped to those fixtures; real isolated tmux acceptance still verifies the close path.
+- **Standalone TUI selftest isolation:** pass repository `src` explicitly even when Python is not editable-installed, isolate managed-host discovery as well as `HOME`, and generate current timestamps for histories that must appear in the initial expanded date buckets. Fixed historical dates eventually move behind the older-session stack; host discovery can otherwise pull real sessions into the fake-home list.
+- **Keyboard smoke-test contract:** use the live pane’s `Ctrl+\` handler to return to the list, `/` for search focus, Esc to clear the query, then press Enter once to leave the search input for the list and a second time to reopen the selected session before testing input forwarding; Ctrl+Q quits. Retired `c` / Esc-exit bindings must not produce false passing assertions. Pane-close mouse behavior is verified through Pilot with real isolated tmux panes.
 
 - **AI 易错点**【禁止】恢复旧的全屏预览或纯列表第二套界面。非进行中会话在右栏直接展示完整对话，已托管会话在右栏挂接内嵌实时终端；「运行中(其他窗口)」走完整对话那一路（它不在任何 tmux 里，抓不到画面）。Space 全屏预览已经退役。原因：双入口会使按键、滚动、选择和展示语义重新分叉。
 - **AI 易错点**【侧边栏末行间隔与关注圆点】搜索框、新建会话项和未来新增的左栏控件，最后一行必须是控件自身高度内的间隔空行；搜索框高 2、新建项高 2。会话卡固定高 3，三行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
@@ -449,7 +454,7 @@ python3 docs/screenshots/capture.py
 python3 -m corral --limit 5
 ```
 
-人工进入终端界面确认：回车打开运行中会话后可直接打字（无需点鼠标），`Ctrl+\` 回列表后再**单击**该会话卡同样能直接打字（不必先点右栏），**再点同一张卡焦点撤回侧边栏、又点一次再进去**（点击开关必须对称），`Ctrl+\` 回列表后该格压暗且底条提示输入未接管，底部快捷键栏在两种焦点下分别显示右栏 / 列表侧动作且**不得出现** `Back to list` / `Toggle sidebar`；Footer 显示高级操作；高级操作动态列出运行时且默认选中第一个已安装的其他运行时；Esc 先关闭弹窗再退出；**每个弹窗（高级操作、新建会话、结束/删除确认、`Ctrl+F` 全文搜索）都点一次框外空白确认能关掉，点框内的标题、输入框、列表项则不能关**；选择已结束会话时右栏展示完整对话（消息之间是角色色横线、角色抬头独占一行且着色、正文按 Markdown 排版且不着色）且详情头写着回车可重启，**在预览格上点一下再按回车能就地把它拉起来**，会话在某一格里跑完退出后（画面变「会话已结束」）按回车同样能原地重启；`/`、Down、Enter 与搜索框 Esc 的焦点行为正确。用户本人还应在真实终端点一次关键路径，这是本域最终的体验验收。
+人工进入终端界面确认：回车打开运行中会话后可直接打字（无需点鼠标），点击当前会话卡回列表后再**单击**该会话卡同样能直接打字（不必先点右栏），**再点同一张卡焦点撤回侧边栏、又点一次再进去**（点击开关必须对称），点击当前会话卡回列表后该格压暗且底条提示输入未接管，底部快捷键栏在两种焦点下分别显示右栏 / 列表侧动作且**不得出现** `Back to list` / `Toggle sidebar`；Footer 显示高级操作；高级操作动态列出运行时且默认选中第一个已安装的其他运行时；Esc 关闭弹窗或清空筛选，Ctrl+Q 退出；**每个弹窗（高级操作、新建会话、结束/删除确认、`Ctrl+F` 全文搜索）都点一次框外空白确认能关掉，点框内的标题、输入框、列表项则不能关**；选择已结束会话时右栏展示完整对话（消息之间是角色色横线、角色抬头独占一行且着色、正文按 Markdown 排版且不着色）且详情头写着回车可重启，**在预览格上点一下再按回车能就地把它拉起来**，会话在某一格里跑完退出后（画面变「会话已结束」）按回车同样能原地重启；`/`、Down、Enter 与搜索框 Esc 的焦点行为正确。用户本人还应在真实终端点一次关键路径，这是本域最终的体验验收。
 
 焦点类问题（谁持有输入、点击后跳没跳过去）**不要靠真机反复肉眼试**：写一次性 Pilot 脚本复现最快——`await pilot.click(card)` 能精确模拟点会话卡，配合把 `SplitPaneArea` / `MainScreen` 的相关方法临时包一层打印（入参、返回值、`app.focused`）就能看清整条异步时序。真机 `selftest.sh` 里注入 SGR 假鼠标偶发不触发命中，自动化点击一律走 Pilot，`selftest.sh` 只用 Tab / 按键覆盖键盘路径。另外 `selftest.sh` 末尾「直启光标锚定」那步的等待窗口只有 6s，机器负载高时会假失败——重跑确认再判定是否真回归，别直接当成自己改坏了。
 

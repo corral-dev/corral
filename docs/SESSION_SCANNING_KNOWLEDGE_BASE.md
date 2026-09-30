@@ -189,6 +189,80 @@ flowchart TD
 6. Cursor `store.db` 的关注信号探测默认只在会话 live 或相关文件签名变化时执行，禁止每轮后台刷新为全部 Cursor 会话打开数据库；重复历史扫描使用真实事件或文件时间，不能把扫描时刻伪装成新事件时间。
 7. 关注状态不得改动会话稳定排序、筛选和机器接口既有 `status` / `status_tag` 语义。
 
+### 2.6.1 注意力证据迁移设计（W4，2026-09-30；仅设计，不搬代码）
+
+> 本节是 `attention_signals.py` / `cursor_observer.py` 未来迁移的依据，代码一律不动。
+> 下文凡标【已验证】为源码或真机实测事实；标【提议】为待 SessKit 侧评审的方案。
+
+【已验证】裁决每轮真正消费的原生证据（`attention_signals.inspect_session`，经 `store._reconcile_attention`
+带签名缓存调用；冷会话命中缓存时不读历史）：
+
+| 运行时 | working 证据 | waiting（结构化提问未配对结果）证据 | idle / 终止证据 |
+|---|---|---|---|
+| Claude | 有界尾部（512KB/768 条）内 assistant 文本或 `AskUserQuestion` tool_use | `AskUserQuestion` tool_use id 配对不到 tool_result（`tool_use_id`） | `[Request interrupted by user]`、system `turn_duration`、`Stop`/`StopFailure` hook |
+| Codex | `task_started`、agent 文本、response_item（reasoning/function_call/custom_tool_call；长轮可没有 `task_started`）、非 final assistant 文本 | `request_user_input` call 配对不到 output | `task_complete`、`turn_aborted`、channel=`final` 的 assistant 文本 |
+| OpenCode v1 | part `pending`/`running` 非提问工具、新助手行的 step/正文/工具 | part `pending`/`running` 的提问工具（回答/完成后消掉） | message `error`、`finish=stop`、`time.completed`、空占位助手行、用户尾 |
+| OpenCode v2 | 尾部 assistant `finish=tool-calls`（仅 live）、无 finish 但有文本/工具的落盘中行 | `completed` + `state.metadata.answers` 为空（作答后落盘带 answers；`error` 不算等待）；`pending`/`running` 问卷同理 | 非空 error、`finish=stop`、用户尾、`idle outcome=failed` 翻转 working |
+| Cursor | 未配对非提问 tool-call，或最新非提问工具活动新于可见答复 | AskQuestion 配对不到结果：JSON `tool-call`/`tool-result` 按 `toolCallId` 集合差 + 首字节 `0x12` field-2 protobuf（field 23 题目 + field 57 调用标识；作答前 JSON 往往还没落盘），另有 JSON 窗口前移与 continuation 过滤 | 最新动作为可见答复/结束标记；`afterAgentResponse` 记 idle |
+| Pi | 未收束 toolCall（`stopReason=toolUse` 或有工具调用）、落盘 assistant | 提问工具名（`_QUESTION_TOOLS`）的 toolCall 配对不到 toolResult | `stopReason` ∈ {stop, error, aborted, length}；另叠加 claim `agentPhase`（`agent_start`→working、`agent_settled`→idle、`ui_prompt_*`→waiting，见 §6） |
+| Kimi | `content.part` 文本、`tool.call`（提问落盘不算执行） | `AskUserQuestion` tool.call 配对不到 tool.result | `turn.cancel`；尾部确为 `step.end` 且读取前后文件签名稳定（mtime 永不单独产生状态） |
+
+非历史输入（永远留在 Corral，见数据面 §4.2.1 归属）：`live` 进程绑定、Pi claim `agentPhase`
+（托管态，非落盘）、Cursor hook 观察事件（`beforeSubmitPrompt`/`afterAgentResponse`/`stop`/`sessionEnd`）、
+OpenCode live form 服务（见下 W4-1 条）。`observed_at` 必须取真实事件/源文件时间（§6），
+Cursor 冷会话默认不开 `store.db`（`signal_probe` 门）。
+
+【已验证】SessKit typed 现状（对照 `sesskit/adapters/*` capabilities 与各分支源码）：
+
+- `load_activity` 快照已覆盖 claude/codex/opencode/cursor/pi 全量历史；kimi 为 `unsupported`
+ （作用域裁定，不动）。增量 `open_reader` 仅 pi 实现。
+- 全分支的 `InteractionRequest.resolution` 只产出 `answered`（有明确作答结果）或 `unknown`；
+  `src/sesskit` 内零处产出 `pending`（刻意：缺结果不得推导 pending，见 SessKit CONTRACT）。
+  因此 SessKit 今天能给“已答”，给不出注意力与手机提问卡要的“正在等答”。
+- OpenCode 分支另缺：`QuestionItem` 无原生字段 key（手机 `question_id` 用 form field key）、
+  `QuestionOption` 无 `value`（回包要用 `value || label`）、`free_text`（`allow_custom`）生产者从未置位、
+  `request_id`（form id）从未置位、多问题作答只链接单问题调用。v2 `completed` + 空 `metadata.answers`
+  的等待信号在归一化层被收成 `unknown`，`metadata.answers` 本身未保留。
+- Cursor 分支只归一化 JSON `args.questions`（resolution 恒 `unknown`），不读 field-2 protobuf，
+  无 JSON 窗口/continuation 过滤；`outcome` 恒 `unknown`（adapter 自述）。
+- Claude 在作答前可完全不落盘提问（`AskUserQuestion` hook 细则见 §6 与 REMOTE 知识库）；
+  Codex async（`request_user_input_async` 的 bare `accepted`）在 SessKit 恒 `unknown`，
+  Corral 注意力侧同样只认 sync 配对——口径一致，无需补。
+
+【已验证】延迟预算（本机真历史实测，`scan_all(50)` 同窗口 225 会话，只计读时不记内容）：
+
+- 现状注意力：`inspect_session` 全量约 305ms；分运行时 p50 为 cursor ~0.00（冷会话跳过）、
+  opencode 0.85、pi 1.87、claude 2.19、codex 2.66ms，p95 ≤ 4.3ms。
+- SessKit `load_activity` 全量快照同窗口约 4.8s（约 16 倍）；p50 为 opencode 2.93、pi 6.52、
+  claude 19.22、cursor 21.39、codex 23.72ms，p95 最高 148ms（cursor）、单会话最大 186ms。
+- 结论：注意力循环不得切换到全量快照 API（数据面 §4.2.1 同条禁令）；Pi `open_reader`
+  无变化 poll 约 0.05ms（数据面设计文档值）是唯一已验证的增量基线。
+
+【提议】SessKit 最小新增（按需分片，全部加法、不动 v1 与现有快照语义）：
+
+1. 有界尾部 activity：`load_tail_activity(session, *, max_bytes/max_rows)`（或各运行时 tail reader），
+   返回尾部 typed 事件 + turn 状态；复用 `open_reader` 的 opaque cursor/generation 语义；
+   Cursor 冷会话沿用“无 live 且签名未变不开库”的门控，不得为注意力全量开库。
+2. `pending` resolution：仅当原生证据明确显示未解决请求时产出（OpenCode v1 part
+   `pending`/`running`、v2 `completed` + 空 `metadata.answers` 并保留该证据；Claude/Codex
+   tool_use 无配对结果且 live 可见——注意 Claude 作答前可无落盘，仍以 live 叠加为准，
+   历史侧不得单方面宣布 pending），其余一律 `unknown`。`turns.pair_invocations` 已有
+   `pending → awaiting_approval` 分支，生产者开始产出 pending 即可接通，无需改 turn 层。
+3. 补齐提问归一化字段：question 原生 key、option `value`、option `description`（Cursor 已有，
+   OpenCode 需透出）、`free_text`、`request_id`、多问题逐项作答链接；`raw_input`/`raw_output`
+   保留不动。
+4. Kimi 不动（SessKit 侧延期裁定有效）；Pi claim `agentPhase` 与 Cursor observer 事件永不进
+   SessKit（Corral 托管态归属）。
+
+【已验证】W4-1 结论（`remote/questions.py` OpenCode 部分，停在原地、不迁移）：SessKit 的 OpenCode
+`InteractionRequest` 在 50 会话真历史窗内产出 4 条且全为 `answered`（无 pending），而手机
+待答卡的数据源是 live 服务（`opencode api GET /api/session/<id>/form` 的 `metadata.kind=question`
+表单），SessKit 只读 SQLite 历史、没有 live 服务 reader；作答提交要 form id + field key +
+option value 并走 `POST .../form/<formID>/reply`，归一化层今天给不出这三件。因此 questions.py
+的 OpenCode 表单路径保持现状（含现有单测语义）；待 SessKit 落地上条 1–3（至少 pending 证据 +
+key/value/free_text/request_id）后再做一轮 parity（待答集合新旧对照，只计数）。Claude/Codex
+的 questions 路径走屏上键控作答，本来就不经历史解析，不受本次交界影响。
+
 ## §2.5 物理路径速查
 
 | 目录（相对 cli） | 内容 | 关键文件 |
@@ -439,3 +513,5 @@ print(f'{(time.perf_counter()-t)*1000:.0f}ms')
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改会话扫描、对话预览、判活、缓存或扫描性能前的快速参考文档 -->
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
+
+The Pi phone projection requires the published SessKit 0.2.1 artifact for typed thinking-only error lifecycle events; 0.2.0 predates this fix. Keep the package requirement and `scripts/sesskit_dep.py` artifact digests aligned.

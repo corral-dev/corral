@@ -26,6 +26,32 @@ DEFAULT_DEBOUNCE_SECONDS = 0.35
 _LOOP_SLICE_SECONDS = 0.5
 
 
+def pressure_cadence(
+    normal_reconcile: float, normal_min_gap: float, pressured: bool,
+) -> tuple[float, float]:
+    """Return the (reconcile, min_gap) cadence for a refresh loop.
+
+    Under memory pressure (see ``reclaim.memory_pressure``) polling floors move
+    out — reconcile triples (at least 60 s) and the minimum scan gap quadruples —
+    so cold rescans stop compounding swap thrash. FS-event wakes are preserved
+    by the callers; only the polling floor moves, and the normal cadence
+    (``REFRESH_MIN_GAP`` et al.) is never changed globally.
+    """
+    if not pressured:
+        return normal_reconcile, normal_min_gap
+    return max(float(normal_reconcile) * 3.0, 60.0), max(float(normal_min_gap) * 4.0, 1.0)
+
+
+def memory_pressured() -> bool:
+    """Best-effort memory-pressure probe for refresh loops (never raises)."""
+    try:
+        from corral import reclaim
+
+        return bool(reclaim.memory_pressure())
+    except Exception:  # noqa: BLE001 — probe failure means normal cadence
+        return False
+
+
 def _history_watch_enabled() -> bool:
     """Unit tests isolate managed hosts / cache; do not watch the developer's real dirs."""
     if os.environ.get("CORRAL_ISOLATE_MANAGED_HOSTS") == "1":

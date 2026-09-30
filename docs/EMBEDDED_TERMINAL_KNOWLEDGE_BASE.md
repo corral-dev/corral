@@ -75,7 +75,7 @@ sequenceDiagram
 1. 用户在终端界面中打开一个会话。已有“运行中(托管)”会话直接由 `EmbedPane.focus_session()` 聚焦；需要启动的计划由 `MainScreen._embed_open()` 在后台调用 `embed.host_session()`。
 2. `host_session()` 用会话保活的专用 socket 建立 detached tmux 会话，名称来自运行时和会话标识；同时按 pane 实际宽高创建，避免先以默认终端尺寸启动造成重排。
 3. 新建时注入 `CORRAL_RUNTIME`、`CORRAL_SESSION_ID` 及旧名兼容变量。若外层终端已探得背景色且 tmux 支持，立即打开控制通道并注入颜色应答，缩短助手首轮主题检测的竞态窗口。
-4. `EmbedPane` 打开与当前会话对应的控制通道、调整 pane 尺寸，并在后台抓帧循环中调用 `capture()`。控制通道可用时，`%output` 立即唤醒抓帧循环；**v0.24.158 起纯自动输出最多每 100ms 取一次完整画面**，主线程只保留最新一帧。键入、粘贴、切换、滚动会打开 250ms 即时窗口，仍按 40ms 最小间隔抓取。空闲时低频轮询兜底。帧率与 CPU 口径见 [性能知识库](PERFORMANCE_KNOWLEDGE_BASE.md)「高输出时的画面降载原则」。
+4. `EmbedPane` 打开与当前会话对应的控制通道、调整 pane 尺寸，并在后台抓帧循环中调用 `capture()`。控制通道可用时，`%output` 立即唤醒抓帧循环；**v0.24.158 起纯自动输出最多每 100ms 取一次完整画面**，主线程只保留最新一帧。键入、粘贴、切换、滚动会打开 250ms 即时窗口，仍按 40ms 最小间隔抓取。空闲时低频轮询兜底。**窗口失焦（`app_focus=false`）时全部格子按 `UNFOCUSED_WINDOW_CAPTURE_INTERVAL`（1.0s，即 ≤1fps）抓帧；重新聚焦或按键经即时窗口立刻恢复全速，不丢最终帧（tmux 缓冲仍是权威画面）、不改托管窗尺寸、不影响手机镜像与关注已读判定。**帧率与 CPU 口径见 [性能知识库](PERFORMANCE_KNOWLEDGE_BASE.md)「高输出时的画面降载原则」。
 5. 抓到的 `capture-pane -p -e` 输出包含 SGR 样式，**也包含 tmux 原样透传的 OSC 8 超链接等非 SGR 序列**。`parse_screen()` 解析为单元格网格，`EmbedPane` 逐行比较，只刷新改变的行。首帧未到时不展示“连接中…”，有详情则继续展示详情（**必须钉在最新消息**，禁止 `to_strips(..., height=pane_h)` 顶裁出最早消息），否则展示空白终端画布。
 6. 可打印字符和特殊键转发到原 pane；粘贴使用 tmux buffer；滚轮按 pane 是否声明鼠标捕获决定转发 SGR 序列或查看应用层历史。用户切回列表不影响后台会话。
 7. 连续三次抓帧失败后，只有 `has-session` 也确认会话不存在才认定结束，右栏显示已结束并收回焦点相关状态。控制通道死亡本身不等于会话死亡：所有调用先自动回退外部 tmux 子进程路径。

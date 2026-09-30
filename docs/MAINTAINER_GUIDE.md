@@ -558,6 +558,14 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 排查「只 Ubuntu 红、macOS 绿 / Smoke host_session 报 server exited unexpectedly / 托管 UI 卡在 Press Enter to restart」时，先看 `keepalive.tmux_env()` 是否仍剥掉 `LD_LIBRARY_PATH`（见「会话保活」节），不要先猜 terminfo 或缺 tmux。
 
+### Readiness and dependency handoff
+
+- Before expensive checks, prepare and verify the declared development/test environment using [the development guide](DEVELOPMENT_ENVIRONMENT_GUIDE.md); use [the test guide](TEST_ENVIRONMENT_GUIDE.md) for isolated acceptance. Keep development, test, and build dependencies explicit in project metadata or the owning guide. A setup/dependency failure is not a product failure and must not be reported as a passing check.
+- Classify failures with the actual command output: environment/setup, product assertion, or real-terminal/acceptance failure. After repeated failures, stop replaying the same command and review the evidence, fixture preconditions, environment, and test strategy; this does not waive the required full suite, real UI/terminal acceptance, or clean-install check.
+- A full-check result is reusable only while both the relevant source fingerprint and the environment/dependency fingerprint match. Corral already uses `scripts/ci-test.py` and `scripts/ci_stamp.py`; the current stamp fingerprints source/build inputs only, so serialized integration must extend that existing stamp with the prepared environment fingerprint before it can safely authorize skipping a full validation run. Never substitute a second stamp system or a partial test run.
+- Keep routine output short and retain the complete log at a stable path. Report the check, terminal state, failure category, relevant fingerprint/readiness result, and full-log path so another maintainer can continue without replaying successful expensive work.
+- The task that introduces or upgrades a shared dependency owns the upstream artifact publication and the complete consumer-pin handoff before relying on it: CI/preflight, clean install, and supported distribution paths must resolve the same pinned artifact. For SessKit, the pin is maintained in `scripts/sesskit_dep.py`; its concrete release and consumer rules remain below.
+
 **Ruff 接入（2026-08-05，v0.24.47/54）**：lint 步骤固定 `ruff==0.16.1`（防自行升级后规则集变化），规则集 `E/F/I/UP/B` 并卡 CI。改 `pyproject.toml` 的 `[tool.ruff]` 后本机先 `ruff check src tests` 清零再提交。三个已知坑：
 
 - **E501 按显示宽度计数，CJK 字符算 2 格**——批量修改脚本用 Python 的 `len()`（按字符数）判断"超长行"会漏掉中文行，noqa 加不上、CI 照样挂；要按 ruff 报的行号精确处理，不要用字符数条件。

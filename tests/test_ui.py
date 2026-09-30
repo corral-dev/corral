@@ -1158,6 +1158,52 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(area.ordered_session_keys(), [keys[0]])
             self.assertEqual(area.focus_key, keys[0])
 
+    @mock.patch("corral.embed.capture", new=lambda *args, **kwargs: "Sidebar fixture")
+    @mock.patch("corral.embed.is_alive", new=lambda *args, **kwargs: True)
+    async def test_group_pane_close_preserves_sidebar_scroll(self) -> None:
+        """Closing focused/unfocused group panes must leave the sidebar viewport alone."""
+        from corral.ui.split_pane_area import _PaneClose
+
+        for count, close_idx, offset in ((3, 2, 0), (3, 0, 45), (2, 0, 45), (2, 1, 999)):
+            with self.subTest(count=count, close_idx=close_idx, offset=offset):
+                sessions = _live_split_sessions(50)
+                store, _ = _make_store(sessions=sessions)
+                store.limit = 100
+                store.load()
+                app = CorralApp(store, embed_ok=True)
+                async with app.run_test(size=(160, 30)) as pilot:
+                    area, keys = await _open_split_group(
+                        pilot, app, sessions[25:25 + count], focus_idx=0,
+                    )
+                    view = app.screen.query_one(SessionListView)
+                    app.screen._cancel_follow_selection()  # noqa: SLF001
+                    app.screen._suppress_selection_follow += 1  # noqa: SLF001
+                    await view.rebuild(select_key=keys[0])
+                    await pilot.pause()
+                    app.screen._suppress_selection_follow -= 1  # noqa: SLF001
+                    scroll = view.query_one("#sidebar-scroll")
+                    scroll.scroll_to(y=offset, animate=False, immediate=True)
+                    await pilot.pause()
+                    before = scroll.scroll_y
+                    button = area.cells()[close_idx].query_one(_PaneClose)
+                    await pilot.click(button)
+                    await _wait_until(lambda area=area, count=count: len(area.cells()) == count - 1)
+                    await pilot.pause(delay=0.2)
+                    self.assertEqual(scroll.scroll_y, min(before, scroll.max_scroll_y))
+                    self.assertNotIn(keys[close_idx], area.ordered_session_keys())
+                    selected = view.selected_session()
+                    self.assertIsNotNone(selected)
+                    self.assertEqual(corral.session_key(selected), area.focus_key)
+                    # Ordinary explicit selection still brings its row into view.
+                    app.screen._suppress_selection_follow += 1  # noqa: SLF001
+                    view.index = view._sticky_count()  # noqa: SLF001
+                    await pilot.pause()
+                    self.assertEqual(scroll.scroll_y, 0)
+                    view.index = len(view.list_children) - 1
+                    await pilot.pause()
+                    self.assertGreater(scroll.scroll_y, 0)
+                    app.screen._suppress_selection_follow -= 1  # noqa: SLF001
+
     async def test_closing_middle_focused_pane_keeps_left_neighbor(self) -> None:
         """三格分屏关掉中间聚焦格时，焦点交给左侧邻居，其余两格仍在。"""
         sessions = _live_split_sessions(3)
@@ -1172,6 +1218,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(area.ordered_session_keys(), [keys[0], keys[2]])
             self.assertEqual(area.focus_key, keys[0])
 
+    @mock.patch("corral.embed.capture", new=lambda *args, **kwargs: "Live fixture")
     async def test_same_hosted_identity_skips_remount_keeps_live_grid(self) -> None:
         """同 (session_key, keepalive) 再 show_hosted_group 不得整排 remount 清掉 live 画面。"""
         from corral.embed import Cell
@@ -1233,6 +1280,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 # 否则抓帧重排的空档会闪一下消息内容。
                 self.assertIsNone(pane._detail_renderer)  # noqa: SLF001
 
+    @mock.patch("corral.embed.capture", new=lambda *args, **kwargs: "Live fixture")
     async def test_hosted_registration_keeps_session_active_without_is_alive(self) -> None:
         """store.hosted 仍登记时，is_alive 假阴性不得把会话判为不活跃。"""
         sessions = [
@@ -1260,6 +1308,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
                 self.assertTrue(app.screen._is_session_active(key))  # noqa: SLF001
 
+    @mock.patch("corral.embed.capture", new=lambda *args, **kwargs: "Live fixture")
     async def test_live_session_is_active_without_tmux_fork(self) -> None:
         """扫描器已报 live 时，开屏/跟随判活不得再问 tmux。"""
         sessions = [
@@ -5545,6 +5594,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 live.assert_called_once()
                 static.assert_not_called()
 
+    @mock.patch("corral.embed.capture", new=lambda *args, **kwargs: "Live fixture")
     async def test_switching_back_to_hosted_session_stays_live_when_probe_fails(
         self,
     ) -> None:
@@ -7271,6 +7321,78 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
             pane._minimum_capture_interval(channel, now),  # noqa: SLF001
             embed_pane_mod.MIN_CAPTURE_INTERVAL,
         )
+
+    def test_unfocused_window_uses_1s_capture_interval(self) -> None:
+        """整扇窗口失焦时全部格子按 ≤2fps 慢抓，持焦态不受影响。"""
+        import corral.ui.embed_pane as embed_pane_mod
+
+        self.assertLessEqual(
+            1.0 / embed_pane_mod.UNFOCUSED_WINDOW_CAPTURE_INTERVAL, 2.0,
+        )
+        pane = EmbedPane()
+        channel = object()
+        now = 10.0
+        pane._capture_hot = True  # noqa: SLF001
+        pane.set_window_focused(False)
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, now),  # noqa: SLF001
+            embed_pane_mod.UNFOCUSED_WINDOW_CAPTURE_INTERVAL,
+        )
+        pane.set_window_focused(True)
+        # 聚焦会打开 250ms 即时窗口（立刻恢复全速），先按 MIN 抓 …
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, time.monotonic()),  # noqa: SLF001
+            embed_pane_mod.MIN_CAPTURE_INTERVAL,
+        )
+        # … 宽限过去后回到持焦格的自动输出档。
+        pane._interactive_capture_until = 0.0  # noqa: SLF001
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, now),  # noqa: SLF001
+            embed_pane_mod.AUTO_OUTPUT_CAPTURE_INTERVAL,
+        )
+
+    def test_unfocused_window_interactive_grace_still_wins(self) -> None:
+        """失焦期间的交互宽限仍优先，保证按键回显不被慢抓拖住。"""
+        import corral.ui.embed_pane as embed_pane_mod
+
+        pane = EmbedPane()
+        channel = object()
+        now = 10.0
+        pane.set_window_focused(False)
+        pane._interactive_capture_until = now + 1  # noqa: SLF001
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, now),  # noqa: SLF001
+            embed_pane_mod.MIN_CAPTURE_INTERVAL,
+        )
+
+    def test_window_refocus_requests_immediate_capture(self) -> None:
+        """重新聚焦必须打开即时窗口并唤醒抓帧线程，不漏最终帧。"""
+        pane = EmbedPane()
+        pane.set_window_focused(False)
+        pane._poke.clear()  # noqa: SLF001
+        before = time.monotonic()
+        pane.set_window_focused(True)
+        self.assertGreater(pane._interactive_capture_until, before)  # noqa: SLF001
+        self.assertTrue(pane._poke.is_set())  # noqa: SLF001
+
+    def test_app_focus_change_propagates_window_focus(self) -> None:
+        """MainScreen 失焦/聚焦钩子把取样档位下发到全部分屏格（唯一允许的钩子）。"""
+        from corral.ui import main_screen as main_screen_mod
+
+        area = mock.Mock()
+        stub = object.__new__(main_screen_mod.MainScreen)
+        stub.embed_ok = True
+        stub._split_area = lambda: area  # noqa: SLF001
+        stub._attention_read_timer = None
+        stub._attention_read_keys = set()
+        stub.call_next = mock.Mock()
+        main_screen_mod.MainScreen._on_app_focus_changed(stub, False)
+        area.set_window_focused.assert_called_once_with(False)
+        self.assertFalse(stub._app_focused)
+        area.reset_mock()
+        main_screen_mod.MainScreen._on_app_focus_changed(stub, True)
+        area.set_window_focused.assert_called_once_with(True)
+        self.assertTrue(stub._app_focused)
 
     def test_sync_strips_accepts_native_parsed_rows(self) -> None:
         """原生解析器返回预编译行时，首帧和逐行更新都不能按 Cell 列表取长度。"""

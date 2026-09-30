@@ -214,13 +214,16 @@ class LayoutControllerMixin:
             remaining_focus = self._split_area().focus_key
         self._cancel_follow_selection()
         self._suppress_selection_follow = getattr(self, "_suppress_selection_follow", 0) + 1
+        self.query_one(SessionListView).begin_preserve_scroll()
         self._apply_layout_change(lambda store: store.remove_session(session_key))
         self._sync_split_marks()
-        self.call_next(self._rebuild_sidebar_projection, remaining_focus)
+        self.call_next(self._rebuild_sidebar_projection, remaining_focus, True)
         # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
         # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
 
-    async def _rebuild_sidebar_projection(self, select_key: str | None = None) -> None:
+    async def _rebuild_sidebar_projection(
+        self, select_key: str | None = None, preserve_scroll: bool = False,
+    ) -> None:
         """只重建会话组树，不触发右栏跟随，避免关格时重挂仍存活的同伴格。"""
         try:
             session_list = self.query_one(SessionListView)
@@ -228,6 +231,10 @@ class LayoutControllerMixin:
             self._update_header()
             self._sync_split_marks()
         finally:
+            if preserve_scroll:
+                self.call_after_refresh(
+                    self.query_one(SessionListView).end_preserve_scroll,
+                )
             self.call_after_refresh(self._release_selection_follow_suppress)
 
     def _try_restore_startup_layout(self) -> None:

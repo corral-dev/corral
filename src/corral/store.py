@@ -130,6 +130,10 @@ class SessionStore:
         return cache_dir() / "sidebar-snapshot.json"
 
     _SNAPSHOT_VERSION = 1
+    # Snapshot rewrites (~400 KB) are startup-hydration only: minute-level
+    # staleness is fine, so skip the write when the key set is unchanged and
+    # the last save is recent. Session arrival/departure always saves.
+    _SNAPSHOT_MIN_INTERVAL_SECONDS = 60.0
 
     def _save_sidebar_snapshot(self) -> None:
         """把当前合并后的会话列表落盘，供下次启动秒开（后台线程内调用）。
@@ -144,6 +148,18 @@ class SessionStore:
             return
         try:
             with self.lock:
+                keys = frozenset(
+                    session_key(session)
+                    for bucket in self.sessions.values()
+                    for session in bucket
+                )
+                now = time.time()
+                last_at = getattr(self, "_last_snapshot_at", 0.0)
+                if (
+                    keys == getattr(self, "_last_snapshot_keys", None)
+                    and now - last_at < self._SNAPSHOT_MIN_INTERVAL_SECONDS
+                ):
+                    return
                 payload = {
                     "version": self._SNAPSHOT_VERSION,
                     "order": list(self._order),
@@ -158,6 +174,9 @@ class SessionStore:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
             os.replace(tmp, path)
+            with self.lock:
+                self._last_snapshot_at = now
+                self._last_snapshot_keys = keys
         except Exception:  # noqa: BLE001 快照失败不影响扫描
             pass
 

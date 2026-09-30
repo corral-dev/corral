@@ -26,6 +26,11 @@ class ScanIndexTests(unittest.TestCase):
         for patch in self.patches:
             patch.start()
             self.addCleanup(patch.stop)
+        scan_index._LAST_PUBLISH.update({"at": 0.0, "path": "", "limit": 0, "keys": None})
+        self.addCleanup(
+            scan_index._LAST_PUBLISH.update,
+            {"at": 0.0, "path": "", "limit": 0, "keys": None},
+        )
 
     def _session(self, runtime: str, sid: str, mtime: float) -> dict:
         return {
@@ -69,6 +74,51 @@ class ScanIndexTests(unittest.TestCase):
             limit=50,
         )
         self.assertIsNone(scan_index.try_consume(50, {"claude": {"missing"}}))
+
+    def test_stale_keep_ids_excused_when_publisher_could_not_cover(self) -> None:
+        # Publisher scanned with a keep set containing long-gone sessions;
+        # a consumer with the same sidebar memory must still hit.
+        scanned = {"claude": [self._session("claude", "a", 1)]}
+        scan_index.publish(
+            scanned, limit=50, keep_ids_by_runtime={"claude": {"a", "gone-1", "gone-2"}},
+        )
+        got = scan_index.try_consume(50, {"claude": {"a", "gone-1", "gone-2"}})
+        self.assertIsNotNone(got)
+
+    def test_new_pin_not_seen_by_publisher_still_forces_miss(self) -> None:
+        scanned = {"claude": [self._session("claude", "a", 1)]}
+        scan_index.publish(
+            scanned, limit=50, keep_ids_by_runtime={"claude": {"a"}},
+        )
+        self.assertIsNone(scan_index.try_consume(50, {"claude": {"a", "fresh-pin"}}))
+
+    def test_publish_throttle_skips_identical_republish(self) -> None:
+        scanned = {"claude": [self._session("claude", "a", 1)]}
+        scan_index.publish(scanned, limit=50)
+        first = json.loads(scan_index.index_path().read_text(encoding="utf-8"))
+        scan_index.publish(
+            {"claude": [dict(self._session("claude", "a", 1))]}, limit=50,
+        )
+        second = json.loads(scan_index.index_path().read_text(encoding="utf-8"))
+        self.assertEqual(first["published_at"], second["published_at"])
+        scan_index.publish(
+            {"claude": [self._session("claude", "a", 1), self._session("claude", "b", 2)]},
+            limit=50,
+        )
+        third = json.loads(scan_index.index_path().read_text(encoding="utf-8"))
+        self.assertGreaterEqual(third["published_at"], second["published_at"])
+        self.assertEqual(len(third["sessions"]["claude"]), 2)
+
+    def test_publish_cleans_stale_tmps(self) -> None:
+        stale = self.cache / "scan-index.json.tmp.424242"
+        stale.write_text("{}", encoding="utf-8")
+        old = time.time() - 600
+        os.utime(stale, (old, old))
+        fresh = self.cache / "scan-index.json.tmp.424243"
+        fresh.write_text("{}", encoding="utf-8")
+        scan_index.publish({"claude": [self._session("claude", "a", 1)]}, limit=50)
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
 
     def test_miss_when_stale(self) -> None:
         scan_index.publish(

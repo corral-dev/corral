@@ -6877,5 +6877,69 @@ class StartupLatencyTests(unittest.TestCase):
         )
 
 
+class SnapshotThrottleTests(unittest.TestCase):
+    """侧栏快照只服务启动秒开：键集合不变且 60s 内不重写（perf-B）。"""
+
+    def _session(self, sid="s1", mtime=100.0):
+        return {
+            "source": "claude",
+            "id": sid,
+            "short_id": sid,
+            "mtime": mtime,
+            "file_mtime": mtime,
+            "cwd": "/tmp",
+            "live": False,
+        }
+
+    def _store(self, signatures, buckets):
+        runtime = mock.Mock()
+        runtime.id = "claude"
+        runtime.display_name = "Claude"
+        runtime.scan_signature.side_effect = signatures
+        runtime.scan_sessions.side_effect = [[dict(s) for s in b] for b in buckets]
+        registry = corral.RuntimeRegistry((runtime,))
+        store = corral.SessionStore(limit=20, registry=registry)
+        return store
+
+    def _quiet(self, store):
+        return (
+            mock.patch.object(corral.titles, "load_cache", return_value={}),
+            mock.patch("corral.scan_index.try_consume", return_value=None),
+            mock.patch("corral.scan_index.publish"),
+            mock.patch.object(corral.SessionStore, "_save_sidebar_snapshot"),
+            mock.patch.object(
+                corral.SessionStore, "_remembered_scan_ids", return_value={},
+            ),
+        )
+
+    def test_snapshot_skipped_when_keys_and_interval_unchanged(self) -> None:
+        import json as json_module
+
+        store = self._store([{"n": 1}], [[self._session()]])
+        quiet = self._quiet(store)
+        for patch in quiet:
+            if getattr(patch, "attribute", "") == "_save_sidebar_snapshot":
+                continue
+            patch.start()
+            self.addCleanup(patch.stop)
+        with tempfile.TemporaryDirectory() as tmp:
+            snap_path = Path(tmp) / "sidebar-snapshot.json"
+            with mock.patch.object(
+                corral.SessionStore, "_snapshot_path",
+                return_value=snap_path,
+            ):
+                store.load()
+                self.assertTrue(snap_path.exists())
+                first = json_module.loads(snap_path.read_text(encoding="utf-8"))
+                with mock.patch.object(
+                    json_module, "dump",
+                    wraps=json_module.dump,
+                ) as dump_spy:
+                    store._save_sidebar_snapshot()
+                dump_spy.assert_not_called()
+                second = json_module.loads(snap_path.read_text(encoding="utf-8"))
+                self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
 # corral 端到端自测（Textual 界面层）：隔离 HOME 与 tmux socket，不碰真实会话。
 #
-# 界面层已从 curses 换成 Textual；本脚本随之重写，覆盖：内嵌面板真实托管/
-# 接回/关闭、Ctrl+\ 焦点切回列表（Textual 能原生区分 Ctrl+\ 和连续两次按 \，
-# 不再需要旧版靠 300ms 时间窗口消歧义的双反斜杠 hack）、键盘输入真实转发进
-# 托管会话、Esc 退出、直启子命令（corral claude ...）托管路径、IME 光标锚定
-# 的真实终端坐标验证、划词选中 + Ctrl+C 复制的真实 OSC 52 写入验证。
-#
-# 会话列表卡片本身的鼠标点击这版暂未覆盖（Textual 的会话列表布局与旧版 curses
-# 手绘坐标不同，点击路径本身走 Textual ListView 内置的鼠标处理，非本项目自写
-# 代码，风险低于键盘路径；如需要可后续用
-# `tmux send-keys -l "$(printf '\033[<0;COL;ROWM')"` 针对新布局重新量出坐标补上）。
+# Real-terminal keyboard smoke: hosting, forwarding, search, reattachment,
+# Ctrl+Q exit, direct launch, IME cursor anchoring and OSC 52 copy.
+# Mouse close/card interactions use Pilot tests with isolated real tmux panes.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,15 +26,6 @@ wait_for() {
   cap >&2 || true
   return 1
 }
-# 右栏键盘交互入口：列表聚焦时 Tab 沿焦点链进入内嵌面板（搜索→列表→右栏）。
-# 回车/直启本身已经自动把输入交给右栏；这个辅助函数用于「Ctrl+\ 回列表之后」
-# 再次进入右栏的场景。自动化里用 Tab 比注入 SGR 单击更稳（tmux send-keys 的
-# 假鼠标偶发不触发 Textual 命中）。
-focus_right_pane() {
-  local target="${1:-tui}"
-  tmux -L "$OUTER" send-keys -t "$target" Tab
-  sleep 0.35
-}
 cleanup() {
   tmux -L "$OUTER" kill-server 2>/dev/null || true
   tmux -L "$KEEPALIVE" kill-session -t corral-claude-aaaa1111 2>/dev/null || true
@@ -54,18 +38,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+FIXTURE_TIMESTAMP="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
 mkdir -p "$TMP/home/.claude/projects/demo" "$TMP/workA" "$TMP/workB" "$TMP/fakebin" "$TMP/home/.cache/corral"
 cat > "$TMP/home/.cache/corral/titles.json" <<'EOF'
 {"claude:aaaa1111":{"title":"修复切换体验","fp":"seed"},"claude:bbbb2222":{"title":"第二个会话","fp":"seed"}}
 EOF
 cat > "$TMP/home/.claude/projects/demo/aaaa1111.jsonl" <<EOF
-{"type":"user","message":{"content":"修复切换体验"},"timestamp":"2026-07-18T10:01:00.000Z","cwd":"$TMP/workA","sessionId":"aaaa1111"}
-{"type":"assistant","message":{"content":[{"type":"text","text":"会话 A 回复"}]},"timestamp":"2026-07-18T10:02:00.000Z","sessionId":"aaaa1111"}
+{"type":"user","message":{"content":"修复切换体验"},"timestamp":"$FIXTURE_TIMESTAMP","cwd":"$TMP/workA","sessionId":"aaaa1111"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"会话 A 回复"}]},"timestamp":"$FIXTURE_TIMESTAMP","sessionId":"aaaa1111"}
 EOF
 cat > "$TMP/home/.claude/projects/demo/bbbb2222.jsonl" <<EOF
-{"type":"user","message":{"content":"第二个会话"},"timestamp":"2026-07-18T09:01:00.000Z","cwd":"$TMP/workB","sessionId":"bbbb2222"}
-{"type":"assistant","message":{"content":[{"type":"text","text":"会话 B 回复"}]},"timestamp":"2026-07-18T09:02:00.000Z","sessionId":"bbbb2222"}
+{"type":"user","message":{"content":"第二个会话"},"timestamp":"$FIXTURE_TIMESTAMP","cwd":"$TMP/workB","sessionId":"bbbb2222"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"会话 B 回复"}]},"timestamp":"$FIXTURE_TIMESTAMP","sessionId":"bbbb2222"}
 EOF
+# The first card must be A even when fresh fixture timestamps are identical.
+touch "$TMP/home/.claude/projects/demo/aaaa1111.jsonl"
 cat > "$TMP/fakebin/claude" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then echo "fake"; exit 0; fi
@@ -90,7 +77,7 @@ TMUX_DIR="$(dirname "$(command -v tmux)")"
 # 能看到的 sys.path 原样透传，绕开这个问题；真正 pip install 到系统/venv 的
 # 用户不受影响。
 PYWORKAROUND_PATH="$(python3 -c 'import sys; print(":".join(p for p in sys.path if p))')"
-ENVV="HOME=$TMP/home PYTHONPATH=$PYWORKAROUND_PATH PATH=$TMP/fakebin:$TMUX_DIR:/usr/local/bin:/usr/bin:/bin TERM=xterm-256color CORRAL_TITLE_GENERATOR=none CORRAL_LANG=zh"
+ENVV="HOME=$TMP/home PYTHONPATH=$REPO/src:$PYWORKAROUND_PATH PATH=$TMP/fakebin:$TMUX_DIR:/usr/local/bin:/usr/bin:/bin TERM=xterm-256color CORRAL_TITLE_GENERATOR=none CORRAL_LANG=zh CORRAL_ISOLATE_MANAGED_HOSTS=1"
 tmux -L "$OUTER" new-session -d -s tui -x 180 -y 42
 tmux -L "$OUTER" set-option -t tui mouse on
 tmux -L "$OUTER" send-keys -t tui "cd $REPO && env $ENVV python3 -m corral --limit 5" Enter
@@ -119,17 +106,12 @@ wait_for "ECHO: smoke-input" 40
 sleep 0.5
 ok "回车后无需点鼠标，键盘输入直接转发进托管会话"
 
-# Ctrl+\ 回列表：Textual 原生区分 Ctrl+\ 与连续两次按 \，不再需要旧版的双反
-# 斜杠时间窗口消歧义。回列表后按 / 聚焦搜索框并输入项目名应能过滤列表（如果焦点
-# 还停在 pane 上，这些按键会被当成字面文本发进托管会话，搜索框不会出现独立的
-# workA 查询串、workB 卡片也不会消失）。
+# Leave the live terminal before using the sidebar search shortcut.
 tmux -L "$OUTER" send-keys -t tui C-\\
-sleep 0.8
+sleep 0.5
 tmux -L "$OUTER" send-keys -t tui /
 sleep 0.3
 tmux -L "$OUTER" send-keys -t tui -l "workA"
-# 注意：不能 wait_for "workA"——列表里本来就有「workA …」标题，会立刻假阳性。
-# 以 workB 卡片消失为准，证明搜索过滤已生效（也就证明焦点已回到列表）。
 filtered=0
 for _ in {1..40}; do
   if ! cap | grep -q "workB 第二个会话"; then
@@ -139,55 +121,38 @@ for _ in {1..40}; do
   sleep 0.15
 done
 if [[ "$filtered" != "1" ]]; then
-  echo "搜索 workA 后列表仍出现 workB 会话卡，焦点可能没回到列表或过滤未生效" >&2
+  echo "Search did not filter out workB" >&2
   cap >&2
   exit 1
 fi
-ok "Ctrl+\\ 把键盘焦点交回列表（/ 搜索过滤生效证明焦点确实回来了）"
-# Esc 清空搜索，恢复全部项目可见；再 Down 把焦点交回列表，避免后续快捷键被搜索框吞掉
+ok "Ctrl+\\ 返回列表后搜索过滤生效"
+# Escape clears the query. Enter first leaves the search input for the list;
+# a second Enter explicitly reopens the selected hosted session.
 tmux -L "$OUTER" send-keys -t tui Escape
-sleep 0.4
 wait_for "workB 第二个会话" 20
-tmux -L "$OUTER" send-keys -t tui Down
-sleep 0.2
-
-# 输入蒙版：焦点在侧边栏时，实时格底条必须提示输入未接管；Tab 进右栏后提示换成出口。
-wait_for "当前输入不会进入这里" 20
-ok "焦点在侧边栏时，实时格底条提示输入未接管"
-focus_right_pane tui
-wait_for "回列表" 20
-ok "重新进入右栏后底条换成回列表出口提示"
-tmux -L "$OUTER" send-keys -t tui C-\\
-sleep 0.6
-
-# 关闭分栏：托管会话必须在后台 tmux 继续存活，不能被一并杀掉。
-tmux -L "$OUTER" send-keys -t tui c
-sleep 0.4
-sessions | grep -qx "corral-claude-aaaa1111"
-ok "c 关闭分栏后，托管会话仍在后台存活"
-
-# 再次回车接回同一个托管会话，不能新建重复会话。
 tmux -L "$OUTER" send-keys -t tui Enter
-wait_for "FAKE-CLAUDE --resume aaaa1111" 40
+sleep 0.4
+tmux -L "$OUTER" send-keys -t tui Enter
+sleep 0.4
+tmux -L "$OUTER" send-keys -t tui -l "reattach-input"
+tmux -L "$OUTER" send-keys -t tui Enter
+wait_for "ECHO: reattach-input" 40
 [[ "$(sessions | grep -c '^corral-claude-aaaa1111$')" == "1" ]]
-ok "重新回车接回已托管会话，不产生重复会话"
+ok "重新回车接回同一托管会话并真实转发输入"
 
-# Esc 退出：先回列表，再 Esc。
-tmux -L "$OUTER" send-keys -t tui C-\\
-sleep 0.8
-tmux -L "$OUTER" send-keys -t tui Escape
-for _ in {1..20}; do
+# The current global quit binding must leave the managed terminal alive.
+tmux -L "$OUTER" send-keys -t tui C-q
+for _ in {1..40}; do
   [[ "$(tmux -L "$OUTER" display-message -p -t tui '#{pane_current_command}')" != "python3" ]] && break
   sleep 0.1
 done
 if [[ "$(tmux -L "$OUTER" display-message -p -t tui '#{pane_current_command}')" == "python3" ]]; then
-  echo "Esc 后 corral 仍在运行" >&2
+  echo "Ctrl+Q did not quit corral" >&2
   cap >&2
   exit 1
 fi
-ok "列表 Esc 退出，托管会话继续在后台存活"
 sessions | grep -qx "corral-claude-aaaa1111"
-ok "退出 corral 后，后台托管会话不受影响"
+ok "Ctrl+Q 退出界面，后台托管会话继续存活"
 
 # ---- 直启子命令：corral claude --resume <id> 直接带进 TUI 侧边栏并托管 ----
 # 直启的 ident 是 keepalive.new_session_ident() 生成的随机 uuid 片段，与
