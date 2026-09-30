@@ -261,6 +261,8 @@ Key delivery guards: the picker footer (`Enter to select` / `Ready to submit you
 
 ## 验证
 
+New-session catalog repair acceptance (2026-09-30): after restarting the active host, an encrypted-relay client received 109 projects including the no-directory entry (0.875 s), the 80-session subscription window (0.929 s), one nonempty history from each of Claude, Codex, OpenCode, Kimi, Cursor and Pi (0.079–0.699 s), and a successful new-session response (0.153 s). Its empty synthetic session was stopped with `confirm=true`, and the temporary probe was unpaired. The real iPhone Max form also showed the restored project picker and opened a newly created Claude chat with the keyboard. The complete CLI gate passed 2063 tests with no first-pass failures. This check did not inject a network failure or test a network switch.
+
 宣称「手机列表/详情已可用」时，必须同时给出：常驻服务启动时间、手机或探针走的是中继还是直连、以及下面这条**与手机同款**的路径。只跑编译、只跑 unittest、只跑 `sessions.list --limit 5` 都不算完成。
 
 ```bash

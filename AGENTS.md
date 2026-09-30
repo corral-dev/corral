@@ -67,9 +67,21 @@
 
 覆盖度扫描必须跳过手机端 Xcode 构建缓存（`ios/.derivedData*`）；不跳过会把文件数顶到上限、把 Swift 入口扫没。
 
+<!-- project-owned: runtime-support -->
+## 运行时支持（Corral 产品边界，永久）
+
+- 仅支持五个活跃运行时：Claude Code、Codex、OpenCode、Cursor、Pi；此为显式 allowlist，新增不在 allowlist 内的运行时需未来用户显式决策后才可加入。
+- 已有 Kimi 兼容实现（适配器/shim/扫描/样式/资源/历史解析/测试夹具）可保留于源码与磁盘，处于 dormant：不再维护、不新增功能、不在任何用户可见入口中出现（新建会话、助手选择器/目录/筛选、接力/恢复/菜单、TUI 与手机侧列表/详情入口均隐藏）。
+- 存量用户历史文件始终保留不删；展示与投影层按活跃 allowlist 过滤，不泄露入口；直接的程序化兼容调用可保留但不经 UI 暴露。
+
 <!-- managed:inherited-agents:end -->
 
 # corral 项目规范
+
+## 运行时支持（Corral 产品边界，永久）
+
+- 仅支持五个活跃运行时：Claude Code、Codex、OpenCode、Cursor、Pi（allowlist）；新增不在此列的运行时需未来用户显式决策。
+- 已有 Kimi 兼容代码/适配/资源/测试可保留于源码，处于 dormant：不再维护、不新增功能、用户界面不提供任何入口（新建/选择器/目录/筛选/接力/恢复/菜单、TUI 与手机侧列表均隐藏；存量历史不删，展示层按 allowlist 过滤）。
 
 - [Network UX implementation review](docs/reviews/NETWORK_UX_2026-09-10-review.md): **must read** before correcting, validating, or releasing the September 10 command-receipt and relay-lane changes; the four recorded findings were corrected in source (see that doc’s Corrections applied). Skipping it can reintroduce false delivery, duplicate execution, or shared disconnections.
 
