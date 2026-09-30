@@ -131,8 +131,8 @@
   isolated sender, never a phone. Against the still-running old scanner, the new
   consumer rejected both its live heartbeat and shared snapshot. Post-install
   relay and physical notification acceptance remain separate evidence.
-- **Modern Codex correction (2026-10-01, SessKit 0.2.5 published; installed
-  consumer gate pending)**:
+- **Modern Codex correction (2026-10-01, Corral 0.24.244 / SessKit 0.2.5
+  published and installed on both development hosts)**:
   First-candidate acceptance also rejected stale terminal inheritance: public
   native scans of prior completion/abort followed by a new modern turn and
   command/message items still returned the previous terminal state with a
@@ -144,7 +144,14 @@
   restart added zero. Full provider tests: 516 passed; published wheel digest
   and exact parser source matched. Twelve stable native histories were sampled,
   including one modern ongoing turn with no notifiable terminal id. Both hosts
-  remain muted until the installed consumer is verified.
+  passed the installed consumer gate. The exact same public scan/hub/notifier
+  acceptance also passed with each host's installed interpreter, with zero
+  synthetic phone pushes. The new worker heartbeat and shared snapshot cohort
+  are active on both hosts. Saved completion/abort preferences were restored
+  only for their original paired devices; unrelated configuration was preserved.
+  The retained logs covered the first 243 seconds after restoration on both
+  hosts and contained zero APNs accepts. This is a bounded observation, not a
+  delivery proof for a future genuine completion.
   The cache/Claude fixes above shipped and passed their acceptance, but a live
   Codex RPC history continued producing completion pushes during command and
   message activity. Its stable native history had a started turn and modern
@@ -152,9 +159,14 @@
   its earlier final-answer item. The installed shared snapshot still projected
   DONE. This is a separate native-finality defect, not proof that cache cohorts
   failed. See SessKit `docs/CONTRACT.md` Completion identity for the current
-  requirement and official protocol references. End notifications are temporarily
-  muted for token-bearing devices on both hosts; private backups preserve the
-  prior preferences. Restore them only after this real-history regression passes.
+  requirement and official protocol references. Private backups preserve the
+  pre-containment preferences; the temporary mute is now removed after installed
+  acceptance. Both encrypted-relay full-table subscriptions passed: one detail
+  from each of the five active assistants on the desktop host; one from each
+  of the four present assistants on the Linux host (no Claude history there).
+  iPhone readback is 1.0.74 (84); launch still returns Locked, so physical
+  reception, notification tap/navigation and affected-screen visual acceptance
+  remain unverified. The signed build is also available on AppShelf.
   Bounded-read limit: if every modern framing marker is outside both head/tail
   windows, legacy assistant-text fallback remains possible. A structural probe
   reproduced that limit; no matching live failure was observed. Do not claim
