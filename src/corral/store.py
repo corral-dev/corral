@@ -237,10 +237,36 @@ class SessionStore:
         except Exception:
             return {}
 
+    @staticmethod
+    def _scan_worker_active() -> bool:
+        """A live off-process scanner owns parsing; never raise (perf-C)."""
+        try:
+            from corral import scan_worker
+
+            return scan_worker.is_active()
+        except Exception:
+            return False
+
+    def _ensure_scan_worker(self) -> None:
+        """Start the singleton scan worker if none is live (perf-C).
+
+        Rate-limited inside; a no-op when disabled (tests, CORRAL_CACHE=0).
+        Must never break load/refresh.
+        """
+        try:
+            from corral import scan_worker
+
+            scan_worker.ensure_scan_worker(self.limit)
+        except Exception:
+            pass
+
     def load(self) -> None:
         from corral import observe
 
         try:
+            # Warm the off-process scanner so later refreshes consume instead
+            # of parsing (perf-C); best-effort, never blocks the load itself.
+            self._ensure_scan_worker()
             t0 = time.perf_counter()
             keep_ids = self._remembered_scan_ids()
             scanned = self.registry.scan_all(
@@ -313,10 +339,19 @@ class SessionStore:
         try:
             t0 = time.perf_counter()
             now = time.monotonic()
+            # With a live off-process scanner (perf-C) the forced local scan
+            # becomes staleness-based: a fresh shared index is sufficient (the
+            # worker scans deeper than any consumer), a miss still falls back
+            # to a local scan below. Without a worker, keep the periodic
+            # forced local scan so new sessions cannot stall.
             force_local = (
                 self._last_local_scan_at is None
                 or (now - self._last_local_scan_at) >= self._FULL_MERGE_INTERVAL
-            )
+            ) and not self._scan_worker_active()
+            if force_local:
+                # Opportunistically (re)start a dead worker; rate-limited and
+                # cheap when one is already live.
+                self._ensure_scan_worker()
             keep_ids = self._remembered_scan_ids()
             scanned = self.registry.scan_all(
                 self.limit,

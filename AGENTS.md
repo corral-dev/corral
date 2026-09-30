@@ -96,7 +96,7 @@
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词；**改接力说明，排查「接力时提示没有历史记录位置后终端界面退出」，排查「刚派生的 OpenCode/Pi 会话被标成已结束」，或排查「接力后默认工作目录像是会话文件目录 / 不是项目目录」时也读**（进程 cwd 跟源项目走；Claude/Codex/Cursor/Kimi 的 `--add-dir` 才是历史父目录，不要当工作目录）
 - `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增、修改、评审或排查一种 AI 助手（含 Pi）的扫描、预览、恢复、接力、空白新建、命令托管、标题生成、**手机远程对话空白**或**命令别名导致的安装状态误判**前必读，避免出现半接入状态；**给新助手设计「带初始提问启动」时也读**（先分清交互窗口还是打印模式，提问正文不能当命令行扫）；**无人值守托管启动**（信任确认框、输入框就绪识别、送达确认）按助手分别处理也在这里
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：改、评审或排查事件日志、诊断、F12 截图观测、界面异常、**远程 RPC 服务端耗时（`audit` 的 `duration_ms`/`plane`/`req_id`、`corral remote status` 最近操作耗时列）**前必读；**问「有没有可观测性 / 界面卡死怎么取证」、读 `events.log` 的 `scan_all`/`refresh_live` 时也读**；**排查历史事件“明明发生过但日志没有”也读**（当前 256KB 整文件截断会永久丢掉前一段，不能据此断言事件未发生）
-- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、**标题语言（跟用户提问主语言，不跟界面语言、不默认中文；排查「英文会话却出中文标题 / 标题跟系统语言走」「侧栏莫名出现 cli 生成 s0 / 为什么还用 Claude 生成标题 / 空壳为什么有标题」）**、会话关注状态与 Cursor 观察器、会话保活（含**手机任务已投递却中断 / 自动清理误杀执行中的 Agent**、**排查「Cursor 进程过多 / 活动监视器一堆 agent」**、**改/查看托管软上限「最大进程数限制是多少 / 上限改成 N 个 / 进程实际有没有超限」**）、直启、Agent 只读接口、**启动 Pi 每次都打出「Warning: No project session found with id …」（进「Pi 扫描与启动」节；无害，禁止为消警告拆掉 `--session-id`）**、**排查「看不到历史 Pi 会话 / 只能看到最近的 Pi / 钉过的旧 Pi 从列表消失 / 旧会话搬家挡发版 / 搬家之后会话去哪了」也进该节**、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、**收尾核对 `releases/latest` 匿名 403 / JSON 解析失败但 Release 已建好（改用 `gh api`，禁止再开第二轮收尾）**、**本机 universal2 构建失败 / Homebrew rustc 缺 x86_64、版本四文件不同号、`verify_clean_install` ensurepip 崩**、要不要上 PyPI）、**CI 工作流（改 / 优化 / 评审 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端 / ci-test 跑很久像卡住 / 发版检查跑三遍 / 不要每次都跑这么重 / 想并行或异步加速检查」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）；**排查「还能执行 pickup / 敲 corral command not found / 新名无法启动 / No module named pickup.bootstrap」进「内嵌面板」节改名后未重装入口那条**（禁止加回 `pickup` console script，跑 `scripts/dev-install.sh`）、**排查「绕过 shim / command codex / corral shim uninstall」「打开 Codex 白屏 / Missing optional dependency codex-darwin-arm64」（进「命令拦截」「Codex 扫描」）**、**多 Agent 发版卫生**（公开仓库提交历史不得含私有项目名、推送门禁扫描整个工作区时的处理）
+- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、**标题语言（跟用户提问主语言，不跟界面语言、不默认中文；排查「英文会话却出中文标题 / 标题跟系统语言走」「侧栏莫名出现 cli 生成 s0 / 为什么还用 Claude 生成标题 / 空壳为什么有标题」）**、会话关注状态与 Cursor 观察器、会话保活（含**手机任务已投递却中断 / 自动清理误杀执行中的 Agent**、**排查「Cursor 进程过多 / 活动监视器一堆 agent」**、**改/查看托管软上限「最大进程数限制是多少 / 上限改成 N 个 / 进程实际有没有超限」**）、直启、Agent 只读接口、**启动 Pi 每次都打出「Warning: No project session found with id …」（进「Pi 扫描与启动」节；无害，禁止为消警告拆掉 `--session-id`）**、**排查「看不到历史 Pi 会话 / 只能看到最近的 Pi / 钉过的旧 Pi 从列表消失 / 旧会话搬家挡发版 / 搬家之后会话去哪了」也进该节**、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、**收尾核对 `releases/latest` 匿名 403 / JSON 解析失败但 Release 已建好（改用 `gh api`，禁止再开第二轮收尾）**、**本机 universal2 构建失败 / Homebrew rustc 缺 x86_64、版本四文件不同号、`verify_clean_install` ensurepip 崩**、要不要上 PyPI）、**CI 工作流（改 / 优化 / 评审 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端 / ci-test 跑很久像卡住 / 发版检查跑三遍 / 不要每次都跑这么重 / 想并行或异步加速检查」前必读「CI 工作流」节；另含环境就绪、依赖交接与 UI / 终端验收）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）；**排查「还能执行 pickup / 敲 corral command not found / 新名无法启动 / No module named pickup.bootstrap」进「内嵌面板」节改名后未重装入口那条**（禁止加回 `pickup` console script，跑 `scripts/dev-install.sh`）、**排查「绕过 shim / command codex / corral shim uninstall」「打开 Codex 白屏 / Missing optional dependency codex-darwin-arm64」（进「命令拦截」「Codex 扫描」）**、**多 Agent 发版卫生**（公开仓库提交历史不得含私有项目名、推送门禁扫描整个工作区时的处理）
 - `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `corral remote`、手机配对、**开源默认中继 / 不要把维护者服务器写进 GitHub / 别人要用自己搭中继 / 禁止捆绑共享多租户**、**审查手机互联网连接 / 中继 / 配对安全线**、**远程服务是 on/off 开关（后台，配对走 pair）**、**重启后远程没了 / 开关记忆与开机自启**、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]`、**换网不可用 / 同 WiFi 却走中继 / 局域网探测无效 / 配对没有 l= / Bonjour mDNS / 出门蜂窝无感切换 / 中继默认与 `--no-relay` 禁区、任意网络可达、守护进程还叫旧名 pickup / 连中继 404 / 手机 App 突然连不上 / 会话列表或打开历史极慢 / 进列表仍先转圈 / 转圈后开发机响应超时 / 打开大历史第一次仍像卡死 / 详情把通道堵住 / Cursor 用户气泡出现整段系统上下文 / Codex 详情第一句是系统说明 / Pi 会话在手机上是空聊天 / 两台开发机点进去会话一模一样 / 发了消息对话不更新 / 看不到助手回复 / 新开会话发了在吗 / 刚开的会话只有自己那句 / 终端里有字聊天没有 / 手机开的会话半分钟才出现在电脑 TUI / 先预览再变可交互 / This session is no longer in the list / 对话在刷但选择题还卡在底上 / 两道题合成一排选项 / Claude、Codex、OpenCode 原生提问与自填回答 / 换网后对话整段重拉 / 重连后聊天闪空 / 手机中途发消息却是 follow up 不是 steering / 要等助手跑完才接**、**规划/实现「会话结束系统通知 / 干完了推送 / 异常结束也要通知」**前**必读**（文首「开源中继硬规则」；结束通知须基于 SessKit 已完成/已中断，见产品边界；验收必须走中继上的整表订阅+**每个助手一条详情**，禁止用 5 条摘要、单条 Codex 或本机 unittest 冒充）；客户端工程见 `../ios/AGENTS.md`；个人多租户公网实例运维只在私有 agentsync，禁止写进公开门面当默认地址。**审查「中继会不会偷看 / 扫码等不等于把电脑交出去 / 合盖后别人占了公网通道」进该文「安全边界」。**
 - `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md`：规划、设计、评审或排查手机会话列表/历史加载慢、**进列表仍先转圈、不要堆滚动分页**、**进详情后返回没反应**、实时数据被大历史拖住、**打开大历史第一次解析整份 JSONL**、Cursor 上下文泄漏、Codex 消息缺失、**Pi 手机聊天空白**、**发了消息对话不更新 / 会话已不在列表里 / 新开会话发了在吗 / 刚开的会话只有自己那句 / 终端里有字聊天没有**、直连/中继切换与断线恢复、**换网后对话像冷启动 / 按序号补缺口**前必读。不读会把压缩或超时当成完整方案，漏掉缓存分页、尾部偏移读取、控制/数据隔离、序号恢复和真实设备验收
 - `docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md`：实现、评审或联调 iOS 会话页右上菜单的复制（`session.copy`，新增）与接力（`session.handoff`，服务端已有）前必读；作用域锁定 copy+handoff（成功后进新会话；不可用/只读隐藏），不含导出/重启/新原生恢复协议/新 i18n/发版；服务端复用 TUI 分叉与托管链路（`SessionHub.copy_session` → `prepare_copy_request` → `build_launch_plan` → `_host`），验收走 fixture 回放与 `test_remote_actions`/`test_remote_sessions`/`test_runtime`。
@@ -126,76 +126,29 @@
 
 ## 发版要求
 
-**功能/修复改完后必须发布新版本**（补丁位递增），不要只提交代码就结束。同步 bump `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`，提交 `release: vX.Y.Z …`，打 annotated tag，推送 `github` 与 `origin`，**再跑 `bash scripts/publish-release.sh`**（建 Release、本机构建并上传安装包、更新 Homebrew 配方，一步到位；脚本自带收尾核对输出）。纯文档/规则整理且无产品行为变化时可不发版；有疑义时默认发版。
-
-**不要把「推了 tag」当成发布完成。** GitHub Actions 的免费并发额度经常让整批任务排队几十分钟（真实发生过 45 分钟仍未开始），期间用户 `brew upgrade` 拿到的还是几个版本前的配方、一键安装脚本找不到预编译包。`scripts/publish-release.sh` 就是为此存在的：它在本机做完 CI 那两件真正决定「用户能不能升级」的事，CI 退化成补齐本机出不了的那部分平台包。细则与历史见 `docs/MAINTAINER_GUIDE.md`「开源发布」。
-
-**发版前必须判定工作区里其他 Agent 的改动是否已完工，未完工则不得打 tag。** 本仓库长期有多个 Agent 并行改动，全局规范要求发版时「不挑拣、不等对方、一并纳入」——但那条的前提是那些改动**本身是完好的**。半成品跟着 tag 发出去，用户升级后就会撞上缺陷。判定手法（2026-07-31 实测有效）：
-
-1. 跑之前先给工作区所有改动文件（含未跟踪文件）算一个哈希快照，跑完再算一次；**两次不一致说明有 Agent 正在编辑，此刻的任何提交都可能捕获到写了一半的文件**。
-2. 用 `env -u TEXTUAL_DISABLE_KITTY_KEY python scripts/ci-test.py` 跑全量，失败用例按归属分类：**未跟踪的新模块 + 它自带的新用例成片失败 = 对方的新功能还没做完**，这是硬阻断，不要发版、也不要替对方修。
-3. 真实案例：本次修 CI 时工作区并存着另一个 Agent 正在开发的会话概览新功能（新模块尚未纳入版本管理、自带用例 5 个全挂），同时 tmux 集成用例因两边同时跑真实 tmux 而大面积 `new-session` 失败——后者属于负载干扰、单独重跑即恢复，前者属于真未完工。两类要分清，不要笼统判成「测试挂了不能发」。
-
-阻断时的正确做法：工作区里所有人的改动都留在磁盘上不提交，向机主说明「谁的什么功能没完工、卡在哪」，由机主决定是单独发自己的修复、还是等对方收尾后合并发布。**禁止**把对方文件挪出工作区（全局绝对禁令，见 agentsync `AGENTS.md`「并行、Git」）。
+- 产品行为或代码修复完成后必须发布新版本（补丁位递增），同步 `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`。以 `release: vX.Y.Z …` 提交、打 annotated tag、推送 `github` 与 `origin`，再运行 `bash scripts/publish-release.sh`。纯文档或规则整理且不改变产品行为时可不 bump 版本。
+- 完工时按全局无条件 ship-all 规则集成、验证并交付完整当前工作区，包括其他 Agent 的改动；脏树、foreign WIP 或并行发布窗口不构成只发布部分内容或延后的理由。不得搬走、隐藏、丢弃其他人的文件。失败检查要在完整工作区上查明并修复，不能缩小验证或发布范围。
+- 本机发布路径必须完成完整验证和干净安装核验，不以 tag 或 CI 队列状态代替实际发布；具体顺序与远端核对见 `docs/MAINTAINER_GUIDE.md`「开源发布 / 多 Agent 并行时的发版卫生」。
 
 ## 验证要求
 
-**首屏（进程启动到 TUI 首次渲染完成）延迟目标 ≤1s；这条红线已随界面层改用 Textual 放宽为非阻断项（用户已同意），但改动扫描/标题/界面代码后仍必须实测并如实汇报耗时，不能不测。** 改动扫描（`scan/claude.py`/`scan/codex.py`/`runtime/`）、标题或界面相关代码后，除下面的编译/单测外，必须额外跑一次真实计时并汇报数值：
+- 耗时检查前，先读 [开发环境指南](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md) 做依赖与运行环境就绪检查，再读 [测试环境指南](docs/TEST_ENVIRONMENT_GUIDE.md) 选择隔离验收入口。开发、测试、构建依赖须有明确来源；将环境/安装失败与产品断言或真实 UI/终端失败分开记录。重复失败要根据日志、夹具前置条件和环境证据复核策略，不得无限原样重跑或因此跳过完整验证。
+- 完整验证结果只有在相关源码 / 构建输入与环境、解释器、依赖版本指纹都一致时才能复用。Corral 现有 `ci-test.py` / `ci_stamp.py` 是唯一完整套件戳机制；其戳扩展到环境指纹前，不能仅凭源码戳跳过完整验证。保留全部 UI、真实终端和干净安装门禁，细节见 `docs/MAINTAINER_GUIDE.md`「Readiness and dependency handoff」。
+- 改动代码、界面或运行时适配器后至少执行：
 
-```bash
-python3 -c "
-import time
-from corral.runtime import default_registry
-r = default_registry()
-t = time.perf_counter()
-r.scan_all(50)
-print(f'{(time.perf_counter()-t)*1000:.0f}ms')
-"
-```
+  ```bash
+  python3 -m compileall -q src/corral tests
+  env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
+  ```
 
-`test_session_scanning.py` 的 `StartupLatencyTests` 会在有真实会话数据时对同一调用做 <1s 断言（`python3 -m unittest -v` 已包含），但真实计时仍要单独跑一次确认，不能只信任测试里的一次采样。**不达标不再是提交阻断条件（硬性红线已放宽），但必须如实汇报实测耗时**；根因排查思路和已修过的坑见 `docs/MAINTAINER_GUIDE.md`「扫描性能」节。
+  该脚本与 CI 一样先跑 Ruff 再跑全量单测。不要用单测子集、跳过 UI / 终端集成或手动跳过标记替代发布门禁。
+- 改动扫描、标题或界面代码后，仍须独立测量首屏扫描耗时并如实记录（该指标不再是阻断线）：
 
-改动代码、界面或运行时适配器后至少执行：
+  ```bash
+  python3 -c "import time; from corral.runtime import default_registry; r=default_registry(); t=time.perf_counter(); r.scan_all(50); print(f'{(time.perf_counter()-t)*1000:.0f}ms')"
+  ```
 
-```bash
-python3 -m compileall -q src/corral tests
-env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
-```
-
-`scripts/ci-test.py` 会**先跑与 CI 相同的 `ruff check`**（固定 `ruff==0.16.1`），再跑全量单测（另加挂死打栈与已知偶发自动重跑一次）。本机只跑 `unittest discover` 会漏掉 lint——2026-08-07 起连续多个版本就因一处 import 排序在 CI Lint 步全矩阵报红、天天发失败邮件，单测根本没跑到。细则见 `docs/MAINTAINER_GUIDE.md`「CI 工作流」节。**复现 CI 环境时必须 `env -u TEXTUAL_DISABLE_KITTY_KEY`**——开发机 shell 里通常已导出该变量，会掩盖掉真实失败。
-
-**推送 / 发版门禁（防再狂发失败邮件）：** 克隆后先跑一次 `bash scripts/install-git-hooks.sh`（写入 `.git/hooks`，不改 git config）。之后：
-
-- 日常 `git push`：自动只跑 `python3 scripts/ci-test.py --lint-only`（几秒）；不过则推送被拦。
-- 提交说明以 `release:` 开头，或推送 `v*` 标签：需要完整检查。**完整套件每个版本只跑一次**：本机刚跑过且产品代码未改时，推送门禁和收尾脚本认戳跳过整套、只再拦 ruff。戳失效（改过 `src/` / `tests/` / `scripts/` 等）才再跑全量。不要指望每次手设 `CORRAL_SKIP_*`。
-- `scripts/publish-release.sh` 同样认戳，但不能跳过完整检查；`CORRAL_SKIP_PUSH_GATE=1` 只绕过推送钩子，不能绕过发布门禁。
-
-全量单测约 560 项；墙钟主要卡在界面自动化（`test_ui` 单文件就约四五分钟）加真实终端集成。`scripts/ci-test.py` 默认按**模块多进程并行**：碰共享保活 socket / Textual Pilot 的模块走同一条串行车道，其余模块与之重叠跑（`--jobs N` / `CORRAL_TEST_JOBS`，`1`=旧单进程）。多核上常见墙钟大约五六分钟量级，别按「几十秒跑完」设超时。**排查「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了」：** 单次完整检查仍要数分钟，不是故障；发版慢曾是因为同一套连跑最多三遍（发版前、推送门禁、收尾脚本），已改为认戳跳过重复。中途刷「某任务执行超过 0.1 秒」是界面框架在抱怨慢，不是挂死。还在往下出新的通过行 / shard 完成行 = 正常；连续许多分钟没有任何新结果、或跑到约 25 分钟被打出全部线程栈才是挂死（那条已修过）。**禁止**把「跑快点」修成跳过界面/终端集成、只跑改过的文件、或把 Pilot/tmux 模块也拆进并行（会抢 `tmux -L corral-keepalive`）。异步协程帮不上这段墙钟——瓶颈在真实等待，不是解释器空转。机器负载高时，涉及真实 tmux 回显和 Textual Pilot 等待的用例（`ControlChannelIntegrationTests`、`MainScreenEmbedFlowTests` 等）会因 4s 级等待超时而假失败：**先把失败用例单独重跑一遍确认，再判定是否真回归**，不要直接当成自己改坏了去查。
-
-涉及界面时还要运行一次真实终端冒烟。标题后台生成会调用本机 agent CLI、消耗对应账号额度；只验证界面时，在临时目录把 `claude`、`codex` 指向本机 `true`，放到 `PATH` 最前面，再启动 `python3 -m corral --limit 5`（或已安装的 `corral --limit 5`），确认：
-
-- 底部 Textual `Footer` 显示 `^n New` / `^n 新建`，以及 `^t Advanced` / `^t 高级操作`（右栏对着某个会话时仍保留，筛选框里不抢该键）。**不得出现** `Back to list` / `返回列表`、`Toggle sidebar` / `显隐侧栏`（侧栏显隐没有快捷键，只点顶栏 ◀/▶）。右端常驻 `x0c/corral` 再跟版本号；点仓库名用系统浏览器打开公开仓库。
-- **按键无响应时先查焦点**：启动时若选中的是别处托管的实时会话，右栏实时格会持有输入焦点，列表侧动作会从 Footer 收起（**不再**改画成「`Ctrl+\` 返回列表」）——此时 `a`/`q` 等会被转发进助手的真实输入行（可能污染正在跑的会话，务必避免盲发鼠标序列）。先按 `Ctrl+\` 或再点当前那张会话卡，把焦点切回侧栏再操作（真机冒烟踩坑：2026-08-17）。
-- 高级操作弹窗（`ui/modals.py` 的 `choose_target_runtime`）第一项是导出会话、第二项是复制会话、第三项是重启会话（结束卡住的托管进程后按原会话原地恢复，上下文保留；仅对 corral 正托管且非占位的会话可用，其余置灰），其后动态列出注册表中的运行时。
-- 默认选中第一个已安装的其他运行时。
-- `Esc` 先关闭弹窗，再退出主界面。
-- 选中已结束会话时右栏是完整对话预览（消息之间是角色色的分隔横线；`● 你` / `◆ 运行时` 抬头独占一行并带时间；正文按 Markdown 排版、顶格另起一行且不着色），不再出现「最近提问 / 最近回复」摘要块。
-
-**界面改动后的截图验收（必要步骤，不能只靠单测文字断言）：** Agent / 维护者必须自己进 TUI 出图并肉眼看图，确认布局与文案没有明显回归。标准做法（Textual Pilot → SVG → PNG，与当初 README 截图同一路径）：
-
-```bash
-cd cli
-pip install cairosvg   # 首次；ImageMagick convert 渲 Rich SVG 常出空白图，不要当主路径
-python3 docs/screenshots/capture.py   # → docs/screenshots/list.png, search.png, demo.gif
-```
-
-然后用读图工具打开 `docs/screenshots/list.png`（以及必要时其它新截图）检查：左栏搜索框与卡片、右栏完整对话、Footer、有无截断错乱、错误文案（如残留「最近提问」、空白右栏、运行时名缺失、标题整行转圈）；图中应有 runtime 真彩（如 Claude `#D97757`），且无 Rich 假 macOS 标题栏/三色点。**若整图灰阶**：先查环境是否带了 `NO_COLOR`——Textual 会启用 Monochrome；`capture.py` 已在创建 App 前清除该变量，不要绕过脚本另跑导出。配色也可用真机 TUI 或 `SessionCard.render_line` 的 segment style 交叉验收。中文若成豆腐块，多半是截图环境缺 CJK 字体——本机（`root@10.10.10.2` / suzhou）需有 `fonts-noto-cjk`（`Noto Sans Mono CJK SC`）；`capture.py` 已按该字体族改写 SVG。**侧边栏会话组名前的水果 emoji / 分组树线方框**：Cairo 画不出 Apple Color Emoji，粗体 Menlo 也缺 `│├└`。`capture.py` 必须用 Hack（或 DejaVu）换字体，并把单独 span 的水果 `<text>` 换成 `docs/screenshots/emoji/` 里的 Twemoji PNG；缺资源要直接报错，禁止静默留豆腐。验收时用读图工具看 **demo.gif 最后一帧** 分组行，不要只看 `wrote`。禁止靠清空 `group_emoji`「修」方框。README 若仍引用旧「全屏预览」图，界面语义变了必须同步换图与说明。截图使用虚构演示数据，禁止把真实用户会话内容写进仓库。
-
-**改动 `keepalive`、入口层保活接线、`embed`/`ui/embed_pane` 内嵌面板、或 `corral claude`/`corral codex` 直启子命令时，除单测外必须额外跑一次真实 tmux 冒烟**：内嵌面板与界面交互（控制通道、滚轮转发、copy-mode、光标、主题注入、「连接中…」回归；界面层已从 curses 换成 Textual，鼠标拖拽选词这版暂未实现，见 `docs/MAINTAINER_GUIDE.md`「内嵌面板」节）的统一入口是仓库根的端到端脚本——直接跑 `bash selftest.sh`（外层 TUI 跑在独立 tmux socket + 隔离 fake HOME；**但托管侧用的就是真实保活 socket `corral-keepalive`**——除固定的 `corral-claude-aaaa1111/bbbb2222` 外，直启与 cursor 两段还会以随机 ident 创建真实命名的会话，正常退出由 trap 清掉，**脚本中途崩溃则会残留**。收工前对照 `tmux -L corral-keepalive list-sessions` 检查：pane 启动命令指向 `/tmp/corral-selftest.*/fakebin/` 的才是本次残留的假夹具、可以清，其余一律不动），全部断言全绿才算过。用 `python3 -c "from corral import keepalive; from corral.models import LaunchPlan; print(keepalive.wrap_plan(LaunchPlan(('sleep','300'),None),'claude','smoketest'))"` 拿到真实 argv 后执行（加 `-d` 变成后台创建，不实际 attach），确认 `tmux -L corral-keepalive list-sessions` 能看到会话、`keepalive.annotate()` 能靠 pid 匹配上、`keepalive.reap_idle(now=<未来时间戳>)` 能正确回收、正常退出（跑一个立即结束的命令如 `true`）后会话不留残留；测试用的 socket 用完后确认没有残留 `tmux -L corral-keepalive` 进程（`ps aux | grep "[t]mux -L corral-keepalive"` 应为空）。改完配置内容（`keepalive` 里的 `_TMUX_CONFIG` 常量）后，额外跑一次 `pip install --target <临时目录> .` 确认真实安装产物里 `src/corral` 包完整。直启子命令额外验证：把 `claude`/`codex` 指向本机 `true`（或一个会 sleep 的 fake 脚本）放到 `PATH` 最前面，跑 `corral --no-keepalive claude <参数>` 确认参数原样透传且垫上了危险参数、用户已带危险参数时不重复；默认路径（真实终端内跑 `corral claude`）确认进入 TUI 侧边栏模式、新会话包进 `tmux -L corral-keepalive` 并显示在右栏；非真实终端（管道）则确认退回 `tmux -L corral-keepalive` 包装后的 execvp 全屏接管。**本机若已有其他真实保活会话在跑（`tmux -L corral-keepalive list-sessions` 能看到非本次测试创建的 `corral-*`/`sc-*` 会话），冒烟测试一律只操作自己新建的会话名，不得 `kill-session` 或以其他方式影响已存在的会话**——那些通常是该机器上真实在跑的 Agent 会话。
-
-**涉及会话扫描、标题或会话预览（`load_conversation`）时，改完必须至少随机抽查 5 条真实会话验证，不能只靠手写的单测小样例过关。** 优先用真实终端打开预览页肉眼检查内容，或写一次性脚本批量跑 `load_conversation`/`scan_sessions` 扫描本机全部真实会话文件、断言没有异常（如空文本、字面量 `"None"`、角色标错、时间戳缺失或非单调）。本机 Claude/Codex 历史里曾各自藏着单测样例覆盖不到的真实格式坑（`stop_reason` 与文本内容无关、`origin.kind` 区分真人和系统事件、`payload` 字段值可能是 JSON `null` 而不是缺失），这类坑只有跑真实数据才会暴露，见「Claude 扫描」节的具体记录。
-
-**标题生成改动的自测硬要求：完成安装后必须直接运行真实 `corral --generate-titles`，同时记录缓存条目数和待补会话数。** 若命令因已有后台补全进程持锁而立即返回，必须检查该进程及其 5 路生成子进程、持续观察缓存增长，不能把立即返回误判为未执行或完成；补全结束后再扫描确认只剩没有可提炼任务信息的会话，且这类会话不会继续排队。不得只验证 `corral list`、源码函数或单测。
+- 任何用户可见 UI 改动都要走真实界面并检查维护的截图；需要真实终端 / tmux 行为的改动也必须走真实 tmux 验收。会话扫描、标题、预览改动要抽查真实记录，标题生成还要核验安装后的真实命令。完整范围、隔离边界、清洁安装及日志要求见 `docs/MAINTAINER_GUIDE.md`「UI, terminal, and data acceptance」与 [测试环境指南](docs/TEST_ENVIRONMENT_GUIDE.md)；截图及日志不得含真实会话正文。
 
 ## 本机入口
 

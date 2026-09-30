@@ -577,10 +577,10 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 **推送 / 发版门禁 + 矩阵 fail-fast（2026-08-07）**：单靠文档不够——Agent 仍可能漏跑验证就推。落地三道：
 
 1. **`.githooks/pre-push`**（`bash scripts/install-git-hooks.sh` 装到 Git 实际会执行的 hooks 目录）：日常推送只跑 `ci-test.py --lint-only`；提交说明以 `release:` 开头或推 `v*` 标签时需要完整检查。应急跳过：`CORRAL_SKIP_PUSH_GATE=1` 或 `git push --no-verify`（应极少用）。
-   - **完整套件每个版本只跑一次（2026-08-30）**：发版慢不是因为单次检查太重，而是同一套完整检查被连跑最多三遍（发版前一次、推送门禁一次、收尾脚本再一次）。完整检查成功后在 `.git/corral-ci-stamp` 记下当前产品代码指纹（`src/`、`tests/`、`scripts/`、`.githooks/`、`rust/` 及版本文件）；推送门禁和 `publish-release.sh` 发现指纹未变就只再拦 ruff。改过这些目录之后戳失效，必须再跑。**禁止**把「跑快点」修成跳过界面/终端集成或只跑改过的文件；也不要指望 Agent 每次记得设 `CORRAL_SKIP_*`。
+   - **复用完整套件结果须匹配源码和环境（2026-08-30；环境指纹接线待集成）**：完整检查成功后，现有 `.git/corral-ci-stamp` 只记录产品代码指纹（`src/`、`tests/`、`scripts/`、`.githooks/`、`rust/` 及版本文件）；它本身不能证明解释器、依赖或工具环境未变。只有同时核对并匹配完整环境指纹，推送门禁或 `publish-release.sh` 才能复用结果；串行集成需把环境身份并入这枚现有戳。在此之前，源码戳单独匹配不得作为跳过完整验证的依据。改过相关源码或环境之后必须重跑。**禁止**把「跑快点」修成跳过界面/终端集成或只跑改过的文件；也不要指望 Agent 每次记得设 `CORRAL_SKIP_*`。
    - **共享 `core.hooksPath`（如 `~/.git-hooks`）**：Git 会忽略各仓 `.git/hooks`。安装脚本必须在共享目录写**合并分发器**：先跑全局 leakgate 泄漏门禁，再仅当当前仓有可执行的 `.githooks/pre-push` 时转调——禁止写成「只转调 Corral」的旧分发器（会盖掉本机所有仓库的密钥扫描），也禁止把本仓专用脚本直接盖到全局 hooks（否则别的仓库推送也会跑 corral 检查）。若目标已是指向本仓脚本的软链，**先 `rm` 再写分发器**；`cat >` 会顺着软链把真脚本盖掉（已踩过一次）。
    - **判定「是否全量门禁」**：只看「相对远端尚未推送」的提交（`git log … --not --remotes`）。新分支首次推送若用裸 `git log $sha`，会扫到历史上任意 `release:` 提交，误跑全量——不要改回。
-2. **`publish-release.sh` 开头**认同一枚戳：工作区未改就跳过整套；戳失效或被 `--no-verify` 绕过推送时仍会跑完整检查，挡住「把配方指到未验证版本」。发布门禁没有跳过开关；失败后修正环境再重跑，成功戳会避免重复执行完整检查。成功后还跑 `scripts/verify_clean_install.py`（临时 venv + 固定 SessKit Release + 本树安装），证明陌生机器不靠本机 editable SessKit 也能装上；`CORRAL_SKIP_CLEAN_INSTALL=1` 仅应急。
+2. **`publish-release.sh` 开头**使用同一枚戳；戳无效或推送钩子被绕过时仍须完整检查，挡住「把配方指到未验证版本」。发布门禁没有跳过开关；修正环境后直接重跑。源码戳须同时匹配环境指纹才能跳过全套；环境指纹尚未接入前，源码未改也不足以证明可复用。成功后还跑 `scripts/verify_clean_install.py`（临时 venv + 固定 SessKit Release + 本树安装），证明陌生机器不靠本机 editable SessKit 也能装上；`CORRAL_SKIP_CLEAN_INSTALL=1` 仅应急。
 3. **`test.yml` 矩阵 `fail-fast: true`**：一路挂了就取消其余作业，少收重复失败邮件、少占免费并发。排查「只在某一 OS / Python 挂」时可临时改 `false` 看全貌，修完改回。
 4. **`release.yml` 必须先看到同一提交上 `test.yml` 成功**（2026-09-11）：打包 / 写 Release / 推 Homebrew 之前跑 `require-tests`；测试失败时禁止再发正式下载。本机收尾脚本不依赖云端排队，但仍执行同等 ci-test + 干净安装门禁。Linux 矩阵必须装 `tmux` **和** `ncurses-term`（不要只在 macOS 步 `brew install`）——缺 tmux 会整组「按回车托管」用例停在静态预览上假失败；缺 `tmux-256color` terminfo 时硬写的 `default-terminal` 也会让 `host_session` 建窗失败。矩阵在全量单测前还有一步 `host_session` 冒烟（`TERM=xterm-256color`，**保留** setup-python 的 `LD_LIBRARY_PATH`，靠 `keepalive.tmux_env()` 消毒）。
 
@@ -590,16 +590,19 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。克隆后若尚未装 hook，先 `bash scripts/install-git-hooks.sh`。
 
-**多 Agent 并行时的发版卫生（2026-08-08）**：工作区常有别人半成品（版本号半 bump、未过单测的 WIP）。门禁会因「脏树 / 版本文件不一致」拒推或让 `publish-release.sh` 半途失败。约定：
+**多 Agent 并行时的发版卫生**：发版准备与全局无条件 ship-all 规则一致；完整 workspace 的改动（包括其他 Agent 的未提交工作）一并集成、完整验证并交付。脏树、并行窗口或尚未完成的 foreign work 不是只发自己的部分或延后发布的理由；不得搬移、隐藏或丢弃其他人的文件。遇到版本冲突时，bump 前重新读取当前版本；验证失败时按环境准备指南分类并修复，再验证完整工作区。
 
-1. 发版前先看清**整棵**工作区；能一并纳入本次 release 的就纳入，不要只挑自己的文件。bump 前再读一次工作区版本号——并行 Agent 可能刚发出了中间版本（2026-09-12：上限 10 原打算接 8 的下一补丁，实际已被别人发成 195，本改动落到 196）。
-2. 别人半成品会污染版本号或测不过时：**停下来告诉机主**，等对方收尾或等机主裁定单独发哪一份。**禁止**把对方未提交的文件挪出工作区再只发自己的。
-3. 推 tag 后必须用 `git ls-remote --tags origin` / `github` 核对远端真有该 tag；本地 `git push` 因门禁失败时可能**根本没推上去**，不能只看本机 tag 列表。
-4. `CORRAL_SKIP_PUSH_GATE=1` 只允许在：**GitHub 侧该版本已验证过**（或本机刚跑完完整 `ci-test`）、且阻塞原因是脏 WIP / 双 remote 重复跑门禁之类非产品缺陷时使用；禁止用跳过门禁掩盖未跑测试。
-5. **显式给旧 tag 跑收尾时，工作区版本号必须等于该 tag。** `publish-release.sh` 按当前工作区打包，不会切回 tag 源码。2026-08-16 给 `v0.24.125` 收尾时工作区已被并行 Agent 升到 `0.24.126`，把 126 的 macOS 安装包传到了 125 的 Release（校验和清单仍是 125 的，附件列表却混了两套）。发现后应立刻从该 Release 删掉版本号不符的附件。脚本现在会在版本不一致时直接退出。
-6. **公开仓库的提交历史**：`origin` 上的全部提交会在**任何一个 Agent** 的下一次发版里随 `git push github` 原样公开（含实验目录、测试夹具、设计文档与截图）。因此不得提交机主的私有项目名、本机项目清单或本机路径清单：示例和夹具用虚构名（如 `Notely`）或已公开项目名；本机数据运行时生成并加入 `.gitignore`（参照 `spikes/web_butler/editor/export_projects.py`）。已推到私有 `origin`、尚未公开的误提交，只能在机主确认后改写**自己的**提交并 `--force-with-lease` 推送（2026-09-29 两次按此处理）；公开前可用 `git merge-base --is-ancestor <提交> github/main` 核对是否已公开。
-7. **推送门禁扫的是工作区，不是本次推送的提交**：`ci-test.py --lint-only` 会检查别的 Agent 未跟踪、未提交的半成品测试文件，导致只改文档或实验目录的推送被拦（2026-09-29：他人暂停中的 `tests/test_remote_richmsg_pi_baseline.py` 报 14 处 ruff）。本次推送不含产品代码时按第 4 条用 `CORRAL_SKIP_PUSH_GATE=1`（全局泄漏门禁照常运行）；**不得**为过门禁挪动或格式化他人文件。环境改进项（未实施）：门禁改为只检查待推送提交的文件树。
-8. **推送时别把输出管道给 `tail`/`head`（未查明原因的观察，2026-09-29 v0.24.228）**：`git push origin main vX.Y.Z 2>&1 | tail -4` 触发的门禁完整检查以 `Exception ignored while flushing sys.stdout` 结束、推送被拒，两个远程都一样；改成 `git push … > /tmp/push.log 2>&1` 重推即成功（门禁认戳跳过重复检查）。发版推送一律把输出写文件再看，不要走管道。
+1. `CORRAL_SKIP_PUSH_GATE=1` 只可绕过本地推送钩子，不能绕过完整验证、发布门禁或全局泄漏门禁；仅当同一工作区的源码与环境指纹都匹配一份完整验证结果、且原因只是重复钩子检查时使用。已发布过同版本本身不能替代当前工作区的完整验证。
+2. 推 tag 后用 `git ls-remote --tags origin` / `github` 确认远端确有该 tag。显式给旧 tag 收尾时，工作区版本必须与 tag 完全一致；`publish-release.sh` 不会切回 tag 源码。
+3. 推送门禁覆盖整个工作区。若它指出未跟踪或并行改动中的失败，按完整验证流程检查并解决，绝不通过移动、隐藏或只提交部分文件来消除失败。推送时将完整输出写到可访问日志文件再检查；不要把 `git push` 输出接到 `tail`/`head` 管道。
+4. 公开仓库的完整提交历史、测试夹具、文档和截图都会随发布公开；不得提交私有项目名、个人路径清单、密钥或真实用户数据。只用虚构或已公开名称，并把本机生成数据排除在提交外。
+
+### UI, terminal, and data acceptance
+
+- UI or visual changes require exercising the real TUI path and inspecting maintained screenshot output; motion checks inspect a frame sequence or final frame. Use `python3 docs/screenshots/capture.py` and synthetic-only fixtures; never commit screenshots containing real conversation data. Check the whole surface (layout, text, clipping, colors, footer, and relevant interaction), not only text assertions.
+- Changes to keepalive, embed, terminal behavior, or direct launch require the full `bash selftest.sh` real-tmux path in addition to unit tests. It uses the shared `corral-keepalive` product socket even though its outer TUI is isolated; run it only when it cannot compete with live UI/terminal work, create/operate only its own test sessions, inspect for its own crash leftovers, and leave all unrelated hosted sessions untouched. The focused isolated acceptance in [the test guide](TEST_ENVIRONMENT_GUIDE.md) supplements but does not replace this required path.
+- Changes to session scanning, titles, or conversation previews require at least five real-record spot checks in addition to fixture tests. Keep private history and its contents out of logs, screenshots, fixtures, and repository artifacts. Title-generation changes also exercise the installed `corral --generate-titles` path and record the cache/pending terminal state; account for its live background process and model quota.
+- Every release still performs the full validation and the `scripts/verify_clean_install.py` clean-install check. `CORRAL_SKIP_CLEAN_INSTALL=1` is an emergency-only escape; if used, clean installation must be proven by another recorded environment/CI check before claiming release acceptance.
 
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
@@ -607,7 +610,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **Kitty 键盘协议回归用例在 5 个 Python 版本上全挂（确定性，非偶发）。** `TEXTUAL_DISABLE_KITTY_KEY` 原先只在 `cli.py` 顶部 `setdefault`，而 `textual.constants` 是**导入时一次性读环境变量定死**的：任何先 `import textual` 再碰 `corral.cli` 的路径（测试套件、只 `import corral` 的脚本、第三方嵌入）都会让这道保护整个失效。本机之所以一直看不出来，是因为开发环境的 shell 里已经导出了 `TEXTUAL_DISABLE_KITTY_KEY=1`，把问题掩盖掉了——**复现必须 `env -u TEXTUAL_DISABLE_KITTY_KEY` 清掉再跑**。已修：开关上移到 `corral/__init__.py`（包顶层是唯一「任何用法必经」的位置），`cli.py` 不再重复设置。
 - **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点已于当天定位并修复**——见下面「macOS 专有挂死」一条，这套打栈机制第一次上线就把它抓了出来（26 分钟自曝，而不是空烧 6 小时）。
 - **已知 Pilot 偶发污染结论。** 见「界面」节的分屏聚焦竞态那条。CI 现在走 `scripts/ci-test.py`，首轮失败的用例自动单独重跑一次，两次都失败才算真回归。
-- **排查 / 优化「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了 / 想并行或异步加速」（2026-08-30；2026-09-12 起默认模块并行）**：单次完整套件仍要数分钟（多核常见约四五分钟），不是故障。墙钟几乎都在 `test_ui`（本机约四五分钟）加真实终端集成；`ci-test.py` 把其它模块与这条串行车道重叠跑（`--jobs` / `CORRAL_TEST_JOBS`，默认约 `min(CPU,6)` 且 ≥2；`1` 退回单进程）。日常推送只跑几秒的格式检查。还在刷新的通过行 / shard 完成行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，是门禁在重复跑同一套（已改为认戳跳过）。**禁止**把「发版门禁太慢」修成：跳过界面/终端集成、只跑改过的文件、用异步协程冒充加速（瓶颈是真实等待不是解释器空转）、或把 Pilot/tmux 模块拆进并行（共享 `tmux -L corral-keepalive` 会互抢）。并行负载下首轮偶发失败可能略多，仍以「失败用例单独重跑一次」为准，不要把首轮 FAIL 直接当回归。
+- **排查 / 优化「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了 / 想并行或异步加速」（2026-08-30；2026-09-12 起默认模块并行）**：单次完整套件仍要数分钟（多核常见约四五分钟），不是故障。墙钟几乎都在 `test_ui`（本机约四五分钟）加真实终端集成；`ci-test.py` 把其它模块与这条串行车道重叠跑（`--jobs` / `CORRAL_TEST_JOBS`，默认约 `min(CPU,6)` 且 ≥2；`1` 退回单进程）。日常推送只跑几秒的格式检查。还在刷新的通过行 / shard 完成行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，可能是门禁重复检查；只有源码和环境指纹均匹配时才能依现有戳复用完整结果。**禁止**把「发版门禁太慢」修成：跳过界面/终端集成、只跑改过的文件、用异步协程冒充加速（瓶颈是真实等待不是解释器空转）、或把 Pilot/tmux 模块拆进并行（共享 `tmux -L corral-keepalive` 会互抢）。并行负载下首轮偶发失败可能略多，仍以「失败用例单独重跑一次」为准，不要把首轮 FAIL 直接当回归。
 - **AI 易错点**【改 `ci-test.py` 并行入口】**（2026-09-12）**：子进程跑模块必须与 `discover(start_dir="tests")` 同语义——把 `tests/` 放进 `sys.path`，用顶层名 `test_foo`，**禁止** `tests.test_foo`（仓内无 `tests` 包）。串行车道名单在脚本 `_SERIAL_MODULES`（含 `test_ui` / `test_embed` 与其它 Pilot 模块）；新增真实 tmux 或 Pilot 文件必须登记进该集合。单测用 importlib 加载本脚本时，须先把模块登记进 `sys.modules` 再 `exec_module`（否则 `@dataclass` 会报 `NoneType.__dict__`）。墙钟应接近串行车道时长，不是各模块耗时之和。
 
 另外两处工作流层面的浪费也一并修了：`on: push` 不带过滤时，tag 推送会和同一提交在 `main` 上的推送产生**完全重复的一轮矩阵**（每次发版凭空多 7 个作业），已收窄为 `branches: ["**"]`；并加了 `concurrency` + `cancel-in-progress`，同分支后推的提交自动作废前一轮排队。
