@@ -211,12 +211,29 @@ sync_local_sesskit() {
   echo "==> 本机 corral 的 SessKit ${have} → ${want}"
   "$py" -m pip install -q --upgrade "$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import sesskit_dep; print(sesskit_dep.wheel_requirement())')" \
     || { echo "!!  本机 SessKit 升级失败，请按 docs/MAINTAINER_GUIDE.md 手动安装"; return 0; }
-  if corral remote status 2>/dev/null | grep -q '^Status: on'; then
-    corral remote off >/dev/null 2>&1 && corral remote on >/dev/null 2>&1 \
-      && echo "==> 手机远程服务已重启，加载新 SessKit"
-  fi
 }
 sync_local_sesskit
+
+# The phone daemon keeps the modules it started with. Restart it whenever the
+# installed corral or SessKit is newer than the running process (2026-09-30:
+# v0.24.236 was installed while the daemon kept running 0.24.235 code).
+restart_stale_remote() {
+  command -v corral >/dev/null 2>&1 || return 0
+  corral remote status 2>/dev/null | grep -q '^Status: on' || return 0
+  local py pid started newest
+  py=$(corral --version 2>/dev/null | sed -n 's/^ *python: *//p' | head -1)
+  pid=$(corral remote status 2>/dev/null | sed -n 's/^Status: on (pid \([0-9]*\)).*/\1/p' | head -1)
+  [ -n "$py" ] && [ -n "$pid" ] || return 0
+  started=$(python3 -c 'import sys, subprocess, datetime as d; s=subprocess.run(["ps","-o","lstart=","-p",sys.argv[1]],capture_output=True,text=True).stdout.strip(); print(int(d.datetime.strptime(s,"%a %b %d %H:%M:%S %Y").timestamp()) if s else 0)' "$pid")
+  newest=$("$py" -c 'import os, corral, sesskit; print(int(max(os.path.getmtime(m.__file__) for m in (corral, sesskit))))' 2>/dev/null || echo 0)
+  if [ "$started" -gt 0 ] && [ "$newest" -gt "$started" ]; then
+    corral remote off >/dev/null 2>&1 && corral remote on >/dev/null 2>&1 \
+      && echo "==> 手机远程服务已重启，加载新安装的 corral / SessKit"
+  else
+    echo "==> 手机远程服务已在运行当前安装版本"
+  fi
+}
+restart_stale_remote
 
 echo
 echo "==> 收尾核对"
