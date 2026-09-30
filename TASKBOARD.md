@@ -29,4 +29,3 @@
 
 | Completion flood repair (implementation owner) | 进行中 | SessKit解析/status/completion_id（跨仓）、CLI消费端pin/push集成/tests/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md | 21:27 | 2026-09-30 22:40 | Native-finality + metadata-invariant id; urgent mute applied notify_completed=False (2 devices) 22:40 backup 0600; preserve foreign rows; reports ~/.config/corral/agent-jobs/20260930-notification-flood/ |
 | 默认关闭命令拦截并还原双机 shim | 发布中 | bootstrap/shim/install/dev-install/tests/MAINTAINER_GUIDE、双机 shell | 17:31 | 2026-09-30 17:37 | 准备发 v0.24.238 |
-
