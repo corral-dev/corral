@@ -92,15 +92,15 @@
   禁止用文件 mtime。）
 - 要求：同一轮重复扫描必须算出同一个值；新一轮结束必须变；
   进程重启后对同一份历史重算仍得同一个值（持久去重不靠内存）。
-- **窗口稳定的身份输入（2026-10-01 验收驳回，SessKit 0.2.4 已发布、消费端待安装）**：
+- **窗口稳定的身份输入（2026-10-01 验收驳回，SessKit ≥0.2.4）**：
   滚动扫描窗口内用户/列表摘要“有没有”变化，不得改变同一原生终局事件的
   id——锚点与参与哈希的尾料都必须是终局锚点事件自身的确定性函数，
   不能取自窗口摘要。已验证失败（SessKit 0.2.3 实装复现）：
   同一终局事件前后两次都是 DONE，64KB 尾部丢了用户摘要后 id 变化，
   同一真实完成连推两条。验收缺口更新（2026-10-01 当日）：
   SessKit 0.2.4 已把 Claude 身份尾料改成锚点终局事件自身正文
-  （窗口稳定；展示摘要回填不变），五处消费端 pin 已更新，待安装到运行进程；
-  在已发布版本到达用户机器之前，旧 id 仍可能因窗口边界换 id。
+  （窗口稳定；展示摘要回填不变），Corral 0.24.243 / SessKit 0.2.4
+  已安装到两台开发机，升级缓存及窗口边界回归均通过。
   Corral 侧不做补偿、不改扫描，只按 `(session_key, completion_id)`
   去重语义消费。
 - **Provider upgrade baseline (2026-10-01 acceptance correction)**: a new
@@ -114,12 +114,12 @@
   new id. Shared-worker upgrade behavior was verified in-tree this same day (see
   implementation note below). A dependency pin alone does not establish that the
   running consumer uses the new contract.
-- **Provider upgrade implementation (2026-10-01, in tree, pending coordinator
-  release/install/verification)**: `cache.provider_cohort()` qualifies every
+- **Provider upgrade implementation (2026-10-01, shipped in 0.24.243)**:
+  `cache.provider_cohort()` qualifies every
   cached row, shared snapshot (`provider_cohort` field, mismatch ⇒ local scan),
   and worker heartbeat (missing/mismatch ⇒ `is_active()` false, no reuse);
   cold-flush purge keeps current-cohort rows (bare or host-tagged) and drops
-  old-contract rows; pins cut to SessKit 0.2.4 in all five places. Per-device
+  old-contract rows; the next provider handoff advances all five pins to 0.2.5. Per-device
   ledgers and preferences unchanged; no compensating push logic.
 - **Independent acceptance (2026-10-01)**: the coordinator seeded the actual
   previous cache contract (bare parser version plus host tag), then scanned an
@@ -131,6 +131,34 @@
   isolated sender, never a phone. Against the still-running old scanner, the new
   consumer rejected both its live heartbeat and shared snapshot. Post-install
   relay and physical notification acceptance remain separate evidence.
+- **Modern Codex correction (2026-10-01, SessKit 0.2.5 published; installed
+  consumer gate pending)**:
+  First-candidate acceptance also rejected stale terminal inheritance: public
+  native scans of prior completion/abort followed by a new modern turn and
+  command/message items still returned the previous terminal state with a
+  nonempty identity. Mid-turn suppression must invalidate older terminal
+  verdicts too. The same worker corrected ordered activity invalidation; the
+  coordinator independently passed those three public-scan cases and the real
+  hub/notifier path: repeated mid-turn items added zero sends, a running restart
+  added zero, the genuine terminal event added one, and metadata/rescan/finished
+  restart added zero. Full provider tests: 516 passed; published wheel digest
+  and exact parser source matched. Twelve stable native histories were sampled,
+  including one modern ongoing turn with no notifiable terminal id. Both hosts
+  remain muted until the installed consumer is verified.
+  The cache/Claude fixes above shipped and passed their acceptance, but a live
+  Codex RPC history continued producing completion pushes during command and
+  message activity. Its stable native history had a started turn and modern
+  completed items, with no completed/aborted turn; additional activity followed
+  its earlier final-answer item. The installed shared snapshot still projected
+  DONE. This is a separate native-finality defect, not proof that cache cohorts
+  failed. See SessKit `docs/CONTRACT.md` Completion identity for the current
+  requirement and official protocol references. End notifications are temporarily
+  muted for token-bearing devices on both hosts; private backups preserve the
+  prior preferences. Restore them only after this real-history regression passes.
+  Bounded-read limit: if every modern framing marker is outside both head/tail
+  windows, legacy assistant-text fallback remains possible. A structural probe
+  reproduced that limit; no matching live failure was observed. Do not claim
+  arbitrary evicted histories or physical phone reception/tap were verified.
 - Cursor 收紧（二选一，SessKit 仓内定）：
   A. 无明确“助手最终答复 / 结构化完成”证据时宁可 `STATUS_NONE`
   也不给 `STATUS_DONE`；B. 维持现状但 `completion_id` 为空，

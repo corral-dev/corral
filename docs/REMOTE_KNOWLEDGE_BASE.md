@@ -102,6 +102,20 @@ still resolve via `resolve_answers`.
 
 **Live TUI verification (2026-10-01, no quota):** fresh Codex 0.159.2 TUI against a local Responses-API stub (`model_catalog_json` advertises `request_user_input_async`, otherwise core rejects the call as `unsupported call`; `/models` alone is never fetched for custom providers). Receipts: 3 live prompts (`call_live1`) → stub commentary + `exec_command sleep` while the turn stayed active → still 3 → `input.question` path `delivered` (grouped choice + free text in one native envelope) → stub saw the envelope once, turn completed on final text → prompts empty; rollout shows the envelope as exactly one user message, no lone-label echo. Rig: stub+driver+report kept as a reproducible artifact (see acceptance report); isolated rollout files and the temp-dir trust entry were deleted afterwards. Still OPEN: encrypted-relay `session.prompts → input.question` hop (handlers are 3-line pass-throughs to the verified functions; service tests green) and real-phone clicks.
 
+**Encrypted RPC gate (2026-10-01, no quota, phone locked):** isolated daemon from the
+current tree (own state dir/port 8741, no autostart/switch changes) + temp full-access
+probe identity (own key, unpaired afterwards; user pairings untouched) + fresh
+Codex 0.159.2 TUI on the local stub. Over the encrypted v2 channel on LAN loopback
+(identical handshake/framing to relay): `hello` → `pair` → `sessions.list` (80) →
+`input.text` → `session.prompts` 3 → commentary + `exec sleep` while active → still 3
+→ `input.question` `delivered` (grouped choice + free text, one envelope) → prompts 0
+within 2 s → normal `task_complete` → repeat `input.question` → `stale`, rollout keeps
+exactly one envelope user message → `input.text` steering starts a new turn and is
+answered. Same probe over the real relay (`wss://pickup-relay.caozc.top`): `hello`
+paired, `sessions.list` 80, `session.prompts` 0. Isolated state dir, rollouts, pane,
+and trust entry deleted afterwards; user daemon/pairings/sessions untouched. Rig:
+`rpc-accept/` next to the acceptance report.
+
 **How to verify without guessing:**
 
 - **Phone-path probe needs full access.** The saved `scripts/phone_remote_acceptance.py` identity is paired read-only (`验收探针`), so `input.*`/`input.question` are rejected. Pair a temporary full probe with its own key file (`corral remote pair --json` → `pair` RPC with that code), drive `session.new` / `input.text` / `session.prompts` / `input.question` / `session.stop`, then `corral remote unpair <id>`. Improvement item: add a question case and a `--key-file` option to that script so this does not need a throwaway harness.

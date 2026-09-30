@@ -555,25 +555,6 @@ def _codex_complete(text: str) -> dict:
     }
 
 
-def _sesskit_emits_completion_lifecycle() -> bool:
-    """Capability probe: SessKit must surface native task_complete as a typed
-    turn-end lifecycle event (not just the final text card)."""
-    from sesskit import get_adapter
-
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "probe.jsonl"
-        _write_jsonl(path, [_codex_complete("Done.")])
-        reader = get_adapter("codex").open_reader(
-            {"source": "codex", "path": str(path), "id": "probe", "cwd": directory},
-            None,
-        )
-        return any(
-            getattr(e, "type", "") == "lifecycle"
-            and str(getattr(e, "stop_reason", "") or "") == "task_complete"
-            for e in list(reader.poll().events)
-        )
-
-
 _ASYNC_ASKED = [
     {"title": "测试单选：你现在使用什么网络？", "options": ["Wi-Fi", "蜂窝网络", "其他网络"]},
     {"title": "测试自由填写：请随便写一句话。", "options": None},
@@ -811,8 +792,6 @@ class AsyncSettlementTests(unittest.TestCase):
         )
 
     def test_normal_completion_jsonl_settles(self) -> None:
-        if not _sesskit_emits_completion_lifecycle():
-            self.skipTest("requires SessKit task_complete turn-end lifecycle")
         messages, prompts = _codex_pending(
             _async_history(_codex_assistant("All done."), _codex_complete("All done."))
         )
@@ -826,8 +805,6 @@ class AsyncSettlementTests(unittest.TestCase):
         self.assertEqual(statuses, ["ok"])
 
     def test_completed_turn_stays_settled_when_later_turn_begins(self) -> None:
-        if not _sesskit_emits_completion_lifecycle():
-            self.skipTest("requires SessKit task_complete turn-end lifecycle")
         messages, prompts = _codex_pending(
             _async_history(
                 _codex_assistant("All done."),
