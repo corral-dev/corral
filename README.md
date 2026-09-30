@@ -4,8 +4,8 @@
   <img src="docs/screenshots/corral-unicorn.png" alt="Corral" width="112" height="112">
 </p>
 <h1 align="center">Corral</h1>
-<p align="center"><strong>Find yesterday's lost chat. One list of coding-agent sessions.</strong></p>
-<p align="center">Search Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Pi conversation history — then resume work in one session manager.</p>
+<p align="center"><strong>Run all your coding agents from one terminal — and pick them up from your phone.</strong></p>
+<p align="center">Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Pi side by side. They keep running when you step away, and you can see which one is waiting for you.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/corral/releases/latest"><img src="https://img.shields.io/github/v/release/x0c/corral" alt="Latest release"></a>
@@ -14,13 +14,21 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" alt="Finding a lost Claude Code chat and listing coding-agent sessions in Corral" width="100%">
+  <img src="docs/screenshots/demo.gif" alt="Switching between coding-agent sessions, searching, and opening two side by side in Corral" width="100%">
 </p>
 <p align="center"><em>Captured from the real terminal UI with sample conversations — not a recording of your machine.</em></p>
 
 <p align="center">
-  <img src="docs/screenshots/list.png" alt="One list of Claude Code and other coding-agent sessions with conversation preview" width="100%">
+  <img src="docs/screenshots/list.png" alt="Corral sidebar with Claude Code, Codex, and other coding-agent sessions next to a conversation preview" width="100%">
 </p>
+
+## Three parts
+
+| Part | What it does | Status |
+| --- | --- | --- |
+| **Terminal app** | Run, watch, and switch between all your coding agents in one terminal. | Available — install below |
+| **iPhone and Mac app** | Follow your agents and answer them away from the terminal. | iPhone: in development, no public download · Mac: planned |
+| **Corral Ideas** | Jot loose ideas on one local page; a coordinating agent turns them into tasks and hands them to coding agents. | Planned |
 
 ## Install
 
@@ -51,11 +59,12 @@ Install and sign in to at least one supported coding assistant separately. Corra
 
 ## What Corral does
 
-- **Find any conversation.** Search across assistant histories, or filter sessions by project and title.
-- **See what needs your attention.** Bring working sessions and waiting questions into one view.
+- **See who needs you.** Working agents and agents waiting on your answer show up in one sidebar, across every assistant.
 - **Work side by side.** Open up to four sessions together, group related work, and pin what matters.
-- **Come back without starting over.** Hosted sessions keep running after you leave Corral or disconnect SSH, while the host remains awake.
-- **Continue with another assistant.** Hand a task to a new assistant session with access to the original conversation history.
+- **Keep agents running.** Hosted sessions keep going after you close Corral or disconnect SSH, as long as the host stays awake.
+- **Hand work to another assistant.** Pass a task with its conversation history to a new session in a different assistant — for example, Claude implements and Codex reviews.
+- **Continue from your phone.** Read replies, send a follow-up, or answer a question away from your desk. The iPhone app is still in development; see below.
+- **Find past conversations.** Search what you said across every assistant's history, or filter by project and title.
 
 ## Start using it
 
@@ -98,9 +107,9 @@ Sidebar shortcuts apply while the sidebar has focus. The footer shows actions av
 
 </details>
 
-## iPhone companion
+## Pick up from your phone
 
-Leave the desk and still read conversations, send a follow-up, or answer a question from your phone.
+Leave the desk and keep your agents moving: read conversations, send a follow-up, or answer a question from your iPhone.
 
 **The iPhone app is still in development; this repository does not provide a public app download.** Installing the CLI does not install the companion app.
 

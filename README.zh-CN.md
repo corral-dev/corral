@@ -4,8 +4,8 @@
   <img src="docs/screenshots/corral-unicorn.png" alt="Corral" width="112" height="112">
 </p>
 <h1 align="center">Corral</h1>
-<p align="center"><strong>找不到昨天的对话？把编程助手会话收成一张列表。</strong></p>
-<p align="center">搜索 Claude Code、Codex、Cursor、OpenCode、Kimi Code 和 Pi 的对话历史，用同一个会话管理工具接着做。</p>
+<p align="center"><strong>在一个终端里运行所有编程助手，离开电脑也能用手机接着做。</strong></p>
+<p align="center">Claude Code、Codex、Cursor、OpenCode、Kimi Code 和 Pi 并排工作。你走开后它们继续运行，哪个在等你回复一眼就能看到。</p>
 
 <p align="center">
   <a href="https://github.com/x0c/corral/releases/latest"><img src="https://img.shields.io/github/v/release/x0c/corral" alt="最新版本"></a>
@@ -14,13 +14,21 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" alt="在 Corral 里找回丢失的 Claude Code 对话，并把编程助手会话收成一张列表" width="100%">
+  <img src="docs/screenshots/demo.gif" alt="在 Corral 里切换编程助手会话、搜索，并把两个会话并排打开" width="100%">
 </p>
 <p align="center"><em>演示来自真实终端界面，使用的是虚构会话，不是你电脑上的实际记录。</em></p>
 
 <p align="center">
-  <img src="docs/screenshots/list.png" alt="Claude Code 等编程助手会话列表与对话预览" width="100%">
+  <img src="docs/screenshots/list.png" alt="Corral 侧栏列出 Claude Code、Codex 等编程助手会话，旁边是对话预览" width="100%">
 </p>
+
+## 三个部分
+
+| 部分 | 用途 | 状态 |
+| --- | --- | --- |
+| **终端应用** | 在一个终端里运行、查看、切换所有编程助手。 | 已可用，安装方法见下文 |
+| **iPhone 与 Mac 应用** | 离开终端也能跟进助手、回答它的提问。 | iPhone：开发中，暂无公开下载 · Mac：规划中 |
+| **Corral Ideas** | 在一个本地页面里随手记想法，由一个统筹助手整理成任务，交给编程助手去做。 | 规划中 |
 
 ## 安装
 
@@ -51,11 +59,12 @@ corral
 
 ## 能帮你做什么
 
-- **找回任何一段对话。** 跨助手搜索历史，也可以按项目和标题筛选。
-- **知道哪里需要你。** 集中查看正在执行的任务和等待回答的问题。
+- **知道哪个在等你。** 所有助手正在执行的任务和等你回答的问题，集中在同一个侧栏里。
 - **同时推进多个任务。** 最多四个会话分屏，相关任务可以分组、置顶。
-- **回来继续做。** 离开 Corral 或断开 SSH 后，托管会话仍可继续运行，开发机需要保持唤醒。
-- **换个助手接着做。** 为另一个助手提供原始对话历史，让它新开会话继续任务。
+- **走开了助手照样跑。** 关掉 Corral 或断开 SSH 后，托管会话继续运行，开发机需要保持唤醒。
+- **换个助手接着做。** 把任务连同对话历史交给另一个助手新开会话，比如 Claude 写完交给 Codex 检查。
+- **用手机接着做。** 离开电脑也能查看回复、追问，或回答助手的提问。iPhone 客户端仍在开发中，见下文。
+- **找回以前的对话。** 跨所有助手搜索聊过的内容，也可以按项目和标题筛选。
 
 ## 开始使用
 
@@ -98,9 +107,9 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 </details>
 
-## iPhone 客户端
+## 用手机接着做
 
-离开电脑后，仍可以在手机上查看对话、回复助手，或回答它提出的问题。
+离开电脑，助手也不用停下：在 iPhone 上查看对话、回复助手，或回答它提出的问题。
 
 **iPhone 客户端仍在开发中；本仓库暂不提供公开的 App 下载。** 安装命令行工具不会同时安装手机客户端。
 
