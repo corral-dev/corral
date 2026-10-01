@@ -12,7 +12,7 @@ Previous plain cream-yellow asset verification (2026-10-01; superseded by Floral
 
 The earlier white-background release was installed as iOS 1.0.79 (89). The social card file is published through the repository; the GitHub custom social-preview setting was not updated because the browser was not authenticated.
 
-Floral 04 production asset verification (2026-10-01): the 1024px master is square and opaque. The 48px and 24px contrast checks passed with luminance spans of 8.08:1 and 7.81:1. The iOS icon is byte-identical to the canonical master; the relay README image is byte-identical to the CLI README image. Device installation and Home Screen appearance remain separate checks.
+Floral 04 production asset verification (2026-10-01): the 1024px master is square and opaque. The 48px and 24px contrast checks passed with luminance spans of 8.08:1 and 7.81:1. The iOS icon is byte-identical to the canonical master; the relay README image is byte-identical to the CLI README image. Signed Release iOS 1.0.88 (98) was installed on iPhone Max with version readback and launch confirmed, and uploaded to AppShelf release 150. GitHub published README icon bytes match the accepted derivative. Physical Home Screen appearance remains unverified while the phone is locked; the in-app browser could not reload GitHub, so this revision does not claim rendered README screenshot acceptance.
 
 ## README contract
 
