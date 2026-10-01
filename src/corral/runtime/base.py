@@ -14,6 +14,35 @@ class LaunchError(RuntimeError):
     """启动计划无法安全执行。"""
 
 
+# Fork title suffixes: the adopted Corral fork suffix plus legacy copy suffixes
+# that must still be recognized. SessKit disk clones still stamp their own
+# legacy suffix (currently spaceless `(copy)`); Corral normalizes new fork
+# titles to the adopted suffix instead of preserving legacy wording verbatim.
+_FORK_TITLE_SUFFIXES = ("（分叉）", " (fork)", "(fork)")
+_LEGACY_COPY_TITLE_SUFFIXES = ("（副本）", " (copy)", "(copy)")
+
+
+def normalize_fork_title(title: str | None) -> str:
+    """Normalize a title to the adopted fork title.
+
+    Strips any existing fork/copy suffixes, then appends the current suffix.
+    Empty titles stay empty (matching the SessKit clone `if title` guard).
+    Already-suffixed titles are unchanged; suffixes never stack.
+    """
+    base = str(title or "")
+    if not base:
+        return base
+    stripped = base
+    while True:
+        for suffix in _FORK_TITLE_SUFFIXES + _LEGACY_COPY_TITLE_SUFFIXES:
+            if stripped.endswith(suffix):
+                stripped = stripped[: -len(suffix)]
+                break
+        else:
+            break
+    return f"{stripped}{t('session.title.copy_suffix')}"
+
+
 def usable_cwd(cwd: str | None) -> str | None:
     """只返回当前机器真实存在的工作目录。"""
     return cwd if cwd and os.path.isdir(cwd) else None

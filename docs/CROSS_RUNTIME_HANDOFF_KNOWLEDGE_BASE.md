@@ -2,10 +2,14 @@
 
 ## §0. 领域定义、主称谓与边界
 
+### Session fork naming (2026-10-01)
+
+The same-assistant session branching action is named **Fork Session** in English and **分叉会话** in Simplified Chinese across the TUI and iOS client. Replace the former Copy Session wording consistently in action labels, accessibility hints, progress/error text and newly generated fork titles. This changes presentation only: retain the existing fork/clone behavior and stable internal `session.copy`, translation keys and adapter methods. Keep existing user history and titles intact; normalize legacy copy suffixes to the fork suffix when deriving a new fork title. Copy-to-clipboard actions retain their existing copy wording.
+
 本知识库描述 corral 如何把用户选中的会话，转换为可执行但尚未执行的**启动计划（LaunchPlan）**。本领域的主称谓固定为：
 
 - **跨助手接力**：源助手导出**接力材料（Handoff）**，目标助手读取源历史后创建自己的新会话。
-- **高级操作**：用户对既有会话的业务入口。弹窗第一项是**导出会话**（写与 `corral share` 相同的 `corral.share/v1` JSON 到缓存目录，并把绝对路径复制到剪贴板，不启动会话）；第二项是**复制会话**（同助手完整克隆历史：有官方分叉则走分叉启动，否则磁盘复制历史并换新身份后再原生恢复）；第三项是**重启会话**（结束卡住的托管进程后按原会话原地恢复，上下文保留；仅对 corral 正托管且非占位的会话可用，其余置灰，替代“先 q 结束再回车恢复”的两步操作；**菜单选定后立刻执行，不再二次确认**，2026-09-13）；其后每一项（含来源自身）是**读取源历史后新建会话**（同助手另起用于原会话卡住 / 出 bug）。真正的原生恢复走侧边栏回车，不走高级操作。
+- **高级操作**：用户对既有会话的业务入口。弹窗第一项是**导出会话**（写与 `corral share` 相同的 `corral.share/v1` JSON 到缓存目录，并把绝对路径复制到剪贴板，不启动会话）；第二项是**分叉会话**（同助手分叉历史：有官方分叉则走分叉启动，否则磁盘复制历史并换新身份后再原生恢复）；第三项是**重启会话**（结束卡住的托管进程后按原会话原地恢复，上下文保留；仅对 corral 正托管且非占位的会话可用，其余置灰，替代“先 q 结束再回车恢复”的两步操作；**菜单选定后立刻执行，不再二次确认**，2026-09-13）；其后每一项（含来源自身）是**读取源历史后新建会话**（同助手另起用于原会话卡住 / 出 bug）。真正的原生恢复走侧边栏回车，不走高级操作。
 - **启动计划（LaunchPlan）**：由参数数组与可选工作目录组成的、可独立测试的启动描述；生成与真正启动分离。
 - **接力材料（Handoff）**：源历史文件、源工作目录、历史阅读提示、任务标题和对话摘录组成的统一交接包。
 - **原生恢复**：同一助手按自身会话标识恢复原会话。
@@ -39,7 +43,7 @@ flowchart TD
     C --> D[来源适配器生成原生 LaunchPlan]
     B -- Ctrl+T 高级操作 --> P{弹窗选项}
     P -- 导出会话 --> Q[写 share JSON 并复制路径]
-    P -- 复制会话 --> R[同助手完整克隆]
+    P -- 分叉会话 --> R[同助手分叉]
     P -- 选目标助手 含自身 --> E[选目标助手]
     E --> F[源适配器导出 Handoff]
     F --> G{源历史文件存在且可读？}
@@ -127,7 +131,7 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 3. **禁止改写或伪造原会话文件。** 接力提示词只能要求只读历史；目标的新增内容只能落在目标助手自己的新会话中。
 4. **不注入完成态。** Handoff 和 `render_prompt` 禁止恢复或新增 `status_tag`、`status_note`、`✅已完成` 等来源列表状态。接力目的在于继续判断未完成工作，提前宣告完成会让目标助手停止推进。
 5. **工作目录必须可用。** 所有恢复、跨助手新建和空白新建都经 `usable_cwd` 校验；不存在的目录降级为 `None`，不能让启动因过期历史目录失败。
-6. **高级操作分流。** 弹窗第一项「导出会话」写 `corral.share/v1` 到 `~/.cache/corral/share/`（尊重 `CORRAL_CACHE_DIR`）并把绝对路径复制到剪贴板，不启动会话、不改原历史。第二项「复制会话」走同助手完整克隆（官方分叉或磁盘复制）。第三项「重启会话」结束卡住的托管进程后按原会话原地恢复（上下文保留；仅对正托管且非占位的会话可用，其余置灰；菜单选定后立刻执行，不再二次确认）。其后每个助手（含来源自身）的文案都是“读取来源历史后新建会话”；同助手另起给原会话卡住 / 出 bug 用。默认优先选择第一个可用的其他助手接力，没有可用目标时才回到来源助手。真正的原生恢复只走侧边栏回车。**界面内嵌时，复制与接力新建默认在源会话旁加一格分屏**（与顶栏“加助手”同路径）。满格时提示上限，不静默覆盖。
+6. **高级操作分流。** 弹窗第一项「导出会话」写 `corral.share/v1` 到 `~/.cache/corral/share/`（尊重 `CORRAL_CACHE_DIR`）并把绝对路径复制到剪贴板，不启动会话、不改原历史。第二项「分叉会话」走同助手分叉（官方分叉或磁盘复制）。第三项「重启会话」结束卡住的托管进程后按原会话原地恢复（上下文保留；仅对正托管且非占位的会话可用，其余置灰；菜单选定后立刻执行，不再二次确认）。其后每个助手（含来源自身）的文案都是“读取来源历史后新建会话”；同助手另起给原会话卡住 / 出 bug 用。默认优先选择第一个可用的其他助手接力，没有可用目标时才回到来源助手。真正的原生恢复只走侧边栏回车。**界面内嵌时，分叉与接力新建默认在源会话旁加一格分屏**（与顶栏“加助手”同路径）。满格时提示上限，不静默覆盖。
 7. **空白就是空白。** 空白新建会话不得出现历史路径、对话摘录或接力提示词，也不得借用已选会话的 ID。
 8. **直启是透传。** 用户显式给出的参数应保持顺序和内容；直启不使用历史会话的工作目录，也不额外加入模型配置等隐式行为。
 
@@ -163,7 +167,7 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 13. **在适配器内接入保活实现**：适配器只生成 LaunchPlan；保活只可在计划生成之后的外层介入。
 14. **改了 render_prompt 却只测 TUI**：`corral context` 会同步变化，必须覆盖两种消费面。
 15. **为了判活去改写接力说明、删掉 `session` 等词**：错方向。OpenCode 跨助手新建本来就把整段说明放进 `--prompt`；操作系统里进程命令行是空格拼接的，扫描必须在 `--prompt` 处停扫，而不是让提示词迁就解析器。改完提示词后仍要用含这些词的原文跑扫描回归。
-16. **把缺历史路径的 `LaunchError` 冒泡出 `@work` 的 `action_handoff`**：会变成 `WorkerFailed`，Textual `_handle_exception` 整屏退出。复制会话已经 catch；接力新建的计划生成在 `_embed_open` 里，那里必须 notify + 响铃后返回，不能让异常回到 worker。典型触发是刚托管、历史还未落盘的占位卡（`path=""`）。**不要**为了消这个现象去伪造空路径、把别的会话历史塞给目标，或在 `_handle_exception` 里吞掉 `LaunchError`。也不要在 `action_handoff` 里先 `build_launch_plan` 再交给 `_embed_open`——成功路径会把对话摘录做两遍，现有捕获计划的回归会失败。真机：2026-08-24 刚托管 Codex 占位卡后按 Ctrl+T 选助手闪退。回归：`test_handoff_without_history_path_keeps_tui_alive`、`test_embed_open_launch_error_keeps_tui_alive`、`test_cross_runtime_requires_history_path`。
+16. **把缺历史路径的 `LaunchError` 冒泡出 `@work` 的 `action_handoff`**：会变成 `WorkerFailed`，Textual `_handle_exception` 整屏退出。分叉会话已经 catch；接力新建的计划生成在 `_embed_open` 里，那里必须 notify + 响铃后返回，不能让异常回到 worker。典型触发是刚托管、历史还未落盘的占位卡（`path=""`）。**不要**为了消这个现象去伪造空路径、把别的会话历史塞给目标，或在 `_handle_exception` 里吞掉 `LaunchError`。也不要在 `action_handoff` 里先 `build_launch_plan` 再交给 `_embed_open`——成功路径会把对话摘录做两遍，现有捕获计划的回归会失败。真机：2026-08-24 刚托管 Codex 占位卡后按 Ctrl+T 选助手闪退。回归：`test_handoff_without_history_path_keeps_tui_alive`、`test_embed_open_launch_error_keeps_tui_alive`、`test_cross_runtime_requires_history_path`。
 
 ## §7. 验证与排查
 

@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 
+from corral.i18n import t
 from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
-from corral.runtime.base import BaseRuntime, LaunchError, usable_cwd
+from corral.runtime.base import (
+    BaseRuntime,
+    LaunchError,
+    normalize_fork_title,
+    usable_cwd,
+)
 from corral.scan import cursor as scan_cursor
 
 
@@ -46,9 +54,10 @@ class CursorRuntime(BaseRuntime):
 
     def clone_session(self, session: SessionInfo) -> SessionInfo:
         try:
-            return scan_cursor.clone_session(session)
+            cloned = scan_cursor.clone_session(session)
         except ValueError as exc:
             raise LaunchError(str(exc)) from exc
+        return _retitle_cursor_fork(cloned, session)
 
     def build_resume_plan(self, session: SessionInfo) -> LaunchPlan:
         return LaunchPlan(
@@ -95,3 +104,45 @@ class CursorRuntime(BaseRuntime):
             argv=(self.executable, *self.auto_approve_args),
             cwd=usable_cwd(cwd),
         )
+
+
+def _retitle_cursor_fork(cloned: SessionInfo, source: SessionInfo) -> SessionInfo:
+    """Rewrite a fresh Cursor clone's title to the adopted fork suffix.
+
+    SessKit stamps its legacy copy suffix into the clone's meta.json; the
+    re-scanned fork would otherwise keep showing copy wording. Only the newly
+    created clone directory is ever written; the source history is untouched.
+    The title is written atomically (temp file + os.replace) so a failed write
+    never truncates existing data, and any failure removes the fresh clone
+    directory before raising.
+    """
+    fork_title = normalize_fork_title(cloned.get("native_title") or "")
+    if not fork_title:
+        return cloned
+    clone_path = os.path.abspath(str(cloned.get("path") or ""))
+    chat_dir = clone_path if os.path.isdir(clone_path) else os.path.dirname(clone_path)
+    source_path = os.path.abspath(str(source.get("path") or ""))
+    source_dir = source_path if os.path.isdir(source_path) else os.path.dirname(source_path)
+    if not chat_dir or chat_dir == source_dir:
+        raise LaunchError(
+            t("launch.fork_title_failed", error="clone directory matches source directory")
+        )
+    meta_path = os.path.join(chat_dir, "meta.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"expected a JSON object in {meta_path}")
+        if data.get("title") == fork_title and cloned.get("native_title") == fork_title:
+            return cloned
+        data["title"] = fork_title
+        tmp_path = meta_path + ".fork-title-tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, meta_path)
+    except (OSError, ValueError) as exc:
+        shutil.rmtree(chat_dir, ignore_errors=True)
+        raise LaunchError(t("launch.fork_title_failed", error=exc)) from exc
+    cloned["native_title"] = fork_title
+    return cloned

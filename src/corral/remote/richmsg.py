@@ -1847,7 +1847,15 @@ def _feed_typed_event(
     if etype == "user_message":
         if (getattr(event, "origin", None) or "unknown") == "injected":
             return None, False
-        clipped = _clip(getattr(event, "text", None) or "", _MAX_TEXT)
+        raw_text = str(getattr(event, "text", None) or "")
+        if runtime == "codex":
+            # Recognize and settle native answers on the complete native text:
+            # display clipping below would truncate a long answer and destroy
+            # the closing tag/JSON. Only remaining ordinary text is clipped.
+            raw_text = _strip_native_reply(reader, raw_text)
+            if not raw_text:
+                return None, False
+        clipped = _clip(raw_text, _MAX_TEXT)
         if not clipped or _phone_injected_user(clipped):
             return None, False
         host = RichMessage(reader._next_seq(), "user", clipped, ts)
@@ -1979,6 +1987,132 @@ def _is_async_acceptance_receipt(value: object) -> bool:
     if isinstance(accepted, str):
         return accepted.strip().lower() == "true"
     return accepted is True
+
+
+# Codex native async answers are submitted as a user-context fragment tagged
+# <send_user_message_question_reply> carrying a JSON array of
+# {questionItemId, question, answer} (codex-rs answered_question.rs). The
+# rollout keeps that row, so without stripping the phone renders the whole
+# wrapper as an ordinary user bubble. Only a well-formed envelope is control
+# content: malformed JSON or a bare tag mention stays ordinary user text.
+_NATIVE_REPLY_RE = re.compile(
+    r"<send_user_message_question_reply>(.*?)</send_user_message_question_reply>",
+    re.S,
+)
+
+
+def _native_identity_parts(value: object) -> tuple[str, int] | None:
+    """Parse the official per-question identity.
+
+    ``JSON.stringify(["request_user_input_async", <call_id>, <index>])``
+    (codex-rs ``async_questions/state.rs``). Anything else — unparseable
+    text, wrong tool, non-string call id, non-integer index — is not a native
+    answer identity.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = json.loads(value)
+    except (ValueError, TypeError):
+        return None
+    if (
+        not isinstance(parts, list)
+        or len(parts) != 3
+        or parts[0] != _ASYNC_QUESTION_TOOL
+        or not isinstance(parts[1], str)
+        or not parts[1]
+        or not isinstance(parts[2], int)
+        or isinstance(parts[2], bool)
+        or parts[2] < 0
+    ):
+        return None
+    return parts[1], parts[2]
+
+
+def _native_reply_items(body: str) -> list[dict] | None:
+    """Parse one envelope body; None when it is not a valid native answer.
+
+    A recognized answer item carries the official string identity plus
+    ``question`` and ``answer`` strings (codex-rs ``answered_question.rs``).
+    Identity-only objects, missing fields, and wrong-typed fields are
+    lookalikes, not answers: the whole fragment stays ordinary user text.
+    """
+    try:
+        parsed = json.loads((body or "").strip())
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    items: list[dict] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            return None
+        if _native_identity_parts(entry.get("questionItemId")) is None:
+            return None
+        question = entry.get("question")
+        answer = entry.get("answer")
+        if not isinstance(question, str) or not question.strip():
+            return None
+        if not isinstance(answer, str):
+            return None
+        items.append(entry)
+    return items
+
+
+def _expected_question_indices(tool: ToolCall) -> set[int] | None:
+    """Question indices one complete native answer must cover, if known."""
+    meta = tool.questions_meta
+    if not meta:
+        return None
+    return set(range(len(meta)))
+
+
+def _settle_native_reply(reader: RichReader, items: list[dict]) -> None:
+    """Settle a pending async request only when the envelope answers it fully.
+
+    The official TUI (``resolve_answers``) clears only the answered questions
+    and keeps unanswered siblings pending. The phone always submits every
+    question of one request at once, so a complete envelope settles the whole
+    call; a partial envelope stays hidden but leaves the request pending
+    instead of losing the unanswered siblings. No other request is ever
+    touched — unknown identities settle nothing.
+    """
+    answered_by_call: dict[str, set[int]] = {}
+    for entry in items:
+        parsed = _native_identity_parts(entry.get("questionItemId"))
+        if parsed is None:
+            continue
+        call_id, index = parsed
+        answered_by_call.setdefault(call_id, set()).add(index)
+    for call_id, answered in answered_by_call.items():
+        tool = reader._pending.get(call_id)
+        if tool is None or tool.name != _ASYNC_QUESTION_TOOL:
+            continue
+        if tool.kind not in QUESTION_KINDS:
+            continue
+        expected = _expected_question_indices(tool)
+        if expected is not None and not expected <= answered:
+            continue
+        reader._pending.pop(call_id, None)
+        tool.status = "ok"
+
+
+def _strip_native_reply(reader: RichReader, text: str) -> str:
+    """Remove recognized native answer envelopes, settling matching requests.
+
+    Returns the remaining ordinary text (possibly empty). Unrecognized
+    fragments — malformed JSON, non-answer bodies, bare tag mentions — are
+    preserved verbatim as ordinary user text.
+    """
+
+    def _replace(match: re.Match) -> str:
+        items = _native_reply_items(match.group(1))
+        if items is None:
+            return match.group(0)
+        _settle_native_reply(reader, items)
+        return ""
+
+    return _NATIVE_REPLY_RE.sub(_replace, text).strip()
 
 
 def _settle_async_on_turn_error(reader: RichReader, event: object) -> None:

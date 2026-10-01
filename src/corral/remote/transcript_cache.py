@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-10-01.2"  # question meta: custom_needs_choice for Claude preview pickers
+PARSER_VERSION = "2026-10-01.3"  # codex native reply envelope stripped before display
 _SCHEMA_VERSION = 1
 
 

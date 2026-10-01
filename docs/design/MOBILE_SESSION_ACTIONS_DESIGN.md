@@ -1,14 +1,14 @@
-# Mobile session actions: copy + handoff
+# Mobile session actions: fork + handoff
 
 ## 1. Scope (locked)
 
-- This document covers **copy + handoff** from the iOS session page top-right menu.
+- This document covers **fork (`session.copy`) + handoff** from the iOS session page top-right menu.
 - **In scope:** `session.copy` (new) and `session.handoff` (already exists server-side).
 - **Out of scope:** export, restart, new native-resume protocol, new i18n keys,
   version bump, release. Export/restart must not be smuggled into this change.
-- On success the client **navigates to the new session** (the copy, not the source).
+- On success the client **navigates to the new session** (the fork, not the source).
 - Availability rules (client-side):
-  - **unavailable** (no tmux, runtime missing, fork/clone failed) → hide the copy entry.
+  - **unavailable** (no tmux, runtime missing, fork/clone failed) → hide the fork entry.
   - **readonly pairing** → hide the whole action sheet (server also rejects).
 
 ## 2. Protocol: `session.copy`
@@ -35,10 +35,10 @@
 1. `require_session(key)` — resolves placeholder old keys via key migration.
 2. `title = store.get_title(session)`; keep `session.get("cwd")` for the new card.
 3. `request = registry.prepare_copy_request(session, title)` — official fork first
-   (Claude/Codex/OpenCode/Pi), else disk clone with new identity + copy suffix.
+   (Claude/Codex/OpenCode/Pi), else disk clone with new identity + fork suffix.
    Title, suffix, and not-installed errors all live there.
 4. `plan = registry.build_launch_plan(request)` — same fork/resume plans the TUI
-   uses for Ctrl+T copy; do not reimplement per-runtime branches.
+   uses for Ctrl+T fork; do not reimplement per-runtime branches.
 5. `_host(plan, request.target_runtime_id, request.title, session.get("cwd"))` —
    same tmux hosting + provisional placeholder card as new/handoff.
 
@@ -51,10 +51,10 @@ no new strings). `LaunchRequest(copy_session=True)` stays same-assistant only
 
 - Call `session.copy` with `{key}`; expect `{"session": SessionSummary}`.
 - On `ok`: open the returned session key (watch + messages), keep the source open too.
-- On `unavailable`: hide the copy entry and surface the server message once.
+- On `unavailable`: hide the fork entry and surface the server message once.
 - On `unauthorized`: the sheet should already be hidden; treat as read-only state.
-- Kimi note: copies of Kimi sessions resume natively in the new identity; a Kimi
-  copy created from an interactive pane runs interactively — do not document it as
+- Kimi note: forks of Kimi sessions resume natively in the new identity; a Kimi
+  fork created from an interactive pane runs interactively — do not document it as
   "runs once and exits" (that only applies to Kimi cross-runtime handoff prompts).
 
 ## 5. Acceptance

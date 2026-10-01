@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from corral.cache import scan_period
 from corral.i18n import t
 from corral.models import LaunchPlan, LaunchRequest, NewSessionRequest, SessionInfo
-from corral.runtime.base import BaseRuntime, LaunchError
+from corral.runtime.base import BaseRuntime, LaunchError, normalize_fork_title
 from corral.runtime.claude import ClaudeRuntime
 from corral.runtime.codex import CodexRuntime
 from corral.runtime.cursor import CursorRuntime
@@ -182,7 +182,7 @@ class RuntimeRegistry:
         source_id = str(request.session.get("source") or "")
         source = self.get(source_id)
         target = self.get(request.target_runtime_id)
-        # 复制会话：同助手官方分叉（磁盘克隆路径在 prepare_copy_request 里已换成新会话 + 原生恢复）。
+        # 分叉会话：同助手官方分叉（磁盘克隆路径在 prepare_copy_request 里已换成新会话 + 原生恢复）。
         if request.copy_session:
             if source.id != target.id:
                 raise LaunchError(t("launch.copy_same_assistant"))
@@ -197,7 +197,7 @@ class RuntimeRegistry:
         return target.build_new_plan(handoff)
 
     def prepare_copy_request(self, session: SessionInfo, title: str) -> LaunchRequest:
-        """高级操作「复制会话」：优先官方分叉，否则磁盘克隆后再原生恢复。"""
+        """高级操作「分叉会话」：优先官方分叉，否则磁盘克隆后再原生恢复。"""
         source_id = str(session.get("source") or "")
         source = self.get(source_id)
         if not source.is_available():
@@ -207,8 +207,7 @@ class RuntimeRegistry:
                 session, source.id, title, copy_session=True,
             )
         cloned = source.clone_session(session)
-        suffix = t("session.title.copy_suffix")
-        copy_title = title if title.endswith("（副本）") or title.endswith(" (copy)") else f"{title}{suffix}"
+        copy_title = normalize_fork_title(title)
         return LaunchRequest(cloned, source.id, copy_title)
 
     def build_new_session_plan(self, request: NewSessionRequest) -> LaunchPlan:

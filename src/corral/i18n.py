@@ -473,16 +473,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "无法导出会话：{error}",
     },
     "modal.copy_session": {
-        "en": "Copy session",
-        "zh": "复制会话",
+        "en": "Fork Session",
+        "zh": "分叉会话",
     },
     "modal.copy_session_action": {
-        "en": "Full clone of current chat (same assistant, open beside)",
-        "zh": "完整克隆当前对话（同助手，旁挂分屏）",
+        "en": "Fork the current chat (same assistant, open beside)",
+        "zh": "分叉当前对话（同助手，旁挂分屏）",
     },
     "modal.copy_session_failed": {
-        "en": "Could not copy session: {error}",
-        "zh": "无法复制会话：{error}",
+        "en": "Could not fork session: {error}",
+        "zh": "无法分叉会话：{error}",
     },
     "modal.restart_session": {
         "en": "Restart session",
@@ -650,16 +650,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "新 {name} 会话",
     },
     "session.title.copy": {
-        "en": "Copy of {name}",
-        "zh": "复制自 {name}",
+        "en": "Fork of {name}",
+        "zh": "分叉自 {name}",
     },
     "session.title.handoff": {
         "en": "Handoff from {name}",
         "zh": "接力自 {name}",
     },
     "session.title.copy_suffix": {
-        "en": " (copy)",
-        "zh": "（副本）",
+        "en": " (fork)",
+        "zh": "（分叉）",
     },
     "session.title.pending": {
         "en": "(pending title)",
@@ -691,8 +691,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "未注册的运行时：{id}",
     },
     "launch.copy_same_assistant": {
-        "en": "Copying a session is only allowed within the same assistant",
-        "zh": "复制会话只能在同一助手内进行",
+        "en": "Forking a session is only allowed within the same assistant",
+        "zh": "分叉会话只能在同一助手内进行",
     },
     "launch.copy_no_fork": {
         "en": (
@@ -702,8 +702,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "运行时 {id} 未提供分叉计划；请先经 prepare_copy_request 完成磁盘克隆",
     },
     "launch.copy_not_installed": {
-        "en": "{name} is not installed, so the session cannot be copied",
-        "zh": "{name} 未安装，无法复制会话",
+        "en": "{name} is not installed, so the session cannot be forked",
+        "zh": "{name} 未安装，无法分叉会话",
     },
     "launch.executable_missing": {
         "en": "Command {executable} was not found; install the corresponding runtime first",
@@ -718,8 +718,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "运行时 {id} 尚未支持携带新指令的续接计划",
     },
     "launch.no_copy": {
-        "en": "Runtime {id} does not yet support copying sessions",
-        "zh": "运行时 {id} 尚未支持复制会话",
+        "en": "Runtime {id} does not yet support forking sessions",
+        "zh": "运行时 {id} 尚未支持分叉会话",
+    },
+    "launch.fork_title_failed": {
+        "en": "Could not write the forked session title: {error}",
+        "zh": "无法写入分叉会话标题：{error}",
     },
     "launch.no_delete": {
         "en": "Runtime {id} does not yet support deleting sessions",

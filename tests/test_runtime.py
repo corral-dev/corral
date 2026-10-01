@@ -280,19 +280,88 @@ class RuntimeTests(unittest.TestCase):
             request = _prepare_copy_request(registry, session, "原标题")
             self.assertFalse(request.copy_session)
             self.assertNotEqual(request.session["id"], old_id)
-            self.assertTrue(
-                str(request.session.get("native_title") or "").endswith(
-                    ("（副本）", " (copy)", t("session.title.copy_suffix").strip())
-                )
-            )
+            # A new fork card and the clone it persists must use the fork
+            # suffix; no legacy copy wording may remain.
+            fork_suffix = t("session.title.copy_suffix")
+            self.assertEqual(request.title, f"原标题{fork_suffix}")
+            native = str(request.session.get("native_title") or "")
+            self.assertTrue(native.endswith(fork_suffix), native)
+            for legacy in ("（副本）", " (copy)", "(copy)"):
+                self.assertNotIn(legacy, request.title)
+                self.assertNotIn(legacy, native)
             new_dir = Path(td) / request.session["id"]
             self.assertTrue((new_dir / "store.db").is_file())
             self.assertTrue((chat_dir / "store.db").is_file(), "原会话不得被改动")
+            # Re-scanning the new fork reads the persisted fork title, while
+            # the source history title stays exactly as it was.
+            clone_meta = json.loads((new_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(clone_meta.get("title"), native)
+            source_meta = json.loads((chat_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(source_meta.get("title"), "原标题")
+            # Forking a fork collapses stacked suffixes instead of doubling
+            # them, and never falls back to copy wording.
+            request2 = _prepare_copy_request(registry, request.session, request.title)
+            self.assertEqual(request2.title, f"原标题{fork_suffix}")
+            self.assertEqual(
+                str(request2.session.get("native_title") or ""), f"原标题{fork_suffix}"
+            )
 
             plan = registry.build_launch_plan(request)
             self.assertIn("--resume", plan.argv)
             self.assertIn(request.session["id"], plan.argv)
             self.assertNotIn("--fork-session", plan.argv)
+
+    def test_cursor_fork_write_failure_removes_clone_and_keeps_source(self) -> None:
+        """A failed fork-title write removes the fresh clone, never the source."""
+        import json
+        import uuid
+
+        with tempfile.TemporaryDirectory() as td:
+            old_id = str(uuid.uuid4())
+            chat_dir = Path(td) / old_id
+            chat_dir.mkdir()
+            (chat_dir / "meta.json").write_text(
+                json.dumps({"cwd": td, "title": "原标题", "hasConversation": True}),
+                encoding="utf-8",
+            )
+            (chat_dir / "store.db").write_bytes(b"")
+            session = self._session("cursor", str(chat_dir / "store.db"), td)
+            session["id"] = old_id
+
+            registry = default_registry()
+            with mock.patch("os.replace", side_effect=OSError("disk gone")):
+                with self.assertRaises(LaunchError) as raised:
+                    _prepare_copy_request(registry, session, "原标题")
+            self.assertIn("forked session title", str(raised.exception))
+            # The fresh clone is gone; the source history is byte-identical.
+            self.assertEqual(sorted(p.name for p in Path(td).iterdir()), [old_id])
+            source_meta = json.loads((chat_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(source_meta.get("title"), "原标题")
+            self.assertTrue((chat_dir / "store.db").is_file())
+
+    def test_cursor_fork_refuses_to_rewrite_source_directory(self) -> None:
+        """The retitle guard never deletes when clone and source coincide."""
+        import json
+        import uuid
+
+        from corral.runtime.cursor import _retitle_cursor_fork
+
+        with tempfile.TemporaryDirectory() as td:
+            old_id = str(uuid.uuid4())
+            chat_dir = Path(td) / old_id
+            chat_dir.mkdir()
+            (chat_dir / "meta.json").write_text(
+                json.dumps({"cwd": td, "title": "原标题", "hasConversation": True}),
+                encoding="utf-8",
+            )
+            session = self._session("cursor", str(chat_dir / "store.db"), td)
+            session["id"] = old_id
+            session["native_title"] = "原标题(copy)"
+            with self.assertRaises(LaunchError):
+                _retitle_cursor_fork(dict(session), dict(session))
+            self.assertTrue(chat_dir.is_dir())
+            source_meta = json.loads((chat_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(source_meta.get("title"), "原标题")
 
     def test_copy_session_kimi_clones_directory(self) -> None:
         import json
@@ -342,6 +411,21 @@ class RuntimeTests(unittest.TestCase):
             plan = registry.build_launch_plan(request)
             self.assertIn("-S", plan.argv)
             self.assertIn(request.session["id"], plan.argv)
+
+    def test_normalize_fork_title_unifies_old_and_new_suffixes(self) -> None:
+        """Fork title normalization converges old/new suffixes, never stacks."""
+        from corral.runtime.base import normalize_fork_title
+
+        fork_suffix = t("session.title.copy_suffix")
+        self.assertEqual(normalize_fork_title("原标题"), f"原标题{fork_suffix}")
+        for old in ("原标题（副本）", "原标题 (copy)", "原标题(copy)"):
+            self.assertEqual(normalize_fork_title(old), f"原标题{fork_suffix}", old)
+        for new in ("原标题（分叉）", "原标题 (fork)", f"原标题{fork_suffix}"):
+            self.assertEqual(normalize_fork_title(new), f"原标题{fork_suffix}", new)
+        self.assertEqual(
+            normalize_fork_title(f"原标题（副本）{fork_suffix}"), f"原标题{fork_suffix}"
+        )
+        self.assertEqual(normalize_fork_title(""), "")
 
     def test_prepare_copy_request_rejects_unavailable_runtime(self) -> None:
         session = self._session("claude", "/tmp/claude.jsonl", "/tmp")

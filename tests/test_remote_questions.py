@@ -657,13 +657,13 @@ class AsyncSettlementTests(unittest.TestCase):
         self.assertEqual(len(prompts), 3)
 
     def test_native_envelope_reply_settles(self) -> None:
-        question_id = '["request_user_input_async","call_async1",0]'
-        envelope = (
-            "<send_user_message_question_reply>\n"
-            + json.dumps(
-                [{"questionItemId": question_id, "question": "q", "answer": "Wi-Fi"}]
-            )
-            + "\n</send_user_message_question_reply>"
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "测试单选：你现在使用什么网络？", "Wi-Fi"),
+                (1, "测试自由填写：请随便写一句话。", "你好"),
+                (2, "测试多题提交：操作是否顺畅？", "顺畅"),
+            ],
         )
         _, prompts = _codex_pending(_async_history(_codex_user(envelope)))
         self.assertEqual(prompts, [])
@@ -877,6 +877,374 @@ class AsyncSettlementTests(unittest.TestCase):
         self.assertEqual(result["status"], "stale")
         paste.assert_not_called()
         send_key.assert_not_called()
+
+
+def _native_envelope(call_id: str, replies: list[tuple[int, str, str]]) -> str:
+    """Native answer fragment in the official rollout shape."""
+    body = json.dumps(
+        [
+            {
+                "questionItemId": json.dumps(
+                    ["request_user_input_async", call_id, index],
+                    separators=(",", ":"),
+                ),
+                "question": question,
+                "answer": answer,
+            }
+            for index, question, answer in replies
+        ],
+        ensure_ascii=False,
+    )
+    return (
+        "<send_user_message_question_reply>\n"
+        + body
+        + "\n</send_user_message_question_reply>"
+    )
+
+
+def _leaked(messages: list) -> list:
+    return [
+        item
+        for item in messages
+        if "send_user_message_question_reply" in (item.text or "")
+    ]
+
+
+def _async_statuses(messages: list) -> list[str]:
+    return [
+        tool.status
+        for message in messages
+        for tool in message.tools
+        if tool.name == "request_user_input_async"
+    ]
+
+
+class NativeReplyDisplayTests(unittest.TestCase):
+    """A native answer settles its request without ever becoming a chat bubble.
+
+    Every case runs the real JSONL → SessKit typed-event → RichMessage path.
+    The turn stays active (no task_complete) unless the case says otherwise,
+    so settlement must come from the envelope itself.
+    """
+
+    def test_valid_answer_no_bubble_settles_while_turn_active(self) -> None:
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "测试单选：你现在使用什么网络？", "Wi-Fi"),
+                (1, "测试自由填写：请随便写一句话。", "你好"),
+                (2, "测试多题提交：操作是否顺畅？", "顺畅"),
+            ],
+        )
+        messages, prompts = _codex_pending(_async_history(_codex_user(envelope)))
+        self.assertEqual(prompts, [])
+        self.assertEqual(_leaked(messages), [])
+        self.assertEqual(_async_statuses(messages), ["ok"])
+
+    def test_partial_answer_hidden_but_siblings_stay_pending(self) -> None:
+        # Official resolve_answers clears only answered questions: a one-index
+        # envelope is control content (no bubble) but must not settle the
+        # unanswered siblings.
+        envelope = _native_envelope("call_async1", [(0, "q0", "Wi-Fi")])
+        messages, prompts = _codex_pending(_async_history(_codex_user(envelope)))
+        self.assertEqual(_leaked(messages), [])
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual({p["request_id"] for p in prompts}, {"call_async1"})
+        self.assertEqual(_async_statuses(messages), ["running"])
+
+    def test_grouped_custom_answers_no_bubble(self) -> None:
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "测试单选：你现在使用什么网络？", "蜂窝网络"),
+                (1, "测试自由填写：请随便写一句话。", "other"),
+                (2, "测试多题提交：操作是否顺畅？", "顺畅"),
+            ],
+        )
+        messages, prompts = _codex_pending(_async_history(_codex_user(envelope)))
+        self.assertEqual(prompts, [])
+        self.assertEqual(_leaked(messages), [])
+        self.assertEqual(_async_statuses(messages), ["ok"])
+
+    def test_repeated_envelopes_settle_without_bubble(self) -> None:
+        envelope = _native_envelope(
+            "call_async1",
+            [(0, "q0", "Wi-Fi"), (1, "q1", "hi"), (2, "q2", "顺畅")],
+        )
+        messages, prompts = _codex_pending(
+            _async_history(_codex_user(envelope + "\n" + envelope))
+        )
+        self.assertEqual(prompts, [])
+        self.assertEqual(_leaked(messages), [])
+        self.assertEqual(_async_statuses(messages), ["ok"])
+
+    def test_mixed_ordinary_text_retained(self) -> None:
+        envelope = _native_envelope(
+            "call_async1",
+            [(0, "q0", "Wi-Fi"), (1, "q1", "hi"), (2, "q2", "顺畅")],
+        )
+        messages, prompts = _codex_pending(
+            _async_history(_codex_user("先说一句\n" + envelope + "\n再补充一句"))
+        )
+        self.assertEqual(prompts, [])
+        self.assertEqual(_leaked(messages), [])
+        bubbles = [item.text for item in messages if item.role == "user"]
+        self.assertTrue(any("先说一句" in text for text in bubbles))
+        self.assertTrue(any("再补充一句" in text for text in bubbles))
+
+    def test_malformed_envelope_preserved(self) -> None:
+        broken = "<send_user_message_question_reply>{not json}</send_user_message_question_reply>"
+        messages, prompts = _codex_pending(_async_history(_codex_user(broken)))
+        # Malformed control text is ordinary user text: still visible, and it
+        # still steers (settles) like any other user turn.
+        self.assertEqual(prompts, [])
+        bubbles = [item.text for item in messages if item.role == "user"]
+        self.assertIn(broken, bubbles)
+
+    def test_bare_tag_mention_preserved(self) -> None:
+        mention = "这个 <send_user_message_question_reply> 标签是干嘛的"
+        messages, prompts = _codex_pending(_async_history(_codex_user(mention)))
+        self.assertEqual(prompts, [])
+        bubbles = [item.text for item in messages if item.role == "user"]
+        self.assertIn(mention, bubbles)
+
+    def test_unrelated_identity_keeps_pending_without_bubble(self) -> None:
+        envelope = _native_envelope("call_other", [(0, "q", "Wi-Fi")])
+        messages, prompts = _codex_pending(_async_history(_codex_user(envelope)))
+        # The envelope is still control content (no bubble), but the live
+        # request it does not name must stay pending.
+        self.assertEqual(_leaked(messages), [])
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual({p["request_id"] for p in prompts}, {"call_async1"})
+
+    def test_other_runtime_text_untouched(self) -> None:
+        from types import SimpleNamespace
+
+        envelope = _native_envelope("call_async1", [(0, "q", "Wi-Fi")])
+        event = SimpleNamespace(
+            type="user_message", text=envelope, origin="human", ts=None, evidence=None
+        )
+        reader = richmsg.RichReader({"source": "claude", "id": "s", "path": ""})
+        host, is_new = richmsg._feed_typed_event(
+            reader, event, runtime="claude", groups={}, batch=richmsg._TypedBatch()
+        )
+        self.assertTrue(is_new)
+        self.assertIsNotNone(host)
+        assert host is not None
+        self.assertEqual(host.text, envelope)
+
+    def test_append_poll_hides_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(path, _async_history())
+            session = {"source": "codex", "path": str(path), "id": "async", "cwd": directory}
+            reader = richmsg.RichReader(session)
+            opened = reader.read_all()
+            self.assertEqual(len(richmsg.pending_prompts_from_messages(opened)), 3)
+            envelope = _native_envelope(
+                "call_async1",
+                [(0, "q0", "Wi-Fi"), (1, "q1", "hi"), (2, "q2", "顺畅")],
+            )
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(_codex_user(envelope), ensure_ascii=False) + "\n")
+            delta = reader.poll()
+            self.assertEqual(_leaked(delta), [])
+            self.assertEqual(_leaked(reader._cc_full or []), [])
+            self.assertEqual(richmsg.pending_prompts_from_messages(reader._cc_full or []), [])
+
+    def test_identity_only_object_preserved(self) -> None:
+        # Structurally not a native answer: no question/answer strings.
+        lookalike = (
+            "<send_user_message_question_reply>\n"
+            '[{"questionItemId":"not a native identity"}]\n'
+            "</send_user_message_question_reply>"
+        )
+        messages, _ = _codex_pending(_async_history(_codex_user(lookalike)))
+        bubbles = [item.text for item in messages if item.role == "user"]
+        self.assertIn(lookalike, bubbles)
+
+    def test_wrong_typed_fields_preserved(self) -> None:
+        cases = [
+            # missing answer
+            [{"questionItemId": '["request_user_input_async","call_async1",0]', "question": "q0"}],
+            # non-string answer
+            [
+                {
+                    "questionItemId": '["request_user_input_async","call_async1",0]',
+                    "question": "q0",
+                    "answer": 123,
+                }
+            ],
+            # blank question
+            [
+                {
+                    "questionItemId": '["request_user_input_async","call_async1",0]',
+                    "question": "  ",
+                    "answer": "Wi-Fi",
+                }
+            ],
+            # non-array identity
+            [{"questionItemId": "call_async1", "question": "q0", "answer": "Wi-Fi"}],
+            # wrong tool in identity
+            [
+                {
+                    "questionItemId": '["request_user_input","call_async1",0]',
+                    "question": "q0",
+                    "answer": "Wi-Fi",
+                }
+            ],
+            # boolean index is not an integer index
+            [
+                {
+                    "questionItemId": '["request_user_input_async","call_async1",true]',
+                    "question": "q0",
+                    "answer": "Wi-Fi",
+                }
+            ],
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                fragment = (
+                    "<send_user_message_question_reply>\n"
+                    + json.dumps(body, ensure_ascii=False)
+                    + "\n</send_user_message_question_reply>"
+                )
+                messages, _ = _codex_pending(_async_history(_codex_user(fragment)))
+                bubbles = [item.text for item in messages if item.role == "user"]
+                self.assertIn(fragment, bubbles)
+
+    def test_long_answer_no_bubble_settles(self) -> None:
+        long_answer = "a" * (richmsg._MAX_TEXT + 100)
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "测试单选：你现在使用什么网络？", long_answer),
+                (1, "测试自由填写：请随便写一句话。", "你好"),
+                (2, "测试多题提交：操作是否顺畅？", "顺畅"),
+            ],
+        )
+        messages, prompts = _codex_pending(_async_history(_codex_user(envelope)))
+        self.assertEqual(prompts, [])
+        self.assertEqual(_leaked(messages), [])
+        self.assertEqual(_async_statuses(messages), ["ok"])
+
+    def test_mixed_text_with_long_answer_retained(self) -> None:
+        long_answer = "b" * (richmsg._MAX_TEXT + 100)
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "测试单选：你现在使用什么网络？", long_answer),
+                (1, "测试自由填写：请随便写一句话。", "你好"),
+                (2, "测试多题提交：操作是否顺畅？", "顺畅"),
+            ],
+        )
+        messages, prompts = _codex_pending(
+            _async_history(_codex_user("前言\n" + envelope + "\n后记"))
+        )
+        self.assertEqual(prompts, [])
+        self.assertEqual(_leaked(messages), [])
+        bubbles = [item.text for item in messages if item.role == "user"]
+        self.assertTrue(any("前言" in text for text in bubbles))
+        self.assertTrue(any("后记" in text for text in bubbles))
+
+    def test_append_poll_hides_long_envelope(self) -> None:
+        long_answer = "c" * (richmsg._MAX_TEXT + 100)
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "q0", long_answer),
+                (1, "q1", "hi"),
+                (2, "q2", "顺畅"),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(path, _async_history())
+            session = {"source": "codex", "path": str(path), "id": "async", "cwd": directory}
+            reader = richmsg.RichReader(session)
+            opened = reader.read_all()
+            self.assertEqual(len(richmsg.pending_prompts_from_messages(opened)), 3)
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(_codex_user(envelope), ensure_ascii=False) + "\n")
+            delta = reader.poll()
+            self.assertEqual(_leaked(delta), [])
+            self.assertEqual(_leaked(reader._cc_full or []), [])
+            self.assertEqual(richmsg.pending_prompts_from_messages(reader._cc_full or []), [])
+
+    def test_tail_and_backward_page_hide_long_envelope(self) -> None:
+        long_answer = "d" * (richmsg._MAX_TEXT + 100)
+        rows = _async_history(
+            _codex_user(
+                _native_envelope(
+                    "call_async1",
+                    [(0, "q0", long_answer), (1, "q1", "hi"), (2, "q2", "顺畅")],
+                )
+            )
+        )
+        for index in range(90):
+            rows.append(_codex_user(f"note {index}"))
+            rows.append(_codex_assistant(f"ack {index}"))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(path, rows)
+            session = {"source": "codex", "path": str(path), "id": "async", "cwd": directory}
+            reader = richmsg.RichReader(session)
+            tail = reader.read_all(limit=5)
+            self.assertEqual(_leaked(tail), [])
+            earlier = reader.read_earlier(500, before_seq=tail[0].seq)
+            self.assertEqual(_leaked(earlier), [])
+            self.assertEqual(_leaked(reader._cc_full or []), [])
+
+
+class NativeReplyCacheInvalidationTests(unittest.TestCase):
+    """A payload parsed before the envelope strip must never be reused."""
+
+    def test_old_parser_payload_rejected_and_reparse_hides_wrapper(self) -> None:
+        import os
+        import sqlite3
+
+        from corral.remote import transcript_cache as tcache
+
+        envelope = _native_envelope(
+            "call_async1",
+            [
+                (0, "测试单选：你现在使用什么网络？", "Wi-Fi"),
+                (1, "测试自由填写：请随便写一句话。", "other"),
+                (2, "测试多题提交：操作是否顺畅？", "顺畅"),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            hist = Path(directory) / "codex.jsonl"
+            _write_jsonl(hist, _async_history(_codex_user(envelope)))
+            session = {
+                "source": "codex",
+                "path": str(hist),
+                "id": "async",
+                "cwd": directory,
+            }
+            with mock.patch.dict(os.environ, {"CACHE": "1", "CORRAL_CACHE": "1"}):
+                db = Path(directory) / "t.sqlite3"
+                cache = tcache.TranscriptCache(db)
+                reader = richmsg.RichReader(session)
+                messages = reader.read_all()
+                self.assertEqual(_leaked(messages), [])
+                cache.put(
+                    "codex", "codex:async", str(hist), messages, reader.export_state(), 1
+                )
+                self.assertIsNotNone(cache.get("codex", "codex:async", str(hist)))
+                cache.close()
+                conn = sqlite3.connect(str(db))
+                conn.execute("UPDATE transcript SET parser_version='2026-10-01.2'")
+                conn.commit()
+                conn.close()
+                stale = tcache.TranscriptCache(db)
+                try:
+                    self.assertIsNone(stale.get("codex", "codex:async", str(hist)))
+                finally:
+                    stale.close()
+                reparsed = richmsg.RichReader(session).read_all()
+                self.assertEqual(_leaked(reparsed), [])
+                self.assertEqual(richmsg.pending_prompts_from_messages(reparsed), [])
 
 
 if __name__ == "__main__":
