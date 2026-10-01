@@ -98,6 +98,41 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertFalse(payload["pinned"])
         self.assertEqual(payload["attention"], "none")
 
+    def test_list_marker_matches_tui_active_marker(self) -> None:
+        """Phone dots come from the TUI rule, never from a merely live process."""
+        import time as _time
+
+        now = _time.time()
+        idle_live = _session(sid="idle", attention="none", mtime=now - 3600)
+        idle_live["live"] = True
+        idle_live["keepalive_name"] = "pane-idle"
+        recent = _session(sid="recent", attention="none", mtime=now - 5)
+        recent["live"] = True
+        recent["keepalive_name"] = "pane-recent"
+        external = _session(sid="external", attention="none", mtime=now - 5)
+        external["live"] = True
+        working = _session(sid="working", attention="working", mtime=now - 3600)
+        with mock.patch.object(self.hub.store, "get_title", return_value="t"):
+            markers = {
+                item["id"]: self.hub.session_payload(item, None)["marker"]
+                for item in (idle_live, recent, external, working)
+            }
+        self.assertEqual(
+            markers,
+            {"idle": "", "recent": "recent", "external": "", "working": "working"},
+        )
+
+    def test_marker_expiry_is_detected_without_history_change(self) -> None:
+        import time as _time
+
+        session = _session(sid="m", attention="none", mtime=_time.time() - 5)
+        session["keepalive_name"] = "pane-m"
+        self.hub.store.sessions = {"claude": [session]}
+        self.assertTrue(self.hub._detect_marker_changes())
+        self.assertFalse(self.hub._detect_marker_changes())
+        session["mtime"] = _time.time() - 3600
+        self.assertTrue(self.hub._detect_marker_changes())
+
     def test_unchanged_capture_skips_screen_parsing_and_encoding(self) -> None:
         session = _session(sid="live")
         session["keepalive_name"] = "pane-live"

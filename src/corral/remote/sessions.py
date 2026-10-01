@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from sesskit import titles as sesskit_titles
 
 from corral import embed, keepalive, titles
+from corral.activity_board import resolve_active_marker
 from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, session_key
@@ -443,6 +444,7 @@ class SessionHub:
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
         self._media = None  # media.PreviewService, created on first image request
         self._last_live: dict[str, bool] = {}
+        self._last_markers: dict[str, str] = {}
         self._last_status: dict[str, str] = {}
         self._last_completion: dict[str, str] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
@@ -545,10 +547,25 @@ class SessionHub:
             self._detect_attention_changes()
             self._detect_live_changes()
             self._detect_status_changes()
-            if (changed or title_keys) and self._sessions_watchers:
+            markers_changed = self._detect_marker_changes()
+            if (changed or title_keys or markers_changed) and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
                 self._emit_title_events(title_keys)
+
+    def _detect_marker_changes(self) -> bool:
+        """True when any row's TUI marker flipped since the last pass.
+
+        A ``recent`` mark expires with time alone, without any history change,
+        so the list push cannot rely on ``store.refresh()`` reporting a change.
+        """
+        current = {
+            session_key(session): resolve_active_marker(session) or ""
+            for session in self.store.all_sessions()
+        }
+        changed = current != self._last_markers
+        self._last_markers = current
+        return changed
 
     def _reclaim_inactive_hosts(self) -> None:
         """Silent reclaim tick on the refresh thread; the daemon may run with no TUI open.
@@ -686,6 +703,9 @@ class SessionHub:
             "live": bool(session.get("live")),
             "hosted": bool(session.get("keepalive_name")),
             "attention": _ATTENTION_LABELS.get(attention, "none"),
+            # Same dot as the TUI sidebar / Active sessions; the phone must not
+            # derive green from ``live``.
+            "marker": resolve_active_marker(session) or "",
             "last_user": str(session.get("last_user_msg") or "")[:160],
             "last_agent": str(session.get("last_agent_msg") or "")[:160],
             # 完成通知去重与事后核对用：只读透传，不进排序/筛选/版本指纹。
@@ -731,6 +751,7 @@ class SessionHub:
                     str(session.get("last_agent_msg") or "")[:160],
                     bool(session.get("live")),
                     pinned,
+                    resolve_active_marker(session) or "",
                 ]
             )
         return _list_version_blob(rows)
