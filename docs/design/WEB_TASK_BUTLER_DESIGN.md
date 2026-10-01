@@ -60,6 +60,14 @@
     Each role's standing prompt states who it is, who it works for, and its duties and
     limits; the per-task brief comes on top of the worker's standing prompt. Drafts:
     `spikes/web_butler/coordinator_eval/coordinator_prompt.md` and `worker_prompt.md`.
+18. **The document lets the owner step away** (owner, 2026-10-01). The owner noticed the
+    product matches a common anti-procrastination advice: before leaving, take a two-minute
+    checkpoint (where was I, what new ideas do I have, what is the first step next time),
+    then get up. "Leaving the computer" is a metaphor for not staying glued to the screen,
+    not powering it off; agents keep running. The product goal includes: the owner can hand
+    off their current thinking and walk away without fear of losing the thread, and
+    coming back has an obvious first step. The owner left the follow-up design to the agent
+    ("你考虑一下吧"); the proposals below are not yet confirmed.
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -77,6 +85,26 @@
 4. **Test layers**: deterministic tests for ledger/anchors/triggers; recorded-replay tests
    for typing → coordinator rounds; an evaluation set for coordinator decisions; end-to-end runs with real
    assistants on disposable projects; browser screenshots/recordings for the editor.
+
+### Stepping away and coming back (*Proposed*, follows requirement 18)
+
+The checkpoint advice has three questions; only the second one is covered by the document so far.
+
+| Checkpoint question | Today's design | Proposal |
+|---|---|---|
+| Where was I? | Not covered | Filled automatically. The ledger and session states already know what is running, done, failed or waiting; the coordinator words it. The owner does not reconstruct it. |
+| What new ideas do I have? | The idea document itself | Unchanged |
+| First step next time? | Partly: green done text and amber questions are scattered through the document | One "pick up here" summary at the top on return: questions awaiting the owner first, then results to review, then what is still running. |
+
+- **Leaving should take seconds, not two minutes.** A single "step away" action may ask the
+  coordinator for a checkpoint note; the owner only adds new thoughts. The action must not
+  be required: closing the tab already loses nothing (§6.1 "never lose the draft").
+- **Phone push must not pull the owner back** (refines requirement 14). If every question is
+  pushed, the owner has left the screen but not the work. Only questions that block all
+  useful progress should be pushed; questions that can wait stay in the document for the
+  "pick up here" summary. Requirement 11 applies: the coordinator judges whether a question
+  is blocking and marks it, the system only routes by that mark. Needs §6.2 evaluation
+  cases (blocking vs. can-wait) and a check that most questions are not pushed.
 
 ## 2. Existing capability (verified in source, 2026-09-29)
 
@@ -614,6 +642,9 @@ Decisions for the owner at freeze:
    settings (requirement 3 leaves it open).
 3. **Scope of the first release.** Proposed: slices 0–5 plus the page command. Phone push of
    questions (slice 6) can follow in the next release.
+4. **Stepping away and coming back** (§1, requirement 18). Proposed: the "pick up here"
+   summary and the blocking-only push in slice 6; the explicit "step away" action is optional
+   and may come later.
 
 ## 11. References
 
