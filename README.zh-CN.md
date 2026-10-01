@@ -1,7 +1,7 @@
 **语言：** [English](README.md) | 简体中文
 
 <p align="center">
-  <img src="docs/screenshots/corral-unicorn.png" alt="Corral" width="112" height="112">
+  <img src="docs/screenshots/corral-icon.png" alt="Corral" width="112" height="112">
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>在一个终端里运行所有编程助手，离开电脑也能用手机接着做。</strong></p>

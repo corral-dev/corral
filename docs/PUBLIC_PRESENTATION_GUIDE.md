@@ -2,11 +2,11 @@
 
 ## Product identity
 
-The currently approved Corral icon is the colorful paper-cut unicorn on a blue background. Use the current iOS master at `../../ios/Corral/Assets.xcassets/AppIcon.appiconset/AppIcon.png` in the product workspace. The green arrow and the orange/sage horse artwork are retired; remove their files and generated packages rather than retaining competing masters.
+Owner decision (2026-10-01): Corral's unified brand mark is the selected yellow-green cowboy hat, identified by the installed `Corral Contrast 04` comparison app. Preserve its silhouette, internal color boundaries, proportions, flat graphic style, white background, centered placement, and approximately 10% horizontal margins. The selected palette is green `#256B4C` and warm yellow `#F3BF73`; do not infer another preferred palette or redraw the hat into a different shape. Produce one independent refined master with clean curves and crisp edges, then replace every active Corral brand surface, including the English and Chinese README and iOS app icon. This explicitly supersedes the former blue-background unicorn identity and the unfinished redesign brief.
 
-Redesign brief (owner direction, 2026-09-30): a complete visual redesign is authorized. Keep the new exploration connected to Corral's enclosure and equestrian imagery, gathering and tending independently running agents. Rework the motif, silhouette, palette, and visual style within that identity; generic unrelated objects do not satisfy this brief. This supersedes the earlier prohibition on generating a replacement interpretation. The current master remains the production identity until a new direction is selected and finished; concept boards are not production assets.
+The canonical production master is `brand/AppIcon-1024.png`. The iOS catalog at `../../ios/Corral/Assets.xcassets/AppIcon.appiconset/AppIcon.png` consumes the same master. README presentation uses `docs/screenshots/corral-icon.png`, a compact rounded display derivative. Keep the application master square and opaque; do not embed the 1024 master in an SVG for GitHub. Retired arrow, horse and unicorn artwork must not remain active brand alternatives. Assistant-provider logos retain their own official identities.
 
-The README display asset is `docs/screenshots/corral-unicorn.png`: a compact rounded clip of the approved master. Keep the application master square and opaque. Do not embed the 1024 master in an SVG for GitHub.
+All presentation derivatives come from that master. `brand/render.py` deterministically prepares the 1024px app asset, rounded README display image and social-preview card. Relay documentation uses the same rounded image. Keep the source artwork and its refinement prompt in `brand/`; do not rely on machine-local generation paths. Use the existing sanitized terminal capture in the social card without replacing the live product demonstration in the README.
 
 ## README contract
 

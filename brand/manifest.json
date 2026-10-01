@@ -1,0 +1,10 @@
+{
+  "source_sha256": "ed983fb655c552b90ab4b2dd60e754449e256d71da421b20b55789f4a7c8a5cf",
+  "artwork": "Approved yellow-green cowboy hat; white background",
+  "generation": "Built-in imagegen; faithful independent refinement",
+  "outputs": {
+    "brand/AppIcon-1024.png": "b395350ac16e6134a9511ec7d66fad14007fa4f3724740384b9430915571fd52",
+    "docs/screenshots/corral-icon.png": "b9eb23ebf11da70905660a507d2e9fab19e3486d70544ac5cc95a55830bb22e9",
+    "docs/screenshots/social-preview.png": "0a282c466bac6ecf44204cf0039e461f1f43dc0977f0953b43b111ba9e0a970f"
+  }
+}

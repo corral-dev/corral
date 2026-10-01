@@ -8,7 +8,7 @@
 
 ## 文档导航
 
-- [Public presentation](cli/docs/PUBLIC_PRESENTATION_GUIDE.md): **must read** before changing or reviewing README, GitHub presentation, or app-icon assets, or troubleshooting **README demo.gif fruit-emoji / group tree-line tofu**; the approved identity is the blue-background unicorn, and retired arrow/horse assets must not return.
+- [Public presentation](cli/docs/PUBLIC_PRESENTATION_GUIDE.md): Approved yellow-green cowboy-hat identity, shared brand assets, README presentation and sanitized product captures.
 
 - [Independent iOS UI annotation design](/Users/geraltgraham/Codes/_standards/workspace-docs/IOS_UI_ANNOTATION_COMPONENT_DESIGN.md): **must read** before designing, implementing or reviewing Corral as an optional destination for annotated UI change requests; otherwise Corral-specific session and authentication assumptions may leak into the independent component (**EditHere** at `/Users/geraltgraham/Codes/EditHere/`). Corral must not become a hard dependency of the annotation core.
 

@@ -1,7 +1,7 @@
 **Languages:** English | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <img src="docs/screenshots/corral-unicorn.png" alt="Corral" width="112" height="112">
+  <img src="docs/screenshots/corral-icon.png" alt="Corral" width="112" height="112">
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>Run all your coding agents from one terminal — and pick them up from your phone.</strong></p>
