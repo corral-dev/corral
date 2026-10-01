@@ -842,6 +842,17 @@ class SessionHubPayloadTests(unittest.TestCase):
                         "session:claude:a",
                         {
                             "version": 1,
+                            "kind": "attention",
+                            "session": "claude:a",
+                            "attention": "working",
+                            "provisional": True,
+                            "live": True,
+                        },
+                    ),
+                    (
+                        "session:claude:a",
+                        {
+                            "version": 1,
                             "kind": "echo",
                             "session": "claude:a",
                             "role": "user",

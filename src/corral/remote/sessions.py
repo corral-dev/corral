@@ -441,6 +441,7 @@ class SessionHub:
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
+        self._media = None  # media.PreviewService, created on first image request
         self._last_live: dict[str, bool] = {}
         self._last_status: dict[str, str] = {}
         self._last_completion: dict[str, str] = {}
@@ -1160,6 +1161,47 @@ class SessionHub:
             }
         return target.tool_detail_page(tool_id=tool_id, offset=offset, limit=limit)
 
+    def image_preview(
+        self,
+        key: str,
+        *,
+        seq: int,
+        ref: str,
+        max_px: int,
+        quality: int,
+    ) -> dict:
+        """Downscaled preview of an image that message ``seq`` literally refers to.
+
+        The containment check keeps ``media.image`` from becoming a general file
+        reader: only references present in that message's text are resolved.
+        """
+        from corral.remote import media
+
+        session = self.require_session(key)
+        reference = media.normalize_ref(ref)
+        transcript = self._ensure_transcript(session)
+        target = next((item for item in transcript.messages if item.seq == seq), None)
+        if target is None:
+            with self._transcript_io:
+                self._fill_earlier(transcript, seq + 1, 1)
+            target = next((item for item in transcript.messages if item.seq == seq), None)
+        if target is None or not reference or reference not in (target.text or ""):
+            raise ActionError("not_found", t("remote.err.image_not_found"))
+        if self._media is None:
+            self._media = media.PreviewService()
+        try:
+            preview = self._media.preview(
+                reference,
+                cwd=str(session.get("cwd") or ""),
+                max_px=max_px,
+                quality=quality,
+            )
+        except media.MediaError as exc:
+            if exc.code == "not_found":
+                raise ActionError("not_found", t("remote.err.image_not_found")) from exc
+            raise ActionError("unavailable", t("remote.err.image_unavailable")) from exc
+        return preview.to_wire()
+
     def prompts(self, key: str) -> list[dict]:
         """当前仍待回答的提问型工具调用（含可点选项列表）。"""
         session = self.require_session(key)
@@ -1456,6 +1498,8 @@ class SessionHub:
                 if pasted:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
+            if text:
+                self._emit_provisional_working(key)
         if text:
             # 立刻回显到手机传来的通道，不占规范化 seq；助手历史落地后的正式消息才带 seq。
             self._on_event(
@@ -1468,6 +1512,26 @@ class SessionHub:
                     "text": text,
                 },
             )
+
+    def _emit_provisional_working(self, key: str) -> None:
+        """Tell every watcher the turn started the moment input was submitted.
+
+        The scanner only reports working once the agent writes its transcript,
+        which can lag the submit by seconds. This hint does not touch the
+        authoritative attention, the list payload, or push decisions; clients
+        expire it themselves when no confirmation follows.
+        """
+        self._on_event(
+            f"session:{key}",
+            {
+                "version": 1,
+                "kind": "attention",
+                "session": key,
+                "attention": "working",
+                "provisional": True,
+                "live": True,
+            },
+        )
 
     def send_keys(self, key: str, keys: list[str]) -> None:
         name = self._keepalive_name(key, resume_if_needed=True)
@@ -1535,6 +1599,7 @@ class SessionHub:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
             self._ensure_turn_submitted(name, session, text)
+            self._emit_provisional_working(key)
 
         if text:
             self._on_event(

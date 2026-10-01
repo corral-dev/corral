@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "corral"
-version = "0.24.248"
+version = "0.24.249"
 description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -53,6 +53,9 @@ remote = [
   # Only used for mDNS LAN discovery broadcast; the daemon degrades silently
   # (observe event `remote_mdns_unavailable`) when it is missing.
   "zeroconf>=0.131",
+  # Downscales message-referenced images for the phone (media.image). Missing →
+  # macOS sips, else small originals pass through and large ones are unavailable.
+  "pillow>=10",
 ]
 
 # 开发期依赖分组：只进本地 .venv，不进发布产物。Ruff 版本与

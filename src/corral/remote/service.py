@@ -67,6 +67,7 @@ _READONLY_METHODS = frozenset(
         protocol.M_PUSH_REGISTER,
         protocol.M_SESSION_MARK_READ,
         protocol.M_COMMAND_STATUS,
+        protocol.M_MEDIA_IMAGE,
     }
 )
 
@@ -665,6 +666,7 @@ class RemoteService:
                 protocol.CAPABILITY_COMMAND_RECEIPTS: True,
                 protocol.CAPABILITY_TOOL_DETAIL: True,
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
+                protocol.CAPABILITY_MEDIA_IMAGE: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -735,6 +737,15 @@ class RemoteService:
             tool_id=tool_id,
             offset=_int_param(params, "offset", 0),
             limit=_int_param(params, "limit", 32, max_value=32),
+        )
+
+    def _media_image(self, connection: Connection, params: dict):
+        return self.hub.image_preview(
+            _key(params),
+            seq=_int_param(params, "seq", 0, max_value=10_000_000),
+            ref=str(params.get("ref") or ""),
+            max_px=_int_param(params, "max_px", 0),
+            quality=_int_param(params, "quality", 0, max_value=100),
         )
 
     def _session_watch(self, connection: Connection, params: dict):
@@ -1137,6 +1148,7 @@ _HANDLERS = {
     protocol.M_SESSION_GET: RemoteService._session_get,
     protocol.M_SESSION_MESSAGES: RemoteService._session_messages,
     protocol.M_SESSION_TOOL_DETAIL: RemoteService._session_tool_detail,
+    protocol.M_MEDIA_IMAGE: RemoteService._media_image,
     protocol.M_SESSION_PROMPTS: RemoteService._session_prompts,
     protocol.M_SESSION_WATCH: RemoteService._session_watch,
     protocol.M_SESSION_UNWATCH: RemoteService._session_unwatch,

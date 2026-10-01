@@ -201,6 +201,8 @@ CAPABILITY_COMMAND_RECEIPTS = "command_receipts"
 CAPABILITY_TOOL_DETAIL = "tool_detail"
 # Host supports per-device completion/abort notification prefs via push.register.
 CAPABILITY_COMPLETION_NOTIFY = "completion_notify"
+# Message-referenced images are previewed through media.image (downscaled on the host).
+CAPABILITY_MEDIA_IMAGE = "media_image"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -215,6 +217,8 @@ M_SESSION_PROMPTS = "session.prompts"
 M_SESSION_WATCH = "session.watch"
 M_SESSION_UNWATCH = "session.unwatch"
 M_SESSION_MARK_READ = "session.markRead"
+# Read-only: {key, seq, ref, max_px?, quality?} → bounded preview of an image that message cites.
+M_MEDIA_IMAGE = "media.image"
 
 M_SCREEN_WATCH = "screen.watch"
 M_SCREEN_UNWATCH = "screen.unwatch"

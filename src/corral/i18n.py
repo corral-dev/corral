@@ -1710,6 +1710,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "No keys to send",
         "zh": "没有要发送的按键",
     },
+    "remote.err.image_not_found": {
+        "en": "That image is not available on this computer",
+        "zh": "开发机上找不到这张图片",
+    },
+    "remote.err.image_unavailable": {
+        "en": "That image cannot be previewed",
+        "zh": "这张图片无法预览",
+    },
     "remote.err.no_image": {
         "en": "No image data",
         "zh": "没有图片数据",
