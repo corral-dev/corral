@@ -1322,10 +1322,13 @@ def _parse_claude_legacy(reader: RichReader) -> list[RichMessage]:
 
         if entry_type != "assistant" or not isinstance(content, list):
             continue
+        # Non-empty thinking reads as reply text, matching Claude Code's inline display.
         texts = [
-            (part.get("text") or "").strip()
+            text
             for part in content
-            if isinstance(part, dict) and part.get("type") == "text" and (part.get("text") or "").strip()
+            if isinstance(part, dict) and part.get("type") in ("text", "thinking")
+            for text in [(part.get("text") or part.get("thinking") or "").strip()]
+            if text
         ]
         tools: list[ToolCall] = []
         for part in content:
@@ -1839,9 +1842,15 @@ def _feed_typed_event(
     differences: Codex attaches tool calls to the batch-local previous
     assistant card and dedups repeated text; Claude dedups the flushed
     upstream-error card; Pi owns the thinking-only error card below.
-    ``thinking`` / ``compaction`` events never reach the phone.
+    ``compaction`` events never reach the phone; ``thinking`` does only for
+    Claude, whose desktop shows non-empty thinking inline as reply text.
     """
     etype = getattr(event, "type", "")
+    if etype == "thinking" and runtime == "claude":
+        # Claude Code stores some visible progress notes as thinking blocks and
+        # renders them inline; the phone shows them exactly like reply text.
+        # Empty / redacted thinking carries no text and stays hidden.
+        etype = "assistant_message"
     ts = getattr(event, "ts", None)
     key = _typed_group_key(event, runtime)
     if etype == "user_message":

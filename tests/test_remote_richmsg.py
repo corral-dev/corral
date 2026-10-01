@@ -767,6 +767,58 @@ class RichmsgIncrementalTests(unittest.TestCase):
             self.assertEqual(second[0].tools[0].status, "ok")
             self.assertIn("hi", second[0].tools[0].output)
 
+    def test_claude_visible_thinking_is_shown_as_reply_text(self) -> None:
+        """Claude Code renders non-empty thinking inline; the phone must too."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "user",
+                        "uuid": "u1",
+                        "message": {"role": "user", "content": "good job"},
+                    },
+                    {
+                        "type": "assistant",
+                        "uuid": "a1",
+                        "message": {
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "content": [{"type": "thinking", "thinking": "", "signature": "x"}],
+                        },
+                    },
+                    {
+                        "type": "assistant",
+                        "uuid": "a2",
+                        "parentUuid": "a1",
+                        "message": {
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "thinking", "thinking": "Glad the picture showed up.", "signature": "y"}
+                            ],
+                        },
+                    },
+                    {
+                        "type": "assistant",
+                        "uuid": "a3",
+                        "parentUuid": "a2",
+                        "message": {
+                            "id": "msg_2",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "The diff touches no layout."}],
+                        },
+                    },
+                ],
+            )
+            messages = richmsg.RichReader(_session("claude", path)).read_all()
+        texts = [message.text for message in messages if message.role == "assistant"]
+        joined = "\n".join(texts)
+        self.assertIn("Glad the picture showed up.", joined)
+        self.assertIn("The diff touches no layout.", joined)
+        self.assertNotIn("", [text.strip() for text in texts])
+
     def test_claude_tool_result_is_reemitted_on_poll(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "claude.jsonl"
