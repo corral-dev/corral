@@ -1730,6 +1730,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Answer every question before submitting",
         "zh": "每道题都要先回答再提交",
     },
+    "remote.question.needs_choice": {
+        "en": "Pick an option for this question; typed text is sent as a note on it",
+        "zh": "这道题要先选一个选项，打的字会作为该选项的备注一起发送",
+    },
     "remote.question.too_long": {
         "en": "Answer is too long",
         "zh": "回答太长了",

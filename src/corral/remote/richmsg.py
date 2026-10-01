@@ -429,6 +429,11 @@ def _question_meta(kind: str, args: dict) -> list[dict]:
                     item.get("multiSelect") or item.get("multi_select") or item.get("multiple")
                 ),
                 "is_secret": bool(item.get("isSecret") or item.get("is_secret")),
+                # Claude's preview picker has no free-text row; typed text is a note on a choice.
+                "custom_needs_choice": any(
+                    isinstance(entry, dict) and entry.get("preview")
+                    for entry in (nested if isinstance(nested, list) else [])
+                ),
                 "options": options,
             }
         )
@@ -2718,6 +2723,7 @@ def prompt_entries(
             "question_id": question_id,
             "multi_select": bool(question.get("multi_select")),
             "allow_custom": bool(custom),
+            "custom_needs_choice": bool(question.get("custom_needs_choice")),
             "is_secret": bool(question.get("is_secret")),
             "option_details": options,
         }

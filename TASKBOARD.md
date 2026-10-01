@@ -4,6 +4,7 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| Hide Codex native question reply envelope on phone | 进行中 | remote/richmsg.py native reply projection and request settlement only; question/richmsg regressions; REMOTE_KNOWLEDGE_BASE.md; coordinator whole-tree release/install | 2026-10-01 11:43 | 2026-10-01 11:43 | OpenCode Muse Spark 1.3 contributor; preserve concurrent notification/parser/iOS work; no SessKit parser or iOS edits without evidence and coordination |
 | Notification framing-eviction acceptance and delivery | 进行中 | SessKit native-finality identity contract; same worker parser/tests; coordinator pins/complete-tree release/install/notification preferences | 2026-10-01 | 2026-10-01 | 0.24.244/0.2.5 dual-host shipped and ordinary cases green; 42KB no-terminal fixture with all modern framing outside head/tail still falsely captures1. Same worker continues; doc-first native-evidence identity gate recorded; temporarily mute end-push, preserve original preferences. |
 | 修复更新链路：发版门禁超时+更新器sesskit兜底 | 发布中 | .github/workflows/release.yml、src/corral/updater.py、tests/test_updater.py、docs/MAINTAINER_GUIDE.md（更新/发版节） | 19:05 | 2026-09-30 19:05 | updater46+toast/restart67共67绿+ruff绿；本机已0.24.238+sesskit0.2.2；正发v0.24.239 |
 | Codex 新开会话使用当前账号 | 进行中 | src/corral/runtime/codex.py、Codex 启动测试、docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md、版本文件 | 17:17 | 2026-09-26 17:17 | 修复空白新建及接力新建未跳过共享 daemon；旧身份修复条目为前日遗留，当前工作树无并行改动。 |

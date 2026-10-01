@@ -182,6 +182,14 @@
   turn-end evidence for a nonempty notification identity. See provider CONTRACT
   for the authority. End notifications are temporarily muted again on both
   hosts; original preference backups remain the restoration source.
+- **Native terminal identity gate rejected (2026-10-01, candidate)**:
+  framing eviction now produces an empty identity and zero captured sends,
+  but two genuine native turns with identical final text and no `payload.id`
+  collide and produce only one send. Stable native sampling found 174 terminal
+  rows using `turn_id` and event timestamps rather than `payload.id`. The same
+  worker must anchor identities to actual native terminal evidence, preserving
+  distinct turns and metadata/restart stability. Provider CONTRACT remains
+  authoritative; no notification restoration or delivery claim is made yet.
 - Cursor 收紧（二选一，SessKit 仓内定）：
   A. 无明确“助手最终答复 / 结构化完成”证据时宁可 `STATUS_NONE`
   也不给 `STATUS_DONE`；B. 维持现状但 `completion_id` 为空，

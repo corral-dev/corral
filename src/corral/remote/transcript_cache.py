@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-10-01.1"  # async panels survive mid-turn commentary/tools; turn-scope native errors settle them
+PARSER_VERSION = "2026-10-01.2"  # question meta: custom_needs_choice for Claude preview pickers
 _SCHEMA_VERSION = 1
 
 

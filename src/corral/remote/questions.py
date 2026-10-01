@@ -130,6 +130,8 @@ def _validated_answers(questions: list[dict], raw: object) -> dict[str, tuple[li
             raise QuestionOutcome("unavailable", t("remote.question.too_long"))
         if text and not question.get("allow_custom"):
             raise QuestionOutcome("unavailable", t("remote.question.invalid"))
+        if text and not selected and question.get("custom_needs_choice"):
+            raise QuestionOutcome("unavailable", t("remote.question.needs_choice"))
         if len(selected) > 1 and not question.get("multi_select"):
             raise QuestionOutcome("unavailable", t("remote.question.invalid"))
         by_id[str(question.get("question_id"))] = (sorted(set(selected)), text)
@@ -148,7 +150,9 @@ def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[s
 
     Verified on Claude Code 2.1.284 in tmux: a digit picks a single-choice option
     and moves on; on multi-choice it toggles; pasting into the last row types a
-    custom answer; the review tab submits with ``1``. Codex 0.158 (tui
+    custom answer; the review tab submits with ``1``. Preview questions (2.1.286)
+    have no custom row: a digit only highlights, ``n`` + paste adds notes, Enter
+    commits. Codex 0.158 (tui
     request_user_input source): a digit commits; ``Down`` to "None of the above"
     + Enter opens notes; Tab on an option opens its note; Enter submits notes.
     """
@@ -172,6 +176,12 @@ def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[s
                 steps += [("key", "Down")] * count + [("paste", text), ("key", "Down")]
             else:
                 steps += [("key", "Down")] * (count + 1)
+            steps.append(("key", "Enter"))
+        elif question.get("custom_needs_choice"):
+            # Preview picker: a digit only highlights; ``n`` opens that option's notes.
+            steps.append(("key", str(picked[0] + 1)))
+            if text:
+                steps += [("key", "n"), ("paste", text)]
             steps.append(("key", "Enter"))
         elif text:
             # Claude has one answer per single-choice question; keep the chosen label.

@@ -50,6 +50,13 @@ PETS = {
     "options": [{"label": "Cat"}, {"label": "Dog"}, {"label": "Fish"}],
 }
 
+LAYOUT = {
+    "question": "Which layout?",
+    "header": "Layout",
+    "multiSelect": False,
+    "options": [{"label": "Two columns", "preview": "A|B"}, {"label": "Single column", "preview": "A\nB"}],
+}
+
 
 class NativePromptTests(unittest.TestCase):
     def _prompts(self, questions_input: list[dict]) -> list[dict]:
@@ -139,6 +146,40 @@ class KeyPlanTests(unittest.TestCase):
                 ("key", "1"),
             ],
         )
+
+    def test_claude_preview_question_uses_notes_and_enter(self) -> None:
+        # Live 2.1.286: preview picker has no custom row; digit highlights, n opens notes.
+        prompts = _entries(_meta(LAYOUT, COLOR))
+        self.assertEqual([p["custom_needs_choice"] for p in prompts], [True, False])
+        answers = questions._validated_answers(
+            prompts,
+            [
+                {"question_id": "0", "selected": ["1"], "text": "my own idea"},
+                {"question_id": "1", "selected": ["1"], "text": ""},
+            ],
+        )
+        self.assertEqual(
+            questions.key_plan("claude", prompts, answers),
+            [
+                ("key", "2"),
+                ("key", "n"),
+                ("paste", "my own idea"),
+                ("key", "Enter"),
+                ("key", "2"),
+                ("key", "1"),
+            ],
+        )
+
+    def test_claude_lone_preview_choice_commits_with_enter(self) -> None:
+        prompts = _entries(_meta(LAYOUT))
+        answers = questions._validated_answers(prompts, [{"question_id": "0", "selected": ["0"], "text": ""}])
+        self.assertEqual(questions.key_plan("claude", prompts, answers), [("key", "1"), ("key", "Enter")])
+
+    def test_preview_question_rejects_text_without_choice(self) -> None:
+        prompts = _entries(_meta(LAYOUT))
+        with self.assertRaises(questions.QuestionOutcome) as caught:
+            questions._validated_answers(prompts, [{"question_id": "0", "selected": [], "text": "other"}])
+        self.assertEqual(caught.exception.status, "unavailable")
 
     def test_claude_single_choice_submits_on_digit(self) -> None:
         prompts = _entries(_meta(COLOR))
