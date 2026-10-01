@@ -58,11 +58,11 @@ def main():
     outputs = [master_path, display_path, card_path]
     manifest = {
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "background": "#FFF5D9",
-        "optical_shift_px": [9, -6],
+        "background": "Cream yellow with dense sage and golden scalloped flowers",
+        "composition": "Preserve accepted Floral 04 refinement",
         "refined_hat_sha256": hashlib.sha256((root / "brand/refined-hat.png").read_bytes()).hexdigest(),
-        "artwork": "Approved yellow-green cowboy hat; cream yellow #FFF5D9; optical placement",
-        "generation": "Built-in imagegen refinement; approved deterministic background and optical placement",
+        "artwork": "Approved yellow-green cowboy hat; Floral 04 repeating flower background",
+        "generation": "Built-in imagegen independent Floral 04 refinement; preserved composition",
         "outputs": {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest() for path in outputs},
     }
     (root / "brand/manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

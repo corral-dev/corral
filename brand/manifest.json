@@ -1,16 +1,13 @@
 {
-  "source_sha256": "bc65b76420f84cdae78a23a950189ccf11647c895bfd5db379585dd1b3204034",
-  "background": "#FFF5D9",
-  "optical_shift_px": [
-    9,
-    -6
-  ],
+  "source_sha256": "24e5c34916630e37c426432d805cf9afa485b288c41cfd6a038079551d84dc26",
+  "background": "Cream yellow with dense sage and golden scalloped flowers",
+  "composition": "Preserve accepted Floral 04 refinement",
   "refined_hat_sha256": "ed983fb655c552b90ab4b2dd60e754449e256d71da421b20b55789f4a7c8a5cf",
-  "artwork": "Approved yellow-green cowboy hat; cream yellow #FFF5D9; optical placement",
-  "generation": "Built-in imagegen refinement; approved deterministic background and optical placement",
+  "artwork": "Approved yellow-green cowboy hat; Floral 04 repeating flower background",
+  "generation": "Built-in imagegen independent Floral 04 refinement; preserved composition",
   "outputs": {
-    "brand/AppIcon-1024.png": "e1e79063887479cd65c060b4a88e4a411497e1356f253ca0d9fd5679dd8f6c60",
-    "docs/screenshots/corral-icon.png": "4fc03ff93228ff278f19548e912b41aad098823340284641250f72bea8bb737f",
-    "docs/screenshots/social-preview.png": "df277b98302ce60dbc339fdda4e43e8811b267efbd8763a473a8b21af6bfe5b4"
+    "brand/AppIcon-1024.png": "870eee3357bd73c8bbe765d642d6783048d7b821a873c76a9396faf55b1f65d1",
+    "docs/screenshots/corral-icon.png": "0781236adcc37f9d3d5eee956b2213c2d1434572aa6b6dc577663b01b9599106",
+    "docs/screenshots/social-preview.png": "e435d0f7b2d06f80e1c058f85267b87db609d18634429f323be2b9b97fd6c332"
   }
 }
