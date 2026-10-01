@@ -4,6 +4,7 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| Notification framing-eviction acceptance and delivery | 进行中 | SessKit native-finality identity contract; same worker parser/tests; coordinator pins/complete-tree release/install/notification preferences | 2026-10-01 | 2026-10-01 | 0.24.244/0.2.5 dual-host shipped and ordinary cases green; 42KB no-terminal fixture with all modern framing outside head/tail still falsely captures1. Same worker continues; doc-first native-evidence identity gate recorded; temporarily mute end-push, preserve original preferences. |
 | 修复更新链路：发版门禁超时+更新器sesskit兜底 | 发布中 | .github/workflows/release.yml、src/corral/updater.py、tests/test_updater.py、docs/MAINTAINER_GUIDE.md（更新/发版节） | 19:05 | 2026-09-30 19:05 | updater46+toast/restart67共67绿+ruff绿；本机已0.24.238+sesskit0.2.2；正发v0.24.239 |
 | Codex 新开会话使用当前账号 | 进行中 | src/corral/runtime/codex.py、Codex 启动测试、docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md、版本文件 | 17:17 | 2026-09-26 17:17 | 修复空白新建及接力新建未跳过共享 daemon；旧身份修复条目为前日遗留，当前工作树无并行改动。 |
 | 修复 Corral Codex 托管身份与重启 | 待发布 | src/corral/codex_identity.py、src/corral/codex_proxy.py、src/corral/keepalive.py、src/corral/liveness.py、src/corral/store.py、src/corral/runtime/codex.py、pyproject.toml、Codex 身份测试与设计文档 | 18:14 | 2026-09-25 18:45 | 30e5050 已推 origin/main；真实 pane→PID→UUID→结束后原 UUID 恢复、1680 全量测试（1 偶发重跑通过）、干净安装及截图通过。旧无 claim 会话不能安全补绑；完整发版仍受其他进行中的未提交功能阻挡。隔离后的 selftest 前 5 项通过，随后旧焦点提示断言失败。 |

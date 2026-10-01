@@ -171,6 +171,17 @@
   windows, legacy assistant-text fallback remains possible. A structural probe
   reproduced that limit; no matching live failure was observed. Do not claim
   arbitrary evicted histories or physical phone reception/tap were verified.
+- **Framing-eviction gate rejected (2026-10-01, installed provider 0.2.5)**:
+  the coordinator reproduced the documented fallback limit through public
+  native scanning and the real hub/notifier. A 42 KB started-turn fixture with
+  modern markers outside both windows and a trailing progress message produced
+  one captured false completion, with no native terminal event and no actual
+  phone push. The previous ordinary-case acceptance and dual-host delivery
+  remain valid, but this additional gate is pending. The same OpenCode session
+  owns the correction: keep legacy display compatibility, require native
+  turn-end evidence for a nonempty notification identity. See provider CONTRACT
+  for the authority. End notifications are temporarily muted again on both
+  hosts; original preference backups remain the restoration source.
 - Cursor 收紧（二选一，SessKit 仓内定）：
   A. 无明确“助手最终答复 / 结构化完成”证据时宁可 `STATUS_NONE`
   也不给 `STATUS_DONE`；B. 维持现状但 `completion_id` 为空，
