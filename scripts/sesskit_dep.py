@@ -24,7 +24,7 @@ WHEEL_NAME = f"sesskit-{VERSION}-py3-none-any.whl"
 SDIST_NAME = f"sesskit-{VERSION}.tar.gz"
 WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{WHEEL_NAME}"
 SDIST_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{SDIST_NAME}"
-# sha256 of the published assets (v0.2.5 verified 2026-10-01: downloaded back
+# sha256 of the published assets (v0.2.6 verified 2026-10-01: downloaded back
 # from the GitHub Release, byte-identical to the local build).
 WHEEL_SHA256 = "cf8ab568fd07db6a9742b510243e0e482e51711e3ace8d5be9d68e570ec026aa"
 SDIST_SHA256 = "a03f8697ae455be9dea78c293a3aaf8aaf3026963f34a20dc5cec4164c846809"
