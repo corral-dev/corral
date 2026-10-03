@@ -667,6 +667,7 @@ class RemoteService:
                 protocol.CAPABILITY_TOOL_DETAIL: True,
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
+                protocol.CAPABILITY_SESSION_RESTART: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -919,12 +920,17 @@ class RemoteService:
             lease_sec = _int_param(params, "lease_sec", DEFAULT_LEASE_SEC, max_value=MAX_LEASE_SEC)
             if lease_sec < 1:
                 lease_sec = 1
+        # Receipts record the canonical target: the phone may still hold a
+        # retired placeholder key while the host dispatches to the formal one.
+        # Retries must never retarget a different session.
+        resolve = getattr(self.hub, "resolve_session_key", None)
+        canonical_key = resolve(target_key) if callable(resolve) else target_key
         try:
             receipt, is_new = self.receipts.begin(
                 device_key=connection.device_public_key,
                 command_id=command_id,
                 payload_digest=digest,
-                target_key=target_key,
+                target_key=canonical_key,
                 method=method,
                 lease_sec=float(lease_sec),
             )
@@ -940,7 +946,9 @@ class RemoteService:
             side_effect()
         except PartialInjectionError as exc:
             # Paste may have landed; Enter (or a later step) did not — do not claim delivered.
-            receipt = self.receipts.mark_unknown(receipt, reason="partial_injection")
+            receipt = self.receipts.mark_unknown(
+                receipt, reason="partial_injection", detail=_receipt_detail(exc.message)
+            )
             _observe_receipt_outcome(
                 connection, receipt, method, target_key,
                 duration_ms=_receipt_ms(started_mono),
@@ -952,6 +960,7 @@ class RemoteService:
                 receipt,
                 reason=exc.code or "action_error",
                 retryable=exc.code in (protocol.E_UNAVAILABLE, protocol.E_RATE_LIMITED),
+                detail=_receipt_detail(exc.message),
             )
             _observe_receipt_outcome(
                 connection, receipt, method, target_key,
@@ -960,7 +969,9 @@ class RemoteService:
             )
             return receipt.to_wire()
         except Exception as exc:
-            receipt = self.receipts.mark_unknown(receipt, reason="ambiguous")
+            receipt = self.receipts.mark_unknown(
+                receipt, reason="ambiguous", detail=_receipt_detail(t("remote.err.internal"))
+            )
             _observe_receipt_outcome(
                 connection, receipt, method, target_key,
                 duration_ms=_receipt_ms(started_mono),
@@ -1008,6 +1019,11 @@ class RemoteService:
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
         return {"session": self.hub.resume_session(_key(params))}
+
+    def _session_restart(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
+        return {"session": self.hub.restart_session(_key(params))}
 
     def _session_handoff(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
@@ -1164,6 +1180,7 @@ _HANDLERS = {
     protocol.M_COMMAND_STATUS: RemoteService._command_status,
     protocol.M_SESSION_NEW: RemoteService._session_new,
     protocol.M_SESSION_RESUME: RemoteService._session_resume,
+    protocol.M_SESSION_RESTART: RemoteService._session_restart,
     protocol.M_SESSION_HANDOFF: RemoteService._session_handoff,
     protocol.M_SESSION_COPY: RemoteService._session_copy,
     protocol.M_SESSION_STOP: RemoteService._session_stop,

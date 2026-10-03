@@ -203,6 +203,9 @@ CAPABILITY_TOOL_DETAIL = "tool_detail"
 CAPABILITY_COMPLETION_NOTIFY = "completion_notify"
 # Message-referenced images are previewed through media.image (downscaled on the host).
 CAPABILITY_MEDIA_IMAGE = "media_image"
+# Host supports session.restart (remote access to the desktop advanced-restart).
+# Advertised only with the implementation; old hosts lack the method entirely.
+CAPABILITY_SESSION_RESTART = "session_restart"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -234,6 +237,10 @@ M_INPUT_QUESTION = "input.question"
 
 M_SESSION_NEW = "session.new"
 M_SESSION_RESUME = "session.resume"
+# 桌面高级操作「重启会话」的远程入口：params 只有 {key}（无需二次确认，
+# 菜单选择即确认），返回 {"session": SessionSummary}，与 resume 同形。
+# 已结束会话退回原生恢复；故意不进 _READONLY_METHODS（只读配对服务端拒掉）。
+M_SESSION_RESTART = "session.restart"
 M_SESSION_HANDOFF = "session.handoff"
 # 同助手复制会话：params 只有 {key}，返回 {"session": SessionSummary}，与 handoff/resume 同形。
 # 官方分叉优先，否则磁盘克隆；故意不进 service._READONLY_METHODS（只读配对服务端拒掉）。

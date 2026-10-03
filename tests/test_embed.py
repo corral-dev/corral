@@ -298,10 +298,175 @@ class SessionIoTests(unittest.TestCase):
         with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect):
             embed.paste("sc-claude-1", "line1\nline2")
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][3:6], ["set-buffer", "-b", "corral-embed"])
+        set_name = calls[0][5]
+        self.assertTrue(set_name.startswith("corral-embed-"))
+        self.assertNotEqual(set_name, "corral-embed")
+        self.assertEqual(calls[0][3:5], ["set-buffer", "-b"])
         self.assertEqual(calls[0][-1], "line1\nline2")
         self.assertEqual(calls[1][3:6], ["paste-buffer", "-p", "-d"])
+        self.assertIn(set_name, calls[1])
         self.assertEqual(calls[1][-1], "sc-claude-1")
+
+    def test_paste_buffers_are_unique_per_call(self):
+        """Concurrent sends must not share one buffer (cross-target overwrite)."""
+        names = []
+
+        def run_side_effect(argv, **_kwargs):
+            if argv[3:5] == ["set-buffer", "-b"]:
+                names.append(argv[5])
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect):
+            self.assertTrue(embed.paste("pane-a", "aaa"))
+            self.assertTrue(embed.paste("pane-b", "bbb"))
+        self.assertEqual(len(names), 2)
+        self.assertNotEqual(names[0], names[1])
+
+    def test_concurrent_pastes_never_share_a_buffer(self):
+        """Two threads pasting at once land in different buffers, same targets."""
+        import threading as _threading
+
+        seen: dict[str, str] = {}
+        lock = _threading.Lock()
+
+        def run_side_effect(argv, **_kwargs):
+            if argv[3:5] == ["set-buffer", "-b"]:
+                with lock:
+                    seen[argv[5]] = argv[-1]
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        barrier = _threading.Barrier(2)
+
+        def _one(target: str, text: str) -> None:
+            barrier.wait()
+            with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect):
+                self.assertTrue(embed.paste(target, text))
+
+        first = _threading.Thread(target=_one, args=("pane-a", "text-for-A"))
+        second = _threading.Thread(target=_one, args=("pane-b", "text-for-B"))
+        first.start()
+        second.start()
+        first.join()
+        second.join()
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(set(seen.values()), {"text-for-A", "text-for-B"})
+
+    def test_paste_detailed_reports_safe_causes(self):
+        from corral.embed import InjectionResult
+
+        def _rc1(argv, **_kwargs):
+            if argv[3] == "set-buffer":
+                return subprocess.CompletedProcess(args=argv, returncode=0)
+            return subprocess.CompletedProcess(args=argv, returncode=1, stderr=b"boom")
+
+        with mock.patch.object(embed.subprocess, "run", side_effect=_rc1):
+            with mock.patch.object(embed, "pane_liveness", return_value="dead"):
+                res = embed.paste_detailed("dead-pane", "hi")
+                # paste-buffer rc!=0 without a missing-target note stays uncertain.
+                self.assertEqual((res.ok, res.uncertain), (False, True))
+            with mock.patch.object(embed, "pane_liveness", return_value="alive"):
+                res = embed.paste_detailed("busy-pane", "hi")
+                self.assertFalse(res.ok)
+                self.assertTrue(res.uncertain)
+        with mock.patch.object(
+            embed.subprocess, "run", side_effect=subprocess.TimeoutExpired([], 1)
+        ):
+            # set-buffer timeout: certain failure, no terminal effect.
+            res = embed.paste_detailed("slow-pane", "hi")
+            self.assertEqual((res.ok, res.cause, res.uncertain), (False, "tmux_busy", False))
+        with mock.patch.object(
+            embed.subprocess, "run", side_effect=FileNotFoundError()
+        ):
+            res = embed.paste_detailed("no-tmux", "hi")
+            self.assertEqual((res.ok, res.cause, res.uncertain), (False, "tmux_unavailable", False))
+        res = embed.paste_detailed("any", "")
+        self.assertEqual((res.ok, res.cause, res.uncertain), (True, "", False))
+        self.assertIsInstance(res, InjectionResult)
+        ok, _cause = res  # tuple unpacking stays compatible
+        self.assertTrue(ok)
+
+    def test_paste_buffer_timeout_is_uncertain_never_retried(self):
+        """paste-buffer may have delivered before the timeout → uncertain."""
+        calls = []
+
+        def _run(argv, **_kwargs):
+            calls.append(argv)
+            if "paste-buffer" in argv:
+                raise subprocess.TimeoutExpired(argv, 1.5)
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        with mock.patch.object(embed.subprocess, "run", side_effect=_run):
+            res = embed.paste_detailed("pane-a", "hello")
+        self.assertEqual((res.ok, res.cause, res.uncertain), (False, "uncertain", True))
+        # The per-call buffer is cleaned up even on failure (same unique name).
+        set_buf = next(a for a in calls if a[3] == "set-buffer")
+        deletes = [a for a in calls if a[3] == "delete-buffer"]
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(deletes[0][5], set_buf[5])
+
+    def test_paste_missing_target_with_dead_probe_is_certain(self):
+        """Authoritative target-not-found + dead probe → certain, eligible for recovery."""
+        def _run(argv, **_kwargs):
+            if "paste-buffer" in argv:
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=1, stderr=b"can't find session: pane-dead"
+                )
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        with mock.patch.object(embed.subprocess, "run", side_effect=_run):
+            with mock.patch.object(embed, "pane_liveness", return_value="dead"):
+                res = embed.paste_detailed("pane-dead", "hello")
+                self.assertEqual((res.ok, res.cause, res.uncertain), (False, "pane_gone", False))
+
+    def test_pane_liveness_tristate_from_real_subprocess_shapes(self):
+        """Unknowns (timeouts, transport, unparseable) must never read as dead."""
+        argv0 = ["tmux", "has-session", "-t", "x"]
+        with mock.patch.object(
+            embed.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=argv0, returncode=0),
+        ):
+            self.assertEqual(embed.pane_liveness("p"), "alive")
+        with mock.patch.object(
+            embed.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=argv0, returncode=1, stderr=b"can't find session: p"
+            ),
+        ):
+            self.assertEqual(embed.pane_liveness("p"), "dead")
+        with mock.patch.object(
+            embed.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=argv0, returncode=1, stderr=b"no server running on /tmp/x"
+            ),
+        ):
+            self.assertEqual(embed.pane_liveness("p"), "unknown")
+        with mock.patch.object(
+            embed.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=argv0, returncode=1, stderr=b"weird"),
+        ):
+            self.assertEqual(embed.pane_liveness("p"), "unknown")
+        # Actual timeouts and spawn failures are unknown, not dead.
+        with mock.patch.object(
+            embed.subprocess, "run", side_effect=subprocess.TimeoutExpired(argv0, 1.5)
+        ):
+            self.assertEqual(embed.pane_liveness("p"), "unknown")
+        with mock.patch.object(embed.subprocess, "run", side_effect=OSError("busy")):
+            self.assertEqual(embed.pane_liveness("p"), "unknown")
+        with mock.patch.object(embed.subprocess, "run", side_effect=FileNotFoundError()):
+            self.assertEqual(embed.pane_liveness("p"), "unknown")
+
+    def test_send_key_timeout_is_uncertain(self):
+        with mock.patch.object(
+            embed, "_active_channel", return_value=None
+        ), mock.patch.object(
+            embed.subprocess, "run", side_effect=subprocess.TimeoutExpired([], 1.5)
+        ):
+            res = embed.send_key_detailed("pane-a", "Enter")
+            self.assertEqual((res.ok, res.cause, res.uncertain), (False, "uncertain", True))
 
     def test_pane_state_parses_formats(self):
         # (光标 x, 光标 y, 光标可见, 程序申请鼠标, SGR 鼠标模式, 回滚行数, 宽, 高)

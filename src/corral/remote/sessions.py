@@ -25,10 +25,11 @@ from corral import embed, keepalive, titles
 from corral.activity_board import resolve_active_marker
 from corral.cache import history_signature
 from corral.i18n import t
-from corral.models import LaunchRequest, NewSessionRequest, session_key
+from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
 from corral.remote import questions, richmsg, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.runtime import LaunchError
+from corral.runtime.registry import ACTIVE_RUNTIME_IDS
 from corral.split_layout import default_layout_db
 from corral.store import SessionStore
 
@@ -66,6 +67,15 @@ _TURN_IMAGE_GAP = 0.15
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b."
 )
+
+# 注入原因码 → 用户可见本地化文案键。原因码只做内部分类，绝不进用户 copy。
+_INJECT_CAUSE_MESSAGE_KEYS = {
+    "pane_gone": "remote.err.inject_cause_pane_gone",
+    "tmux_busy": "remote.err.inject_cause_tmux_busy",
+    "tmux_error": "remote.err.inject_cause_tmux_error",
+    "tmux_unavailable": "remote.err.inject_cause_tmux_unavailable",
+    "uncertain": "remote.err.inject_cause_uncertain",
+}
 
 
 class ActionError(RuntimeError):
@@ -432,6 +442,8 @@ class SessionHub:
         self.layout_db = default_layout_db()
         self._on_event = on_event or (lambda channel, data: None)
         self._lock = threading.Lock()
+        # 同会话重启串行锁：杀旧起新必须串行，禁止并行起新复用未死透的旧名。
+        self._restart_locks: dict[str, threading.Lock] = {}
         self._screens: dict[str, _ScreenWatch] = {}
         self._conversations: dict[str, _ConversationWatch] = {}
         self._transcripts: dict[str, _Transcript] = {}
@@ -1429,6 +1441,13 @@ class SessionHub:
 
         Phone chat can open ended history and still send. Desktop Enter-to-restart
         already resumes; phone input must do the same instead of a red failed bubble.
+
+        The stored name is returned without a liveness fork on the happy path.
+        A stale (dead) binding is recovered failure-triggered at the inject step
+        (`_recover_dead_pane_binding`): inject first, and only when it certainly
+        failed AND the pane is tri-state dead (`embed.pane_liveness`, authoritative
+        target-not-found only) the binding is cleared and the SAME conversation
+        is natively resumed once. Uncertainty (timeouts) never resumes.
         """
         session = self.require_session(key)
         name = str(session.get("keepalive_name") or "")
@@ -1441,6 +1460,123 @@ class SessionHub:
             if name:
                 return name
         raise ActionError("unavailable", t("remote.err.session_not_running"))
+
+    @staticmethod
+    def _pane_proven_dead(name: str) -> bool:
+        """Tri-state death check: only authoritative target-not-found counts.
+
+        Timeouts and transport errors are ``"unknown"``, never death — two
+        unknowns must not clear a binding or resume (that would duplicate a
+        merely busy pane). See `embed.pane_liveness`.
+        """
+        try:
+            return bool(name) and embed.pane_liveness(name) == "dead"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _inject_cause_text(cause: str) -> str:
+        """Map an internal inject cause code to a human localized description.
+
+        Raw codes never reach the user copy or the wire detail.
+        """
+        key = _INJECT_CAUSE_MESSAGE_KEYS.get(str(cause or ""))
+        if key is None:
+            key = "remote.err.inject_cause_tmux_error"
+        return t(key)
+
+    def _recover_dead_pane_binding(self, key: str, name: str, *, cause: str) -> tuple[str, bool]:
+        """Certain injection failure on the stored binding: recover and return
+        ``(pane_name, resumed)`` for exactly one retry.
+
+        Serialized on the canonical key (`_restart_lock_for`, the same lock the
+        phone restart path uses — same acquisition order everywhere, so no
+        deadlock): concurrent recoveries re-read the binding under the lock, so
+        only the first one resumes; the others reuse the new binding. Never
+        retargets, never copy/handoff. ``resumed`` tells the caller which error
+        wording is truthful (a restart DID happen vs nothing was restarted).
+        Only a tri-state-dead pane resumes. Resume failure propagates its own
+        cause. Live-or-unknown panes never resume.
+        """
+        canonical = self.resolve_session_key(key)
+        lock = self._restart_lock_for(canonical)
+        with lock:
+            current = self.store.find_session(canonical)
+            if current is None:
+                raise ActionError("not_found", t("remote.err.session_gone"))
+            target = str(current.get("keepalive_name") or "")
+            moved = bool(target) and target != name
+            if moved:
+                # Binding moved while we were injecting (another recovery won
+                # the race, or the desktop re-hosted): judge the current one.
+                name = target
+            if name and not self._pane_proven_dead(name):
+                # Current binding is live-or-unknown. Our attempt certainly
+                # failed with no effect, so exactly one retry on the current
+                # same-session binding is safe. ``moved`` keeps the post-retry
+                # wording truthful (restart happened vs nothing restarted).
+                return name, moved
+            if not name:
+                # No binding left under the lock: same-conversation resume
+                # cannot duplicate anything.
+                pass
+            self.store.mark_hosted(canonical, None)
+            if name:
+                try:
+                    embed.forget_alive(name)
+                except Exception:
+                    pass
+            # Same-conversation native resume only (binding was cleared above,
+            # so the resume path cannot no-op on the dead name; if the desktop
+            # re-hosted concurrently, resume no-ops on the live binding and we
+            # simply reuse it). Failure propagates with its own actionable
+            # cause; unknown/partial receipts are kept.
+            self.resume_session(canonical)
+            session = self.require_session(canonical)
+            new_name = str(session.get("keepalive_name") or "")
+            if not new_name:
+                raise ActionError(
+                    "unavailable", t("remote.err.inject_resumed_not_ready")
+                )
+            return new_name, True
+
+    def _attempt_with_recovery(self, key: str, name: str, attempt) -> tuple[str, dict]:
+        """Run ``attempt(name) -> InjectionResult``; certain failure on a proven-dead
+        binding resumes the same conversation once and retries once.
+
+        Uncertainty (possible side effect) raises PartialInjectionError immediately —
+        never retried, never resumed. A failed post-resume retry raises the
+        truthful after-resume error (a restart DID happen). Returns the live
+        pane name and the refreshed session.
+        """
+        res = attempt(name)
+        if res.uncertain:
+            raise PartialInjectionError(t("remote.err.inject_partial"))
+        if res.ok:
+            return name, self.store.find_session(self.resolve_session_key(key)) or {}
+        name, resumed = self._recover_dead_pane_binding(key, name, cause=res.cause)
+        session = self.store.find_session(self.resolve_session_key(key)) or {}
+        res = attempt(name)
+        if res.uncertain:
+            raise PartialInjectionError(t("remote.err.inject_partial"))
+        if not res.ok:
+            # Truthful wording: only claim a restart when one actually happened.
+            if resumed:
+                raise ActionError(
+                    "unavailable",
+                    t(
+                        "remote.err.inject_after_resume",
+                        detail=self._inject_cause_text(res.cause),
+                    ),
+                )
+            raise ActionError(
+                "unavailable",
+                t(
+                    "remote.err.inject_transient",
+                    detail=self._inject_cause_text(res.cause),
+                ),
+            )
+        return name, session
 
     def _capture_frame(self, watch: _ScreenWatch) -> dict | None:
         session = self.store.find_session(self.resolve_session_key(watch.key))
@@ -1503,22 +1639,33 @@ class SessionHub:
         Cursor, a second empty Enter promotes a mid-turn queue into the active
         run; skip that only while the agent is waiting for an answer.
 
-        Raises ActionError when injection fails with no proven side effect.
-        Raises PartialInjectionError when paste succeeded but Enter failed.
+        Raises ActionError when injection certainly failed with no side effect.
+        Raises PartialInjectionError when anything may already have reached
+        the pane (uncertain paste/Enter, or Enter failure after a paste).
+
+        A certain paste failure on a proven-dead binding clears it and natively
+        resumes the same conversation once, then retries once on the new pane.
         """
         name = self._keepalive_name(key, resume_if_needed=True)
         session = self.store.find_session(self.resolve_session_key(key)) or {}
         pasted = False
         if text:
-            if not embed.paste(name, text):
-                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            name, session = self._attempt_with_recovery(
+                key, name, lambda pane: embed.paste_detailed(pane, text)
+            )
             pasted = True
         if submit:
             time.sleep(0.05)  # 给目标程序一点时间收完粘贴，避免回车抢在正文前面
-            if not self._submit_enter(name, session, pasted=pasted):
-                if pasted:
-                    raise PartialInjectionError(t("remote.err.inject_partial"))
-                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            res = self._submit_enter(name, session)
+            if res.uncertain or (not res.ok and pasted):
+                raise PartialInjectionError(t("remote.err.inject_partial"))
+            if not res.ok:
+                # Certain Enter failure with nothing pasted (empty text): the
+                # Enter itself hit a dead binding — same single
+                # same-conversation recovery, then retry once.
+                name, session = self._attempt_with_recovery(
+                    key, name, lambda pane: embed.send_key_detailed(pane, "Enter")
+                )
             if text:
                 self._emit_provisional_working(key)
         if text:
@@ -1555,12 +1702,14 @@ class SessionHub:
         )
 
     def send_keys(self, key: str, keys: list[str]) -> None:
+        """Uncertain key delivery is partial/unknown, never a plain rejection."""
         name = self._keepalive_name(key, resume_if_needed=True)
         cleaned = [str(k) for k in keys if str(k).strip()]
         if not cleaned:
             raise ActionError("usage_error", t("remote.err.no_keys"))
-        if not embed.send_key(name, *cleaned):
-            raise ActionError("unavailable", t("remote.err.inject_failed"))
+        self._attempt_with_recovery(
+            key, name, lambda pane: embed.send_key_detailed(pane, *cleaned)
+        )
 
     def send_image(self, key: str, image_bytes: bytes) -> str:
         """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的落盘+粘贴路径协议。"""
@@ -1594,6 +1743,11 @@ class SessionHub:
         """
         name = self._keepalive_name(key, resume_if_needed=True)
         session = self.store.find_session(self.resolve_session_key(key)) or {}
+        if self._pane_proven_dead(name):
+            # Dead binding would burn the whole ready-timeout in captures that
+            # can never turn ready; resume the same conversation up front.
+            name = self._recover_dead_pane_binding(key, name, cause="pane_gone")
+            session = self.store.find_session(self.resolve_session_key(key)) or {}
         self._wait_pane_ready(name, timeout=ready_timeout)
 
         paths: list[str] = []
@@ -1609,13 +1763,23 @@ class SessionHub:
 
         pasted = False
         if text:
-            if not embed.paste(name, text):
-                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            if paths:
+                # Image paths are already in the pane: a text failure now must
+                # NOT resume/retry (that would replay the turn without its
+                # images, or double-deliver). Partial/unknown, always.
+                res = embed.paste_detailed(name, text)
+                if res.uncertain or not res.ok:
+                    raise PartialInjectionError(t("remote.err.inject_partial"))
+            else:
+                name, session = self._attempt_with_recovery(
+                    key, name, lambda pane: embed.paste_detailed(pane, text)
+                )
             pasted = True
 
         if submit:
             time.sleep(_TURN_SUBMIT_PAUSE)
-            if not self._submit_enter(name, session, pasted=pasted):
+            res = self._submit_enter(name, session)
+            if res.uncertain or not res.ok:
                 if pasted or paths:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
@@ -1645,15 +1809,22 @@ class SessionHub:
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
             time.sleep(_TURN_READY_POLL)
 
-    def _submit_enter(self, name: str, session: dict, *, pasted: bool) -> bool:
-        """Send Enter (+ Cursor steer promote). Returns False if the first Enter failed."""
-        del pasted  # callers use this only for error class selection
-        if not embed.send_key(name, "Enter"):
-            return False
+    def _submit_enter(self, name: str, session: dict):
+        """Send Enter (+ Cursor steer promote). Returns the first Enter's result.
+
+        Uncertainty propagates: an Enter that may have landed is partial/unknown
+        for the caller, never a plain failure. The promote Enter stays
+        best-effort — the first Enter already landed by then.
+        """
+        res = embed.send_key_detailed(name, "Enter")
+        if not res.ok:
+            return res
         if _phone_steer_promote(session):
             time.sleep(0.05)
-            embed.send_key(name, "Enter")  # best-effort; first Enter already landed
-        return True
+            # Best-effort promote; the first Enter already landed. Same detailed
+            # path so there is one observable injection point (result ignored).
+            embed.send_key_detailed(name, "Enter")
+        return res
 
     def _ensure_turn_submitted(self, name: str, session: dict, text: str) -> None:
         """Retry Enter while the prompt is still sitting in the composer."""
@@ -1665,7 +1836,8 @@ class SessionHub:
             plain = _plain_pane_text(embed.capture(name, 0, 0))
             if not _composer_still_holds(plain, marker):
                 return
-            if not self._submit_enter(name, session, pasted=True):
+            res = self._submit_enter(name, session)
+            if res.uncertain or not res.ok:
                 raise PartialInjectionError(t("remote.err.inject_partial"))
         plain = _plain_pane_text(embed.capture(name, 0, 0))
         if _composer_still_holds(plain, marker):
@@ -1815,6 +1987,119 @@ class SessionHub:
         canonical = session_key(session)
         self.store.mark_hosted(canonical, name)
         refreshed = self.store.find_session(canonical) or session
+        return self.session_payload(refreshed, self._layout())
+
+    def _restart_lock_for(self, canonical: str) -> threading.Lock:
+        """同会话重启串行：杀旧起新必须在同一把锁里，禁止并行起新。"""
+        with self._lock:
+            lock = self._restart_locks.get(canonical)
+            if lock is None:
+                lock = threading.Lock()
+                self._restart_locks[canonical] = lock
+            return lock
+
+    def restart_session(self, key: str) -> dict:
+        """桌面高级操作「重启会话」的远程入口：只换托管进程，不碰历史与身份。
+
+        复用 TUI ``_restart_hosted_session`` / ``_restart_and_focus`` 的同一套
+        非 UI 原语（plan 预检 → kill → 关通道 → 忘探活 → 等旧死 → 同 ident
+        起新 → 改挂托管标记），不另起一套重启语义。手机菜单选择即确认，
+        不做二次确认（2026-09-13 桌面裁定）。落盘历史、标题、项目、会话键、
+        分屏/置顶记忆一律保留；失败直接报错，不伪装成功。
+        """
+        if not embed.available():
+            raise ActionError("unavailable", t("remote.err.tmux_missing_restart"))
+        session = self.require_session(key)
+        if session.get("provisional"):
+            raise ActionError("usage_error", t("remote.err.restart_provisional"))
+        if is_shell_session(session):
+            raise ActionError("usage_error", t("remote.err.restart_not_supported"))
+        runtime = self._runtime_of(session)
+        if runtime.id not in ACTIVE_RUNTIME_IDS:
+            raise ActionError("usage_error", t("remote.err.restart_not_supported"))
+        canonical = session_key(session)
+        if not session.get("keepalive_name"):
+            # 已结束：没有可杀的进程，直接走原生恢复（与桌面回车同一条路）。
+            return self.resume_session(canonical)
+        # 预检先行：恢复计划都生成不出来时，原进程必须原样保留。
+        try:
+            self.registry.build_launch_plan(
+                LaunchRequest(session, runtime.id, self.store.get_title(session))
+            )
+        except LaunchError as exc:
+            raise ActionError(
+                "unavailable", t("remote.err.cannot_restart", error=exc)
+            ) from exc
+        with self._restart_lock_for(canonical):
+            return self._restart_locked(canonical, runtime.id)
+
+    def _restart_locked(self, canonical: str, runtime_id: str) -> dict:
+        """锁内重启：重读当前绑定（并发期间会话可能已变），杀旧后起新。"""
+        current = self.store.find_session(canonical)
+        if current is None:
+            raise ActionError("not_found", t("remote.err.session_gone"))
+        name = str(current.get("keepalive_name") or "")
+        if not name:
+            return self.resume_session(canonical)
+        try:
+            plan = self.registry.build_launch_plan(
+                LaunchRequest(current, runtime_id, self.store.get_title(current))
+            )
+        except LaunchError as exc:
+            raise ActionError(
+                "unavailable", t("remote.err.cannot_restart", error=exc)
+            ) from exc
+        # 杀旧 best-effort，但必须验死：旧 pane 还活着就拒绝，绝不能把
+        # 同名复用回来的旧进程当成“已重启”返回（那会静默假装成功）。
+        # 尺寸沿用旧 pane 的真实几何（组身份=同 tmux 名 + 同会话键改挂，
+        # 落盘历史不动），取不到才回落默认托管尺寸。
+        try:
+            old_size = embed.pane_size(name)
+        except Exception:
+            old_size = None
+        keepalive.kill(name)
+        try:
+            embed.close_channel(name)
+        except Exception:
+            pass
+        try:
+            embed.forget_alive(name)
+        except Exception:
+            pass
+        for _ in range(10):
+            try:
+                alive = embed.is_alive(name)
+            except Exception:
+                alive = False
+                break
+            if not alive:
+                break
+            time.sleep(0.1)
+        try:
+            still_alive = bool(embed.is_alive(name))
+        except Exception:
+            still_alive = False
+        if still_alive:
+            raise ActionError(
+                "unavailable", t("remote.err.restart_still_running")
+            )
+        # 同会话恢复：沿用原会话 id 做 ident（与桌面 `_restart_and_focus` 一致，
+        # 落盘历史不变，不插占位卡）。
+        ident = str(current.get("id") or "").strip() or name.rsplit("-", 1)[-1]
+        if old_size is not None:
+            width, height = embed.normalize_host_size(old_size[0], old_size[1])
+        else:
+            width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
+        try:
+            new_name = embed.host_session(plan, runtime_id, ident, width, height)
+        except embed.EmbedError as exc:
+            # 失败不碰托管标记（与桌面 `_on_restart_failed` 一致）：不伪装成功，
+            # 下一轮扫描按绑定的真实存活纠正展示。
+            raise ActionError(
+                "unavailable", t("remote.err.restart_failed", error=exc)
+            ) from exc
+        self.store.mark_hosted(canonical, new_name)
+        refreshed = self.store.find_session(canonical) or current
         return self.session_payload(refreshed, self._layout())
 
     def handoff_session(self, key: str, target_runtime_id: str) -> dict:

@@ -611,6 +611,20 @@ def send_key(name: str, *keys: str) -> bool:
     return _send(name, ["send-keys", "-t", name, "--", *keys])
 
 
+def send_key_detailed(name: str, *keys: str) -> InjectionResult:
+    """`send_key` 的可诊断版：失败时附带安全的原因码与不确定标记。
+
+    控制通道成功时返回成功结果；通道缺席时走外部子进程并分类失败。
+    用户按键内容永远不进原因码。
+    """
+    if not keys:
+        return InjectionResult(True)
+    ch = _active_channel(name)
+    if ch is not None and ch.command("send", "-t", name, "--", *keys):
+        return InjectionResult(True)
+    return _classify_send_result(name, *_run_tmux_capture(name, ["send-keys", "-t", name, "--", *keys]))
+
+
 def _send(name: str, argv: list[str]) -> bool:
     try:
         completed = subprocess.run(
@@ -625,34 +639,192 @@ def _send(name: str, argv: list[str]) -> bool:
     return completed.returncode == 0
 
 
+# 注入失败的原因码（只在代码内部分类与日志基数使用；用户可见文案一律经
+# i18n 映射，绝不含用户文本/tmux 原始 stderr）：
+# pane_gone=目标 pane 已证实不存在；tmux_busy=调用超时（未知而非死亡）；
+# tmux_error=其它非零退出；tmux_unavailable=tmux 二进制起不来；
+# uncertain=可能已送达（超时/歧义，绝不能当失败重试）。
+_INJECT_CAUSES = ("pane_gone", "tmux_busy", "tmux_error", "tmux_unavailable", "uncertain")
+
+
+@dataclass
+class InjectionResult:
+    """单次注入尝试的结果：成功 / 确定失败 / 不确定（可能已送达）。
+
+    ``uncertain=True`` 意味着调用超时或结果歧义——调用方必须按 partial/unknown
+    处理，绝不能当成确定失败去重试或 resume（副作用可能已经发生）。
+    保留二元组解包兼容（``ok, cause = ...``）。
+    """
+
+    ok: bool
+    cause: str = ""
+    uncertain: bool = False
+
+    def __iter__(self):  # type: ignore[override]
+        yield self.ok
+        yield self.cause
+
+
+# 只有权威的“目标不存在”才算死亡；传输类错误一律未知（未知不判死）。
+_MISSING_TARGET_RE = re.compile(
+    r"can'?t find (session|pane)|couldn'?t find (session|pane)"
+    r"|no such (session|pane)|unknown session|invalid (session|pane)",
+    re.IGNORECASE,
+)
+
+
+def pane_liveness(name: str) -> str:
+    """三态 pane 探针：``"alive"`` | ``"dead"`` | ``"unknown"``。
+
+    只有 tmux 权威的 target-not-found 才判死；超时、子进程起不来、tmux 缺席、
+    以及一切不能解析的非零退出都是 ``"unknown"``——未知绝不能触发清绑定/resume，
+    否则忙 pane 会被复制出第二个进程。本函数是纯查询，不写存活标记。
+    """
+    if not name or shutil.which("tmux") is None:
+        return "unknown"
+    try:
+        completed = subprocess.run(
+            [*keepalive.tmux_argv(name), "has-session", "-t", name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if completed.returncode == 0:
+        return "alive"
+    if _MISSING_TARGET_RE.search(_decode_tmux_stderr(completed.stderr)):
+        return "dead"
+    return "unknown"
+
+
+def _run_tmux_capture(name: str, argv: list[str]) -> tuple[str, str]:
+    """经外部子进程跑一条 tmux 命令，返回 ``(状态, stderr 文本)``。
+
+    状态：``"ok"`` / ``"failed"``（非零退出） / ``"timeout"``（超时或其它
+    OSError，含义未知） / ``"unavailable"``（tmux 二进制不存在，确定无副作用）。
+    stderr 只在内部做分类，绝不向上传递。
+    """
+    try:
+        completed = subprocess.run(
+            [*keepalive.tmux_argv(name), *argv],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
+        )
+    except FileNotFoundError:
+        return "unavailable", ""
+    except (OSError, subprocess.TimeoutExpired):
+        return "timeout", ""
+    if completed.returncode == 0:
+        return "ok", ""
+    return "failed", _decode_tmux_stderr(completed.stderr)
+
+
+def _classify_send_result(name: str, status: str, err: str) -> InjectionResult:
+    """send-keys 类（有终端副作用）结果分类：不确定绝不判成确定失败。"""
+    if status == "ok":
+        return InjectionResult(True)
+    if status == "unavailable":
+        return InjectionResult(False, "tmux_unavailable", False)
+    if status == "timeout":
+        # 按键可能已在超时前送达——不确定，调用方按 partial/unknown 处理。
+        return InjectionResult(False, "uncertain", True)
+    if _MISSING_TARGET_RE.search(err or "") and pane_liveness(name) == "dead":
+        return InjectionResult(False, "pane_gone", False)
+    return InjectionResult(False, "tmux_error", True)
+
+
+def _delete_paste_buffer(name: str, buffer_name: str) -> None:
+    """尽力删掉本次调用专用的 buffer；失败静默（server 可能已随会话消失）。
+
+    buffer 名每次调用唯一，只会删自己的，绝不会动其它并发调用的 buffer。
+    """
+    try:
+        subprocess.run(
+            [*keepalive.tmux_argv(name), "delete-buffer", "-b", buffer_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _decode_tmux_stderr(raw: object) -> str:
+    """Decode tmux stderr for internal classification only; never surfaced."""
+    try:
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", "replace")
+        if raw:
+            text = str(raw)
+            return text if len(text) < 500 else text[:500]
+    except Exception:
+        pass
+    return ""
+
+
+def _paste_buffer_name() -> str:
+    """本次粘贴专用的 buffer 名：并发投递互不覆盖（2026-10-03 修复）。
+
+    旧实现所有目标共用单个 ``corral-embed`` buffer：A set-buffer 后 B 紧接着
+    set-buffer，会把 A 待 paste 的内容冲掉，造成串话或错投。buffer 名带上
+    pid/线程/nanotime，tmux server 内全局唯一；paste-buffer 仍带 ``-d``，
+    用后即删，不堆积。
+    """
+    return f"{_PASTE_BUFFER}-{os.getpid()}-{threading.get_ident()}-{time.monotonic_ns()}"
+
+
 def paste(name: str, text: str) -> bool:
     """整段粘贴：经 paste buffer 一次性注入，-p 让目标程序按 bracketed paste 接收。
 
     刻意走外部子进程而不走控制通道：多行文本含换行，无法作为控制模式行协议的
     单条命令参数；且数据注入类命令（与 send-keys -l 同类）外部执行是安全的。
 
+    每次调用使用独立 buffer 名（见 `_paste_buffer_name`），并发投递不串话。
+
     Returns True only when every subprocess step finished with returncode 0.
+    Note: False no longer distinguishes certain failure from uncertainty —
+    remote callers must use `paste_detailed`.
+    """
+    return paste_detailed(name, text).ok
+
+
+def paste_detailed(name: str, text: str) -> InjectionResult:
+    """`paste` 的可诊断版：返回成功 / 确定失败 / 不确定（可能已送达）。
+
+    两步语义不同：``set-buffer`` 只写 server 侧 buffer，无终端副作用——它的
+    失败是确定的（可重试、可走死绑定恢复）；``paste-buffer`` 一旦超时或歧义，
+    内容可能已进终端，必须按不确定处理，绝不能自动重试或 resume。
+    失败时尽力删掉本次专用的 buffer（成功时 ``-d`` 已删）；buffer 名唯一，
+    不会动其它并发调用的 buffer。用户正文永远不进原因码。
     """
     if not text:
-        return True
-    try:
-        set_buf = subprocess.run(
-            [*keepalive.tmux_argv(name), "set-buffer", "-b", _PASTE_BUFFER, "--", text],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=_CALL_TIMEOUT, check=False,
-            env=keepalive.tmux_env(),
-        )
-        if set_buf.returncode != 0:
-            return False
-        pasted = subprocess.run(
-            [*keepalive.tmux_argv(name), "paste-buffer", "-p", "-d", "-b", _PASTE_BUFFER, "-t", name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=_CALL_TIMEOUT, check=False,
-            env=keepalive.tmux_env(),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return pasted.returncode == 0
+        return InjectionResult(True)
+    buffer_name = _paste_buffer_name()
+    status, _err = _run_tmux_capture(
+        name, ["set-buffer", "-b", buffer_name, "--", text],
+    )
+    if status != "ok":
+        _delete_paste_buffer(name, buffer_name)
+        if status == "timeout":
+            return InjectionResult(False, "tmux_busy", False)
+        if status == "unavailable":
+            return InjectionResult(False, "tmux_unavailable", False)
+        return InjectionResult(False, "tmux_error", False)
+    status, err = _run_tmux_capture(
+        name, ["paste-buffer", "-p", "-d", "-b", buffer_name, "-t", name],
+    )
+    if status == "ok":
+        return InjectionResult(True)
+    _delete_paste_buffer(name, buffer_name)
+    if status == "timeout":
+        return InjectionResult(False, "uncertain", True)
+    if status == "unavailable":
+        return InjectionResult(False, "tmux_unavailable", False)
+    if _MISSING_TARGET_RE.search(err or "") and pane_liveness(name) == "dead":
+        return InjectionResult(False, "pane_gone", False)
+    return InjectionResult(False, "tmux_error", True)
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from corral import split_layout
-from corral.embed import Cell
+from corral.embed import Cell, InjectionResult
 from corral.remote import sessions as remote_sessions
 from corral.remote.screen import ScreenEncoder
 from corral.remote.sessions import SessionHub
@@ -863,8 +863,12 @@ class SessionHubPayloadTests(unittest.TestCase):
         session["keepalive_name"] = "pane-a"
         self.hub.store.sessions = {"claude": [session]}
         with (
-            mock.patch.object(remote_sessions.embed, "paste") as paste,
-            mock.patch.object(remote_sessions.embed, "send_key") as send_key,
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ) as paste,
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
         ):
             self.hub.send_text("claude:a", "你好手机")
@@ -913,8 +917,12 @@ class SessionHubPayloadTests(unittest.TestCase):
 
         with (
             mock.patch.object(self.hub, "resume_session", side_effect=_fake_resume) as resume,
-            mock.patch.object(remote_sessions.embed, "paste", return_value=True) as paste,
-            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ) as paste,
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
         ):
             self.hub.send_text("claude:ended", "快点动手实现")
@@ -922,18 +930,296 @@ class SessionHubPayloadTests(unittest.TestCase):
             paste.assert_called_once_with("pane-resumed", "快点动手实现")
             send_key.assert_called_once_with("pane-resumed", "Enter")
 
+    def test_send_text_recovers_dead_binding_on_same_conversation(self) -> None:
+        """Stale binding + failed paste + proven-dead pane → clear, native-resume
+        the SAME conversation once, retry the paste on the new pane only."""
+        session = _session(sid="stale")
+        session["keepalive_name"] = "pane-dead"
+        self.hub.store.sessions = {"claude": [session]}
+
+        def _fake_resume(key: str) -> dict:
+            self.assertEqual(key, "claude:stale")
+            found = self.hub.store.find_session("claude:stale")
+            assert found is not None
+            self.assertNotIn("keepalive_name", found)
+            found["keepalive_name"] = "pane-new"
+            return {"key": key}
+
+        pastes: list[tuple[str, str]] = []
+
+        def _fake_paste(name: str, text: str):
+            pastes.append((name, text))
+            if name == "pane-dead":
+                return InjectionResult(False, "pane_gone", False)
+            return InjectionResult(True)
+
+        with (
+            mock.patch.object(self.hub, "resume_session", side_effect=_fake_resume) as resume,
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="dead"),
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", side_effect=_fake_paste
+            ),
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("claude:stale", "继续")
+            resume.assert_called_once_with("claude:stale")
+            self.assertEqual(
+                pastes, [("pane-dead", "继续"), ("pane-new", "继续")]
+            )
+            send_key.assert_called_once_with("pane-new", "Enter")
+            current = self.hub.store.find_session("claude:stale")
+            assert current is not None
+            self.assertEqual(current.get("keepalive_name"), "pane-new")
+
+    def test_send_text_transient_when_pane_still_alive(self) -> None:
+        """Paste fails but the pane is alive → one safe retry on the same live
+        binding (certain no-effect failure), then plain transient, no resume,
+        nothing restarted, no duplicate process (a busy pane is never resumed)."""
+        session = _session(sid="busy")
+        session["keepalive_name"] = "pane-busy"
+        self.hub.store.sessions = {"claude": [session]}
+        with (
+            mock.patch.object(self.hub, "resume_session") as resume,
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="alive"),
+            mock.patch.object(
+                remote_sessions.embed,
+                "paste_detailed",
+                return_value=InjectionResult(False, "tmux_busy", False),
+            ) as paste,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.ActionError) as ctx:
+                self.hub.send_text("claude:busy", "继续")
+            self.assertEqual(ctx.exception.code, "unavailable")
+            message = str(ctx.exception.message)
+            self.assertIn("did not respond in time", message)
+            self.assertIn("nothing was restarted", message)
+            for raw in ("tmux_busy", "pane_gone", "tmux_error", "uncertain"):
+                self.assertNotIn(raw, message)
+            resume.assert_not_called()
+            self.assertEqual(paste.call_count, 2, "one safe retry on the same live pane")
+            paste.assert_called_with("pane-busy", "继续")
+            current = self.hub.store.find_session("claude:busy")
+            assert current is not None
+            self.assertEqual(current.get("keepalive_name"), "pane-busy")
+
+    def test_send_text_resume_failure_propagates_own_cause(self) -> None:
+        """Dead binding whose same-conversation resume fails → the resume's own
+        cause reaches the receipt, never a blind second paste."""
+        session = _session(sid="noresume")
+        session["keepalive_name"] = "pane-dead"
+        self.hub.store.sessions = {"claude": [session]}
+
+        def _boom(_key: str) -> dict:
+            raise remote_sessions.ActionError("unavailable", "恢复失败：xxx")
+
+        with (
+            mock.patch.object(self.hub, "resume_session", side_effect=_boom),
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="dead"),
+            mock.patch.object(
+                remote_sessions.embed,
+                "paste_detailed",
+                return_value=InjectionResult(False, "pane_gone", False),
+            ) as paste,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.ActionError) as ctx:
+                self.hub.send_text("claude:noresume", "继续")
+            self.assertIn("恢复失败", str(ctx.exception.message))
+            paste.assert_called_once_with("pane-dead", "继续")
+
+    def test_send_text_uncertain_paste_is_partial_without_resume_or_retry(self) -> None:
+        """A paste that may have delivered (timeout) → unknown receipt, never a
+        rejection, never a resume, never a second paste."""
+        session = _session(sid="unc")
+        session["keepalive_name"] = "pane-unc"
+        self.hub.store.sessions = {"claude": [session]}
+        with (
+            mock.patch.object(self.hub, "resume_session") as resume,
+            mock.patch.object(
+                remote_sessions.embed,
+                "paste_detailed",
+                return_value=InjectionResult(False, "uncertain", True),
+            ) as paste,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.PartialInjectionError):
+                self.hub.send_text("claude:unc", "继续")
+            resume.assert_not_called()
+            paste.assert_called_once_with("pane-unc", "继续")
+
+    def test_send_text_unknown_liveness_never_resumes(self) -> None:
+        """Two unknowns (timeout-shaped) are not proof of death: transient, no resume."""
+        session = _session(sid="twouk")
+        session["keepalive_name"] = "pane-twouk"
+        self.hub.store.sessions = {"claude": [session]}
+        with (
+            mock.patch.object(self.hub, "resume_session") as resume,
+            mock.patch.object(
+                remote_sessions.embed, "pane_liveness", return_value="unknown"
+            ),
+            mock.patch.object(
+                remote_sessions.embed,
+                "paste_detailed",
+                return_value=InjectionResult(False, "pane_gone", False),
+            ),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.ActionError) as ctx:
+                self.hub.send_text("claude:twouk", "继续")
+            self.assertEqual(ctx.exception.code, "unavailable")
+            resume.assert_not_called()
+            current = self.hub.store.find_session("claude:twouk")
+            assert current is not None
+            self.assertEqual(current.get("keepalive_name"), "pane-twouk")
+
+    def test_send_turn_with_pasted_images_never_resumes_on_text_failure(self) -> None:
+        """Image paths already in the pane → text failure is partial, no resume,
+        no retry (retrying would replay an image-less turn)."""
+        session = _session(source="cursor", sid="imgturn", attention="none")
+        session["keepalive_name"] = "pane-img"
+        self.hub.store.sessions = {"cursor": [session]}
+        with (
+            mock.patch.object(self.hub, "resume_session") as resume,
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="alive"),
+            mock.patch.object(remote_sessions.embed, "capture", return_value="→ ready"),
+            mock.patch.object(
+                remote_sessions.embed,
+                "save_image_and_paste_path",
+                return_value="/tmp/paste-1.png",
+            ),
+            mock.patch.object(
+                remote_sessions.embed,
+                "paste_detailed",
+                return_value=InjectionResult(False, "pane_gone", False),
+            ) as paste,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.PartialInjectionError):
+                self.hub.send_turn("cursor:imgturn", "看图说话", images=[b"png-bytes"])
+            resume.assert_not_called()
+            paste.assert_called_once_with("pane-img", "看图说话")
+
+    def test_concurrent_recoveries_resume_once_and_share_new_binding(self) -> None:
+        """Two racing recoveries on one key: a single resume, both retry on it."""
+        import threading as _threading
+
+        session = _session(sid="shared")
+        session["keepalive_name"] = "pane-dead"
+        self.hub.store.sessions = {"claude": [session]}
+        resumes: list[str] = []
+
+        def _fake_resume(key: str) -> dict:
+            resumes.append(key)
+            import time as _time
+
+            _time.sleep(0.05)
+            found = self.hub.store.find_session("claude:shared")
+            assert found is not None
+            found["keepalive_name"] = "pane-new"
+            return {"key": key}
+
+        lock = _threading.Lock()
+        pastes: list[tuple[str, str]] = []
+        first_attempts = _threading.Barrier(2)
+        paste_calls = {"n": 0}
+
+        def _fake_paste(name: str, text: str):
+            with lock:
+                pastes.append((name, text))
+                paste_calls["n"] += 1
+                first_round = paste_calls["n"] <= 2
+            if first_round:
+                # Both threads attempt on the stale binding before either may
+                # recover, so the stranded-duplicate race is actually exercised.
+                first_attempts.wait(timeout=10)
+            if name == "pane-dead":
+                return InjectionResult(False, "pane_gone", False)
+            return InjectionResult(True)
+
+        def _liveness(name: str) -> str:
+            return "dead" if name == "pane-dead" else "alive"
+
+        errors: list[BaseException] = []
+
+        def _send() -> None:
+            try:
+                self.hub.send_text("claude:shared", "继续")
+            except BaseException as exc:  # noqa: BLE001 - collected for assertion
+                errors.append(exc)
+
+        with (
+            mock.patch.object(self.hub, "resume_session", side_effect=_fake_resume),
+            mock.patch.object(remote_sessions.embed, "pane_liveness", side_effect=_liveness),
+            mock.patch.object(remote_sessions.embed, "paste_detailed", side_effect=_fake_paste),
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            first = _threading.Thread(target=_send)
+            second = _threading.Thread(target=_send)
+            first.start()
+            second.start()
+            first.join()
+            second.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(resumes, ["claude:shared"])
+        self.assertEqual(
+            sorted(pastes),
+            [("pane-dead", "继续"), ("pane-dead", "继续"), ("pane-new", "继续"), ("pane-new", "继续")],
+        )
+
+    def test_post_resume_failure_says_restarted_not_safe_retry(self) -> None:
+        """After a resume, a second failure must not claim nothing restarted."""
+        session = _session(sid="again")
+        session["keepalive_name"] = "pane-dead"
+        self.hub.store.sessions = {"claude": [session]}
+
+        def _fake_resume(key: str) -> dict:
+            found = self.hub.store.find_session("claude:again")
+            assert found is not None
+            found["keepalive_name"] = "pane-new"
+            return {"key": key}
+
+        calls = {"n": 0}
+
+        def _fake_paste(name: str, text: str):
+            calls["n"] += 1
+            return InjectionResult(False, "tmux_error", False)
+
+        with (
+            mock.patch.object(self.hub, "resume_session", side_effect=_fake_resume),
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="dead"),
+            mock.patch.object(remote_sessions.embed, "paste_detailed", side_effect=_fake_paste),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.ActionError) as ctx:
+                self.hub.send_text("claude:again", "继续")
+            message = str(ctx.exception.message)
+            self.assertIn("was restarted", message)
+            self.assertNotIn("nothing was restarted", message)
+            for raw in ("pane_gone", "tmux_busy", "tmux_error", "uncertain", "tmux_unavailable"):
+                self.assertNotIn(raw, message)
+            self.assertEqual(calls["n"], 2)
+
     def test_send_text_cursor_promotes_with_second_enter(self) -> None:
         """Phone Cursor submits must steer: paste + Enter + empty Enter."""
         session = _session(source="cursor", sid="c1", attention="working")
         session["keepalive_name"] = "pane-cursor"
         self.hub.store.sessions = {"cursor": [session]}
         with (
-            mock.patch.object(remote_sessions.embed, "paste") as paste,
-            mock.patch.object(remote_sessions.embed, "send_key") as send_key,
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ) as paste,
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
         ):
-            send_key.return_value = True
-            paste.return_value = True
             self.hub.send_text("cursor:c1", "改方向")
             paste.assert_called_once_with("pane-cursor", "改方向")
             self.assertEqual(
@@ -949,8 +1235,12 @@ class SessionHubPayloadTests(unittest.TestCase):
         session["keepalive_name"] = "pane-cursor"
         self.hub.store.sessions = {"cursor": [session]}
         with (
-            mock.patch.object(remote_sessions.embed, "paste", return_value=True),
-            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ),
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
         ):
             self.hub.send_text("cursor:c2", "选 A")
@@ -972,8 +1262,13 @@ class SessionHubPayloadTests(unittest.TestCase):
                 "save_image_and_paste_path",
                 return_value="/tmp/paste-1.png",
             ) as save_img,
-            mock.patch.object(remote_sessions.embed, "paste", return_value=True) as paste,
-            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ) as paste,
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="alive"),
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
             mock.patch.object(
                 remote_sessions,
@@ -1007,8 +1302,13 @@ class SessionHubPayloadTests(unittest.TestCase):
             mock.patch.object(
                 remote_sessions.embed, "capture", return_value="→ ready"
             ),
-            mock.patch.object(remote_sessions.embed, "paste", return_value=True),
-            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ),
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="alive"),
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
             mock.patch.object(
                 remote_sessions,

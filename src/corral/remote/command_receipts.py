@@ -89,6 +89,12 @@ class Receipt:
     target_key: str = ""
     method: str = ""
     reason: str | None = None
+    # Human-readable host cause (localized ActionError text) for rejected and
+    # unknown receipts. The wire name is the established ``detail`` field the
+    # phone already decodes; a ``message`` alias with the same text is also
+    # emitted for compatibility. Absent when the host has no human cause
+    # (internal store transitions such as host_restart).
+    detail: str | None = None
     retryable: bool | None = None
     lease_expires_mono: float = 0.0
     created_at: float = 0.0
@@ -103,6 +109,9 @@ class Receipt:
         }
         if self.reason is not None:
             out["reason"] = self.reason
+        if self.detail is not None:
+            out["detail"] = self.detail
+            out["message"] = self.detail
         if self.retryable is not None:
             out["retryable"] = self.retryable
         return out
@@ -117,6 +126,8 @@ class Receipt:
             "target_key": self.target_key,
             "method": self.method,
             "reason": self.reason,
+            "detail": self.detail,
+            "message": self.detail,
             "retryable": self.retryable,
             "lease_expires_mono": self.lease_expires_mono,
             "created_at": self.created_at,
@@ -135,6 +146,8 @@ class Receipt:
             target_key=str(raw.get("target_key") or ""),
             method=str(raw.get("method") or ""),
             reason=raw.get("reason"),
+            # New records carry ``detail``; accept the legacy ``message`` alias.
+            detail=raw.get("detail", raw.get("message")),
             retryable=raw.get("retryable"),
             lease_expires_mono=float(raw.get("lease_expires_mono") or 0.0),
             created_at=float(raw.get("created_at") or 0.0),
@@ -385,25 +398,37 @@ class CommandReceiptStore:
         *,
         reason: str,
         retryable: bool,
+        detail: str | None = None,
     ) -> Receipt:
         with self._lock:
             if receipt.status in (STATUS_DELIVERED, STATUS_UNKNOWN):
                 # Never auto-convert unknown/delivered into rejected.
+                # Unknown stays uncertain: callers must not re-mark it here.
                 return receipt
             receipt.status = STATUS_REJECTED
             receipt.reason = reason
+            if detail is not None:
+                receipt.detail = detail
             receipt.retryable = retryable
             receipt.host_run_id = self.host_run_id
             receipt.updated_at = time.time()
             self._write(receipt)
             return receipt
 
-    def mark_unknown(self, receipt: Receipt, *, reason: str = "ambiguous") -> Receipt:
+    def mark_unknown(
+        self,
+        receipt: Receipt,
+        *,
+        reason: str = "ambiguous",
+        detail: str | None = None,
+    ) -> Receipt:
         with self._lock:
             if receipt.status in (STATUS_DELIVERED, STATUS_REJECTED, STATUS_UNKNOWN):
                 return receipt
             receipt.status = STATUS_UNKNOWN
             receipt.reason = reason
+            if detail is not None:
+                receipt.detail = detail
             receipt.retryable = False
             receipt.host_run_id = self.host_run_id
             receipt.updated_at = time.time()

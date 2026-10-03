@@ -1770,6 +1770,39 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Input may have been partially delivered; outcome is unknown",
         "zh": "输入可能只送进了一部分，结果不确定",
     },
+    "remote.err.inject_transient": {
+        "en": "Could not deliver input to the session ({detail}); nothing was restarted, safe to retry",
+        "zh": "没能把输入送进会话（{detail}）；没有重启任何东西，可以重试",
+    },
+    "remote.err.inject_after_resume": {
+        "en": "The session was restarted but the input still did not go "
+        "through ({detail}); please try again in a moment",
+        "zh": "会话已经重启过一次，但输入仍然没有送达（{detail}），请稍后再试",
+    },
+    "remote.err.inject_cause_pane_gone": {
+        "en": "the session's terminal pane had already exited",
+        "zh": "会话的终端窗格已经退出",
+    },
+    "remote.err.inject_cause_tmux_busy": {
+        "en": "the terminal multiplexer did not respond in time",
+        "zh": "终端复用器没有及时响应",
+    },
+    "remote.err.inject_cause_tmux_error": {
+        "en": "the terminal multiplexer reported an error",
+        "zh": "终端复用器报错",
+    },
+    "remote.err.inject_cause_tmux_unavailable": {
+        "en": "the terminal multiplexer is not available",
+        "zh": "终端复用器不可用",
+    },
+    "remote.err.inject_cause_uncertain": {
+        "en": "the input may already have reached the session",
+        "zh": "输入可能已经送达",
+    },
+    "remote.err.inject_resumed_not_ready": {
+        "en": "The session was resumed but its terminal is not ready yet; try again in a moment",
+        "zh": "会话已恢复，但终端还没就绪，稍后再试",
+    },
     "remote.err.delete_failed": {
         "en": "Delete failed: {error}",
         "zh": "删除失败：{error}",
@@ -1809,6 +1842,30 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.err.resume_failed": {
         "en": "Resume failed: {error}",
         "zh": "恢复失败：{error}",
+    },
+    "remote.err.tmux_missing_restart": {
+        "en": "tmux is not installed on the development machine, so a session cannot be restarted from the phone",
+        "zh": "开发机上没有装 tmux，无法从手机重启会话",
+    },
+    "remote.err.restart_provisional": {
+        "en": "This session is still starting and has no resumable history yet. Try again once its first message lands",
+        "zh": "这条会话还在启动中，暂无可恢复的历史，等第一条消息落盘后再试",
+    },
+    "remote.err.restart_not_supported": {
+        "en": "This session cannot be restarted from the phone (terminal pane or unsupported assistant)",
+        "zh": "这条会话无法从手机重启（终端窗格或暂不支持的助手）",
+    },
+    "remote.err.cannot_restart": {
+        "en": "This session cannot be restarted: {error}",
+        "zh": "这条会话无法重启：{error}",
+    },
+    "remote.err.restart_failed": {
+        "en": "Restart failed: {error}",
+        "zh": "重启失败：{error}",
+    },
+    "remote.err.restart_still_running": {
+        "en": "The running process did not stop, so the session was not restarted. Try again",
+        "zh": "旧进程没有停下来，会话没有被重启，请重试",
     },
     "remote.err.tmux_missing_handoff": {
         "en": "tmux is not installed on the development machine, so a handoff cannot be started from the phone",
