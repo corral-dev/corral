@@ -924,11 +924,61 @@ class SessionHubPayloadTests(unittest.TestCase):
                 remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
             ) as send_key,
             mock.patch.object(remote_sessions.time, "sleep"),
+            mock.patch.object(self.hub, "_wait_pane_settled") as settle,
         ):
             self.hub.send_text("claude:ended", "快点动手实现")
             resume.assert_called_once_with("claude:ended")
+            settle.assert_called_once_with("pane-resumed")
             paste.assert_called_once_with("pane-resumed", "快点动手实现")
             send_key.assert_called_once_with("pane-resumed", "Enter")
+
+    def test_send_text_to_hosted_session_does_not_wait_for_settle(self) -> None:
+        session = _session(sid="live")
+        session["keepalive_name"] = "pane-live"
+        self.hub.store.sessions = {"claude": [session]}
+        with (
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ),
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ),
+            mock.patch.object(remote_sessions.time, "sleep"),
+            mock.patch.object(self.hub, "_wait_pane_settled") as settle,
+        ):
+            self.hub.send_text("claude:live", "继续")
+        settle.assert_not_called()
+
+    def test_wait_pane_settled_returns_after_quiet_window(self) -> None:
+        frames = ["", "Starting ⠋", "Starting ⠙"] + ["› ready"] * 10
+        captured: list[str] = []
+
+        def _capture(*_args: object) -> str:
+            captured.append(frames[len(captured)])
+            return captured[-1]
+
+        # Two clock reads before the loop, then one per poll, 0.3 s apart.
+        clock = iter([0.0, 0.0] + [0.3 * n for n in range(1, 20)])
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", side_effect=_capture),
+            mock.patch.object(remote_sessions.time, "monotonic", side_effect=lambda: next(clock)),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub._wait_pane_settled("pane", quiet=1.0, timeout=20.0)
+        # Returned on the first frame after "› ready" stayed unchanged for >= 1 s,
+        # never on the empty or spinning frames.
+        self.assertEqual(captured[-1], "› ready")
+        self.assertLess(len(captured), len(frames))
+
+    def test_wait_pane_settled_gives_up_at_deadline_without_raising(self) -> None:
+        counter = iter(range(1000))
+        with (
+            mock.patch.object(
+                remote_sessions.embed, "capture", side_effect=lambda *_: f"spin {next(counter)}"
+            ),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub._wait_pane_settled("pane", quiet=1.0, timeout=0.0)
 
     def test_send_text_recovers_dead_binding_on_same_conversation(self) -> None:
         """Stale binding + failed paste + proven-dead pane → clear, native-resume

@@ -31,4 +31,3 @@
 | CI cloud two-minute speed (ongoing phase) | 验证中 | .github/workflows/test.yml, docs/MAINTAINER_GUIDE.md CI section (C scope only) | 2026-09-30 20:06 | 2026-09-30 22:46 | Docs reconciled to current evidence, awaiting fresh cloud-241 green to close: local COMPLETE 93.72s outer (2063 exact-once, jobs6, stamp written); jobs1 compat green (2060 tests, 294.05s); cloud v240 still >120 on 5/7 (Test 99–151s). Row stays until actual default-cloud all-7 ≤120 with verified shipping — not deleted, no completion claimed. |
 
 | 默认关闭命令拦截并还原双机 shim | 发布中 | bootstrap/shim/install/dev-install/tests/MAINTAINER_GUIDE、双机 shell | 17:31 | 2026-09-30 17:37 | 准备发 v0.24.238 |
-

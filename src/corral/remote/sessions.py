@@ -61,6 +61,11 @@ _ATTENTION_LABELS = {"none": "none", "unread": "unread", "working": "working", "
 # still-starting Cursor Agent. Retry submit if the prompt is still in the composer.
 _TURN_READY_TIMEOUT = 45.0
 _TURN_READY_POLL = 0.25
+# A freshly resumed assistant draws its banner, starts tools and only then
+# accepts Enter; input pasted earlier sits in the composer unsubmitted (seen on
+# Codex 2026-10-04). Wait until the pane stops changing for a quiet window.
+_RESUME_SETTLE_QUIET = 1.0
+_RESUME_SETTLE_TIMEOUT = 20.0
 _TURN_SUBMIT_PAUSE = 0.25
 _TURN_SUBMIT_RETRIES = 3
 _TURN_IMAGE_GAP = 0.15
@@ -1436,11 +1441,20 @@ class SessionHub:
             watch.last_capture = None
         return self._capture_frame(watch)
 
-    def _keepalive_name(self, key: str, *, resume_if_needed: bool = False) -> str:
+    def _keepalive_name(
+        self,
+        key: str,
+        *,
+        resume_if_needed: bool = False,
+        resumed: list[bool] | None = None,
+    ) -> str:
         """Return the hosted tmux name; optionally native-resume a stopped session.
 
         Phone chat can open ended history and still send. Desktop Enter-to-restart
         already resumes; phone input must do the same instead of a red failed bubble.
+
+        ``resumed`` (optional out-list) receives ``True`` when this call
+        native-resumed the session, so callers can wait for the fresh pane.
 
         The stored name is returned without a liveness fork on the happy path.
         A stale (dead) binding is recovered failure-triggered at the inject step
@@ -1458,6 +1472,8 @@ class SessionHub:
             session = self.require_session(key)
             name = str(session.get("keepalive_name") or "")
             if name:
+                if resumed is not None:
+                    resumed.append(True)
                 return name
         raise ActionError("unavailable", t("remote.err.session_not_running"))
 
@@ -1646,8 +1662,13 @@ class SessionHub:
         A certain paste failure on a proven-dead binding clears it and natively
         resumes the same conversation once, then retries once on the new pane.
         """
-        name = self._keepalive_name(key, resume_if_needed=True)
+        woke: list[bool] = []
+        name = self._keepalive_name(key, resume_if_needed=True, resumed=woke)
         session = self.store.find_session(self.resolve_session_key(key)) or {}
+        if woke:
+            # Just native-resumed: Enter sent while the assistant is still
+            # starting is dropped and the text stays in the composer.
+            self._wait_pane_settled(name)
         pasted = False
         if text:
             name, session = self._attempt_with_recovery(
@@ -1798,6 +1819,34 @@ class SessionHub:
                 },
             )
         return paths
+
+    def _wait_pane_settled(
+        self,
+        name: str,
+        *,
+        quiet: float = _RESUME_SETTLE_QUIET,
+        timeout: float = _RESUME_SETTLE_TIMEOUT,
+    ) -> None:
+        """Best-effort: return once the pane shows content unchanged for ``quiet``.
+
+        Runtime-agnostic (startup spinners keep the pane changing, a ready
+        composer does not). Never raises: on timeout the caller still injects,
+        which is no worse than injecting immediately.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        last: str | None = None
+        stable_since = time.monotonic()
+        while True:
+            plain = _plain_pane_text(embed.capture(name, 0, 0))
+            now = time.monotonic()
+            if plain != last:
+                last = plain
+                stable_since = now
+            elif plain.strip() and now - stable_since >= quiet:
+                return
+            if now >= deadline:
+                return
+            time.sleep(_TURN_READY_POLL)
 
     def _wait_pane_ready(self, name: str, *, timeout: float) -> None:
         deadline = time.monotonic() + max(0.0, timeout)

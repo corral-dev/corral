@@ -319,6 +319,7 @@ infrastructure runbook; they are not an open-source default deployment:
 | 新建会话页项目列表空白 | `projects.list` 缺 `path`/`name`（旧版只有 `cwd`/`label`）；两端需同时认两套字段 |
 | 发送失败但输入框已清空 | 客户端在 `try?` 后无条件清空草稿；应仅在成功时清空并展示服务端错误文案 |
 | 手机往已结束会话发消息红感叹号 / 回执 `unavailable` / 「快点动手实现」发不出 | 会话不在保活窗格里（`keepalive_name` 空），旧逻辑直接拒绝注入。自本修复起：`input.text` / `input.keys` / `input.image` 在注入前会先走原生恢复再粘贴（对齐电脑「回车重开」）。若仍失败：看回执 `reason`、该会话是否真能 resume、以及常驻远程是否已换新版。**不要**只当成中继超时 |
+| 发给已结束会话的消息停在助手输入框里不提交 / 回执是已送达但助手没反应 / 唤醒后 Enter 被吞 | 2026-10-04 Mac 客户端验收实测（Codex，已结束会话）：`input.text` 先原生恢复再立刻粘贴 + 回车，助手还在启动（横幅、工具加载），回车被丢，正文留在输入框，回执仍是成功；之后在已就绪窗格补一次回车即正常回复。`send_turn` 的「等就绪」只认 Claude/Cursor 的 `→` 提示符，不能直接复用到 Codex。修法：仅在本次确实是唤醒（发送前无 `keepalive_name`）时，先等窗格画面连续约 1 秒不变（启动转圈会持续改画面；最多等 20 秒，超时照常注入、不报错），再粘贴回车；已在跑的会话不走这段、不加延迟。验证：单测覆盖唤醒必等、在跑不等、静止判定与超时不抛错；真实验收用 Mac/手机给一条已结束的一次性会话发消息，确认助手直接回复 |
 | 手机详情顶栏显示 Ended / 已结束，但对话还在刷、电脑侧栏是执行中 | 常见不是 Cursor 判活假阴性。开发机 `corral list` 已是 `live=true` 时，根因是手机顶栏死守列表缓存的 `live`，进详情后列表 watch 常被卸掉，attention 事件又不带 live。修法：顶栏读打开中对话的 live；attention 事件带 `live`；live 翻转给已打开详情推 metadata。电脑「子代理跑、主会话已结束」另查扫描知识库 |
 | Pi 会话有对话却看不到 Agent activity / 工具调用 | 旧远程把 Pi 挂在纯文本解析上，`supports_tool_calls` 也不含 pi。现已按活动分支解析 `toolCall` / `toolResult`；须抬高规范化缓存版本并 `corral remote off && on`。手机端活动卡本身不用改 |
 | 置顶接口永远回未置顶 / 组内会话点置顶无效 | `session.pin` 必须读 `pinned_session_keys`（不是已废弃的 `pinned_sessions`）；组成员不能单独置顶，应改切 `pinned_group_ids`（与桌面侧栏一致）。列表载荷里组字段用 `group.id`（值取自 `SplitGroup.group_id`） |
