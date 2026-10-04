@@ -169,6 +169,8 @@ acceptance do not establish mobile visual acceptance.
 - 命令回执（可选能力）：`command.status`
 - 会话动作：`session.new` / `session.stop` / `session.delete` / `session.markRead` …
 - 配对与推送：`pair`、`push.register`
+- 桌面客户端（Mac，能力 `desktop_layout`，2026-10-04）：`layout.watch` / `layout.unwatch`（通道 `layout`，快照 `{revision, groups:[{id,name,project,members,focus,collapsed,pinned,pinned_at}], pinned_sessions}`）与 `layout.setGroup` / `layout.removeSession` / `layout.setFocus` / `layout.pin` / `layout.pinGroup` / `layout.collapse`：读写的就是 TUI 的侧栏记忆库（`split_layout.SidebarLayoutDB`），Mac 分屏即 TUI 会话组，TUI 写入经每秒一次的版本号轮询推给 Mac（仅有桌面订阅时运行）。`layout.pin` 用 TUI 语义（组成员钉整组）；手机的 `session.pin` 与列表载荷不变、仍无分组概念。`search.fulltext {q, top}` 复用 TUI Ctrl+F 的对话正文索引，返回命中行与高亮区间（只读，`search` 仍只查标题/路径/最近一句）。
+- Mac 终端视图的实时打字：每个按键都是一次 `input.keys`，或 `submit: false` 的 `input.text`；这两类走独立限流 `TERMINAL_TYPING`（1200 次/分），真正发送消息（`submit: true`）仍走 `INPUT_ACTIONS`（120 次/分）。协商了回执的连接上，每次输入都必须带 `command_id`，否则开发机回 `Missing command_id`。只有 `submit: true` 才广播 `echo` 用户气泡；未提交的终端打字不得出现在聊天与提问列表里。
 
 成功返回形状（手机解码依赖这些字段，缺了会空白或静默失败）：
 

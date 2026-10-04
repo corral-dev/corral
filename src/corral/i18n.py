@@ -1931,6 +1931,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Incomplete image data",
         "zh": "图片数据不完整",
     },
+    "remote.err.layout_group_size": {
+        "en": "A split group needs two to four sessions",
+        "zh": "分屏组需要两到四个会话",
+    },
     "remote.err.resize_forbidden": {
         "en": "The phone is not allowed to resize the terminal window",
         "zh": "手机端不允许调整终端窗口大小",

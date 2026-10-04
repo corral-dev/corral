@@ -142,6 +142,7 @@ class RemoteActionTests(unittest.TestCase):
         ratelimit.PAIR_ATTEMPTS.reset()
         ratelimit.PAIR_ATTEMPTS_HOURLY.reset()
         ratelimit.INPUT_ACTIONS.reset()
+        ratelimit.TERMINAL_TYPING.reset()
         ratelimit.SESSION_CREATE.reset()
         ratelimit.PUSH_REGISTER.reset()
 

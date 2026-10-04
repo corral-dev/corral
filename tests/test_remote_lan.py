@@ -142,6 +142,7 @@ class HelloLocalHintsTests(unittest.TestCase):
             ratelimit.PAIR_ATTEMPTS,
             ratelimit.PAIR_ATTEMPTS_HOURLY,
             ratelimit.INPUT_ACTIONS,
+            ratelimit.TERMINAL_TYPING,
             ratelimit.SESSION_CREATE,
             ratelimit.PUSH_REGISTER,
         ):

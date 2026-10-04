@@ -39,6 +39,7 @@ _SCAN_LIMIT = 200
 _REFRESH_RECONCILE = 15.0
 _REFRESH_MIN_GAP = 15.0  # do not scan more often than the old remote cadence under thrash
 _TITLE_POLL_SLICE = 15.0
+_LAYOUT_POLL_SECONDS = 1.0
 _PHONE_LIST_LIMIT = 80
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
 _CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期（空闲）
@@ -455,6 +456,9 @@ class SessionHub:
         self._transcript_cache = transcript_cache.TranscriptCache()
         self._transcript_io = threading.Lock()
         self._sessions_watchers = 0
+        self._layout_watchers = 0
+        self._layout_thread: threading.Thread | None = None
+        self._layout_revision_seen: int | None = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
@@ -1308,6 +1312,165 @@ class SessionHub:
         with self._lock:
             self._sessions_watchers = max(0, self._sessions_watchers - 1)
 
+    # -- 桌面布局（与 TUI 共用的分屏组 / 置顶）-------------------------------
+
+    def watch_layout(self) -> None:
+        """Count a desktop layout watcher; start the revision poller on first use.
+
+        The TUI writes the layout store directly, so changes made there never
+        reach the history watcher. A one-second revision read (an indexed meta
+        row) is cheap and only runs while a desktop client watches.
+        """
+        with self._lock:
+            self._layout_watchers += 1
+            if self._layout_thread is None or not self._layout_thread.is_alive():
+                self._layout_thread = threading.Thread(
+                    target=self._layout_loop, name="corral-layout-watch", daemon=True
+                )
+                self._layout_thread.start()
+
+    def unwatch_layout(self) -> None:
+        with self._lock:
+            self._layout_watchers = max(0, self._layout_watchers - 1)
+
+    def _layout_loop(self) -> None:
+        while not self._stop.wait(_LAYOUT_POLL_SECONDS):
+            with self._lock:
+                if self._layout_watchers <= 0:
+                    self._layout_thread = None
+                    return
+            self._emit_layout_if_changed()
+
+    def _emit_layout_if_changed(self, *, force: bool = False) -> None:
+        try:
+            revision = int(self.layout_db.read_revision())
+        except Exception:
+            return
+        if not force and revision == self._layout_revision_seen:
+            return
+        self._layout_revision_seen = revision
+        self._on_event("layout", self.layout_snapshot())
+
+    def layout_snapshot(self) -> dict:
+        """Desktop projection of the TUI sidebar memory (groups and pins).
+
+        Uses the TUI's default read (member pins promote the group), exactly as
+        the desktop sidebar renders it. Never part of the phone payload.
+        """
+        try:
+            layout = self.layout_db.read()
+        except Exception:
+            layout = None
+        if layout is None:
+            return {"revision": 0, "groups": [], "pinned_sessions": {}}
+        pinned_groups = dict(getattr(layout, "pinned_group_ids", {}) or {})
+        groups = []
+        for group in layout.ordered_groups():
+            groups.append(
+                {
+                    "id": group.group_id,
+                    "name": group.name,
+                    "project": group.project_cwd,
+                    "members": list(group.session_keys),
+                    "focus": group.focus_key or "",
+                    "collapsed": bool(group.collapsed),
+                    "pinned": group.group_id in pinned_groups,
+                    "pinned_at": self._wire_float(pinned_groups.get(group.group_id)),
+                    "updated_at": self._wire_float(group.updated_at),
+                }
+            )
+        return {
+            "revision": int(getattr(layout, "revision", 0) or 0),
+            "groups": groups,
+            "pinned_sessions": {
+                key: self._wire_float(at)
+                for key, at in (getattr(layout, "pinned_session_keys", {}) or {}).items()
+            },
+        }
+
+    def _layout_mutated(self) -> dict:
+        snapshot = self.layout_snapshot()
+        self._layout_revision_seen = snapshot["revision"]
+        self._on_event("layout", snapshot)
+        return snapshot
+
+    def layout_set_group(self, project: str, keys: list[str], focus: str | None) -> dict:
+        canonical = [self.resolve_session_key(key) for key in keys if key]
+        if len(canonical) < 2:
+            raise ActionError("usage_error", t("remote.err.layout_group_size"))
+        focus_key = self.resolve_session_key(focus) if focus else None
+        self.layout_db.set_group(project or "", canonical, focus_key=focus_key)
+        return self._layout_mutated()
+
+    def layout_remove_session(self, key: str) -> dict:
+        self.layout_db.remove_session(self.resolve_session_key(key))
+        return self._layout_mutated()
+
+    def layout_set_focus(self, project: str, key: str) -> dict:
+        self.layout_db.set_focus(project or "", self.resolve_session_key(key))
+        return self._layout_mutated()
+
+    def layout_toggle_pin(self, key: str) -> dict:
+        """TUI pin semantics: a visible group member pins or unpins its whole group."""
+        canonical = self.resolve_session_key(key)
+        layout = self.layout_db.read()
+        group = layout.get_group(canonical) if layout is not None else None
+        if group is not None:
+            self.layout_db.toggle_group_pin(group.group_id)
+        else:
+            self.layout_db.toggle_session_pin(canonical)
+        return self._layout_mutated()
+
+    def layout_toggle_group_pin(self, group_id: str) -> dict:
+        self.layout_db.toggle_group_pin(group_id)
+        return self._layout_mutated()
+
+    def fulltext_search(self, query: str, top: int = 40) -> dict:
+        """Conversation-body search with hit lines, shared with the TUI's Ctrl+F.
+
+        The index keeps per-session signatures, so only changed conversations
+        are re-read; the first call parses uncached histories once.
+        """
+        from corral.search import ConversationIndex
+
+        with self._lock:
+            index = getattr(self, "_fulltext_index", None)
+            if index is None:
+                index = ConversationIndex()
+                self._fulltext_index = index
+        sessions = [
+            session
+            for session in self.store.all_sessions()
+            if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS
+        ]
+        index.refresh(self.store, sessions)
+        titles = {session_key(session): self.store.get_title(session) for session in sessions}
+        outcome = index.search(sessions, query, titles=titles, top=max(1, min(int(top), 100)))
+        return {
+            "total": outcome.total,
+            "matches": [
+                {
+                    "key": match.key,
+                    "title": match.title,
+                    "total_hits": match.total_hits,
+                    "lines": [
+                        {
+                            "role": line.role,
+                            "text": line.text,
+                            "spans": [list(span) for span in line.spans],
+                            "ts": self._wire_float(line.timestamp),
+                        }
+                        for line in match.lines
+                    ],
+                }
+                for match in outcome.matches
+            ],
+        }
+
+    def layout_set_collapsed(self, group_id: str, collapsed: bool) -> dict:
+        self.layout_db.set_collapsed(group_id, collapsed)
+        return self._layout_mutated()
+
     def conversation_snapshot(self, key: str) -> list[dict]:
         """不改订阅计数，只读当前富消息全文（仅供本机内部兼容路径）。"""
         session = self.require_session(key)
@@ -1689,7 +1852,9 @@ class SessionHub:
                 )
             if text:
                 self._emit_provisional_working(key)
-        if text:
+        # Only a submitted turn is a user message. Unsubmitted text is live
+        # terminal typing (desktop client) and must not appear in the chat.
+        if text and submit:
             # 立刻回显到手机传来的通道，不占规范化 seq；助手历史落地后的正式消息才带 seq。
             self._on_event(
                 f"session:{key}",

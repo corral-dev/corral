@@ -206,6 +206,10 @@ CAPABILITY_MEDIA_IMAGE = "media_image"
 # Host supports session.restart (remote access to the desktop advanced-restart).
 # Advertised only with the implementation; old hosts lack the method entirely.
 CAPABILITY_SESSION_RESTART = "session_restart"
+# Desktop clients (the Mac app) share the TUI's split groups and pins through
+# the host layout store: layout.watch / layout.* below. Phone clients never
+# call these and keep their group-free list payload.
+CAPABILITY_DESKTOP_LAYOUT = "desktop_layout"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -249,12 +253,28 @@ M_SESSION_STOP = "session.stop"
 M_SESSION_DELETE = "session.delete"
 M_SESSION_PIN = "session.pin"
 
+# Desktop layout (split groups shared with every TUI window of this host).
+# layout.watch → snapshot + `layout` channel events on every revision change.
+# Mutations return the new snapshot and are rejected for read-only pairings.
+M_LAYOUT_WATCH = "layout.watch"
+M_LAYOUT_UNWATCH = "layout.unwatch"
+M_LAYOUT_SET_GROUP = "layout.setGroup"        # {project, keys:[2..4], focus?}
+M_LAYOUT_REMOVE = "layout.removeSession"      # {key}: pane closed → leave its group
+M_LAYOUT_FOCUS = "layout.setFocus"            # {project, key}
+M_LAYOUT_PIN = "layout.pin"                   # {key}: TUI semantics (group member pins the group)
+M_LAYOUT_PIN_GROUP = "layout.pinGroup"        # {group_id}
+M_LAYOUT_COLLAPSE = "layout.collapse"         # {group_id, collapsed}
+
 M_PROJECTS_LIST = "projects.list"
 M_SEARCH = "search"
+# Full-text conversation search (the TUI's Ctrl+F index) for desktop clients:
+# {q, top?} → {total, matches:[{key, title, total_hits, lines:[{role, text, spans, ts}]}]}.
+M_SEARCH_FULLTEXT = "search.fulltext"
 M_RUNTIMES_LIST = "runtimes.list"
 
 # 订阅通道名前缀
 CH_SESSIONS = "sessions"
+CH_LAYOUT = "layout"
 
 
 def screen_channel(session_key: str) -> str:

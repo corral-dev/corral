@@ -175,6 +175,7 @@ class CommandReceiptWireTests(unittest.TestCase):
         os.environ["CORRAL_CACHE_DIR"] = self._tmp.name
         self.addCleanup(self._restore_cache)
         ratelimit.INPUT_ACTIONS.reset()
+        ratelimit.TERMINAL_TYPING.reset()
         ratelimit.PAIR_ATTEMPTS.reset()
         ratelimit.PAIR_ATTEMPTS_HOURLY.reset()
         self.hub = FakeHub()

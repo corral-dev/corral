@@ -64,6 +64,9 @@ _READONLY_METHODS = frozenset(
         protocol.M_PROJECTS_LIST,
         protocol.M_RUNTIMES_LIST,
         protocol.M_SEARCH,
+        protocol.M_LAYOUT_WATCH,
+        protocol.M_LAYOUT_UNWATCH,
+        protocol.M_SEARCH_FULLTEXT,
         protocol.M_PUSH_REGISTER,
         protocol.M_SESSION_MARK_READ,
         protocol.M_COMMAND_STATUS,
@@ -461,6 +464,8 @@ class RemoteService:
         """连接断开时把中枢侧的订阅计数减回去，别让后台白抓帧。"""
         if channel == protocol.CH_SESSIONS:
             self.hub.unwatch_sessions()
+        elif channel == protocol.CH_LAYOUT:
+            self.hub.unwatch_layout()
         elif channel.startswith("screen:"):
             self.hub.unwatch_screen(channel[len("screen:") :])
         elif channel.startswith("session:"):
@@ -668,6 +673,7 @@ class RemoteService:
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
+                protocol.CAPABILITY_DESKTOP_LAYOUT: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -704,6 +710,44 @@ class RemoteService:
         if self._unsubscribe(connection, protocol.CH_SESSIONS):
             self.hub.unwatch_sessions()
         return {"ok": True}
+
+    # -- 桌面布局（Mac 客户端与 TUI 共用分屏组）---------------------------------
+
+    def _layout_watch(self, connection: Connection, params: dict):
+        if self._subscribe(connection, protocol.CH_LAYOUT):
+            self.hub.watch_layout()
+        return self.hub.layout_snapshot()
+
+    def _layout_unwatch(self, connection: Connection, params: dict):
+        if self._unsubscribe(connection, protocol.CH_LAYOUT):
+            self.hub.unwatch_layout()
+        return {"ok": True}
+
+    def _layout_set_group(self, connection: Connection, params: dict):
+        keys = params.get("keys")
+        if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+            raise ActionError(protocol.E_USAGE, t("remote.err.layout_group_size"))
+        focus = params.get("focus")
+        return self.hub.layout_set_group(
+            str(params.get("project") or ""), keys, focus if isinstance(focus, str) else None
+        )
+
+    def _layout_remove(self, connection: Connection, params: dict):
+        return self.hub.layout_remove_session(_key(params))
+
+    def _layout_focus(self, connection: Connection, params: dict):
+        return self.hub.layout_set_focus(str(params.get("project") or ""), _key(params))
+
+    def _layout_pin(self, connection: Connection, params: dict):
+        return self.hub.layout_toggle_pin(_key(params))
+
+    def _layout_pin_group(self, connection: Connection, params: dict):
+        return self.hub.layout_toggle_group_pin(str(params.get("group_id") or ""))
+
+    def _layout_collapse(self, connection: Connection, params: dict):
+        return self.hub.layout_set_collapsed(
+            str(params.get("group_id") or ""), bool(params.get("collapsed"))
+        )
 
     def _session_get(self, connection: Connection, params: dict):
         return self.hub.session_detail(_key(params))
@@ -795,10 +839,11 @@ class RemoteService:
         return {"frame": self.hub.scroll_screen(_key(params), _int_param(params, "offset", 0))}
 
     def _input_text(self, connection: Connection, params: dict):
-        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+        submit = bool(params.get("submit", True))
+        limiter = ratelimit.INPUT_ACTIONS if submit else ratelimit.TERMINAL_TYPING
+        if not limiter.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
         text = str(params.get("text") or "")
-        submit = bool(params.get("submit", True))
         if not text and not submit:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
         key = _key(params)
@@ -816,7 +861,7 @@ class RemoteService:
         )
 
     def _input_keys(self, connection: Connection, params: dict):
-        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+        if not ratelimit.TERMINAL_TYPING.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
         keys = params.get("keys")
         if not isinstance(keys, list):
@@ -1044,6 +1089,12 @@ class RemoteService:
     def _search(self, connection: Connection, params: dict):
         return {"sessions": self.hub.list_sessions(query=str(params.get("q") or ""), limit=100)}
 
+    def _search_fulltext(self, connection: Connection, params: dict):
+        query = str(params.get("q") or "").strip()
+        if not query:
+            return {"total": 0, "matches": []}
+        return self.hub.fulltext_search(query, top=_int_param(params, "top", 40))
+
     def _push_register(self, connection: Connection, params: dict):
         if not ratelimit.PUSH_REGISTER.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.push_rate_limited"))
@@ -1186,8 +1237,17 @@ _HANDLERS = {
     protocol.M_SESSION_STOP: RemoteService._session_stop,
     protocol.M_SESSION_DELETE: RemoteService._session_delete,
     protocol.M_SESSION_PIN: RemoteService._session_pin,
+    protocol.M_LAYOUT_WATCH: RemoteService._layout_watch,
+    protocol.M_LAYOUT_UNWATCH: RemoteService._layout_unwatch,
+    protocol.M_LAYOUT_SET_GROUP: RemoteService._layout_set_group,
+    protocol.M_LAYOUT_REMOVE: RemoteService._layout_remove,
+    protocol.M_LAYOUT_FOCUS: RemoteService._layout_focus,
+    protocol.M_LAYOUT_PIN: RemoteService._layout_pin,
+    protocol.M_LAYOUT_PIN_GROUP: RemoteService._layout_pin_group,
+    protocol.M_LAYOUT_COLLAPSE: RemoteService._layout_collapse,
     protocol.M_PROJECTS_LIST: RemoteService._projects_list,
     protocol.M_RUNTIMES_LIST: RemoteService._runtimes_list,
     protocol.M_SEARCH: RemoteService._search,
+    protocol.M_SEARCH_FULLTEXT: RemoteService._search_fulltext,
     protocol.M_PUSH_REGISTER: RemoteService._push_register,
 }
