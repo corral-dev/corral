@@ -28,6 +28,7 @@ from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
 from corral.remote import questions, richmsg, transcript_cache
 from corral.remote.screen import ScreenEncoder
+from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
 from corral.runtime.registry import ACTIVE_RUNTIME_IDS
 from corral.split_layout import default_layout_db
@@ -451,6 +452,8 @@ class SessionHub:
         # 同会话重启串行锁：杀旧起新必须串行，禁止并行起新复用未死透的旧名。
         self._restart_locks: dict[str, threading.Lock] = {}
         self._screens: dict[str, _ScreenWatch] = {}
+        # Desktop raw terminal streams: key -> (stream, viewer ids).
+        self._terminals: dict[str, tuple[TerminalStream, set[str]]] = {}
         self._conversations: dict[str, _ConversationWatch] = {}
         self._transcripts: dict[str, _Transcript] = {}
         self._transcript_cache = transcript_cache.TranscriptCache()
@@ -492,6 +495,11 @@ class SessionHub:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._lock:
+            terminals = [stream for stream, _ in self._terminals.values()]
+            self._terminals.clear()
+        for stream in terminals:
+            stream.stop()
         watcher = self._history_watcher
         if watcher is not None:
             watcher.stop()
@@ -1603,6 +1611,78 @@ class SessionHub:
             watch.encoder.reset()
             watch.last_capture = None
         return self._capture_frame(watch)
+
+    # -- 桌面终端原始流（Mac 终端视图） ----------------------------------
+
+    def terminal_attach(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool) -> dict:
+        """Start (or join) the session's raw stream; a snapshot event follows."""
+        name = self._keepalive_name(key)
+        with self._lock:
+            entry = self._terminals.get(key)
+            if entry is None:
+                stream = TerminalStream(
+                    key,
+                    name,
+                    emit=lambda payload, key=key: self._on_event(f"term:{key}", payload),
+                    resolve_name=lambda key=key: self._hosted_name(key),
+                )
+                entry = (stream, set())
+                self._terminals[key] = entry
+                stream.start()
+            stream, viewers = entry
+            viewers.add(viewer)
+        return self._terminal_size(stream, viewer, cols, rows, vote=vote, snapshot=True)
+
+    def terminal_resize(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool) -> dict:
+        return self._terminal_size(self._terminal(key), viewer, cols, rows, vote=vote, snapshot=False)
+
+    def terminal_resync(self, key: str) -> None:
+        self._terminal(key).request_snapshot()
+
+    def terminal_input(self, key: str, data: bytes) -> None:
+        if not data:
+            raise ActionError("usage_error", t("remote.err.no_content"))
+        with self._lock:
+            entry = self._terminals.get(key)
+        name = entry[0].name if entry is not None else self._keepalive_name(key)
+        if not embed.send_bytes(name, data):
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
+
+    def terminal_detach(self, key: str, viewer: str) -> None:
+        with self._lock:
+            entry = self._terminals.get(key)
+            if entry is None:
+                return
+            stream, viewers = entry
+            viewers.discard(viewer)
+            last = not viewers
+            if last:
+                self._terminals.pop(key, None)
+        stream.withdraw(viewer)
+        if last:
+            stream.stop()
+
+    def _terminal(self, key: str) -> TerminalStream:
+        with self._lock:
+            entry = self._terminals.get(key)
+        if entry is None:
+            raise ActionError("usage_error", t("remote.err.not_watching_screen"))
+        return entry[0]
+
+    @staticmethod
+    def _terminal_size(stream: TerminalStream, viewer: str, cols: int, rows: int,
+                       *, vote: bool, snapshot: bool) -> dict:
+        if vote:
+            effective = stream.vote(viewer, cols, rows)
+        else:
+            effective = embed.pane_size(stream.name) or (cols, rows)
+        if snapshot:
+            stream.request_snapshot()
+        return {"cols": effective[0], "rows": effective[1]}
+
+    def _hosted_name(self, key: str) -> str:
+        session = self.store.find_session(self.resolve_session_key(key)) or {}
+        return str(session.get("keepalive_name") or "")
 
     def _keepalive_name(
         self,

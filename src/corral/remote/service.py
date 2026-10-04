@@ -67,12 +67,35 @@ _READONLY_METHODS = frozenset(
         protocol.M_LAYOUT_WATCH,
         protocol.M_LAYOUT_UNWATCH,
         protocol.M_SEARCH_FULLTEXT,
+        # Read-only devices watch the desktop terminal stream without a size vote.
+        protocol.M_TERMINAL_ATTACH,
+        protocol.M_TERMINAL_RESIZE,
+        protocol.M_TERMINAL_RESYNC,
+        protocol.M_TERMINAL_DETACH,
         protocol.M_PUSH_REGISTER,
         protocol.M_SESSION_MARK_READ,
         protocol.M_COMMAND_STATUS,
         protocol.M_MEDIA_IMAGE,
     }
 )
+
+# Raw terminal input per request: keystrokes and IME commits, never a paste
+# (pastes go through input.text so bracketed paste follows the agent's mode).
+_TERMINAL_INPUT_MAX = 16 * 1024
+
+
+def _terminal_viewer(connection: Connection) -> str:
+    """Size-vote identity: one per live connection, shared registry with the TUI."""
+    return f"remote:{connection.device_id or connection.device_public_key[:16]}:{id(connection):x}"
+
+
+def _terminal_grid(params: dict) -> tuple[int, int]:
+    cols = _int_param(params, "cols", 0, max_value=1000)
+    rows = _int_param(params, "rows", 0, max_value=500)
+    if cols < 1 or rows < 1:
+        raise ActionError(protocol.E_USAGE, t("remote.err.bad_terminal_size"))
+    return cols, rows
+
 
 # 需要二次确认的破坏性操作
 _CONFIRM_METHODS = frozenset(
@@ -359,7 +382,7 @@ class RemoteService:
                         self._subscribers.pop(channel, None)
             connection.channels.clear()
         for channel in channels:
-            self._release_channel(channel)
+            self._release_channel(channel, connection)
         if data_hook is not None:
             try:
                 data_hook()
@@ -460,7 +483,7 @@ class RemoteService:
                     self._subscribers.pop(channel, None)
         return True
 
-    def _release_channel(self, channel: str) -> None:
+    def _release_channel(self, channel: str, connection: Connection) -> None:
         """连接断开时把中枢侧的订阅计数减回去，别让后台白抓帧。"""
         if channel == protocol.CH_SESSIONS:
             self.hub.unwatch_sessions()
@@ -468,6 +491,8 @@ class RemoteService:
             self.hub.unwatch_layout()
         elif channel.startswith("screen:"):
             self.hub.unwatch_screen(channel[len("screen:") :])
+        elif channel.startswith("term:"):
+            self.hub.terminal_detach(channel[len("term:") :], _terminal_viewer(connection))
         elif channel.startswith("session:"):
             self.hub.unwatch_conversation(channel[len("session:") :])
 
@@ -479,7 +504,7 @@ class RemoteService:
         if not targets:
             return
         message = protocol.event(channel, data)
-        via_data = channel.startswith("screen:")
+        via_data = channel.startswith(("screen:", "term:"))
         for connection in targets:
             if connection.closed:
                 continue
@@ -674,6 +699,7 @@ class RemoteService:
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
+                protocol.CAPABILITY_TERMINAL_STREAM: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -837,6 +863,52 @@ class RemoteService:
 
     def _screen_scroll(self, connection: Connection, params: dict):
         return {"frame": self.hub.scroll_screen(_key(params), _int_param(params, "offset", 0))}
+
+    def _terminal_attach(self, connection: Connection, params: dict):
+        key = _key(params)
+        viewer = _terminal_viewer(connection)
+        cols, rows = _terminal_grid(params)
+        if not self._subscribe(connection, protocol.terminal_channel(key)):
+            # Already attached on this connection: a size update plus a fresh snapshot.
+            size = self.hub.terminal_resize(key, viewer, cols, rows, vote=connection.access != "readonly")
+            self.hub.terminal_resync(key)
+            return size
+        try:
+            return self.hub.terminal_attach(key, viewer, cols, rows, vote=connection.access != "readonly")
+        except Exception:
+            self._unsubscribe(connection, protocol.terminal_channel(key))
+            raise
+
+    def _terminal_resize(self, connection: Connection, params: dict):
+        cols, rows = _terminal_grid(params)
+        return self.hub.terminal_resize(
+            _key(params), _terminal_viewer(connection), cols, rows, vote=connection.access != "readonly",
+        )
+
+    def _terminal_resync(self, connection: Connection, params: dict):
+        self.hub.terminal_resync(_key(params))
+        return {"ok": True}
+
+    def _terminal_input(self, connection: Connection, params: dict):
+        if not ratelimit.TERMINAL_TYPING.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        import base64
+        import binascii
+
+        try:
+            data = base64.b64decode(str(params.get("data") or ""), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_content")) from exc
+        if len(data) > _TERMINAL_INPUT_MAX:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
+        self.hub.terminal_input(_key(params), data)
+        return {"ok": True}
+
+    def _terminal_detach(self, connection: Connection, params: dict):
+        key = _key(params)
+        if self._unsubscribe(connection, protocol.terminal_channel(key)):
+            self.hub.terminal_detach(key, _terminal_viewer(connection))
+        return {"ok": True}
 
     def _input_text(self, connection: Connection, params: dict):
         submit = bool(params.get("submit", True))
@@ -1224,6 +1296,11 @@ _HANDLERS = {
     protocol.M_SCREEN_UNWATCH: RemoteService._screen_unwatch,
     protocol.M_SCREEN_SCROLL: RemoteService._screen_scroll,
     protocol.M_SCREEN_RESIZE: RemoteService._screen_resize,
+    protocol.M_TERMINAL_ATTACH: RemoteService._terminal_attach,
+    protocol.M_TERMINAL_RESIZE: RemoteService._terminal_resize,
+    protocol.M_TERMINAL_RESYNC: RemoteService._terminal_resync,
+    protocol.M_TERMINAL_INPUT: RemoteService._terminal_input,
+    protocol.M_TERMINAL_DETACH: RemoteService._terminal_detach,
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,

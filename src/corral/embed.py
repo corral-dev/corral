@@ -611,6 +611,22 @@ def send_key(name: str, *keys: str) -> bool:
     return _send(name, ["send-keys", "-t", name, "--", *keys])
 
 
+def send_bytes(name: str, data: bytes) -> bool:
+    """Send raw input bytes (``send-keys -H``): what a terminal emulator would
+    write to the pane, never parsed as key names. Channel first, fork fallback."""
+    for start in range(0, len(data), _RAW_INPUT_CHUNK):
+        hexes = [f"{b:02x}" for b in data[start:start + _RAW_INPUT_CHUNK]]
+        ch = _active_channel(name)
+        if ch is not None and ch.command("send", "-H", "-t", name, *hexes):
+            continue
+        if not _send(name, ["send-keys", "-H", "-t", name, *hexes]):
+            return False
+    return True
+
+
+_RAW_INPUT_CHUNK = 256
+
+
 def send_key_detailed(name: str, *keys: str) -> InjectionResult:
     """`send_key` 的可诊断版：失败时附带安全的原因码与不确定标记。
 
@@ -966,6 +982,17 @@ def _ctl_quote(arg: str) -> str:
                   .replace("$", "\\$").replace("`", "\\`")) + '"'
 
 
+_OCTAL_ESCAPE_RE = re.compile(rb"\\([0-7]{3})")
+
+
+def unescape_control_output(payload: bytes) -> bytes:
+    """Undo control-mode %output escaping: bytes below 0x20 and backslash
+    arrive as three-digit octal; everything else (UTF-8 included) is raw."""
+    if b"\\" not in payload:
+        return payload
+    return _OCTAL_ESCAPE_RE.sub(lambda m: bytes((int(m.group(1), 8),)), payload)
+
+
 # 匹配 %begin/%end/%error 守卫行，提取 (时间戳, 命令号)——tmux(1) 控制模式协议：
 # 每条命令产生一个 %begin ts num [flags] ... %end/%error ts num [flags] 块，
 # 同一块的 begin/end 共享相同的 (ts, num)。只用前两个数字字段做匹配，不管
@@ -992,9 +1019,16 @@ class ControlChannel:
     %begin…%end/%error → 同步命令的响应块（见 request()）。
     """
 
-    def __init__(self, name: str, on_output=None) -> None:
+    def __init__(self, name: str, on_output=None, on_data=None) -> None:
         self.name = name
         self.on_output = on_output
+        # Optional raw-output consumer ``(pane_id, data: bytes, output_seq)`` for clients
+        # that run their own emulator (the Mac terminal stream). Called on the
+        # reader thread in tmux order; must not block.
+        self.on_data = on_data
+        # Count of %output lines read so far. Command responses carry the value
+        # at their %end, so a caller can tell which output preceded a capture.
+        self.output_seq = 0
         self.dead = False
         self.last_error: str | None = None
         self._lock = threading.Lock()
@@ -1057,6 +1091,14 @@ class ControlChannel:
         current_waiter: queue.Queue | None | object = None
         try:
             for raw in self._proc.stdout:
+                if raw.startswith(b"%output "):
+                    # Same handling as before (an async notification, never part
+                    # of a response block), plus the raw bytes for stream readers.
+                    self.output_seq += 1
+                    if self.on_data is not None:
+                        self._deliver_output(raw)
+                    self._notify()
+                    continue
                 line = raw.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
                 if in_block:
                     m = _GUARD_RE.match(line)
@@ -1077,7 +1119,7 @@ class ControlChannel:
                             self._ready.set()
                         elif current_waiter is not None:
                             try:
-                                current_waiter.put_nowait((ok, block_lines))
+                                current_waiter.put_nowait((ok, block_lines, self.output_seq))
                             except queue.Full:
                                 pass  # 调用方已超时放弃，静默丢弃迟到的响应
                         with self._lock:
@@ -1158,9 +1200,22 @@ class ControlChannel:
         for waiter in pending:
             if waiter is not None and waiter is not _STARTUP_WAITER:
                 try:
-                    waiter.put_nowait((False, []))
+                    waiter.put_nowait((False, [], self.output_seq))
                 except queue.Full:
                     pass
+
+    def _deliver_output(self, raw: bytes) -> None:
+        """Decode ``%output %<pane> <data>`` (octal escapes) and hand it on."""
+        parts = raw.rstrip(b"\r\n").split(b" ", 2)
+        if len(parts) < 2:
+            return
+        payload = parts[2] if len(parts) == 3 else b""
+        try:
+            self.on_data(
+                parts[1].decode("ascii", "replace"), unescape_control_output(payload), self.output_seq,
+            )
+        except Exception:
+            pass  # a consumer bug must not kill the reader thread
 
     def _notify(self) -> None:
         if self.on_output is not None:
@@ -1217,9 +1272,24 @@ class ControlChannel:
         真机实测是内嵌面板 CPU 占用的主要来源之一）。命令失败（%error）或
         通道死亡/超时都返回 None，调用方据此回退外部 fork 路径。
         """
+        result = self._request(args, timeout)
+        return result[0] if result is not None else None
+
+    def request_ordered(
+        self, *args: str, timeout: float = _CALL_TIMEOUT,
+    ) -> tuple[list[str], int] | None:
+        """Like ``request`` and also return ``output_seq`` at the response end.
+
+        tmux keeps output notifications and command responses in one ordered
+        stream, so every %output counted at or below the returned value was
+        written before the command ran (and is already in a capture).
+        """
+        return self._request(args, timeout)
+
+    def _request(self, args: tuple[str, ...], timeout: float) -> tuple[list[str], int] | None:
         if self.dead:
             return None
-        waiter: queue.Queue[tuple[bool, list[str]]] = queue.Queue(maxsize=1)
+        waiter: queue.Queue[tuple[bool, list[str], int]] = queue.Queue(maxsize=1)
         try:
             cmd = " ".join(_ctl_quote(a) for a in args)
         except ControlQuoteError:
@@ -1227,13 +1297,13 @@ class ControlChannel:
         if not self._send_command(cmd, waiter):
             return None
         try:
-            ok, lines = waiter.get(timeout=timeout)
+            ok, lines, seq = waiter.get(timeout=timeout)
         except queue.Empty:
             # 控制响应超时后不能继续复用 FIFO：不知道这条响应是迟到还是已经
             # 丢失，继续发请求只会让后续响应整体错位、pending 无界增长。
             self.close()
             return None
-        return lines if ok else None
+        return (lines, seq) if ok else None
 
     def close(self) -> None:
         """幂等关闭控制 client，唤醒请求方并完整回收子进程、管道和 reader。
@@ -1324,7 +1394,7 @@ _channels: dict[str, ControlChannel] = {}
 _channel_lock = threading.Lock()
 
 
-def open_channel(name: str, on_output=None) -> ControlChannel | None:
+def open_channel(name: str, on_output=None, on_data=None) -> ControlChannel | None:
     """聚焦托管会话时打开控制通道；按 tmux 会话名维护通道池，多分屏可同时存活。
 
     同名复用时也要把 on_output 换成最新调用者传入的回调——host_session 会在
@@ -1343,12 +1413,15 @@ def open_channel(name: str, on_output=None) -> ControlChannel | None:
         if ch is None:
             try:
                 _ensure_manual_window_size(name)
-                ch = ControlChannel(name, on_output)
+                ch = ControlChannel(name, on_output, on_data)
                 _channels[name] = ch
             except OSError:
                 return None
-        elif on_output is not None:
-            ch.on_output = on_output
+        else:
+            if on_output is not None:
+                ch.on_output = on_output
+            if on_data is not None:
+                ch.on_data = on_data
         _channel_used[name] = time.monotonic()
         _prune_channels(keep=name)
     # 通道建起来说明会话确实在，登记为存活证据（见 is_alive 的 max_age 说明）。

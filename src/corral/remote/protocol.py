@@ -210,6 +210,9 @@ CAPABILITY_SESSION_RESTART = "session_restart"
 # the host layout store: layout.watch / layout.* below. Phone clients never
 # call these and keep their group-free list payload.
 CAPABILITY_DESKTOP_LAYOUT = "desktop_layout"
+# Desktop clients with their own emulator: raw pane output on ``term:<key>``,
+# sizing through the widest-viewer registry (see remote/terminal_stream.py).
+CAPABILITY_TERMINAL_STREAM = "terminal_stream"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -265,6 +268,12 @@ M_LAYOUT_PIN = "layout.pin"                   # {key}: TUI semantics (group memb
 M_LAYOUT_PIN_GROUP = "layout.pinGroup"        # {group_id}
 M_LAYOUT_COLLAPSE = "layout.collapse"         # {group_id, collapsed}
 
+M_TERMINAL_ATTACH = "terminal.attach"   # {key, cols, rows} → {cols, rows}; snapshot follows as event
+M_TERMINAL_RESIZE = "terminal.resize"   # {key, cols, rows} → {cols, rows}
+M_TERMINAL_RESYNC = "terminal.resync"   # {key}: a fresh snapshot event (after a seq gap)
+M_TERMINAL_INPUT = "terminal.input"     # {key, data: base64}: raw bytes to the pane
+M_TERMINAL_DETACH = "terminal.detach"   # {key}
+
 M_PROJECTS_LIST = "projects.list"
 M_SEARCH = "search"
 # Full-text conversation search (the TUI's Ctrl+F index) for desktop clients:
@@ -279,6 +288,10 @@ CH_LAYOUT = "layout"
 
 def screen_channel(session_key: str) -> str:
     return f"screen:{session_key}"
+
+
+def terminal_channel(session_key: str) -> str:
+    return f"term:{session_key}"
 
 
 def session_channel(session_key: str) -> str:

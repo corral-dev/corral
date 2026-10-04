@@ -60,7 +60,7 @@ Phone-submitted tasks must continue through normal Agent execution; delivery ack
 
 - 开发机跑 `corral remote` 常驻服务；手机只连这台服务，不直接扫各助手历史文件。
 - 中继只做路由与代发推送，**看不到**会话明文；推送正文在手机本地用设备私钥解开。
-- 手机与桌面共享同一个保活窗格时，**手机端禁止发 `screen.resize`**——否则会把电脑正在看的窗口挤窄。服务端即使收到也会以 `usage_error` 拒绝，**不会**改桌面窗口尺寸（不挂真实 resize 实现）。
+- 手机与桌面共享同一个保活窗格时，**手机端禁止发 `screen.resize`**——否则会把电脑正在看的窗口挤窄。服务端即使收到也会以 `usage_error` 拒绝，**不会**改桌面窗口尺寸（不挂真实 resize 实现）。Mac 终端视图不走 `screen.*`：它用下面「桌面终端原始流」的 `terminal.*`，像 TUI 窗口一样按「最宽观看方」参与定尺寸；手机仍永不改尺寸。
 - 远程能力的组件（`cryptography` / `websockets` / `segno`）不进主安装包：首次执行会启动服务或配对的命令时，必须自动、幂等地补齐到 **当前 `corral` 命令实际使用的安装副本**。不得误装到系统 Python 后仍报缺依赖；只有网络或软件源不可用时才报清晰失败原因与可重试提示。只读状态查询不得为检查而改动安装环境。
 
 ## Native agent questions: implemented paths (2026-09-29)
@@ -170,7 +170,8 @@ acceptance do not establish mobile visual acceptance.
 - 会话动作：`session.new` / `session.stop` / `session.delete` / `session.markRead` …
 - 配对与推送：`pair`、`push.register`
 - 桌面客户端（Mac，能力 `desktop_layout`，2026-10-04）：`layout.watch` / `layout.unwatch`（通道 `layout`，快照 `{revision, groups:[{id,name,project,members,focus,collapsed,pinned,pinned_at}], pinned_sessions}`）与 `layout.setGroup` / `layout.removeSession` / `layout.setFocus` / `layout.pin` / `layout.pinGroup` / `layout.collapse`：读写的就是 TUI 的侧栏记忆库（`split_layout.SidebarLayoutDB`），Mac 分屏即 TUI 会话组，TUI 写入经每秒一次的版本号轮询推给 Mac（仅有桌面订阅时运行）。`layout.pin` 用 TUI 语义（组成员钉整组）；手机的 `session.pin` 与列表载荷不变、仍无分组概念。`search.fulltext {q, top}` 复用 TUI Ctrl+F 的对话正文索引，返回命中行与高亮区间（只读，`search` 仍只查标题/路径/最近一句）。
-- Mac 终端视图的实时打字：每个按键都是一次 `input.keys`，或 `submit: false` 的 `input.text`；这两类走独立限流 `TERMINAL_TYPING`（1200 次/分），真正发送消息（`submit: true`）仍走 `INPUT_ACTIONS`（120 次/分）。协商了回执的连接上，每次输入都必须带 `command_id`，否则开发机回 `Missing command_id`。只有 `submit: true` 才广播 `echo` 用户气泡；未提交的终端打字不得出现在聊天与提问列表里。
+- 桌面终端原始流（Mac，能力 `terminal_stream`，2026-10-05；设计见 iOS 仓 `docs/design/MACOS_CLIENT_DESIGN.md` 的 Terminal view rebuild，实现 `remote/terminal_stream.py`）：`terminal.attach {key, cols, rows}` 订阅通道 `term:<key>`（走数据面），事件 `snapshot {seq, cols, rows, data}` / `output {seq, data}` / `ended {seq}`，`data` 为 base64 原始字节，`seq` 每流连续；客户端见缺口调 `terminal.resync` 拿新快照。字节来自开发机进程对该会话的 tmux 控制通道 `%output`（`embed.ControlChannel.on_data`），快照用同一通道的 `request_ordered` 取「状态 + capture-pane + 状态」并以 `output_seq` 为界拼接：界内输出已在快照里、界外才发，**不丢不重**；两次状态之间有新输出就重取。快照含最近 1500 行历史、可见屏、备用屏（`capture-pane -a` 取被保存的主屏）、光标、滚动区与光标键/小键盘/鼠标/光标形状模式；括号粘贴模式 tmux 不暴露，所以 Mac 粘贴仍走 `input.text submit:false`（tmux `paste-buffer -p` 按程序真实模式加括号）。尺寸：`attach`/`terminal.resize` 把该连接登记进 TUI 共用的 `host-viewers.sqlite3`（`viewer_id` 形如 `remote:<设备>:<连接>`，每秒续票），按最宽观看方 `resize-window` 后推新快照；只读设备只看不投票；断线/`terminal.detach` 撤票，最后一个观看方离开时关掉该会话的控制通道。`terminal.input {key, data}` 是原始字节（`send-keys -H`，单次 ≤16KB，限流 `TERMINAL_TYPING`，不走回执）；tmux 已代答程序的终端查询，客户端模拟器自己的应答必须丢弃。
+- 终端打字限流：`terminal.input`、`input.keys` 与 `submit: false` 的 `input.text` 走独立限流 `TERMINAL_TYPING`（1200 次/分），真正发送消息（`submit: true`）仍走 `INPUT_ACTIONS`（120 次/分）。协商了回执的连接上，`input.*` 每次都必须带 `command_id`，否则开发机回 `Missing command_id`。只有 `submit: true` 才广播 `echo` 用户气泡；未提交的终端打字不得出现在聊天与提问列表里。
 
 成功返回形状（手机解码依赖这些字段，缺了会空白或静默失败）：
 

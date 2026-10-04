@@ -1935,6 +1935,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "A split group needs two to four sessions",
         "zh": "分屏组需要两到四个会话",
     },
+    "remote.err.bad_terminal_size": {
+        "en": "Terminal size must be at least one column and one row",
+        "zh": "终端尺寸至少要有一列一行",
+    },
     "remote.err.resize_forbidden": {
         "en": "The phone is not allowed to resize the terminal window",
         "zh": "手机端不允许调整终端窗口大小",
