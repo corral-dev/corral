@@ -53,7 +53,7 @@
 | 标题补全 | cli/src/corral/titles.py · cli/src/corral/titlegen.py |
 | Agent 只读查询 | cli/src/corral/agent_api.py |
 | 手机远程接力（开发机侧） | cli/src/corral/remote/ · cli/docs/REMOTE_KNOWLEDGE_BASE.md（文首「开源中继硬规则」：公开默认关中继、无维护者域名） · cli/src/corral/bootstrap.py · cli/tests/test_remote_service.py |
-| 手机客户端 | ios/ · ios/AGENTS.md · ios/Corral/Design/ · ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md（局域网优先；自建中继才换网；禁止内置共享中继） |
+| Apple 客户端（iPhone + 原生 Mac） | ios/ · ios/AGENTS.md · ios/Shared/（两端共享代码）· ios/CorralMac/ · ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md · ios/docs/design/MACOS_CLIENT_DESIGN.md（局域网优先；自建中继才换网；禁止内置共享中继） |
 | 零知识中继与 APNs | relay/ · relay/docs/PROTOCOL_V2.md · 开源自建见 relay/README；个人多租户公网运维只在私有 agentsync（禁止写入公开门面当默认） |
 | Windows / WSL 兼容（已裁定不做） | cli/docs/design/WINDOWS_COMPATIBILITY_DESIGN.md |
 | 开源发布与一键安装 | cli/install.sh · cli/.github/workflows/ · cli/scripts/publish-release.sh |
