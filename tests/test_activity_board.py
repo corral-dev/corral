@@ -55,8 +55,49 @@ class ResolveActiveMarkerTests(unittest.TestCase):
             "waiting",
         )
 
+    def test_interruption_blocks_recent_fallback_but_allows_resumption(self) -> None:
+        from sesskit.titles import STATUS_ABORTED
+
+        now = time.time()
+        session = {
+            "status_tag": STATUS_ABORTED, "keepalive_name": "retained",
+            "live": True, "mtime": now, "attention_kind": "none",
+        }
+        self.assertIsNone(resolve_active_marker(session, now=now))
+        for kind in ("working", "waiting", "unread"):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    resolve_active_marker(session, attention_kind=kind, now=now), kind
+                )
+
+    def test_normal_completion_keeps_existing_recent_policy(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        now = time.time()
+        self.assertEqual(resolve_active_marker({
+            "status_tag": STATUS_DONE, "keepalive_name": "retained",
+            "mtime": now, "attention_kind": "none",
+        }, now=now), "recent")
+
 
 class CollectCandidatesTests(unittest.TestCase):
+    def test_interrupted_host_is_not_a_recent_board_candidate(self) -> None:
+        from sesskit.titles import STATUS_ABORTED
+
+        now = time.time()
+
+        class _Store:
+            def all_sessions(self):
+                return [{
+                    "source": "claude", "id": "limited", "keepalive_name": "k1",
+                    "status_tag": STATUS_ABORTED, "mtime": now, "live": True,
+                }]
+
+            def attention_for(self, key):
+                return AttentionState(kind="none")
+
+        self.assertEqual(collect_candidates(_Store(), now=now), [])
+
     def test_only_hosted_waiting_working_unread(self) -> None:
         class _Store:
             def all_sessions(self):

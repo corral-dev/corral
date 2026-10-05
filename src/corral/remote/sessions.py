@@ -603,12 +603,35 @@ class SessionHub:
         A ``recent`` mark expires with time alone, without any history change,
         so the list push cannot rely on ``store.refresh()`` reporting a change.
         """
+        sessions = self.store.all_sessions()
         current = {
             session_key(session): resolve_active_marker(session) or ""
-            for session in self.store.all_sessions()
+            for session in sessions
+        }
+        changed_keys = {
+            key for key, marker in current.items()
+            if self._last_markers.get(key) != marker
         }
         changed = current != self._last_markers
         self._last_markers = current
+        # Details can unsubscribe from the list. Their footer also follows the
+        # marker, including recent expiry and interruption with unchanged live/attention.
+        with self._lock:
+            watches = [watch for watch in self._conversations.values() if watch.watchers > 0]
+        if changed_keys and watches:
+            layout = self._layout()
+            for session in sessions:
+                key = session_key(session)
+                if key not in changed_keys:
+                    continue
+                summary = self.session_payload(session, layout)
+                for watch in watches:
+                    if watch.key != key and watch.canonical_key != key:
+                        continue
+                    self._on_event(f"session:{watch.key}", {
+                        "version": 1, "kind": "metadata", "session": watch.key,
+                        "summary": summary,
+                    })
         return changed
 
     def _reclaim_inactive_hosts(self) -> None:

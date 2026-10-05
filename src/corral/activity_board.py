@@ -17,6 +17,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+from sesskit.titles import STATUS_ABORTED
+
 from corral.attention import AttentionKind, AttentionState
 from corral.display import JUST_NOW_SECONDS
 from corral.split_layout import MAX_PANES
@@ -91,6 +93,10 @@ def resolve_active_marker(
     kind = str(attention_kind or "none")
     if kind in BOARD_KINDS:
         return kind  # type: ignore[return-value]
+    # A retained process or metadata write cannot restart an interrupted turn.
+    # Fresh working/waiting evidence above still wins when the agent resumes.
+    if session is not None and session.get("status_tag") == STATUS_ABORTED:
+        return None
     if not hosted:
         return None
     if now is None:
@@ -135,6 +141,7 @@ def collect_candidates(store, now: float | None = None) -> list[BoardCandidate]:
         state: AttentionState = store.attention_for(key)
         mtime = float(session.get("mtime") or 0.0)
         marker = resolve_active_marker(
+            session,
             attention_kind=state.kind,
             hosted=True,
             mtime=mtime,

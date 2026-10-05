@@ -133,6 +133,57 @@ class SessionHubPayloadTests(unittest.TestCase):
         session["mtime"] = _time.time() - 3600
         self.assertTrue(self.hub._detect_marker_changes())
 
+    def test_open_detail_receives_marker_without_list_subscription(self) -> None:
+        import time as _time
+
+        from sesskit.titles import STATUS_ABORTED
+
+        events = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        session = _session(sid="quota", attention="none", mtime=_time.time())
+        session.update(live=True, keepalive_name="pane-quota")
+        self.hub.store.sessions = {"claude": [session]}
+        # Canonical key differs after a provisional session is retired.
+        watch = remote_sessions._ConversationWatch("claude:placeholder", mock.Mock())
+        watch.canonical_key = "claude:quota"
+        watch.watchers = 1
+        self.hub._conversations[watch.key] = watch
+        self.assertEqual(self.hub._sessions_watchers, 0)
+        self.hub._detect_marker_changes()
+        self.assertEqual(events[-1][1]["summary"]["marker"], "recent")
+        events.clear()
+        session["status_tag"] = STATUS_ABORTED
+        self.assertTrue(self.hub._detect_marker_changes())
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "session:claude:placeholder")
+        self.assertEqual(events[0][1]["kind"], "metadata")
+        self.assertEqual(events[0][1]["summary"]["marker"], "")
+        self.assertEqual(events[0][1]["summary"]["attention"], "none")
+        self.assertTrue(events[0][1]["summary"]["live"])
+        events.clear()
+        self.assertFalse(self.hub._detect_marker_changes())
+        self.assertEqual(events, [])
+        session["attention_kind"] = "working"
+        self.hub._detect_marker_changes()
+        self.assertEqual(events[-1][1]["summary"]["marker"], "working")
+
+    def test_recent_expiry_updates_open_detail_metadata(self) -> None:
+        import time as _time
+
+        events = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        session = _session(sid="recent", mtime=_time.time())
+        session["keepalive_name"] = "pane-recent"
+        self.hub.store.sessions = {"claude": [session]}
+        watch = remote_sessions._ConversationWatch("claude:recent", mock.Mock())
+        watch.watchers = 1
+        self.hub._conversations[watch.key] = watch
+        self.hub._detect_marker_changes()
+        events.clear()
+        session["mtime"] = _time.time() - 3600
+        self.hub._detect_marker_changes()
+        self.assertEqual(events[-1][1]["summary"]["marker"], "")
+
     def test_unchanged_capture_skips_screen_parsing_and_encoding(self) -> None:
         session = _session(sid="live")
         session["keepalive_name"] = "pane-live"

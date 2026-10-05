@@ -45,6 +45,8 @@ corral 的价值是让用户从一个终端界面中继续或接力不同 Coding
 
 终端界面默认英文，中文系统语言自动切换中文；`CORRAL_LANG` 可覆盖语言选择。机器可读的 `corral list` 等接口不进入本域翻译体系，不能因改界面文案而改变其英文数据契约。
 
+Interrupted-turn exception (2026-10-05): the shared marker resolver must suppress the recent green fallback after native history reports an aborted turn, even if the hosted process remains alive or metadata refreshes its mtime. Explicit working/waiting evidence from a resumed turn still wins, and unread results remain red. The activity board must pass the full session into the resolver so its membership agrees with sidebar and remote markers. See [remote marker contract](REMOTE_KNOWLEDGE_BASE.md#message-images-and-provisional-working-2026-10-01).
+
 ## §1.5 架构概览
 
 ```mermaid
