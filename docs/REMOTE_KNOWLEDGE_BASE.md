@@ -34,6 +34,7 @@ Phone-submitted tasks must continue through normal Agent execution; delivery ack
 3. **禁止**把「维护者自己在用的多租户服务」当成开源用户的默认依赖——多租户账号登录（`corral login`）只服务**你自己部署的多租户中继**；单租户自建不需要 login。
 4. 维护者本机已写入 `remote.json` 的中继地址可以继续用；那是**本机状态**，不是开源默认。新装 / 空状态：`relay_enabled=false`、`relay_url=""`，只开局域网。
 5. 代码里若需识别「某个 URL 要走多租户 GitHub 登录」，只允许读环境变量允许名单（如 `CORRAL_PUBLIC_RELAY_URLS`），**默认名单为空**——不要把私人域名写死进仓库。
+6. **Official paid builds (owner decision 2026-10-05; narrows rules 1 and 3 for these builds only).** The official App Store builds may offer an opt-in, maintainer-operated hosted relay as part of the paid subscription. Its endpoint and credentials reach the client and host through the paid account (private build configuration or server-provided after purchase), never through public source, README, install instructions, examples or built-in constants; rules 2 and 5 still apply. Open-source and self-built clients, the free tier and new CLI installs keep rules 1–4 unchanged: LAN only unless the user configures their own relay.
 
 ## 产品边界
 
