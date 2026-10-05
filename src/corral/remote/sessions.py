@@ -609,13 +609,15 @@ class SessionHub:
             if full:
                 if watcher is not None:
                     watcher.clear()
+                # Stamp before scanning: a publish that lands during this (multi-
+                # second) refresh must still trigger the next arrival-follow scan.
+                index_stamp = _scan_index_stamp()
                 try:
                     changed = self.store.refresh()
                 except Exception:
                     # History scan failures must not block state or title propagation.
                     pass
                 last_scan = time.monotonic()
-                index_stamp = _scan_index_stamp()
                 self._reclaim_inactive_hosts()
                 title_keys.update(self.store.poll_title_updates())
                 last_title_poll = time.monotonic()

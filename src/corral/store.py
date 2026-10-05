@@ -34,6 +34,9 @@ _TITLE_STALE_SPAWN_SECONDS = 30.0
 _FILE_STAT_RUNTIMES = frozenset({"claude", "codex", "pi"})
 # Upper bound on sessions one state probe touches; live hosted panes dominate.
 _STATE_PROBE_MAX_SESSIONS = 160
+# A history written this recently may belong to a session whose pid the
+# (possibly stale) scan has not resolved yet; growth after the scan means live.
+_LIVE_FROM_WRITE_SECONDS = 30.0
 
 
 def _is_state_hot(session: dict) -> bool:
@@ -55,18 +58,26 @@ def _pid_alive(pid: object) -> bool:
     return True
 
 
+def _recently_written(session: dict, now: float) -> bool:
+    stamp = float(session.get("file_mtime") or session.get("mtime") or 0.0)
+    return now - stamp < _LIVE_FROM_WRITE_SECONDS
+
+
 def _freshen_from_disk(sessions: list[dict]) -> bool:
     """Correct scan facts that may be stale against first-hand probes.
 
     Scans can come from the shared index, whose worker backs off to a minute
-    under churn and memory pressure. For hot sessions, re-stat per-session
-    history files (so attention evidence re-reads a grown tail) and drop
-    ``live`` when the recorded pid has exited. Only moves facts forward;
-    returns True when anything changed.
+    under churn and memory pressure. For hot or recently written sessions,
+    re-stat per-session history files (so attention evidence re-reads a grown
+    tail) and drop ``live`` when the recorded pid has exited. A history that
+    keeps growing after a not-live verdict proves a writer is alive: a brand
+    new session is parsed before its pid is known, and a stale not-live flag
+    would make attention force it idle. Returns True when anything changed.
     """
     changed = False
+    now = time.time()
     for session in sessions:
-        if not _is_state_hot(session):
+        if not (_is_state_hot(session) or _recently_written(session, now)):
             continue
         if session.get("source") in _FILE_STAT_RUNTIMES and not session.get("provisional"):
             path = str(session.get("path") or "")
@@ -82,6 +93,9 @@ def _freshen_from_disk(sessions: list[dict]) -> bool:
                         session["size_kb"] = round(info.st_size / 1024, 1)
                         session["file_mtime"] = info.st_mtime
                         changed = True
+                        if not session.get("live") and now - info.st_mtime < _LIVE_FROM_WRITE_SECONDS:
+                            session["live"] = True
+                            session["pid"] = None
         pid = session.get("pid")
         if session.get("live") and pid and not _pid_alive(pid):
             session["live"] = False
@@ -541,11 +555,12 @@ class SessionStore:
         with self.lock:
             if not self.loaded:
                 return False
+            now = time.time()
             hot = [
                 session
                 for bucket in self.sessions.values()
                 for session in bucket
-                if _is_state_hot(session)
+                if _is_state_hot(session) or _recently_written(session, now)
             ][:_STATE_PROBE_MAX_SESSIONS]
             before = self._state_signature()
         _freshen_from_disk(hot)

@@ -101,6 +101,25 @@ class FreshenFromDiskTests(unittest.TestCase):
             self.assertEqual(session["mtime"], stale_mtime)
             self.assertFalse(store_module._freshen_from_disk([session]))
 
+    def test_growth_after_a_not_live_scan_marks_a_new_session_live(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "new.jsonl"
+            path.write_text("x" * 10, encoding="utf-8")
+            created = path.stat().st_mtime
+            # Parsed at creation, before its pid was resolvable.
+            session = {"source": "claude", "id": "n", "path": str(path), "live": False,
+                       "pid": None, "size_bytes": 10, "file_mtime": created, "mtime": created}
+            self.assertFalse(store_module._freshen_from_disk([session]))
+            path.write_text("x" * 80, encoding="utf-8")
+            self.assertTrue(store_module._freshen_from_disk([session]))
+            self.assertTrue(session["live"])
+            # An old ended session that merely differs in size stays ended.
+            old = {"source": "claude", "id": "o", "path": str(path), "live": False,
+                   "size_bytes": 1, "file_mtime": created - 3600, "mtime": created - 3600}
+            os.utime(path, (created - 3600, created - 3600))
+            store_module._freshen_from_disk([old])
+            self.assertFalse(old["live"])
+
     def test_cold_sessions_and_shared_databases_are_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "opencode.db"
