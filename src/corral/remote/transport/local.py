@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 
 from corral import observe
 from corral.remote import protocol, ratelimit
@@ -73,8 +74,11 @@ class LocalServer:
                 await self._server.wait_closed()
 
     async def _handle(self, socket_conn) -> None:
-        if not ratelimit.CHANNEL_OPENS.allow_request("local"):
-            observe.event("remote_local_rate_limited")
+        peer = ""
+        with contextlib.suppress(Exception):
+            peer = str(socket_conn.remote_address[0])
+        if not _is_loopback(peer) and not ratelimit.LOCAL_CHANNEL_OPENS.allow_request(peer or "unknown"):
+            observe.event("remote_local_rate_limited", address=peer)
             with contextlib.suppress(Exception):
                 await socket_conn.close()
             return
@@ -139,6 +143,13 @@ class LocalServer:
             channel.close()
             async with self._channels_lock:
                 self._channels = max(0, self._channels - 1)
+
+
+def _is_loopback(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
 
 
 async def _close_ws(socket_conn, closed: asyncio.Event) -> None:

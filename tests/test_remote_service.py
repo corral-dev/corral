@@ -747,6 +747,46 @@ class RemoteServiceTests(unittest.TestCase):
         listing = self._call(new, protocol.M_SESSIONS_LIST)
         self.assertTrue(listing["ok"])
 
+    def _instance(self, instance_id: str, public_key: str = "aa" * 32) -> Connection:
+        connection = Connection(public_key, self.sent.append)
+        connection.instance_id = instance_id
+        self.service.attach(connection)
+        return connection
+
+    def test_two_app_instances_of_one_device_coexist(self):
+        """Installed Mac app + Debug build share a key; they must not evict each other."""
+        installed = self._instance("installed")
+        debug = self._instance("debug")
+        # Each reconnecting again (as the old ping-pong did) still leaves both online.
+        installed_again = self._instance("installed")
+        debug_again = self._instance("debug")
+        self.assertTrue(installed.closed)
+        self.assertTrue(debug.closed)
+        self.assertFalse(installed_again.closed)
+        self.assertFalse(debug_again.closed)
+        self.assertEqual(
+            {c for c in self.service._connections}, {installed_again, debug_again}
+        )
+
+    def test_reconnect_of_same_instance_supersedes_its_stale_socket(self):
+        stale = self._instance("phone")
+        fresh = self._instance("phone")
+        self.assertTrue(stale.closed)
+        self.assertIn(fresh, self.service._connections)
+
+    def test_legacy_client_without_instance_keeps_one_plane_per_key(self):
+        legacy = self._connect()
+        modern = self._instance("mac")
+        self.assertTrue(legacy.closed, "an id-less predecessor is still replaced")
+        legacy_again = self._connect()
+        self.assertTrue(modern.closed, "an id-less newcomer still replaces everything")
+        self.assertEqual(self.service._connections, {legacy_again})
+
+    def test_per_device_control_planes_are_capped_oldest_first(self):
+        planes = [self._instance(f"i{index}") for index in range(5)]
+        self.assertTrue(planes[0].closed)
+        self.assertEqual(self.service._connections, set(planes[1:]))
+
     def test_other_devices_are_not_touched_when_one_reconnects(self):
         first = self._connect("aa" * 32)
         second = self._connect("bb" * 32)

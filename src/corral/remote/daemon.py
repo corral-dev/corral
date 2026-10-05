@@ -59,9 +59,10 @@ class RemoteDaemon:
         remote_config.write_pid()
         observe.event("remote_started", host=self.state.host_name)
 
-        # 首轮扫描是纯磁盘活儿，别把事件循环堵在这儿——中继连接可以并行建起来。
-        await asyncio.to_thread(self.hub.start)
-
+        # The first scan can take tens of seconds on a loaded machine. Open the
+        # LAN listener and the relay first so clients connect at once; requests
+        # that need session data wait for the scan (`SessionHub.wait_ready`).
+        self.hub.mark_starting()
         tasks = []
         if self.relay is not None:
             tasks.append(asyncio.create_task(self.relay.run(stop)))
@@ -73,6 +74,7 @@ class RemoteDaemon:
             tasks.append(asyncio.create_task(asyncio.to_thread(self.mdns.start)))
         if not tasks:
             raise RuntimeError(t("remote.err.no_entry"))
+        await asyncio.to_thread(self.hub.start)
         tasks.append(asyncio.create_task(self._reconcile_loop(stop)))
         try:
             await stop.wait()

@@ -1883,6 +1883,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Unsupported action: {method}",
         "zh": "不支持的操作：{method}",
     },
+    "remote.err.host_starting": {
+        "en": "The development machine is still starting up. Please try again in a moment",
+        "zh": "开发机还在启动，请稍后再试",
+    },
     "remote.err.internal": {
         "en": "Something went wrong on the development machine. Please try again later",
         "zh": "开发机上出了点问题，请稍后再试",

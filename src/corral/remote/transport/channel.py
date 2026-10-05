@@ -33,6 +33,18 @@ _DEFAULT_QUEUE_SIZE = 256
 UNCONFIRMED_TTL = 20.0
 
 
+_MAX_INSTANCE_ID_LEN = 64
+
+
+def _client_instance(message: dict) -> str:
+    """Per-process client instance id carried on every request (`ci`)."""
+    value = message.get("ci")
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if 0 < len(value) <= _MAX_INSTANCE_ID_LEN else ""
+
+
 class HostChannel:
     """一条设备通道。``writer`` 收 (帧类型, 载荷) 并负责实际发送，必须线程安全。
 
@@ -202,6 +214,7 @@ class HostChannel:
             self._send_message,
             address=self._address,
         )
+        connection.instance_id = _client_instance(message)
         connection.close_hook = self.close
         self._owns_logical_connection = True
         self._connection = connection
@@ -218,7 +231,11 @@ class HostChannel:
                 compress=self._connection is not None and self._connection.compression_enabled,
             )
             frame = self._secure.encrypt(payload)
-        self._writer(protocol.FRAME_DATA, frame)
+            # The counter was assigned just now, so the hand-off must stay inside
+            # the lock: a reply and a pushed event racing on two threads would
+            # otherwise reach the socket in the wrong order and the client drops
+            # the channel (`加密帧顺序异常`). Writers only schedule, never block.
+            self._writer(protocol.FRAME_DATA, frame)
 
     def close(self) -> None:
         if self._closed:

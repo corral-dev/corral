@@ -64,6 +64,8 @@ class RelayClient:
         self.state = state
         self.static_private = static_private
         self._channels: dict[bytes, HostChannel] = {}
+        # Socket each channel's encrypted frames are pinned to (see `_write`).
+        self._lanes: dict[bytes, object] = {}
         self._socket = None
         self._bulk_socket = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -332,7 +334,7 @@ class RelayClient:
         if len(self._channels) >= _MAX_CHANNELS:
             observe.event("remote_channel_limit", count=len(self._channels))
             return None
-        if not ratelimit.CHANNEL_OPENS.allow_request(self.state.host_id or "host"):
+        if not ratelimit.RELAY_CHANNEL_OPENS.allow_request(self.state.host_id or "host"):
             observe.event("remote_channel_rate_limited")
             return None
         channel = HostChannel(
@@ -366,10 +368,12 @@ class RelayClient:
     def _release_channel(self, channel_id: bytes) -> None:
         """Forget the channel and ask the relay to detach that device socket."""
         self._channels.pop(channel_id, None)
+        self._lanes.pop(channel_id, None)
         self._write(protocol.FRAME_DEVICE_CLOSE, channel_id, b"")
 
     def _close_channel(self, channel_id: bytes) -> None:
         channel = self._channels.pop(channel_id, None)
+        self._lanes.pop(channel_id, None)
         if channel is not None:
             channel.close()
 
@@ -377,6 +381,7 @@ class RelayClient:
         for channel in list(self._channels.values()):
             channel.close()
         self._channels.clear()
+        self._lanes.clear()
 
     def _write(self, frame_type: int, channel_id: bytes, payload: bytes) -> None:
         """由通道工作线程调用，必须把发送动作转投回事件循环。"""
@@ -390,6 +395,18 @@ class RelayClient:
             socket = self._socket
         if socket is None:
             return
+        if frame_type == protocol.FRAME_DATA and channel is not None:
+            # Encrypted frames carry a strict counter, and the relay only keeps
+            # order within one lane. Pin the channel to the lane of its first
+            # frame; if that lane is gone, close the channel so the client
+            # rebinds cleanly instead of receiving frames out of order.
+            pinned = self._lanes.setdefault(channel_id, socket)
+            if pinned is not socket:
+                if pinned is not self._socket and pinned is not self._bulk_socket:
+                    observe.event("remote_channel_lane_lost")
+                    loop.call_soon_threadsafe(self._close_channel, channel_id)
+                    return
+                socket = pinned
         frame = protocol.encode_frame(frame_type, channel_id, payload)
         asyncio.run_coroutine_threadsafe(_safe_send(socket, frame), loop)
 

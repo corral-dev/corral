@@ -171,6 +171,105 @@ class CodexAttentionSignalTests(unittest.TestCase):
             self.assertEqual(completed.phase, "idle")
             self.assertIsNotNone(completed.activity_token)
 
+    def test_async_question_survives_receipt_and_continued_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            entries = [{"type": "response_item", "payload": {
+                "type": "function_call", "name": "request_user_input_async", "call_id": "q1",
+                "arguments": json.dumps({"questions": [{"title": "Choose scope?", "options": ["A", "B"]}]}),
+            }}]
+            _write_jsonl(path, entries)
+            waiting = inspect_session(_session("codex", path))
+            self.assertEqual(waiting.phase, "waiting")
+            for payload in (
+                {"type": "function_call_output", "call_id": "q1", "output": '{"accepted":true}'},
+                {"type": "message", "role": "assistant", "channel": "commentary"},
+                {"type": "function_call", "name": "exec_command", "call_id": "other"},
+                {"type": "function_call_output", "call_id": "other", "output": "done"},
+                {"type": "message", "role": "assistant", "channel": "final"},
+            ):
+                entries.append({"type": "response_item", "payload": payload})
+                _write_jsonl(path, entries)
+                current = inspect_session(_session("codex", path))
+                self.assertEqual(current.phase, "waiting")
+                self.assertEqual(current.question_token, waiting.question_token)
+            self.assertEqual(inspect_session(_session("codex", path, live=False)).phase, "idle")
+            for ending in ("task_complete", "turn_aborted", "error", "user_message", "task_started"):
+                with self.subTest(ending=ending):
+                    _write_jsonl(path, entries + [{"type": "event_msg", "payload": {
+                        "type": ending, "message": "Continue", "turn_id": "t1",
+                    }}])
+                    self.assertNotEqual(inspect_session(_session("codex", path)).phase, "waiting")
+
+    def test_async_native_item_only_and_partial_matching_replies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            entries = [{"type": "event_msg", "payload": {
+                "type": "item_completed", "item": {
+                    "type": "AgentMessage", "id": "q1", "delivery": "async", "phase": "final_answer",
+                    "questions": [{"title": "First?"}, {"title": "Second?"}],
+                },
+            }}]
+            _write_jsonl(path, entries)
+            self.assertEqual(inspect_session(_session("codex", path)).phase, "waiting")
+            for call_id, index, expected in (("unknown", 0, "waiting"), ("q1", 0, "waiting"), ("q1", 1, "idle")):
+                reply = [{"questionItemId": json.dumps(["request_user_input_async", call_id, index]),
+                          "question": "Question?", "answer": "A"}]
+                entries.append({"type": "event_msg", "payload": {
+                    "type": "user_message",
+                    "message": "<send_user_message_question_reply>" + json.dumps(reply)
+                               + "</send_user_message_question_reply>",
+                }})
+                _write_jsonl(path, entries)
+                self.assertEqual(inspect_session(_session("codex", path)).phase, expected)
+
+    def test_async_question_outlives_large_tool_tail_and_incremental_appends(self) -> None:
+        from corral.attention_signals import _CODEX_ATTENTION_READERS
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            entries = [
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}},
+                {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                    "type": "AgentMessage", "id": "q1", "delivery": "async", "questions": [{"title": "Scope?"}],
+                }}},
+            ]
+            _write_jsonl(path, entries)
+            original = inspect_session(_session("codex", path))
+            with path.open("a") as file:
+                for index in range(900):
+                    file.write(json.dumps({"type": "response_item", "payload": {
+                        "type": "function_call_output", "call_id": f"tool-{index}", "output": "x" * 1000,
+                    }}) + "\n")
+            self.assertEqual(inspect_session(_session("codex", path)).question_token, original.question_token)
+            _CODEX_ATTENTION_READERS.pop(str(path), None)
+            cold = inspect_session(_session("codex", path))
+            self.assertEqual(cold.phase, "waiting")
+            self.assertEqual(cold.question_token, original.question_token)
+            # A reader must not consume or lose an unfinished append.
+            end = json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t1"}})
+            with path.open("a") as file:
+                file.write(end[:20])
+            self.assertEqual(inspect_session(_session("codex", path)).phase, "waiting")
+            with path.open("a") as file:
+                file.write(end[20:] + "\n")
+            self.assertEqual(inspect_session(_session("codex", path)).phase, "idle")
+            # Rewritten/truncated files invalidate retained request identities.
+            _write_jsonl(path, [{"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t2"}}])
+            self.assertEqual(inspect_session(_session("codex", path)).phase, "working")
+
+    def test_async_failed_tool_is_not_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            entries = [{"type": "response_item", "payload": {
+                "type": "function_call", "name": "request_user_input_async", "call_id": "q1",
+                "arguments": '{"questions":[{"title":"Scope?"}]}',
+            }}, {"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": "q1", "output": "unsupported call",
+            }}]
+            _write_jsonl(path, entries)
+            self.assertEqual(inspect_session(_session("codex", path)).phase, "working")
+
     def test_non_live_task_started_is_idle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "codex.jsonl"

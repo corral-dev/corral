@@ -48,5 +48,12 @@ INPUT_ACTIONS = SlidingWindowLimiter(allow=120, window=60.0)
 # than a chat send. Submitted messages stay on INPUT_ACTIONS.
 TERMINAL_TYPING = SlidingWindowLimiter(allow=1200, window=60.0)
 SESSION_CREATE = SlidingWindowLimiter(allow=20, window=60.0)
-CHANNEL_OPENS = SlidingWindowLimiter(allow=16, window=60.0)
+# Channel opens. One reconnect race opens a socket per local hint for both the
+# control and data planes, so a single global bucket of 16/min was exhausted by
+# one reconnect storm and then refused the recovery itself. LAN opens are
+# counted per peer address (loopback is never limited); relay opens cannot be
+# told apart by address, so that bucket is per host and roomier. Unknown
+# devices are still rejected at the handshake and pairing has its own limits.
+LOCAL_CHANNEL_OPENS = SlidingWindowLimiter(allow=60, window=60.0)
+RELAY_CHANNEL_OPENS = SlidingWindowLimiter(allow=120, window=60.0)
 PUSH_REGISTER = SlidingWindowLimiter(allow=10, window=60.0)

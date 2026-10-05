@@ -156,11 +156,55 @@ class Connection:
         self.close_hook = None  # 可选：() -> None，用于踢掉控制面底层传输
         self.data_close_hook = None  # 可选：() -> None，只关数据面
         self.data_channel = None  # 数据面 HostChannel 身份，供拆绑时对号入座
+        # Per-process client instance (`ci` on every request). Empty for legacy clients.
+        self.instance_id = ""
+        self.attached_at = 0.0
 
     def emit(self, message: dict, *, data: bool = False) -> None:
         """按平面发一帧。数据面未附着或 ``data=False`` 时走控制面。"""
         writer = self.data_send if data and self.data_send is not None else self.send
         writer(message)
+
+
+# A request that needs session data while the host's first scan is still
+# loading waits this long (client RPC timeout is 20 s), then gets a retryable
+# `unavailable` instead of a half-loaded store.
+_HUB_READY_WAIT = 15.0
+
+# Concurrent control planes one device key may hold (several app instances on
+# one machine, e.g. the installed Mac app plus a Debug build).
+_MAX_CONTROL_PLANES_PER_DEVICE = 4
+
+
+def _superseded_by(connection: Connection, existing) -> list[Connection]:
+    """Older control planes the new one replaces.
+
+    A reconnect from the same client instance (path change, socket the client
+    already abandoned) replaces its predecessor; keeping it would leave the
+    device counted online and burn a channel slot. Different instances of the
+    same device key coexist, so two app copies never evict each other in a
+    loop. Clients without an instance id keep the legacy one-per-key rule.
+    """
+    same_key = [
+        other
+        for other in existing
+        if other is not connection and other.device_public_key == connection.device_public_key
+    ]
+    superseded = [
+        other
+        for other in same_key
+        if not connection.instance_id
+        or not other.instance_id
+        or other.instance_id == connection.instance_id
+    ]
+    survivors = sorted(
+        (other for other in same_key if other not in superseded),
+        key=lambda other: other.attached_at,
+    )
+    overflow = len(survivors) + 1 - _MAX_CONTROL_PLANES_PER_DEVICE
+    if overflow > 0:
+        superseded.extend(survivors[:overflow])
+    return superseded
 
 
 class RemoteService:
@@ -326,16 +370,9 @@ class RemoteService:
             connection.access = device.access
             remote_config.touch_device(self.state, connection.device_public_key)
             self._sync_state_mtime()
+        connection.attached_at = time.monotonic()
         with self._lock:
-            # One device key owns one control plane. An older confirmed control
-            # connection from the same key is a stale socket the phone already
-            # abandoned (reconnect / path change); keeping it would leave the
-            # device counted online forever and burn a channel slot.
-            superseded = [
-                other
-                for other in self._connections
-                if other is not connection and other.device_public_key == connection.device_public_key
-            ]
+            superseded = _superseded_by(connection, self._connections)
             self._connections.add(connection)
         for old in superseded:
             observe.event(
@@ -600,6 +637,9 @@ class RemoteService:
             return self._hello(connection, params)
         if not connection.paired:
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
+        wait_ready = getattr(self.hub, "wait_ready", None)
+        if wait_ready is not None and not wait_ready(_HUB_READY_WAIT):
+            raise ActionError(protocol.E_UNAVAILABLE, t("remote.err.host_starting"))
         if connection.access == "readonly" and method not in _READONLY_METHODS:
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
         if method in _CONFIRM_METHODS and not bool(params.get("confirm")):

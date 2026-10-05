@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
+from collections import OrderedDict
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
@@ -19,7 +21,13 @@ from corral.attention import AttentionEvidence
 
 _JSONL_TAIL_BYTES = 512 * 1024
 _JSONL_TAIL_ENTRIES = 768
+# A single image tool result (screenshots) can exceed the tail window and evict every
+# lifecycle record; read further back until enough complete records are in view.
+_JSONL_TAIL_MIN_ENTRIES = 32
+_JSONL_TAIL_MAX_BYTES = 8 * 1024 * 1024
 _DB_TAIL_ROWS = 192
+_CODEX_ATTENTION_READERS: OrderedDict[str, dict] = OrderedDict()
+_CODEX_ATTENTION_LOCK = threading.RLock()
 _QUESTION_TOOLS = frozenset({"AskUserQuestion", "request_user_input", "question", "AskQuestion"})
 
 
@@ -111,18 +119,24 @@ def _finalize_history_phase(phase: str, live: bool) -> str:
 
 
 def _read_jsonl_tail(path: str) -> list[dict]:
-    try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as file:
-            offset = max(0, size - _JSONL_TAIL_BYTES)
-            file.seek(offset)
-            data = file.read().decode("utf-8", errors="replace")
-    except OSError:
-        return []
+    window = _JSONL_TAIL_BYTES
+    while True:
+        try:
+            size = os.path.getsize(path)
+            with open(path, "rb") as file:
+                offset = max(0, size - window)
+                file.seek(offset)
+                data = file.read().decode("utf-8", errors="replace")
+        except OSError:
+            return []
 
-    lines = data.splitlines()
-    if offset and lines:
-        lines = lines[1:]
+        lines = data.splitlines()
+        if offset and lines:
+            lines = lines[1:]
+        if offset == 0 or len(lines) >= _JSONL_TAIL_MIN_ENTRIES or window >= _JSONL_TAIL_MAX_BYTES:
+            break
+        window = min(window * 4, _JSONL_TAIL_MAX_BYTES)
+
     entries: list[dict] = []
     for line in lines[-_JSONL_TAIL_ENTRIES:]:
         try:
@@ -193,7 +207,9 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
             has_agent_output = False
             for part in _content_parts(entry):
                 part_type = part.get("type")
-                if part_type == "text":
+                # Text, reasoning and tool calls are all execution; long tool-only rounds
+                # write no text for minutes.
+                if part_type in {"text", "thinking", "redacted_thinking", "tool_use"}:
                     has_agent_output = True
                 if part_type == "tool_use" and part.get("name") == "AskUserQuestion":
                     call_id = str(part.get("id") or "")
@@ -233,17 +249,191 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
 
 
+def _settle_codex_async_user_text(text: str, pending: dict[str, set[int]]) -> None:
+    """Use the conversation parser's native reply contract for matching answers."""
+    if not pending or not text.strip():
+        return
+    # Lazy import: ordinary attention scans do not load the remote transcript stack.
+    from corral.remote.richmsg import (
+        _NATIVE_REPLY_RE,
+        _native_identity_parts,
+        _native_reply_items,
+    )
+
+    def settle(match: Any) -> str:
+        items = _native_reply_items(match.group(1))
+        if items is None:
+            return match.group(0)
+        for item in items:
+            identity = _native_identity_parts(item["questionItemId"])
+            if identity is None:
+                continue
+            call_id, index = identity
+            if call_id in pending:
+                pending[call_id].discard(index)
+                if not pending[call_id]:
+                    pending.pop(call_id)
+        return ""
+
+    # Ordinary steering clears the native panel; a reply envelope only answers
+    # its own questions, preserving siblings and other requests.
+    if _NATIVE_REPLY_RE.sub(settle, text).strip():
+        pending.clear()
+
+
+def _compact_codex_attention_entry(entry: dict) -> dict | None:
+    """Keep lifecycle/question evidence, never large command output or reasoning."""
+    payload = entry.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("type")
+    if kind == "item_completed":
+        item = payload.get("item")
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "AgentMessage"
+            or not isinstance(item.get("questions"), list)
+            or not item["questions"]
+            or item.get("delivery") != "async"
+        ):
+            return None
+    elif kind not in {
+        "user_message", "task_started", "task_complete", "turn_aborted", "error", "agent_message",
+        "function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output",
+        "message", "reasoning",
+    }:
+        return None
+    compact = {key: payload[key] for key in (
+        "type", "turn_id", "call_id", "id", "completed_at", "started_at", "name", "role", "channel",
+    ) if key in payload}
+    if kind == "item_completed":
+        item = payload["item"]
+        compact["item"] = {"type": item.get("type"), "id": item.get("id"), "delivery": "async",
+                           "questions": [None] * len(item["questions"])}
+    elif kind == "function_call" and payload.get("name") == "request_user_input_async":
+        args = payload.get("arguments")
+        try:
+            args = json.loads(args) if isinstance(args, str) else args
+        except (ValueError, TypeError):
+            args = None
+        questions = args.get("questions") if isinstance(args, dict) else None
+        compact["arguments"] = {"questions": [None] * len(questions)} if isinstance(questions, list) else {}
+    elif kind in {"function_call_output", "custom_tool_call_output"}:
+        from corral.remote.richmsg import _is_async_acceptance_receipt
+
+        compact["output"] = {"accepted": _is_async_acceptance_receipt(payload.get("output"))}
+    elif kind == "user_message":
+        text = str(payload.get("message") or "")
+        compact["message"] = (
+            text if "<send_user_message_question_reply>" in text else ("steering" if text.strip() else "")
+        )
+    return {"type": entry.get("type"), "timestamp": entry.get("timestamp"), "payload": compact}
+
+
+def _read_codex_attention_delta(path: str, state: dict) -> list[dict]:
+    """Cold-open only the current turn; then consume complete appended records.
+
+    Async questions outlive an arbitrary tail window. Retaining their reduced
+    state and a byte cursor avoids rereading a long turn on every refresh.
+    """
+    stat = os.stat(path)
+    identity = (stat.st_dev, stat.st_ino)
+    offset = state.get("offset", 0)
+    if state and (state.get("identity") != identity or stat.st_size < offset
+                  or (stat.st_size == offset and stat.st_mtime_ns != state.get("mtime_ns"))):
+        state.clear()
+    entries: list[dict] = []
+    with open(path, "rb") as file:
+        if state:
+            file.seek(max(0, state["offset"] - 64))
+            if file.read(min(64, state["offset"])) != state.get("checkpoint"):
+                state.clear()
+        if state:
+            file.seek(state["offset"])
+            while True:
+                start = file.tell()
+                line = file.readline()
+                if not line or not line.endswith(b"\n"):
+                    offset = start
+                    break
+                try:
+                    entry = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(entry, dict) and (compact := _compact_codex_attention_entry(entry)) is not None:
+                    entries.append(compact)
+        else:
+            # Reverse blocks bound working memory; stop at the newest turn
+            # boundary instead of walking the session's older history.
+            end = stat.st_size
+            offset = end
+            search_end = end
+            while search_end:
+                start = max(0, search_end - _JSONL_TAIL_BYTES)
+                file.seek(start)
+                last = file.read(search_end - start)
+                newline = last.rfind(b"\n")
+                if newline >= 0:
+                    offset = start + newline + 1
+                    break
+                offset = start
+                search_end = start
+            position = offset
+            remainder = b""
+            stopped = False
+            while position and not stopped:
+                start = max(0, position - _JSONL_TAIL_BYTES)
+                file.seek(start)
+                lines = (file.read(position - start) + remainder).split(b"\n")
+                remainder = lines.pop(0) if start else b""
+                for line in reversed(lines):
+                    try:
+                        entry = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    compact = _compact_codex_attention_entry(entry)
+                    if compact is not None:
+                        entries.append(compact)
+                        if compact["payload"].get("type") in {"task_started", "task_complete", "turn_aborted"}:
+                            stopped = True
+                            break
+                position = start
+            entries.reverse()
+        file.seek(max(0, offset - 64))
+        checkpoint = file.read(min(64, offset))
+    state.update(offset=offset, identity=identity, mtime_ns=stat.st_mtime_ns, checkpoint=checkpoint)
+    return entries
+
+
 def _inspect_codex(session: dict) -> AttentionEvidence:
     path = str(session.get("path") or "")
-    entries = _read_jsonl_tail(path)
-    if not entries:
-        return _evidence(observed_at=_stable_observed_at(session, path))
+    if session.get("live") is not True:
+        return _inspect_codex_entries(session, _read_jsonl_tail(path), {})
+    with _CODEX_ATTENTION_LOCK:
+        state = _CODEX_ATTENTION_READERS.setdefault(path, {})
+        _CODEX_ATTENTION_READERS.move_to_end(path)
+        while len(_CODEX_ATTENTION_READERS) > 32:
+            _CODEX_ATTENTION_READERS.popitem(last=False)
+        try:
+            entries = _read_codex_attention_delta(path, state)
+        except OSError:
+            _CODEX_ATTENTION_READERS.pop(path, None)
+            return _evidence(observed_at=_stable_observed_at(session, path))
+        return _inspect_codex_entries(session, entries, state)
 
+
+def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> AttentionEvidence:
+    path = str(session.get("path") or "")
+    if not entries and "phase" not in state:
+        return _evidence(observed_at=_stable_observed_at(session, path))
     live = session.get("live") is True
-    phase = "unknown"
-    pending: dict[str, str] = {}
-    activity_token = None
-    observed_at = _stable_observed_at(session, path)
+    phase = state.get("phase", "unknown")
+    pending: dict[str, str] = state.setdefault("pending", {})
+    async_pending: dict[str, set[int]] = state.setdefault("async_pending", {})
+    activity_token = state.get("activity_token")
+    observed_at = state.get("observed_at", _stable_observed_at(session, path))
 
     for entry in entries:
         payload = entry.get("payload")
@@ -257,19 +447,52 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
         relevant = False
 
         if entry.get("type") == "event_msg" and payload_type == "user_message":
-            # 用户消息只说明新一轮可能开始，不能当成正在跑模型。
+            # User text may answer an async question without opening a new turn.
+            _settle_codex_async_user_text(str(payload.get("message") or ""), async_pending)
             relevant = True
         elif payload_type == "task_started":
+            async_pending.clear()
             phase = "working"
             relevant = True
         elif payload_type == "task_complete":
+            async_pending.clear()
+            pending.clear()
             phase = "idle"
             activity_token = _token("codex", "complete", native) or activity_token
             relevant = True
         elif payload_type == "turn_aborted":
+            async_pending.clear()
+            pending.clear()
             phase = "idle"
             activity_token = _token("codex", "aborted", native) or activity_token
             relevant = True
+        elif payload_type == "error":
+            async_pending.clear()
+            phase = "idle"
+            relevant = True
+        elif payload_type == "item_completed":
+            item = payload.get("item")
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "AgentMessage"
+                and item.get("delivery") == "async"
+                and isinstance(item.get("questions"), list)
+                and item["questions"]
+                and item.get("id")
+            ):
+                async_pending[str(item["id"])] = set(range(len(item["questions"])))
+                relevant = True
+        elif payload_type == "function_call" and payload.get("name") == "request_user_input_async":
+            call_id = str(payload.get("call_id") or payload.get("id") or "")
+            try:
+                args = payload.get("arguments") or {}
+                args = json.loads(args) if isinstance(args, str) else args
+            except (ValueError, TypeError):
+                args = {}
+            questions = args.get("questions") if isinstance(args, dict) else None
+            if call_id and isinstance(questions, list) and questions:
+                async_pending[call_id] = set(range(len(questions)))
+                relevant = True
         elif payload_type == "agent_message":
             phase = "working"
             activity_token = _token("codex", "assistant", native) or activity_token
@@ -284,7 +507,13 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
         }:
             # A bounded tail can omit task_started during a long tool-heavy turn.
             # Native response items are execution evidence; process presence is not.
-            pending.pop(str(payload.get("call_id") or ""), None)
+            call_id = str(payload.get("call_id") or "")
+            pending.pop(call_id, None)
+            if payload_type in {"function_call_output", "custom_tool_call_output"} and call_id in async_pending:
+                from corral.remote.richmsg import _is_async_acceptance_receipt
+
+                if not _is_async_acceptance_receipt(payload.get("output")):
+                    async_pending.pop(call_id, None)
             phase = "working"
             relevant = True
         elif (
@@ -307,6 +536,16 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
                 payload.get("started_at"),
             )
 
+    state.update(phase=phase, activity_token=activity_token, observed_at=observed_at)
+
+    if async_pending and live:
+        call_id = next(reversed(async_pending))
+        return _evidence(
+            "waiting",
+            activity_token=activity_token,
+            question_token=_token("codex", "question", call_id),
+            observed_at=observed_at,
+        )
     if pending and live:
         return _evidence(
             "waiting",

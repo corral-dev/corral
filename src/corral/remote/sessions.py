@@ -473,6 +473,11 @@ class SessionHub:
         self._last_completion: dict[str, str] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
         self._history_watcher = None
+        # Set once the first scan is loaded. Library users that never call
+        # `start()` are ready immediately; the daemon clears it before it opens
+        # its transports so connections are accepted while the scan runs.
+        self._ready = threading.Event()
+        self._ready.set()
 
     # -- 生命周期 ---------------------------------------------------------
 
@@ -484,14 +489,24 @@ class SessionHub:
         watcher = HistoryWatcher()
         self._history_watcher = watcher
         watcher.start()
-        self.store.load()
-        self._snapshot_attention()
-        self._snapshot_live()
-        self._snapshot_status()
+        try:
+            self.store.load()
+            self._snapshot_attention()
+            self._snapshot_live()
+            self._snapshot_status()
+        finally:
+            self._ready.set()
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop):
             thread = threading.Thread(target=target, daemon=True, name=f"remote-{target.__name__}")
             thread.start()
             self._threads.append(thread)
+
+    def mark_starting(self) -> None:
+        """Requests needing session data wait until `start()` finishes its scan."""
+        self._ready.clear()
+
+    def wait_ready(self, timeout: float) -> bool:
+        return self._ready.wait(timeout)
 
     def stop(self) -> None:
         self._stop.set()
