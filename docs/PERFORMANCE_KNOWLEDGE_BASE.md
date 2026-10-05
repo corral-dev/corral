@@ -363,7 +363,7 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 ## 派生缓存边界
 
 - 默认位置：`~/.cache/corral/performance-cache.sqlite3`；遵循 `XDG_CACHE_HOME`，也可用 `CORRAL_CACHE_DIR` 改目录。
-- **库路径在每次连接时按当前环境解析，不在导入时锁定。** 2026-10-05 事故：进程级单例 `_CACHE` 在 `import corral.cache` 那一刻就把路径定成真实 `~/.cache/corral`，而 `tests/test_ui.py` 先 `from corral import …` 再设 `CORRAL_CACHE_DIR`，隔离形同虚设；界面测试 mock 的「测试问题 / 测试回复」被写进真实缓存，键是本机托管窗格里真实 Claude 会话的 key 与文件签名，签名一直有效，于是侧栏标题正确、预览格子却是假对话（Enter restart 的已结束会话最明显）。修法：未显式传路径时 `path` 属性每次取 `cache_path()`，路径变了就丢弃本线程旧连接重连。残留脏行用 `corral cache clear` 或删除 payload 恰为夹具的行清理。
+- **库路径在每次连接时按当前环境解析，不在导入时锁定。** 2026-10-05 事故：进程级单例 `_CACHE` 在 `import corral.cache` 那一刻就把路径定成真实 `~/.cache/corral`，而 `tests/test_ui.py` 先 `from corral import …` 再设 `CORRAL_CACHE_DIR`，隔离形同虚设；界面测试 mock 的「测试问题 / 测试回复」被写进真实缓存，键是本机托管窗格里真实 Claude 会话的 key 与文件签名，签名一直有效，于是侧栏标题正确、预览格子却是假对话（Enter restart 的已结束会话最明显）。修法：未显式传路径时 `path` 属性每次取 `cache_path()`，路径变了就丢弃本线程旧连接重连。残留脏行用 `corral cache clear` 或删除 payload 恰为夹具的行清理。同日第二个缺口：`scripts/ci-test.py` 只给界面类分片设私有 `CORRAL_CACHE_DIR`，模块分片与串行剩余仍写真实缓存（18:08–18:11 实测写入 `fake:*`、`claude:share-1` 等临时路径行）；现由 `ci-test.py` 主入口在未设置时为整轮检查建私有缓存目录并在结束时删除，所有子进程继承。直接 `python -m unittest` 跑单个模块不经过这道保护，需自行设 `CORRAL_CACHE_DIR`。
 - 默认上限 256 MiB；可用 `CORRAL_CACHE_MAX_MB` 调整，最小 16 MiB。超过上限时优先淘汰完整对话，元数据保留以保障启动速度。
 - 文件签名包含设备、inode、字节数和纳秒修改时间；Codex 额外包含标题索引签名，Cursor 额外包含提示历史和正文数据库签名。任一输入变化都视为未命中。
 - 缓存目录权限为当前用户独占，数据库为当前用户读写。内容只来自用户本来可读的本机会话历史，不上传、不进入项目日志。

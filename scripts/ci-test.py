@@ -41,12 +41,15 @@ matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
 from __future__ import annotations
 
 import argparse
+import atexit
 import concurrent.futures
 import faulthandler
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from dataclasses import dataclass
@@ -1157,6 +1160,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Keep developer keepalive panes out of SessionStore unit fixtures.
     os.environ.setdefault("CORRAL_ISOLATE_MANAGED_HOSTS", "1")
+    # Only UI shards enter ci_test_support isolation; give every other worker a
+    # private cache too, or fixture conversations land in the user's real cache.
+    if not os.environ.get("CORRAL_CACHE_DIR"):
+        private_cache = tempfile.mkdtemp(prefix="corral-ci-cache-")
+        os.environ["CORRAL_CACHE_DIR"] = private_cache
+        atexit.register(shutil.rmtree, private_cache, ignore_errors=True)
 
     jobs = args.jobs if args.jobs is not None else _default_jobs()
     if jobs < 1:
