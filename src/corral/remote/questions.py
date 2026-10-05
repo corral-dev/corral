@@ -67,6 +67,20 @@ def pending_prompts(session: dict, messages: list[richmsg.RichMessage]) -> list[
     runtime = str(session.get("source") or "")
     if runtime == "opencode":
         return _opencode_prompts(session)
+    if runtime == "codex":
+        from corral.attention_signals import codex_async_question_state
+
+        current = codex_async_question_state(session)
+        if current is not None:
+            entries = richmsg.prompt_entries(
+                request_id=current["request_id"],
+                name=_ASYNC_TOOL,
+                questions=[
+                    (richmsg._question_meta("question", {"questions": [question]}) or [{}])[0]
+                    for question in current["questions"]
+                ],
+            )
+            return [entry for index, entry in enumerate(entries) if index in current["remaining"]]
     prompts = richmsg.pending_prompts_from_messages(messages)
     if runtime not in ANSWERABLE_RUNTIMES:
         for entry in prompts:

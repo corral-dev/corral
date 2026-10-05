@@ -309,7 +309,7 @@ def _compact_codex_attention_entry(entry: dict) -> dict | None:
     if kind == "item_completed":
         item = payload["item"]
         compact["item"] = {"type": item.get("type"), "id": item.get("id"), "delivery": "async",
-                           "questions": [None] * len(item["questions"])}
+                           "questions": item["questions"]}
     elif kind == "function_call" and payload.get("name") == "request_user_input_async":
         args = payload.get("arguments")
         try:
@@ -317,7 +317,7 @@ def _compact_codex_attention_entry(entry: dict) -> dict | None:
         except (ValueError, TypeError):
             args = None
         questions = args.get("questions") if isinstance(args, dict) else None
-        compact["arguments"] = {"questions": [None] * len(questions)} if isinstance(questions, list) else {}
+        compact["arguments"] = {"questions": questions} if isinstance(questions, list) else {}
     elif kind in {"function_call_output", "custom_tool_call_output"}:
         from corral.remote.richmsg import _is_async_acceptance_receipt
 
@@ -432,6 +432,7 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
     phase = state.get("phase", "unknown")
     pending: dict[str, str] = state.setdefault("pending", {})
     async_pending: dict[str, set[int]] = state.setdefault("async_pending", {})
+    async_questions: dict[str, list[dict]] = state.setdefault("async_questions", {})
     activity_token = state.get("activity_token")
     observed_at = state.get("observed_at", _stable_observed_at(session, path))
 
@@ -481,6 +482,7 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
                 and item.get("id")
             ):
                 async_pending[str(item["id"])] = set(range(len(item["questions"])))
+                async_questions[str(item["id"])] = item["questions"]
                 relevant = True
         elif payload_type == "function_call" and payload.get("name") == "request_user_input_async":
             call_id = str(payload.get("call_id") or payload.get("id") or "")
@@ -492,6 +494,7 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
             questions = args.get("questions") if isinstance(args, dict) else None
             if call_id and isinstance(questions, list) and questions:
                 async_pending[call_id] = set(range(len(questions)))
+                async_questions[call_id] = questions
                 relevant = True
         elif payload_type == "agent_message":
             phase = "working"
@@ -536,6 +539,9 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
                 payload.get("started_at"),
             )
 
+    for call_id in list(async_questions):
+        if call_id not in async_pending:
+            del async_questions[call_id]
     state.update(phase=phase, activity_token=activity_token, observed_at=observed_at)
 
     if async_pending and live:
@@ -555,6 +561,23 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
         )
     phase = _finalize_history_phase(phase, live)
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+
+
+def codex_async_question_state(session: dict) -> dict | None:
+    """The current live panel, including indices hidden by a chat tail window."""
+    if session.get("live") is not True:
+        return None
+    with _CODEX_ATTENTION_LOCK:
+        _inspect_codex(session)
+        state = _CODEX_ATTENTION_READERS.get(str(session.get("path") or ""), {})
+        pending = state.get("async_pending", {})
+        if not pending:
+            return None
+        request_id = next(reversed(pending))
+        questions = state.get("async_questions", {}).get(request_id, [])
+        if not questions or not all(isinstance(question, dict) for question in questions):
+            return None
+        return {"request_id": request_id, "questions": questions, "remaining": set(pending[request_id])}
 
 
 def _inspect_kimi(session: dict) -> AttentionEvidence:

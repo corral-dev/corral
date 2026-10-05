@@ -202,6 +202,8 @@ class CodexAttentionSignalTests(unittest.TestCase):
                     self.assertNotEqual(inspect_session(_session("codex", path)).phase, "waiting")
 
     def test_async_native_item_only_and_partial_matching_replies(self) -> None:
+        from corral.remote.questions import pending_prompts
+
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "codex.jsonl"
             entries = [{"type": "event_msg", "payload": {
@@ -212,6 +214,7 @@ class CodexAttentionSignalTests(unittest.TestCase):
             }}]
             _write_jsonl(path, entries)
             self.assertEqual(inspect_session(_session("codex", path)).phase, "waiting")
+            self.assertEqual(len(pending_prompts(_session("codex", path), [])), 2)
             for call_id, index, expected in (("unknown", 0, "waiting"), ("q1", 0, "waiting"), ("q1", 1, "idle")):
                 reply = [{"questionItemId": json.dumps(["request_user_input_async", call_id, index]),
                           "question": "Question?", "answer": "A"}]
@@ -222,16 +225,26 @@ class CodexAttentionSignalTests(unittest.TestCase):
                 }})
                 _write_jsonl(path, entries)
                 self.assertEqual(inspect_session(_session("codex", path)).phase, expected)
+                prompts = pending_prompts(_session("codex", path), [])
+                if call_id == "unknown":
+                    self.assertEqual(len(prompts), 2)
+                elif index == 0:
+                    self.assertEqual([p["summary"] for p in prompts], ["Second?"])
+                    self.assertEqual(json.loads(prompts[0]["question_id"])[2], 1)
+                else:
+                    self.assertEqual(prompts, [])
 
     def test_async_question_outlives_large_tool_tail_and_incremental_appends(self) -> None:
         from corral.attention_signals import _CODEX_ATTENTION_READERS
+        from corral.remote.questions import pending_prompts
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "codex.jsonl"
             entries = [
                 {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}},
                 {"type": "event_msg", "payload": {"type": "item_completed", "item": {
-                    "type": "AgentMessage", "id": "q1", "delivery": "async", "questions": [{"title": "Scope?"}],
+                    "type": "AgentMessage", "id": "q1", "delivery": "async",
+                    "questions": [{"title": "Scope?", "options": ["All", "One"]}],
                 }}},
             ]
             _write_jsonl(path, entries)
@@ -246,6 +259,10 @@ class CodexAttentionSignalTests(unittest.TestCase):
             cold = inspect_session(_session("codex", path))
             self.assertEqual(cold.phase, "waiting")
             self.assertEqual(cold.question_token, original.question_token)
+            # Cold-opened chat windows may contain no question card at all.
+            prompts = pending_prompts(_session("codex", path), [])
+            self.assertEqual(prompts[0]["summary"], "Scope?")
+            self.assertEqual(prompts[0]["options"], ["All", "One"])
             # A reader must not consume or lose an unfinished append.
             end = json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t1"}})
             with path.open("a") as file:
@@ -254,6 +271,7 @@ class CodexAttentionSignalTests(unittest.TestCase):
             with path.open("a") as file:
                 file.write(end[20:] + "\n")
             self.assertEqual(inspect_session(_session("codex", path)).phase, "idle")
+            self.assertEqual(pending_prompts(_session("codex", path), []), [])
             # Rewritten/truncated files invalidate retained request identities.
             _write_jsonl(path, [{"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t2"}}])
             self.assertEqual(inspect_session(_session("codex", path)).phase, "working")
