@@ -28,6 +28,81 @@ _TITLE_SPAWN_DEBOUNCE_SECONDS = 3.0
 _TITLE_STALE_SPAWN_SECONDS = 30.0
 
 
+# Runtimes whose ``path`` is that session's own history file, so one stat is an
+# exact freshness probe. OpenCode shares one database (its stat feeds the
+# evidence signature instead) and Cursor has its own stat signature.
+_FILE_STAT_RUNTIMES = frozenset({"claude", "codex", "pi"})
+# Upper bound on sessions one state probe touches; live hosted panes dominate.
+_STATE_PROBE_MAX_SESSIONS = 160
+
+
+def _is_state_hot(session: dict) -> bool:
+    """Sessions whose execution state can change without a new history file."""
+    return bool(
+        session.get("live")
+        or session.get("keepalive_name")
+        or session.get("attention_kind") in ("working", "waiting")
+    )
+
+
+def _pid_alive(pid: object) -> bool:
+    try:
+        os.kill(int(pid), 0)  # type: ignore[arg-type]
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError, TypeError, ValueError):
+        return True  # exists but not ours, or unknowable: keep the scan's verdict
+    return True
+
+
+def _freshen_from_disk(sessions: list[dict]) -> bool:
+    """Correct scan facts that may be stale against first-hand probes.
+
+    Scans can come from the shared index, whose worker backs off to a minute
+    under churn and memory pressure. For hot sessions, re-stat per-session
+    history files (so attention evidence re-reads a grown tail) and drop
+    ``live`` when the recorded pid has exited. Only moves facts forward;
+    returns True when anything changed.
+    """
+    changed = False
+    for session in sessions:
+        if not _is_state_hot(session):
+            continue
+        if session.get("source") in _FILE_STAT_RUNTIMES and not session.get("provisional"):
+            path = str(session.get("path") or "")
+            if path:
+                try:
+                    info = os.stat(path)
+                except OSError:
+                    info = None
+                if info is not None:
+                    known_mtime = float(session.get("file_mtime") or session.get("mtime") or 0.0)
+                    if info.st_size != session.get("size_bytes") and info.st_mtime >= known_mtime:
+                        session["size_bytes"] = info.st_size
+                        session["size_kb"] = round(info.st_size / 1024, 1)
+                        session["file_mtime"] = info.st_mtime
+                        changed = True
+        pid = session.get("pid")
+        if session.get("live") and pid and not _pid_alive(pid):
+            session["live"] = False
+            session["pid"] = None
+            changed = True
+    return changed
+
+
+def _opencode_db_signature(session: dict) -> tuple:
+    """Stat of the shared OpenCode database and its WAL (no SQL)."""
+    path = str(session.get("path") or "")
+    signature = []
+    for candidate in (path, f"{path}-wal" if path else ""):
+        try:
+            info = os.stat(candidate) if candidate else None
+        except OSError:
+            info = None
+        signature.append((info.st_size, info.st_mtime_ns) if info is not None else None)
+    return tuple(signature)
+
+
 def _session_matches_keepalive_ident(session: dict, name: str) -> bool:
     """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。"""
     if session.get("source") == "codex":
@@ -445,12 +520,84 @@ class SessionStore:
         with liveness.tmux_list_wave():
             liveness.annotate(sessions)
             self._adopt_foreign_hosted(sessions)
+        _freshen_from_disk(sessions)
         with self.lock:
             attention_sessions = [
                 session for bucket in self.sessions.values() for session in bucket
             ]
         states = self._reconcile_attention(attention_sessions)
         self._inject_attention_states(states)
+
+    def refresh_state(self, *, list_hosts: bool = False) -> bool:
+        """Cheap state probe between full scans; True when list state changed.
+
+        Touches only hot sessions (live, hosted, working or waiting): re-stat
+        their history files, drop exited pids, re-derive attention from the
+        changed tails. With ``list_hosts`` it also lists managed tmux panes to
+        drop vanished hosts and adopt panes another process just started.
+        Never rescans histories, so callers may run it every second and
+        regardless of memory pressure; the full scan keeps its own cadence.
+        """
+        with self.lock:
+            if not self.loaded:
+                return False
+            hot = [
+                session
+                for bucket in self.sessions.values()
+                for session in bucket
+                if _is_state_hot(session)
+            ][:_STATE_PROBE_MAX_SESSIONS]
+            before = self._state_signature()
+        _freshen_from_disk(hot)
+        if list_hosts:
+            self._probe_hosts(hot)
+        with self.lock:
+            hot = [
+                session
+                for bucket in self.sessions.values()
+                for session in bucket
+                if _is_state_hot(session) and not session.get("provisional")
+            ][:_STATE_PROBE_MAX_SESSIONS]
+        if hot:
+            states = self._reconcile_attention(hot)
+            self._inject_partial_attention_states(states)
+        with self.lock:
+            changed = self._state_signature() != before
+        if changed:
+            self._save_sidebar_snapshot()
+        return changed
+
+    def _probe_hosts(self, hot: list[dict]) -> None:
+        """Drop host names whose tmux session is gone; adopt foreign new panes."""
+        try:
+            with liveness.tmux_list_wave():
+                hosts = liveness.list_managed_hosts()
+                names = {str(host.get("name") or "") for host in hosts}
+                for session in hot:
+                    name = session.get("keepalive_name")
+                    if not name or session.get("provisional") or name in names:
+                        continue
+                    # An empty listing may be a tmux timeout under load; trust it
+                    # only for sessions whose own process is already gone.
+                    if names or not session.get("live"):
+                        session.pop("keepalive_name", None)
+                self._adopt_foreign_hosted(hot)
+        except Exception:  # noqa: BLE001 — the next full merge re-annotates
+            return
+
+    def _state_signature(self) -> tuple:
+        """Fields that decide dots, Working and hosted state; caller holds the lock."""
+        return tuple(
+            (
+                session_key(session),
+                bool(session.get("live")),
+                session.get("keepalive_name"),
+                session.get("attention_kind"),
+            )
+            for bucket in self.sessions.values()
+            for session in bucket
+            if _is_state_hot(session) or session.get("attention_kind")
+        )
 
     def _sessions_signature(self) -> tuple:
         """判定「会话集合是否真的变了」的签名，只应纳入值变化后必须触发列表
@@ -542,6 +689,7 @@ class SessionStore:
                     candidate.get("source"),
                     candidate.get("path"),
                     candidate.get("mtime"),
+                    candidate.get("file_mtime"),
                     candidate.get("size_bytes"),
                     bool(candidate.get("live")),
                 )
@@ -573,6 +721,10 @@ class SessionStore:
                         candidate.get("agent_phase"),
                         candidate.get("agent_phase_at"),
                     )
+                elif candidate.get("source") == "opencode" and candidate.get("live"):
+                    # One shared database: its per-session size is not a file stat,
+                    # so a live session re-reads evidence whenever the DB moves.
+                    evidence_signature = base_signature + (_opencode_db_signature(candidate),)
                 else:
                     evidence_signature = base_signature
                 prepared.append((candidate, evidence_signature))
@@ -633,6 +785,7 @@ class SessionStore:
             # Adopt unmatched managed panes as provisional interactive cards so the
             # desktop sidebar does not wait for history / lag through a preview phase.
             self._adopt_foreign_hosted(annotated)
+        _freshen_from_disk(annotated)
 
         with self.lock:
             attention_migrations = self._reconcile_provisional_sessions(scanned)
@@ -1044,6 +1197,17 @@ class SessionStore:
                         session,
                         self.attention_states.get(session_key(session), AttentionState()),
                     )
+
+    def _inject_partial_attention_states(self, states: dict[str, AttentionState]) -> None:
+        """Like ``_inject_attention_states`` for a subset; other sessions keep theirs."""
+        with self.lock:
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    key = session_key(session)
+                    if key not in states:
+                        continue
+                    self.attention_states[key] = states[key]
+                    self._inject_attention(session, states[key])
 
     def projects(self) -> list[dict]:
         """跨所有来源聚合的项目文件夹列表（新建会话 / 侧边栏用），惰性计算并缓存。

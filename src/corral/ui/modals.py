@@ -521,16 +521,71 @@ class ConfirmModal(OutsideClickDismiss, ModalScreen[bool]):
         super().on_click(event)
 
 
+class TextInputModal(OutsideClickDismiss, ModalScreen[str | None]):
+    """单行文字输入框：回车返回输入内容（可为空串），Esc / 点框外返回 None。"""
+
+    DEFAULT_CSS = """
+    TextInputModal {
+        align: center middle;
+    }
+    TextInputModal > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        border: round $primary;
+        padding: 0 1;
+    }
+    /* 同新建会话弹窗：压住 Input 默认 tall 边框，避免外框套内框。 */
+    TextInputModal Input,
+    TextInputModal Input:focus {
+        border: none;
+        padding: 0 1;
+        margin: 1 0;
+        height: 1;
+        background: $panel;
+    }
+    TextInputModal .hint {
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, title: str, value: str, placeholder: str, hint: str) -> None:
+        super().__init__()
+        self._title = title
+        self._value = value
+        self._placeholder = placeholder
+        self._hint = hint
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f" {self._title} ", classes="title")
+            yield Input(value=self._value, placeholder=self._placeholder)
+            yield Label(self._hint, classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value)
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+
+
 # ---------------------------------------------------------------------------
 # 业务流程封装：project/runtime 选择 + 新建会话组合流程
 # ---------------------------------------------------------------------------
 
 # 高级操作里非运行时选项的哨兵 id。
+RENAME_SPLIT_CHOICE = "__rename_split__"
 EXPORT_SESSION_CHOICE = "__export_session__"
 COPY_SESSION_CHOICE = "__copy_session__"
 RESTART_SESSION_CHOICE = "__restart_session__"
 _ADVANCED_SENTINELS = frozenset(
-    {EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE, RESTART_SESSION_CHOICE}
+    {RENAME_SPLIT_CHOICE, EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE, RESTART_SESSION_CHOICE}
 )
 
 
@@ -549,9 +604,17 @@ def _handoff_default_index(choices: list[RuntimeChoice], source: str) -> int:
     return 0 if same is None else same
 
 
-async def choose_target_runtime(app, store, source: str, restart_available: bool = False) -> str | None:
+async def choose_target_runtime(
+    app,
+    store,
+    source: str,
+    restart_available: bool = False,
+    *,
+    rename_split: bool = False,
+) -> str | None:
     """高级操作：导出会话、复制会话、重启会话，或选择接力目标运行时。
 
+    光标停在分屏卡上时（``rename_split``）首项是「重命名分屏」。
     列表第一项是「导出会话」（写 share transcript 并把路径复制到剪贴板，不启动）；
     第二项是「复制会话」（同助手完整克隆）；第三项是「重启会话」（结束托管进程后
     按原会话原地恢复，仅对 corral 正托管、非占位的会话可用）；其后每一个助手
@@ -586,13 +649,23 @@ async def choose_target_runtime(app, store, source: str, restart_available: bool
             unavailable_text=t("modal.not_hosted", action=restart_action),
         ),
     ]
+    if rename_split:
+        choices.insert(
+            0,
+            RuntimeChoice(
+                RENAME_SPLIT_CHOICE,
+                t("modal.rename_split"),
+                t("modal.rename_split_action"),
+                True,
+            ),
+        )
     for runtime in runtimes:
         action = t("modal.read_history_new", source=source_name)
         choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
+    # 光标在分屏卡上按 Ctrl+T，最可能是想给分屏改名：默认高亮首项。
+    default_index = 0 if rename_split else _handoff_default_index(choices, source)
     return await app.push_screen_wait(
-        RuntimePickerModal(
-            t("modal.handoff_title"), choices, _handoff_default_index(choices, source),
-        )
+        RuntimePickerModal(t("modal.handoff_title"), choices, default_index)
     )
 
 

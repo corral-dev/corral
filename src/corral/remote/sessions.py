@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -31,7 +32,7 @@ from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
 from corral.runtime.registry import ACTIVE_RUNTIME_IDS
-from corral.split_layout import default_layout_db
+from corral.split_layout import default_layout_db, is_auto_group_name
 from corral.store import SessionStore
 
 _SCAN_LIMIT = 200
@@ -40,6 +41,15 @@ _SCAN_LIMIT = 200
 _REFRESH_RECONCILE = 15.0
 _REFRESH_MIN_GAP = 15.0  # do not scan more often than the old remote cadence under thrash
 _TITLE_POLL_SLICE = 15.0
+# Hot-session state probe (dots, Working, Ended, hosted panes); runs every tick
+# regardless of memory pressure so clients stay within ~2 s of the host.
+_STATE_TICK = 1.0
+# List managed tmux panes every N ticks: adopt new TUI panes, drop vanished ones.
+_STATE_HOSTS_EVERY_TICKS = 2
+# After a new session history file appears, follow shared-index publishes this
+# long (the scan worker parses it on its next pass) with this minimum gap.
+_ARRIVAL_FOLLOW_SECONDS = 20.0
+_ARRIVAL_MIN_GAP = 1.0
 _LAYOUT_POLL_SECONDS = 1.0
 _PHONE_LIST_LIMIT = 80
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
@@ -55,6 +65,17 @@ _MAX_IN_MEMORY_TRANSCRIPTS = 48
 _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
 # New session keys that first appear already terminal still notify if this fresh.
 _STATUS_NOTIFY_FRESH_SECONDS = 300.0
+
+def _scan_index_stamp() -> tuple | None:
+    """Cheap change stamp of the shared scan index (stat only, no JSON parse)."""
+    try:
+        from corral import scan_index
+
+        info = os.stat(scan_index.index_path())
+    except Exception:
+        return None
+    return (info.st_mtime_ns, info.st_size)
+
 
 _ATTENTION_LABELS = {"none": "none", "unread": "unread", "working": "working", "waiting": "waiting"}
 
@@ -535,58 +556,76 @@ class SessionHub:
     # -- 后台循环 ---------------------------------------------------------
 
     def _refresh_loop(self) -> None:
+        """One thread owns list state: a 1 s state probe plus the throttled full scan.
+
+        Dots, Working, Ended and newly hosted panes come from
+        ``store.refresh_state`` every tick, independent of memory pressure (owner
+        budget: about 2 s to every client). Only the full history scan keeps the
+        FS-event / reconcile / min-gap cadence that backs off under pressure.
+        A new session history file is the exception: follow the shared index
+        for a short window so the arrival lists as soon as the worker publishes.
+        """
         from corral.history_watch import memory_pressured, pressure_cadence
         from corral.schedprio import demote_background
 
         demote_background()
         watcher = self._history_watcher
-        last_scan = 0.0
+        last_scan = time.monotonic()  # start() just loaded
+        last_title_poll = last_scan
+        arrival_seen = self._watcher_arrivals(watcher)
+        arrival_until = 0.0
+        index_stamp = _scan_index_stamp()
+        tick = 0
         while not self._stop.is_set():
-            # Back off the polling floor under memory pressure (evaluated once
-            # per pass; FS-event wakes still fire). Normal cadence unchanged.
+            # Fixed tick: FS events are read via ``watcher.is_set()`` below, so a
+            # write burst cannot spin this loop faster than once per second.
+            if self._stop.wait(_STATE_TICK):
+                return
+            now = time.monotonic()
+            tick += 1
             reconcile, min_gap = pressure_cadence(
                 _REFRESH_RECONCILE, _REFRESH_MIN_GAP, memory_pressured(),
             )
-            # Title updates are independent of history mtimes — poll them on the
-            # short slice even when the full scan sleeps until FSEvents / reconcile.
-            title_only = True
             if watcher is None:
-                if self._stop.wait(_TITLE_POLL_SLICE):
-                    return
-                title_only = False
-            else:
-                deadline = time.monotonic() + reconcile
-                while not self._stop.is_set():
-                    left = deadline - time.monotonic()
-                    if left <= 0:
-                        title_only = False
-                        break
-                    if watcher.wait(timeout=min(_TITLE_POLL_SLICE, left)):
-                        title_only = False
-                        break
-                    # Slice elapsed without FS change: still propagate titles.
-                    title_keys = self.store.poll_title_updates()
-                    if title_keys and self._sessions_watchers:
-                        self._emit_title_events(title_keys)
-                if self._stop.is_set():
-                    return
-                if last_scan > 0:
-                    gap = min_gap - (time.monotonic() - last_scan)
-                    if gap > 0 and self._stop.wait(gap):
-                        return
-                watcher.clear()
-
-            title_keys = self.store.poll_title_updates()
+                reconcile = min_gap = _TITLE_POLL_SLICE
+            arrivals = self._watcher_arrivals(watcher)
+            if arrivals != arrival_seen:
+                arrival_seen = arrivals
+                arrival_until = now + _ARRIVAL_FOLLOW_SECONDS
+            since_scan = now - last_scan
+            full = since_scan >= reconcile or (
+                watcher is not None and watcher.is_set() and since_scan >= min_gap
+            )
+            if not full and now < arrival_until and since_scan >= _ARRIVAL_MIN_GAP:
+                stamp = _scan_index_stamp()
+                full = stamp != index_stamp
+            title_keys: set[str] = set()
+            if now - last_title_poll >= _TITLE_POLL_SLICE and not full:
+                # Title updates are independent of history; ~0.2 s per poll here,
+                # so keep the old 15 s slice instead of the state tick.
+                title_keys = self.store.poll_title_updates()
+                last_title_poll = now
             changed = False
-            if not title_only:
+            if full:
+                if watcher is not None:
+                    watcher.clear()
                 try:
                     changed = self.store.refresh()
                 except Exception:
-                    # History scan failures must not block title-only propagation.
+                    # History scan failures must not block state or title propagation.
                     pass
                 last_scan = time.monotonic()
+                index_stamp = _scan_index_stamp()
                 self._reclaim_inactive_hosts()
-            title_keys.update(self.store.poll_title_updates())
+                title_keys.update(self.store.poll_title_updates())
+                last_title_poll = time.monotonic()
+            else:
+                try:
+                    changed = self.store.refresh_state(
+                        list_hosts=tick % _STATE_HOSTS_EVERY_TICKS == 0,
+                    )
+                except Exception:
+                    changed = False
             self._follow_key_migrations()
             self._detect_attention_changes()
             self._detect_live_changes()
@@ -596,6 +635,13 @@ class SessionHub:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
                 self._emit_title_events(title_keys)
+
+    @staticmethod
+    def _watcher_arrivals(watcher) -> int:
+        try:
+            return int(getattr(watcher, "arrival_seq", 0) or 0)
+        except Exception:
+            return 0
 
     def _detect_marker_changes(self) -> bool:
         """True when any row's TUI marker flipped since the last pass.
@@ -1416,6 +1462,9 @@ class SessionHub:
                 {
                     "id": group.group_id,
                     "name": group.name,
+                    # False: `name` is the hidden internal identity; clients join
+                    # member titles instead (TERMINAL_UI_KNOWLEDGE_BASE split names).
+                    "named": not is_auto_group_name(group.name),
                     "project": group.project_cwd,
                     "members": list(group.session_keys),
                     "focus": group.focus_key or "",
@@ -1515,6 +1564,10 @@ class SessionHub:
 
     def layout_set_collapsed(self, group_id: str, collapsed: bool) -> dict:
         self.layout_db.set_collapsed(group_id, collapsed)
+        return self._layout_mutated()
+
+    def layout_rename_group(self, group_id: str, name: str) -> dict:
+        self.layout_db.rename_group(group_id, name)
         return self._layout_mutated()
 
     def conversation_snapshot(self, key: str) -> list[dict]:
@@ -2531,11 +2584,14 @@ class SessionHub:
                         "live": bool(session.get("live")),
                     },
                 )
-            if hook is None or previous is None:
+            if previous is None:
                 continue
             if current == "waiting":
+                payload = self.session_payload(session, layout)
+                self._emit_notification(payload, "waiting")
                 try:
-                    hook(self.session_payload(session, layout), previous, current)
+                    if hook is not None:
+                        hook(payload, previous, current)
                 except Exception:
                     continue
 
@@ -2580,6 +2636,14 @@ class SessionHub:
                     },
                 )
 
+    def _emit_notification(self, payload: dict, kind: str) -> None:
+        """Encrypted desktop event, independent of APNs preferences/list windows."""
+        if self._sessions_watchers:
+            self._on_event(
+                "sessions",
+                {"kind": "notification", "notification_kind": kind, "notification": payload},
+            )
+
     def _detect_status_changes(self) -> None:
         """SessKit status_tag 变化 → 推送层（已完成 / 已中断）。
 
@@ -2589,8 +2653,6 @@ class SessionHub:
         只要历史很新仍要推——否则短会话会漏通知。
         """
         hook = self._status_hook
-        if hook is None:
-            return
         layout = self._layout()
         now = time.time()
         terminal_payloads: list[dict] = []
@@ -2631,8 +2693,14 @@ class SessionHub:
                     mtime = 0.0
                 if mtime <= 0 or (now - mtime) > _STATUS_NOTIFY_FRESH_SECONDS:
                     continue
+            payload = self.session_payload(session, layout)
+            if current == sesskit_titles.STATUS_DONE and current_cid:
+                self._emit_notification(payload, "completed")
+            elif current == sesskit_titles.STATUS_ABORTED:
+                self._emit_notification(payload, "aborted")
             try:
-                hook(self.session_payload(session, layout), previous or "", current)
+                if hook is not None:
+                    hook(payload, previous or "", current)
             except Exception:
                 continue
         # 有界重试：待确认回执超时/失败、且仍是最新轮次的，按设备重发。

@@ -2675,15 +2675,19 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group_text = group_cards[0].render().plain
             lines = group_text.splitlines()
             self.assertEqual(len(lines), 3)
-            emoji = _split_layout.group_emoji(group_cards[0].group.name)
-            self.assertTrue(emoji, "水果组名必须能取到对应 emoji")
-            self.assertTrue(group_text.startswith(f"▼ {emoji} Group "))
+            # 未命名分屏不展示内部水果名，按分屏格顺序拼成员标题。
+            card = group_cards[0]
+            self.assertTrue(_split_layout.is_auto_group_name(card.group.name))
+            self.assertNotIn("Group", lines[0])
+            self.assertEqual(len(card.member_titles), 2)
+            self.assertTrue(lines[0].startswith(f"▼ {card.member_titles[0][:5]}"))
+            self.assertEqual(card.display_name, " + ".join(card.member_titles))
+            self.assertIn("Split view · 2 sessions", lines[1])
             self.assertNotIn("●", lines[0], "会话组标题不能重复显示会话状态圆点")
-            # 第二行项目名与第一行 Group 文字同列起笔（按终端显示宽度比较，
-            # emoji 是宽字符：1 个 Python 字符占 2 格，不能直接比字符下标）。
+            # 第二行项目名与第一行显示名同列起笔（按终端显示宽度比较）。
             from rich.cells import cell_len
 
-            group_col = cell_len(lines[0][: lines[0].index("Group")])
+            group_col = cell_len("▼ ")
             self.assertTrue(lines[1].startswith("│"))
             self.assertTrue(lines[2].startswith("│"))
             tmp_col = cell_len(lines[1][: lines[1].find("tmp")])
@@ -2780,6 +2784,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(keys[2], list_view.group_store.pinned_session_keys)
 
     async def test_filter_by_group_name_reveals_all_members(self) -> None:
+        """筛选只匹配用户给分屏起的名字；隐藏的水果身份名不参与匹配。"""
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -2792,6 +2797,11 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group = list_view.group_store.get_group(keys[0])
             group.collapsed = True
             list_view.nav.project_query = group.name.lower()
+            await list_view.rebuild()
+            self.assertEqual(len(list(list_view.query(SessionGroupCard))), 0)
+
+            list_view.on_layout_change(lambda s: s.rename_group(group.group_id, "Release check"))
+            list_view.nav.project_query = "release"
             await list_view.rebuild()
             self.assertEqual(len(list(list_view.query(SessionGroupCard))), 1)
             self.assertEqual(len(list(list_view.query(SessionCard))), 2)

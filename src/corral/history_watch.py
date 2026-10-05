@@ -24,6 +24,25 @@ from pathlib import Path
 DEFAULT_DEBOUNCE_SECONDS = 0.35
 # How long the CFRunLoop / inotify thread may block before checking stop.
 _LOOP_SLICE_SECONDS = 0.5
+# Remember this many arrival paths: FSEvents may repeat the "created" flag on
+# later appends to a recently created file, and a repeat is not a new session.
+_ARRIVAL_MEMORY = 512
+
+
+def is_session_arrival_path(path: str) -> bool:
+    """True when a newly created file looks like a new session's history.
+
+    Claude / Codex / Pi write one JSONL per session and Cursor one ``store.db``
+    per chat. Claude subagent transcripts are not listed sessions, so their
+    creation must not defeat the scan worker's churn backoff.
+    """
+    if not path:
+        return False
+    normalized = path.replace("\\", "/")
+    if "/subagents/" in normalized:
+        return False
+    name = normalized.rsplit("/", 1)[-1]
+    return name.endswith(".jsonl") or name == "store.db"
 
 
 def pressure_cadence(
@@ -119,6 +138,8 @@ class HistoryWatcher:
         self._backend = "none"
         self._last_fire = 0.0
         self._lock = threading.Lock()
+        self._arrival_seq = 0
+        self._arrival_paths: dict[str, None] = {}
 
     @property
     def backend(self) -> str:
@@ -152,6 +173,30 @@ class HistoryWatcher:
 
     def is_set(self) -> bool:
         return self._changed.is_set()
+
+    @property
+    def arrival_seq(self) -> int:
+        """Monotonic count of new session history files seen (see ``note_created``)."""
+        with self._lock:
+            return self._arrival_seq
+
+    def note_created(self, path: str) -> None:
+        """Record a created file; new session histories bump ``arrival_seq``.
+
+        Content appends keep the debounced change signal only. A creation is
+        the one event that can add a session, so consumers use it to skip
+        churn backoff instead of waiting out a full reconcile.
+        """
+        if not is_session_arrival_path(path):
+            return
+        with self._lock:
+            if path in self._arrival_paths:
+                return
+            self._arrival_paths[path] = None
+            while len(self._arrival_paths) > _ARRIVAL_MEMORY:
+                self._arrival_paths.pop(next(iter(self._arrival_paths)))
+            self._arrival_seq += 1
+        self._changed.set()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Block until a change is signaled or ``timeout`` elapses.
@@ -235,10 +280,24 @@ class HistoryWatcher:
             ctypes.POINTER(ctypes.c_uint64),
         )
 
+        kFSEventStreamEventFlagItemCreated = 0x00000100
+        kFSEventStreamEventFlagItemIsFile = 0x00010000
+        created_file = kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile
+
         @Callback
         def _callback(stream, info, num_events, event_paths, event_flags, event_ids):  # noqa: ARG001
-            if num_events:
-                self._signal()
+            if not num_events:
+                return
+            try:
+                paths = ctypes.cast(event_paths, ctypes.POINTER(ctypes.c_char_p))
+                for index in range(int(num_events)):
+                    if event_flags[index] & created_file == created_file:
+                        raw = paths[index]
+                        if raw:
+                            self.note_created(raw.decode("utf-8", "replace"))
+            except Exception:  # noqa: BLE001 — arrival detection is advisory
+                pass
+            self._signal()
 
         self._fsevents_callback = _callback  # keep alive
 
@@ -344,6 +403,8 @@ class HistoryWatcher:
         if fd < 0:
             return False
 
+        wd_paths: dict[int, str] = {}
+
         def add_tree(path: Path, depth: int = 0) -> int:
             count = 0
             try:
@@ -352,6 +413,7 @@ class HistoryWatcher:
                 return 0
             if wd < 0:
                 return 0
+            wd_paths[wd] = str(path)
             count += 1
             if depth >= 4:
                 return count
@@ -382,7 +444,28 @@ class HistoryWatcher:
                     n = libc.read(fd, buf, len(buf))
                     if n <= 0:
                         break
+                    self._note_inotify_creations(bytes(buf[:n]), wd_paths, IN_CREATE)
                     self._signal()
         finally:
             os.close(fd)
         return True
+
+    def _note_inotify_creations(self, data: bytes, wd_paths: dict[int, str], in_create: int) -> None:
+        """Parse ``struct inotify_event`` records and report created files."""
+        import struct
+
+        offset = 0
+        header = struct.calcsize("iIII")
+        try:
+            while offset + header <= len(data):
+                wd, event_mask, _cookie, name_len = struct.unpack_from("iIII", data, offset)
+                raw_name = data[offset + header : offset + header + name_len]
+                offset += header + name_len
+                if not event_mask & in_create:
+                    continue
+                name = raw_name.split(b"\0", 1)[0].decode("utf-8", "replace")
+                parent = wd_paths.get(wd)
+                if name and parent:
+                    self.note_created(os.path.join(parent, name))
+        except Exception:  # noqa: BLE001 — arrival detection is advisory
+            return

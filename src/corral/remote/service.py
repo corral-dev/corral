@@ -815,6 +815,11 @@ class RemoteService:
             str(params.get("group_id") or ""), bool(params.get("collapsed"))
         )
 
+    def _layout_rename_group(self, connection: Connection, params: dict):
+        return self.hub.layout_rename_group(
+            str(params.get("group_id") or ""), str(params.get("name") or "")
+        )
+
     def _session_get(self, connection: Connection, params: dict):
         return self.hub.session_detail(_key(params))
 
@@ -1362,6 +1367,7 @@ _HANDLERS = {
     protocol.M_LAYOUT_PIN: RemoteService._layout_pin,
     protocol.M_LAYOUT_PIN_GROUP: RemoteService._layout_pin_group,
     protocol.M_LAYOUT_COLLAPSE: RemoteService._layout_collapse,
+    protocol.M_LAYOUT_RENAME_GROUP: RemoteService._layout_rename_group,
     protocol.M_PROJECTS_LIST: RemoteService._projects_list,
     protocol.M_RUNTIMES_LIST: RemoteService._runtimes_list,
     protocol.M_SEARCH: RemoteService._search,

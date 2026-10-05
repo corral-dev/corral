@@ -98,6 +98,22 @@ def is_alive(name: str, *, max_age: float | None = None) -> bool:
     return True
 
 
+def _socket_may_exist(socket: str) -> bool:
+    """False only when the tmux socket file is provably absent.
+
+    ``keepalive.tmux_env`` pins ``TMUX_TMPDIR=/tmp``, so tmux serves ``-L name``
+    from ``/tmp/tmux-<uid>/name``. Unknown layouts (no such directory, no uid)
+    keep the old behavior of asking tmux.
+    """
+    try:
+        directory = f"/tmp/tmux-{os.getuid()}"
+    except AttributeError:  # pragma: no cover - non-POSIX
+        return True
+    if not os.path.isdir(directory):
+        return True
+    return os.path.exists(os.path.join(directory, socket))
+
+
 def _list_tmux_sessions(fields: str) -> list[list[str]]:
     """列出新旧保活 socket 上的托管会话；某个 socket 还不存在时跳过，不报错。"""
     if shutil.which("tmux") is None:
@@ -109,6 +125,8 @@ def _list_tmux_sessions(fields: str) -> list[list[str]]:
     rows: list[list[str]] = []
     seen: set[str] = set()
     for socket in ALL_SOCKET_NAMES:
+        if not _socket_may_exist(socket):
+            continue  # no server behind it: skip a ~30 ms failing tmux spawn
         try:
             out = subprocess.check_output(
                 [*tmux_base_argv(socket), "list-sessions", "-F", fields],

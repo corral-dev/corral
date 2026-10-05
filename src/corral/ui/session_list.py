@@ -618,8 +618,21 @@ class SessionCard(Widget):
         return out
 
 
+def _member_titles(member_sessions: tuple[dict, ...], display_titles: dict) -> tuple[str, ...]:
+    """分屏成员当前行标题（与成员卡同源），按分屏格顺序，供拼分屏显示名。"""
+    import corral
+
+    return tuple(
+        str(display_titles.get(corral.session_key(session), session.get("fallback_title") or ""))
+        for session in member_sessions
+    )
+
+
 class SessionGroupCard(Widget):
-    """会话组三行卡：展开三角+水果名 / 项目与数量 / 空白行（高度与会话卡统一为 3）。
+    """分屏三行卡：展开三角+显示名 / 项目·分屏·数量 / 空白行（高度与会话卡统一为 3）。
+
+    显示名是用户起的名字，未命名时按分屏格顺序拼成员标题（`split_layout.group_display_name`）；
+    内部水果身份名不展示。
 
     第三行故意留空：成员各自已有时间，组卡再写「最近活动」是重复噪音。
     """
@@ -644,17 +657,26 @@ class SessionGroupCard(Widget):
         member_sessions: tuple[dict, ...],
         *,
         pinned: bool = False,
+        member_titles: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self.group = group
         self.member_sessions = member_sessions
         self.pinned = pinned
+        self.member_titles = member_titles
         self._render_signature = self._compute_signature()
+
+    @property
+    def display_name(self) -> str:
+        from corral.split_layout import group_display_name
+
+        return group_display_name(self.group.name, self.member_titles)
 
     def _compute_signature(self) -> tuple:
         # 收起时汇总含「刚刚」绿点，须随成员关注态 / 托管 / 新鲜度更新。
         return (
             self.group.name,
+            self.member_titles,
             self.group.project_cwd,
             self.group.collapsed,
             self.pinned,
@@ -715,10 +737,12 @@ class SessionGroupCard(Widget):
         member_sessions: tuple[dict, ...],
         *,
         pinned: bool = False,
+        member_titles: tuple[str, ...] = (),
     ) -> bool:
         self.group = group
         self.member_sessions = member_sessions
         self.pinned = pinned
+        self.member_titles = member_titles
         signature = self._compute_signature()
         changed = signature != self._render_signature
         self._render_signature = signature
@@ -735,16 +759,13 @@ class SessionGroupCard(Widget):
 
     def render(self) -> Text:
         import corral
-        from corral.split_layout import group_emoji
 
         width = max(10, self.size.width or 40)
         arrow = "▶" if self.group.collapsed else "▼"
         pin = " ↑" if self.pinned else ""
-        emoji = group_emoji(self.group.name)
-        emoji_prefix = f"{emoji} " if emoji else ""
-        # 前缀宽度固定：第二行项目名从同一列起笔，和水果 emoji/Group xxx 左对齐。
-        name_prefix = f"{arrow}{pin} {emoji_prefix}"
-        title = corral._fit_cell(f"{name_prefix}{self.group.name}", width)
+        # 前缀宽度固定：第二行项目名从同一列起笔，和显示名左对齐。
+        name_prefix = f"{arrow}{pin} "
+        title = corral._fit_cell(f"{name_prefix}{self.display_name}", width)
         project = os.path.basename(self.group.project_cwd.rstrip(os.sep))
         if not project:
             project = t("project.unknown")
@@ -755,23 +776,14 @@ class SessionGroupCard(Widget):
         # 不画这条线，避免把已隐藏的内容误画成还在列表里。
         branch_prefix = "│" if not self.group.collapsed else " "
         lower_indent = branch_prefix + indent[1:]
-        count_cell = f" · {t(count_key, count=count)}"
+        count_cell = f" · {t('group.split_label')} · {t(count_key, count=count)}"
         project_cell = corral._fit_cell(
             f"{lower_indent}{project}",
             max(1, width - corral._text_width(count_cell)),
         )
         title = title.rstrip()
         out = Text()
-        if emoji and emoji in title:
-            before, _, after = title.partition(emoji)
-            out.append(before, style="bold")
-            # emoji 本身天然是彩色图形，不需要再加粗；单独成 span 方便
-            # capture.py 把水果字形换成 Twemoji PNG（Cairo 画不出 Color Emoji）。
-            out.append(emoji)
-
-            out.append(after, style="bold")
-        else:
-            out.append(title, style="bold")
+        out.append(title, style="bold")
         out.append(" " * max(0, width - corral._text_width(title)))
         out.append("\n")
         out.append(project_cell.rstrip(), style="bold")
@@ -1668,7 +1680,10 @@ class SessionListView(Vertical):
                 widget.apply_update(row.count, expanded=row.expanded)
             elif isinstance(widget, SessionGroupCard) and row.group is not None:
                 widget.apply_update(
-                    row.group, row.member_sessions, pinned=row.pinned
+                    row.group,
+                    row.member_sessions,
+                    pinned=row.pinned,
+                    member_titles=_member_titles(row.member_sessions, display_titles),
                 )
             elif isinstance(widget, SessionCard) and row.session is not None:
                 key = corral.session_key(row.session)
@@ -1697,10 +1712,12 @@ class SessionListView(Vertical):
         query = self.nav.project_query.strip().casefold()
         if not query or self.group_store is None:
             return visible
+        from corral.split_layout import custom_group_name
+
         visible_keys = {corral.session_key(session) for session in visible}
         by_key = {corral.session_key(session): session for session in sessions}
         for group in self.group_store.groups.values():
-            if query not in group.name.casefold():
+            if query not in custom_group_name(group.name).casefold():
                 continue
             for key in group.session_keys:
                 session = by_key.get(key)
@@ -1732,6 +1749,7 @@ class SessionListView(Vertical):
 
         if self.group_store is not None:
             from corral.models import is_shell_session
+            from corral.split_layout import custom_group_name
 
             for group in self.group_store.ordered_groups():
                 # 终端 pane 会随分屏组合一起持久化成组员，但它不挂任何运行时；
@@ -1745,7 +1763,9 @@ class SessionListView(Vertical):
                 # 历史记录缺失或会话已被明确删除后，侧边栏不显示空壳组。
                 if len(all_members) < 2:
                     continue
-                group_matches = bool(query and query in group.name.casefold())
+                group_matches = bool(
+                    query and query in custom_group_name(group.name).casefold()
+                )
                 members = (
                     all_members
                     if not query or group_matches
@@ -2309,7 +2329,10 @@ class SessionListView(Vertical):
             )
         if row.kind == "group" and row.group is not None:
             card: Widget = SessionGroupCard(
-                row.group, row.member_sessions, pinned=row.pinned
+                row.group,
+                row.member_sessions,
+                pinned=row.pinned,
+                member_titles=_member_titles(row.member_sessions, display_titles),
             )
         elif row.session is not None:
             key = corral.session_key(row.session)

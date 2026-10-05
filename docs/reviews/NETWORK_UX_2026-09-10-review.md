@@ -18,7 +18,7 @@ Required correction: propagate explicit injection outcomes; declare delivery onl
 
 ### P1: A lost response destroys pending-command reconciliation
 
-Location: `ios/Corral/Views/Chat/SessionDetailView.swift` `submitText` catch paths (also `submitPrompt`); `ios/Corral/Store/PendingCommandStore.swift` `updateDelivery`.
+Location: `apple/iOS/Views/Chat/SessionDetailView.swift` `submitText` catch paths (also `submitPrompt`); `apple/iOS/Store/PendingCommandStore.swift` `updateDelivery`.
 
 On any transport exception, the view marks the command rejected and restores its text to the draft. The pending store maps rejection to failed and removes the durable record. If the host executed the command but its reply was lost, reconnection no longer queries its status. Pressing the ordinary retry/send action allocates a new UUID, bypassing host deduplication and potentially executing the same instruction twice.
 

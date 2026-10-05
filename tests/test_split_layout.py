@@ -736,5 +736,49 @@ class DedupeKeepaliveNameTests(unittest.TestCase):
         self.assertEqual(host.warmed, ["bbb"])
 
 
+
+class SplitDisplayNameTests(unittest.TestCase):
+    def test_internal_fruit_names_count_as_unnamed(self) -> None:
+        for name in ("", "Group Orange", "Group Orange 13", "Group Apple 2"):
+            self.assertTrue(split_layout.is_auto_group_name(name), name)
+        for name in ("Release check", "Group Foo", "Group Orange beta", "发版"):
+            self.assertFalse(split_layout.is_auto_group_name(name), name)
+
+    def test_unnamed_split_joins_member_titles_in_pane_order(self) -> None:
+        self.assertEqual(
+            split_layout.group_display_name("Group Orange 13", ["界面重新设计", "重组\n 文件夹", ""]),
+            "界面重新设计 + 重组 文件夹",
+        )
+        self.assertEqual(split_layout.group_display_name("发版检查", ["a", "b"]), "发版检查")
+        self.assertEqual(split_layout.custom_group_name("Group Kiwi"), "")
+        self.assertEqual(split_layout.custom_group_name("发版检查"), "发版检查")
+
+    def test_rename_trims_and_empty_restores_unique_internal_name(self) -> None:
+        store = split_layout.SplitLayoutStore()
+        store.set_group("/p", ["claude:a", "codex:b"])
+        store.set_group("/q", ["claude:c", "codex:d"])
+        first, second = store.groups.values()
+        self.assertTrue(store.rename_group(first.group_id, "  发版   检查  "))
+        self.assertEqual(first.name, "发版 检查")
+        self.assertFalse(store.rename_group(first.group_id, "发版 检查"))
+        self.assertEqual(
+            len(store.rename_group(first.group_id, "x" * 200) and first.name),
+            split_layout.MAX_GROUP_NAME_LENGTH,
+        )
+        self.assertTrue(store.rename_group(first.group_id, "   "))
+        self.assertTrue(split_layout.is_auto_group_name(first.name))
+        self.assertNotEqual(first.name, second.name)
+        self.assertFalse(store.rename_group(first.group_id, ""), "already unnamed")
+        self.assertFalse(store.rename_group("missing", "x"))
+
+    def test_rename_persists_through_layout_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = split_layout.SidebarLayoutDB(os.path.join(tmp, "layout.sqlite3"))
+            gid = next(iter(db.set_group("/p", ["claude:a", "codex:b"]).groups))
+            db.rename_group(gid, "发版检查")
+            reopened = split_layout.SidebarLayoutDB(os.path.join(tmp, "layout.sqlite3"))
+            self.assertEqual(reopened.read().groups[gid].name, "发版检查")
+
+
 if __name__ == "__main__":
     unittest.main()

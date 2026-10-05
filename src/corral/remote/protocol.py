@@ -267,6 +267,7 @@ M_LAYOUT_FOCUS = "layout.setFocus"            # {project, key}
 M_LAYOUT_PIN = "layout.pin"                   # {key}: TUI semantics (group member pins the group)
 M_LAYOUT_PIN_GROUP = "layout.pinGroup"        # {group_id}
 M_LAYOUT_COLLAPSE = "layout.collapse"         # {group_id, collapsed}
+M_LAYOUT_RENAME_GROUP = "layout.renameGroup"  # {group_id, name}: empty name restores the automatic name
 
 M_TERMINAL_ATTACH = "terminal.attach"   # {key, cols, rows} → {cols, rows}; snapshot follows as event
 M_TERMINAL_RESIZE = "terminal.resize"   # {key, cols, rows} → {cols, rows}

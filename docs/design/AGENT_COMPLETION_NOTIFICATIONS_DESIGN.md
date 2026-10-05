@@ -29,7 +29,7 @@
   经 `PushNotifier.on_status_change`（`cli/src/corral/remote/push.py`）
   加密后请中继代发 APNs（`RelayClient.send_push` →
   `relay/internal/hub` `forwardPush` → `internal/push`）。
-- 手机 `NotificationService`（`ios/CorralNSE/NotificationService.swift`）
+- 手机 `NotificationService`（`apple/NotificationService/NotificationService.swift`）
   用 `host_id` 取钥匙串里的开发机公钥，本地解密后改写标题正文；
   `userInfo["session_key"]` 已透出，点击通知可按会话键打开详情；
   `CORRAL_WAITING` 分类已有快捷回复（`PushRegistrar`）。

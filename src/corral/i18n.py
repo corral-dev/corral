@@ -361,6 +361,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Next page",
         "zh": "下一页",
     },
+    "group.split_label": {
+        "en": "Split view",
+        "zh": "分屏",
+    },
     "group.session_count": {
         "en": "{count} sessions",
         "zh": "{count} 个会话",
@@ -456,6 +460,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Read {source} history, then start a new session",
         "zh": "读取 {source} 历史后新建会话",
     },
+    "modal.rename_split": {
+        "en": "Rename split view",
+        "zh": "重命名分屏",
+    },
+    "modal.rename_split_action": {
+        "en": "Name this split; leave empty to use its session titles",
+        "zh": "给这个分屏起名；留空则用会话标题",
+    },
+    "modal.rename_split_hint": {
+        "en": "Enter to save · empty restores the automatic name · Esc to cancel",
+        "zh": "回车保存 · 留空恢复自动名称 · Esc 取消",
+    },
     "modal.export_session": {
         "en": "Export session",
         "zh": "导出会话",
@@ -538,19 +554,19 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "confirm.delete_group": {
         "en": (
-            "Delete all {count} sessions in group “{name}”? This permanently erases "
+            "Delete all {count} sessions in split view “{name}”? This permanently erases "
             "their local history and cannot be undone"
         ),
-        "zh": "删除会话组「{name}」下全部 {count} 个会话？将永久抹掉它们的本地历史，不可恢复",
+        "zh": "删除分屏「{name}」下全部 {count} 个会话？将永久抹掉它们的本地历史，不可恢复",
     },
     "confirm.delete_running_group": {
         "en": (
-            "{running} of the {count} sessions in group “{name}” are still running. "
+            "{running} of the {count} sessions in split view “{name}” are still running. "
             "Deleting will end them first, then permanently erase all their local "
             "history — this cannot be undone"
         ),
         "zh": (
-            "会话组「{name}」下有 {running} 个会话正在进行中。删除会先结束它们，"
+            "分屏「{name}」下有 {running} 个会话正在进行中。删除会先结束它们，"
             "再永久抹掉全部 {count} 个会话的本地历史，不可恢复"
         ),
     },

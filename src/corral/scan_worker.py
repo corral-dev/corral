@@ -46,8 +46,9 @@ HEARTBEAT_MIN_INTERVAL_SECONDS = 5.0
 # per-runtime session ids (message/mtime churn, no arrivals), the gap between
 # full parses ramps from the poll floor up to this cap. A new/removed session
 # id, changed keep ids, or a long FS-quiet stretch resets to the floor, so
-# idle-to-arrival latency is unchanged and arrivals during sustained churn
-# wait at most this long plus the consumer gap.
+# idle-to-arrival latency is unchanged. A watcher-reported new session
+# history file (``HistoryWatcher.arrival_seq``) also resets, so arrivals during
+# sustained churn are parsed on the next pass instead of waiting out this cap.
 CHURN_BACKOFF_MAX_SECONDS = 24.0
 # Same cap under memory pressure: cold rescans stop compounding swap thrash.
 CHURN_BACKOFF_PRESSURED_MAX_SECONDS = 60.0
@@ -388,6 +389,7 @@ def run_loop(
     last_action_mono = 0.0
     last_heartbeat_mono = 0.0
     pressured = False
+    arrival_seq = int(getattr(watcher, "arrival_seq", 0) or 0) if watcher is not None else 0
     try:
         while True:
             if parent_pid and _parent_dead(parent_pid):
@@ -398,6 +400,14 @@ def run_loop(
                     if watcher.wait(0):
                         last_event_mono = now_mono
                     watcher.clear()
+                    seq = int(getattr(watcher, "arrival_seq", 0) or 0)
+                    if seq != arrival_seq:
+                        # A new session history file: parse on the next pass
+                        # instead of waiting out churn backoff (up to 60 s
+                        # under memory pressure) — consumers need the arrival.
+                        arrival_seq = seq
+                        streak = 0
+                        next_parse_at = min(next_parse_at, now_mono)
                 except Exception:  # noqa: BLE001 — watcher is advisory
                     pass
             if now_mono - last_action_mono < floor:

@@ -24,7 +24,7 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,12 +64,45 @@ _FRUIT_EMOJI = {
 _FRUIT_NAMES = tuple(_FRUIT_EMOJI)
 
 
+# 用户给分屏起名的长度上限（侧栏一行放不下也会截断，这里只防异常长输入落盘）。
+MAX_GROUP_NAME_LENGTH = 80
+GROUP_TITLE_SEPARATOR = " + "
+
+
 def group_emoji(name: str) -> str:
     """从 `Group <Fruit>`／`Group <Fruit> <n>` 组名中取对应水果 emoji；取不到则返回空串。"""
     if not name.startswith("Group "):
         return ""
     fruit = name[len("Group ") :].split(" ", 1)[0]
     return _FRUIT_EMOJI.get(fruit, "")
+
+
+def is_auto_group_name(name: str) -> bool:
+    """内部水果身份名（`Group <Fruit>` / `Group <Fruit> N`）或空名视为「未命名」。
+
+    这类名字只作落盘身份，不展示；其余名字是用户起的，原样展示。
+    """
+    if not name:
+        return True
+    if not name.startswith("Group "):
+        return False
+    parts = name[len("Group ") :].split(" ")
+    if parts[0] not in _FRUIT_EMOJI:
+        return False
+    return len(parts) == 1 or (len(parts) == 2 and parts[1].isdigit())
+
+
+def group_display_name(name: str, member_titles: Iterable[str]) -> str:
+    """分屏显示名：用户起的名字原样返回；未命名时按分屏格顺序拼成员标题。"""
+    if not is_auto_group_name(name):
+        return name
+    titles = [" ".join(str(title).split()) for title in member_titles]
+    return GROUP_TITLE_SEPARATOR.join(title for title in titles if title)
+
+
+def custom_group_name(name: str) -> str:
+    """用户起的名字；未命名（水果身份名）返回空串。筛选只匹配这一个。"""
+    return "" if is_auto_group_name(name) else name
 
 
 def layout_cache_dir() -> Path:
@@ -367,6 +400,23 @@ class SplitLayoutStore:
         for key in list(self.session_to_group):
             if self.session_to_group.get(key) == gid:
                 del self.session_to_group[key]
+
+    def rename_group(self, group_id: str, name: str) -> bool:
+        """用户给分屏起名；空名恢复自动名（换回一个内部水果身份名）。实际变化时返回 True。"""
+        group = self.groups.get(group_id)
+        if group is None:
+            return False
+        cleaned = " ".join(str(name or "").split())[:MAX_GROUP_NAME_LENGTH]
+        if not cleaned:
+            if is_auto_group_name(group.name):
+                return False
+            group.name = ""
+            group.name = self._new_group_name()
+            return True
+        if cleaned == group.name:
+            return False
+        group.name = cleaned
+        return True
 
     def _new_group_name(self) -> str:
         """生成当前布局内不重名的水果组名；水果名用尽后随机挑一种水果加序号。"""
@@ -830,6 +880,9 @@ class SidebarLayoutDB:
 
     def toggle_group_pin(self, group_id: str) -> SplitLayoutStore:
         return self._mutate(lambda store: store.toggle_group_pin(group_id))
+
+    def rename_group(self, group_id: str, name: str) -> SplitLayoutStore:
+        return self._mutate(lambda store: store.rename_group(group_id, name))
 
     # ---- 侧边栏显隐（启动时套用的偏好，不参与跨窗口实时同步）----
 

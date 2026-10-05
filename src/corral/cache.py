@@ -120,7 +120,11 @@ class PerformanceCache:
     """多进程安全的 SQLite 派生缓存；失败时始终按未命中处理。"""
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or cache_path()
+        # The process-wide default instance is created at import time; resolving
+        # the location then would pin it before callers (tests, fixtures) set
+        # CORRAL_CACHE_DIR and leak their data into the user's real cache.
+        self._explicit_path = path
+        self._resolved_path: tuple[tuple, Path] | None = None
         self._local = threading.local()
         self._pending_lock = threading.Lock()
         self._pending_sessions: list[tuple] = []
@@ -130,12 +134,31 @@ class PerformanceCache:
         self._snapshot_lock = threading.Lock()
         self._snapshots: dict[str, dict[str, tuple]] | None = None
 
+    @property
+    def path(self) -> Path:
+        if self._explicit_path is not None:
+            return self._explicit_path
+        # Resolve per access so a later CORRAL_CACHE_DIR takes effect, but memoize
+        # on the inputs: cache_dir() stats the directory and this is a hot path.
+        key = (getenv("CACHE_DIR"), os.environ.get("XDG_CACHE_HOME"), os.environ.get("HOME"))
+        resolved = self._resolved_path
+        if resolved is None or resolved[0] != key:
+            resolved = self._resolved_path = (key, cache_path())
+        return resolved[1]
+
     @contextmanager
     def _connect(self, *, create: bool = True) -> Iterator[sqlite3.Connection | None]:
         if not enabled():
             yield None
             return
         conn = getattr(self._local, "connection", None)
+        if conn is not None and getattr(self._local, "connection_path", None) != self.path:
+            # The configured location changed since this thread connected.
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+            self._local.connection = conn = None
         if conn is not None and create:
             # 连接已经建好，就说明目录当时已创建成功，热路径上不必再 mkdir + chmod
             # 一遍：一次 Codex 扫描原本要为此白做约 1900 次系统调用。create=False
@@ -161,6 +184,7 @@ class PerformanceCache:
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA busy_timeout=80")
                 self._local.connection = conn
+                self._local.connection_path = self.path
                 if create:
                     self._init_schema(conn)
                     try:

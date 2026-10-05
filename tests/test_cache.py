@@ -86,6 +86,39 @@ class PerformanceCacheTests(unittest.TestCase):
         self.assertEqual(broken.status()["session_count"], 0)
 
 
+class DefaultCacheLocationTests(unittest.TestCase):
+    """The default instance exists from import; it must follow CORRAL_CACHE_DIR set later."""
+
+    def test_default_instance_follows_cache_dir_set_after_creation(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            history = Path(first) / "session.jsonl"
+            history.write_text("{}\n", encoding="utf-8")
+            messages = [ConversationMessage("user", "fixture", 1.0)]
+            with mock.patch.dict(os.environ, {"CORRAL_CACHE": "1", "CORRAL_CACHE_DIR": first}):
+                cache = PerformanceCache()
+                self.assertEqual(cache.path, Path(first) / "performance-cache.sqlite3")
+                cache.put_conversation("claude", "claude:abc", str(history), messages)
+                os.environ["CORRAL_CACHE_DIR"] = second
+                self.assertEqual(cache.path, Path(second) / "performance-cache.sqlite3")
+                self.assertIsNone(cache.get_conversation("claude", "claude:abc", str(history)))
+                cache.put_conversation("claude", "claude:abc", str(history), messages)
+            self.assertTrue((Path(second) / "performance-cache.sqlite3").exists())
+
+    def test_ui_test_import_order_does_not_pin_real_cache(self):
+        with tempfile.TemporaryDirectory() as isolated:
+            env = {k: v for k, v in os.environ.items() if not k.endswith("CACHE_DIR")}
+            script = (
+                "import os\n"
+                "from corral import split_layout, cache\n"
+                f"os.environ['CORRAL_CACHE_DIR'] = {isolated!r}\n"
+                "print(cache.get_cache().path)\n"
+            )
+            out = subprocess.run(
+                [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+            ).stdout.strip()
+            self.assertEqual(out, str(Path(isolated) / "performance-cache.sqlite3"))
+
+
 class StaleSessionPurgeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

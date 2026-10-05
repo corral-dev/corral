@@ -44,8 +44,10 @@ from corral.ui.footer import CorralFooter
 from corral.ui.modals import (
     COPY_SESSION_CHOICE,
     EXPORT_SESSION_CHOICE,
+    RENAME_SPLIT_CHOICE,
     RESTART_SESSION_CHOICE,
     ConfirmModal,
+    TextInputModal,
     choose_target_runtime,
     new_session_flow,
 )
@@ -77,6 +79,10 @@ REFRESH_INTERVAL_MAX = REFRESH_RECONCILE_FALLBACK
 # 到点后跳过这一轮扫描（不是拉长间隔：FS 事件仍会唤醒，只是这次不扫）。
 # 禁止把 REFRESH_MIN_GAP 改大来达到同样效果——那会拖慢所有正常刷新。
 REFRESH_HOST_COOLDOWN = 6.0
+# Hot-session state probe between full scans (dots, Ended, hosted panes); not
+# scaled by memory pressure. Managed tmux panes are listed every Nth probe.
+STATE_PROBE_INTERVAL = 1.0
+STATE_PROBE_HOSTS_EVERY = 4
 CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重扫轻得多，保持高频）
 # 秒，侧边栏记忆的跨窗口同步间隔。每次只读一个版本号（单行 SELECT），版本号没变就什么都不做；
 # 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
@@ -698,6 +704,7 @@ class MainScreen(
             else REFRESH_RECONCILE_FALLBACK
         )
         last_refresh = 0.0
+        last_probe = (0.0, 0)
         try:
             while not worker.is_cancelled:
                 # Back off the polling floor under memory pressure (once per
@@ -714,12 +721,18 @@ class MainScreen(
                         break
                     if worker.cancelled_event.is_set():
                         return
+                    last_probe = self._probe_session_state(last_probe)
                 if worker.is_cancelled:
                     return
-                if last_refresh > 0:
+                while last_refresh > 0:
                     gap = min_gap - (_time.monotonic() - last_refresh)
-                    if gap > 0 and worker.cancelled_event.wait(gap):
+                    if gap <= 0:
+                        break
+                    # Dots and hosted state keep moving while the full scan waits
+                    # out its (pressure-scaled) minimum gap.
+                    if worker.cancelled_event.wait(min(STATE_PROBE_INTERVAL, gap)):
                         return
+                    last_probe = self._probe_session_state(last_probe)
                 # 托管刚成功（新建/重启）：pid 快照变化让签名必穿，紧接着的
                 # 全量重扫（秒级，握住 GIL）会和首帧抓取抢时间片。跳过这一轮
                 # 扫描，让首帧先上屏；FS 事件仍保留（watcher.clear 照常），
@@ -752,6 +765,31 @@ class MainScreen(
             watcher.stop()
             if self._history_watcher is watcher:
                 self._history_watcher = None
+
+    def _probe_session_state(self, last_probe: tuple[float, int]) -> tuple[float, int]:
+        """Hot-session state probe between full scans (refresh worker thread only).
+
+        ``store.refresh_state`` re-stats live histories, drops exited pids and
+        re-derives dots without rescanning, so it is exempt from the memory
+        pressure backoff that slows the full scan. Returns the new
+        ``(last_run_monotonic, count)``.
+        """
+        import time as _time
+
+        at, count = last_probe
+        now = _time.monotonic()
+        if now - at < STATE_PROBE_INTERVAL or not self.store.loaded:
+            return last_probe
+        count += 1
+        try:
+            changed = self.store.refresh_state(
+                list_hosts=count % STATE_PROBE_HOSTS_EVERY == 0,
+            )
+        except Exception:  # noqa: BLE001 — the next full scan converges
+            changed = False
+        if changed:
+            self.app.call_from_thread(self._rebuild_list)
+        return (now, count)
 
     def _reclaim_inactive_hosts(self) -> None:
         """Silent reclaim tick; runs on the refresh worker thread only.
@@ -1883,13 +1921,21 @@ class MainScreen(
             and not is_shell_session(session)
             and not session.get("provisional")
         )
+        rename_group = self._rename_target_group()
         target = await choose_target_runtime(
-            self.app, self.store, source, restart_available=restart_available,
+            self.app,
+            self.store,
+            source,
+            restart_available=restart_available,
+            rename_split=rename_group is not None,
         )
         if target is None:
             return
         import corral
 
+        if target == RENAME_SPLIT_CHOICE and rename_group is not None:
+            await self._rename_split(rename_group)
+            return
         if target == RESTART_SESSION_CHOICE:
             await self._restart_hosted_session(session)
             return
@@ -2256,6 +2302,44 @@ class MainScreen(
         self._apply_layout_change(lambda store: store.remove_session(key))
         await self._rebuild_list()
 
+    def _rename_target_group(self):
+        """Ctrl+T 时光标停在分屏卡上（列表持焦）才提供「重命名分屏」。"""
+        if self._any_embed_focused():
+            return None
+        try:
+            return self.query_one(SessionListView).selected_group()
+        except Exception:
+            return None
+
+    def _split_display_name(self, group) -> str:
+        """分屏显示名：用户起的名字，否则按分屏格顺序拼成员标题（与侧栏同一规则）。"""
+        from corral.split_layout import group_display_name
+
+        titles = [
+            self.store.get_title(session)
+            for key in group.session_keys
+            if (session := self.store.find_session(key)) is not None
+        ]
+        return group_display_name(group.name, titles)
+
+    async def _rename_split(self, group) -> None:
+        from corral.split_layout import custom_group_name
+
+        name = await self.app.push_screen_wait(
+            TextInputModal(
+                t("modal.rename_split"),
+                custom_group_name(group.name),
+                self._split_display_name(group),
+                t("modal.rename_split_hint"),
+            )
+        )
+        if name is None:
+            return
+        self._apply_layout_change(
+            lambda store, gid=group.group_id, value=name: store.rename_group(gid, value)
+        )
+        await self._rebuild_list()
+
     async def _delete_session_group(self, group) -> None:
         """x 落在会话组标题上：把整组会话的本地历史一次删干净。
 
@@ -2286,15 +2370,16 @@ class MainScreen(
             await self._rebuild_list()
             return
         running = sum(1 for *_, keepalive_name in members if keepalive_name)
+        display_name = self._split_display_name(group)
         message = (
             t(
                 "confirm.delete_running_group",
-                name=group.name,
+                name=display_name,
                 count=len(members),
                 running=running,
             )
             if running
-            else t("confirm.delete_group", name=group.name, count=len(members))
+            else t("confirm.delete_group", name=display_name, count=len(members))
         )
         confirmed = await self.app.push_screen_wait(
             ConfirmModal(message, confirm_key="x")

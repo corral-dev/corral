@@ -893,6 +893,49 @@ class SessionHubStatusHookTests(unittest.TestCase):
     def _hook(self, session: dict, previous: str, current: str) -> None:
         self.calls.append((previous, current))
 
+    def test_desktop_notification_does_not_depend_on_phone_preferences(self) -> None:
+        events = []
+        self.hub._on_event = lambda channel, payload: events.append((channel, payload))
+        self.hub._sessions_watchers = 1
+        session = _session()
+        session["completion_id"] = ""
+        self.hub.store.sessions = {"pi": [session]}
+        self.hub._snapshot_status()
+        session["status_tag"] = sesskit_titles.STATUS_DONE
+        self.hub._detect_status_changes()
+        self.assertEqual(events, [])  # Weak DONE must not become a desktop alert.
+        session["completion_id"] = "native-round-1"
+        self.hub._detect_status_changes()
+        self.assertEqual(events[-1][1]["notification_kind"], "completed")
+        self.hub._detect_status_changes()
+        self.assertEqual(len(events), 1)
+        session["completion_id"] = "native-round-2"
+        self.hub._detect_status_changes()
+        self.assertEqual(len(events), 2)  # Identical text in a second round still alerts.
+        session["status_tag"] = sesskit_titles.STATUS_ABORTED
+        session["completion_id"] = "native-error"
+        self.hub._detect_status_changes()
+        self.assertEqual(events[-1][1]["notification_kind"], "aborted")
+
+    def test_desktop_baseline_and_waiting(self) -> None:
+        events = []
+        self.hub._on_event = lambda channel, payload: events.append((channel, payload))
+        self.hub._sessions_watchers = 1
+        session = _session(status_tag=sesskit_titles.STATUS_DONE, attention="waiting")
+        session["completion_id"] = "old-round"
+        self.hub.store.sessions = {"pi": [session]}
+        self.hub._snapshot_status()
+        self.hub._last_attention = {"pi:s1": "waiting"}
+        self.hub._detect_status_changes()
+        self.hub._detect_attention_changes()
+        self.assertEqual(events, [])
+        self.hub._last_attention = {"pi:s1": "working"}
+        self.hub._detect_attention_changes()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][1]["notification_kind"], "waiting")
+        self.hub._detect_attention_changes()
+        self.assertEqual(len(events), 1)
+
     def test_first_snapshot_does_not_push(self) -> None:
         path = Path(self._tmp.name) / "pi.jsonl"
         path.write_text("", encoding="utf-8")
