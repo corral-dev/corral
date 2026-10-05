@@ -1472,7 +1472,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             "source": "pi", "id": real_id, "short_id": real_id[:12],
             "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
             "native_title": "真会话", "fallback_title": "真会话",
-            "cwd": "/tmp/proj", "live": False,
+            "cwd": "/tmp/proj", "live": False, "keepalive_name": kname,
         }
         app = CorralApp(store, embed_ok=True)
         real_refresh = store.refresh
@@ -3679,7 +3679,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.index, len(STICKY_IDS))  # 默认落在第一条会话，跳过固定头
             self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
-            self.assertIn("Filter groups / projects / titles", search.placeholder)
+            self.assertIn("Filter splits / projects / titles", search.placeholder)
             self.assertFalse(search.has_class("-active"))
 
             await pilot.press("down")
@@ -9167,6 +9167,13 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
     会静默用原生恢复另起一个进程，右栏冒出一个刚从历史恢复的新界面，用户看到的
     就是"会话已中断"，而且两个进程写同一份历史有互相覆盖的风险。
     """
+
+    def setUp(self) -> None:
+        # The store drops `live` once the recorded pid has exited; the fixture pid
+        # stands for a process in another terminal window, so report it alive.
+        patcher = mock.patch("corral.store._pid_alive", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     @staticmethod
     def _external_sessions():

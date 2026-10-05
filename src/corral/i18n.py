@@ -123,33 +123,33 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # 筛选框同时匹配组名、项目名、路径和会话标题；搜对话正文是
     # 另一条路（Ctrl+F 全文搜索弹窗），不在这个框里。
     "filter.placeholder": {
-        "en": "Filter groups / projects / titles…",
-        "zh": "筛选分组 / 项目 / 标题…",
+        "en": "Filter splits / projects / titles…",
+        "zh": "筛选分屏 / 项目 / 标题…",
     },
     "filter.placeholder_count": {
-        "en": "Filter groups / projects / titles ({count})",
-        "zh": "筛选分组 / 项目 / 标题 ({count})",
+        "en": "Filter splits / projects / titles ({count})",
+        "zh": "筛选分屏 / 项目 / 标题 ({count})",
     },
     "filter.placeholder_count_active": {
-        "en": "Filter groups / projects / titles… ({count})",
-        "zh": "筛选分组 / 项目 / 标题… ({count})",
+        "en": "Filter splits / projects / titles… ({count})",
+        "zh": "筛选分屏 / 项目 / 标题… ({count})",
     },
     # Honest staleness when the list has not been rescanned recently (event-driven idle).
     "filter.placeholder_count_stale": {
-        "en": "Filter groups / projects / titles ({count}) · updated {age}s ago",
-        "zh": "筛选分组 / 项目 / 标题 ({count}) · {age} 秒前更新",
+        "en": "Filter splits / projects / titles ({count}) · updated {age}s ago",
+        "zh": "筛选分屏 / 项目 / 标题 ({count}) · {age} 秒前更新",
     },
     "filter.placeholder_count_active_stale": {
-        "en": "Filter groups / projects / titles… ({count}) · updated {age}s ago",
-        "zh": "筛选分组 / 项目 / 标题… ({count}) · {age} 秒前更新",
+        "en": "Filter splits / projects / titles… ({count}) · updated {age}s ago",
+        "zh": "筛选分屏 / 项目 / 标题… ({count}) · {age} 秒前更新",
     },
     "filter.load_error": {
-        "en": "Filter groups / projects / titles… — {error}; retrying",
-        "zh": "筛选分组 / 项目 / 标题… — {error}；正在自动重试",
+        "en": "Filter splits / projects / titles… — {error}; retrying",
+        "zh": "筛选分屏 / 项目 / 标题… — {error}；正在自动重试",
     },
     "filter.no_sessions": {
-        "en": "Filter groups / projects / titles… — no {names} sessions found",
-        "zh": "筛选分组 / 项目 / 标题… — 未找到任何 {names} 会话记录",
+        "en": "Filter splits / projects / titles… — no {names} sessions found",
+        "zh": "筛选分屏 / 项目 / 标题… — 未找到任何 {names} 会话记录",
     },
     "filter.clear": {
         "en": "×",

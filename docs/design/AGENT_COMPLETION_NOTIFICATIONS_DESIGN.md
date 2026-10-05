@@ -385,3 +385,7 @@ Slice 1/2 可先按“有 `completion_id` 则用、无则对 DONE 保守静默�
 - [ ] 中继验收：整表订阅 + 每个助手一条详情（REMOTE_KB 硬门槛）。
 
 <!-- 该文档整理/压缩于 2026-09-29 -->
+
+### Invisible device mute correction (2026-10-05)
+
+Both owned hosts were verified to retain disabled completion/abort preferences for their paired iPhones. The client registration only supplied token/environment, and its Settings screen did not expose these preferences. Apple clients now show device-local completed/aborted switches, default on, and include both in every registration. Explicit local off choices persist. Do not reset unrelated devices (the iPad's retained BadDeviceToken records are a separate problem). Desktop notification events are independent of APNs device preferences and list pagination; see the remote knowledge base.

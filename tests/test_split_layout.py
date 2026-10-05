@@ -750,6 +750,8 @@ class SplitDisplayNameTests(unittest.TestCase):
             "界面重新设计 + 重组 文件夹",
         )
         self.assertEqual(split_layout.group_display_name("发版检查", ["a", "b"]), "发版检查")
+        self.assertEqual(split_layout.group_display_name("Group Kiwi", ["...", "导出报表"]), "导出报表")
+        self.assertEqual(split_layout.group_display_name("Group Kiwi", ["...", "…"]), "... + …")
         self.assertEqual(split_layout.custom_group_name("Group Kiwi"), "")
         self.assertEqual(split_layout.custom_group_name("发版检查"), "发版检查")
 

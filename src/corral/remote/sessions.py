@@ -471,7 +471,7 @@ class SessionHub:
         self._on_event = on_event or (lambda channel, data: None)
         self._lock = threading.Lock()
         # 同会话重启串行锁：杀旧起新必须串行，禁止并行起新复用未死透的旧名。
-        self._restart_locks: dict[str, threading.Lock] = {}
+        self._restart_locks: dict[str, threading.RLock] = {}
         self._screens: dict[str, _ScreenWatch] = {}
         # Desktop raw terminal streams: key -> (stream, viewer ids).
         self._terminals: dict[str, tuple[TerminalStream, set[str]]] = {}
@@ -2356,8 +2356,29 @@ class SessionHub:
         if not embed.available():
             raise ActionError("unavailable", t("remote.err.tmux_missing_resume"))
         session = self.require_session(key)
-        if session.get("keepalive_name"):
-            return self.session_payload(session, self._layout())
+        canonical = session_key(session)
+        # Resume, explicit restart and failure-triggered input recovery share
+        # one lock. Recovery already holds it when it calls us, hence RLock.
+        with self._restart_lock_for(canonical):
+            return self._resume_locked(canonical)
+
+    def _resume_locked(self, canonical: str) -> dict:
+        session = self.require_session(canonical)
+        name = str(session.get("keepalive_name") or "")
+        if name:
+            state = embed.pane_liveness(name)
+            if state == "alive":
+                return self.session_payload(session, self._layout())
+            if state != "dead":
+                # A timeout is not evidence of death. Do not report success or
+                # start a competing assistant while the old pane may be alive.
+                raise ActionError(
+                    "unavailable", t("remote.err.resume_failed", error=self._inject_cause_text("tmux_busy"))
+                )
+            self.store.mark_hosted(canonical, None)
+            embed.close_channel(name)
+            embed.forget_alive(name)
+            session = self.require_session(canonical)
         runtime = self._runtime_of(session)
         try:
             plan = runtime.build_resume_plan(session)
@@ -2369,17 +2390,16 @@ class SessionHub:
             name = embed.host_session(plan, runtime.id, ident, width, height)
         except embed.EmbedError as exc:
             raise ActionError("unavailable", t("remote.err.resume_failed", error=exc)) from exc
-        canonical = session_key(session)
         self.store.mark_hosted(canonical, name)
         refreshed = self.store.find_session(canonical) or session
         return self.session_payload(refreshed, self._layout())
 
-    def _restart_lock_for(self, canonical: str) -> threading.Lock:
+    def _restart_lock_for(self, canonical: str) -> threading.RLock:
         """同会话重启串行：杀旧起新必须在同一把锁里，禁止并行起新。"""
         with self._lock:
             lock = self._restart_locks.get(canonical)
             if lock is None:
-                lock = threading.Lock()
+                lock = threading.RLock()
                 self._restart_locks[canonical] = lock
             return lock
 

@@ -184,7 +184,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
             self.assertEqual(calls, ["claude:one"])
 
             calls.clear()
-            live_two = dict(two, live=True, pid=2)
+            live_two = dict(two, live=True, pid=os.getpid())
             self.store._merge_scanned({"claude": [changed_one], "codex": [live_two]})
             self.assertEqual(calls, ["codex:two"])
 

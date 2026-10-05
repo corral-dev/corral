@@ -93,11 +93,17 @@ def is_auto_group_name(name: str) -> bool:
 
 
 def group_display_name(name: str, member_titles: Iterable[str]) -> str:
-    """分屏显示名：用户起的名字原样返回；未命名时按分屏格顺序拼成员标题。"""
+    """分屏显示名：用户起的名字原样返回；未命名时按分屏格顺序拼成员标题。
+
+    只有标点的占位标题（如还没生成标题时的 ``...``）不参与拼接，免得出现
+    「... + 某标题」；全是占位时才原样拼。
+    """
     if not is_auto_group_name(name):
         return name
     titles = [" ".join(str(title).split()) for title in member_titles]
-    return GROUP_TITLE_SEPARATOR.join(title for title in titles if title)
+    titles = [title for title in titles if title]
+    meaningful = [title for title in titles if any(ch.isalnum() for ch in title)]
+    return GROUP_TITLE_SEPARATOR.join(meaningful or titles)
 
 
 def custom_group_name(name: str) -> str:

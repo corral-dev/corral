@@ -112,6 +112,7 @@ flowchart TD
 9. **SVG 不能证明真彩色。** F12/Textual 的 SVG 导出可能把真彩色压成灰阶；排查 runtime 配色需以真实终端或界面样式验证为准。
 10. **界面异常后后台循环应继续。** 抓帧或重扫发生未预料异常时记录错误后继续下一轮，不能因为观测或单次失败让后台线程静默死亡。
 11. **活进程卡死时用信号取栈，不加新命令。** `observe.install_stack_dumps()` 在 TUI 与 `remote _serve` 启动时安装 SIGUSR1 处理器（无该信号的平台上为无操作）；诊断时用 `kill -USR1 <pid>` 把全线程栈追加到 `stacks.log`（带时间与 pid 头行，超 1MB 轮转一代）。`agent_api` 保持只读：不得为此新增“向某 pid 发信号”的子命令；取 pid 用既有只读可见性（`list --live` 的 `pid` 字段）。栈文件只作本地排查，不提交仓库。
+12. **Test runs still write into the real `events.log`.** `observe.EVENTS_LOG` is resolved once at import, so a test that later points `CORRAL_CACHE_DIR` at a temp dir still logs to `~/.cache/corral/events.log`; only UI workers in `scripts/ci-test.py` enter `isolated_test_resources` before import. Observed 2026-10-05: bursts of hundreds of `remote_device_attached` / `remote_device_superseded` events in one second, with empty `device` and `address`, landed in the user's log during a connection investigation. Until fixed, filter those bursts out (empty device and address, same second) before attributing them to real clients. Improvement item: resolve the log path per call from the environment, or isolate every CI worker, like the parallel fix for the derived cache's import-time path.
 
 ## §7 验证路径
 
@@ -150,5 +151,8 @@ flowchart TD
 - 内嵌实时终端的抓帧协议和控制通道实现细节，参见内嵌实时终端知识库；
 - 发布、远程遥测、Prometheus 或任何远端收集方案；
 - 未在当前实现中定义的日志保留天数、上传、检索或告警机制。
+
+
+State-refresh tests that claim a live process must use a real owned process PID (or explicitly mock the first-hand PID probe). Invented PIDs become ended under the current disk/process freshness check and invalidate attention, external-session, and stop-tombstone fixtures. This requirement preserves production liveness checks.
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
