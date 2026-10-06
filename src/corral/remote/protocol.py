@@ -213,6 +213,9 @@ CAPABILITY_DESKTOP_LAYOUT = "desktop_layout"
 # Desktop clients with their own emulator: raw pane output on ``term:<key>``,
 # sizing through the widest-viewer registry (see remote/terminal_stream.py).
 CAPABILITY_TERMINAL_STREAM = "terminal_stream"
+# Every human prompt of a session (session.userPrompts), independent of the
+# history window a client has paged in. Old hosts lack the method entirely.
+CAPABILITY_USER_PROMPTS = "user_prompts"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -224,6 +227,8 @@ M_SESSION_GET = "session.get"
 M_SESSION_MESSAGES = "session.messages"
 M_SESSION_TOOL_DETAIL = "session.toolDetail"
 M_SESSION_PROMPTS = "session.prompts"
+# Read-only: {key} → every human prompt of the session, oldest first (Your prompts).
+M_SESSION_USER_PROMPTS = "session.userPrompts"
 M_SESSION_WATCH = "session.watch"
 M_SESSION_UNWATCH = "session.unwatch"
 M_SESSION_MARK_READ = "session.markRead"
@@ -274,6 +279,9 @@ M_TERMINAL_RESIZE = "terminal.resize"   # {key, cols, rows} → {cols, rows}
 M_TERMINAL_RESYNC = "terminal.resync"   # {key}: a fresh snapshot event (after a seq gap)
 M_TERMINAL_INPUT = "terminal.input"     # {key, data: base64}: raw bytes to the pane
 M_TERMINAL_DETACH = "terminal.detach"   # {key}
+# {key, background, foreground?} (#rrggbb): the viewer's terminal colours, answered to the
+# agent's OSC 10/11 queries; attach accepts the same two fields.
+M_TERMINAL_THEME = "terminal.theme"
 
 M_PROJECTS_LIST = "projects.list"
 M_SEARCH = "search"

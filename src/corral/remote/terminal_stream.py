@@ -19,11 +19,17 @@ that sees a gap asks for ``terminal.resync``.
 Sizing: desktop viewers vote in the same widest-viewer registry the TUI windows
 use (`embed.desired_host_size`); the pane is resized to the winner. Read-only
 viewers watch without voting. The phone never uses this module.
+
+Colours: a desktop viewer reports its terminal background and foreground
+(``#rrggbb``); they are injected into the pane as OSC 11/10 answers, the same
+`refresh-client -r` path the TUI uses for its outer terminal, so agents that
+query the background pick the matching light or dark theme.
 """
 
 from __future__ import annotations
 
 import base64
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -47,6 +53,23 @@ _STATE_FORMAT = "|".join(
         "#{scroll_region_lower}", "#{cursor_shape}", "#{cursor_blinking}",
     )
 )
+
+
+_HEX_COLOR = re.compile(r"#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})")
+
+
+def theme_report(background: str, foreground: str = "") -> bytes | None:
+    """OSC 11 (+ OSC 10) answers for ``#rrggbb`` colours; None without a valid background."""
+    parts = []
+    for code, value in ((11, background), (10, foreground)):
+        match = _HEX_COLOR.fullmatch((value or "").strip())
+        if match is None:
+            if code == 11:
+                return None
+            continue
+        channels = "/".join(c.lower() * 2 for c in match.groups())
+        parts.append(f"\x1b]{code};rgb:{channels}\x07".encode("ascii"))
+    return b"".join(parts)
 
 
 class PaneState:
@@ -141,6 +164,8 @@ class TerminalStream:
         self._votes_lock = threading.Lock()
         self._size: tuple[int, int] = (0, 0)
         self._channel: embed.ControlChannel | None = None
+        self._theme: bytes | None = None
+        self._theme_pending = False
         self._ended = False
         self._need_snapshot = threading.Event()
         self._wake = threading.Event()
@@ -192,6 +217,12 @@ class TerminalStream:
     def send_input(self, data: bytes) -> bool:
         return embed.send_bytes(self.name, data)
 
+    def set_theme(self, report: bytes) -> None:
+        """Remember the viewer's colours; the worker injects them into the pane."""
+        self._theme = report
+        self._theme_pending = True
+        self._wake.set()
+
     # -- worker --------------------------------------------------------
 
     def _run(self) -> None:
@@ -209,6 +240,8 @@ class TerminalStream:
                 if now >= next_tick:
                     next_tick = now + _TICK_SECONDS
                     self._tick()
+                if self._theme_pending:
+                    self._apply_theme()
                 if self._need_snapshot.is_set():
                     self._need_snapshot.clear()
                     self._snapshot()
@@ -239,6 +272,15 @@ class TerminalStream:
             if (width, height) != self._size:
                 self._need_snapshot.set()
 
+    def _apply_theme(self) -> None:
+        # The tick rebinds a dead channel and marks the report pending again.
+        channel = self._channel
+        if channel is None or channel.dead:
+            return
+        self._theme_pending = False
+        if self._theme is not None and embed.supports_theme_report():
+            embed.report_theme(channel, self._theme)
+
     def _apply_size(self, effective: tuple[int, int]) -> None:
         if effective == self._size or not embed.should_resize_host(*effective):
             return
@@ -268,6 +310,8 @@ class TerminalStream:
         self._channel = channel
         self._ended = False
         self._need_snapshot.set()
+        # A new control client (native restart, reopened channel) starts without the report.
+        self._theme_pending = self._theme is not None
         return channel
 
     def _end(self) -> None:

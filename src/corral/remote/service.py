@@ -56,6 +56,7 @@ _READONLY_METHODS = frozenset(
         protocol.M_SESSION_GET,
         protocol.M_SESSION_MESSAGES,
         protocol.M_SESSION_PROMPTS,
+        protocol.M_SESSION_USER_PROMPTS,
         protocol.M_SESSION_WATCH,
         protocol.M_SESSION_UNWATCH,
         protocol.M_SCREEN_WATCH,
@@ -87,6 +88,12 @@ _TERMINAL_INPUT_MAX = 16 * 1024
 def _terminal_viewer(connection: Connection) -> str:
     """Size-vote identity: one per live connection, shared registry with the TUI."""
     return f"remote:{connection.device_id or connection.device_public_key[:16]}:{id(connection):x}"
+
+
+def _terminal_theme(params: dict) -> bytes | None:
+    from corral.remote.terminal_stream import theme_report
+
+    return theme_report(str(params.get("background") or ""), str(params.get("foreground") or ""))
 
 
 def _terminal_grid(params: dict) -> tuple[int, int]:
@@ -740,6 +747,7 @@ class RemoteService:
                 protocol.CAPABILITY_SESSION_RESTART: True,
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
+                protocol.CAPABILITY_USER_PROMPTS: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -844,6 +852,9 @@ class RemoteService:
     def _session_prompts(self, connection: Connection, params: dict):
         return {"prompts": self.hub.prompts(_key(params))}
 
+    def _session_user_prompts(self, connection: Connection, params: dict):
+        return self.hub.user_prompts(_key(params))
+
     def _session_tool_detail(self, connection: Connection, params: dict):
         tool_raw = params.get("tool_id")
         tool_id = None if tool_raw is None or tool_raw == "" else str(tool_raw)
@@ -913,16 +924,20 @@ class RemoteService:
         key = _key(params)
         viewer = _terminal_viewer(connection)
         cols, rows = _terminal_grid(params)
+        theme = _terminal_theme(params) if connection.access != "readonly" else None
         if not self._subscribe(connection, protocol.terminal_channel(key)):
             # Already attached on this connection: a size update plus a fresh snapshot.
             size = self.hub.terminal_resize(key, viewer, cols, rows, vote=connection.access != "readonly")
             self.hub.terminal_resync(key)
-            return size
-        try:
-            return self.hub.terminal_attach(key, viewer, cols, rows, vote=connection.access != "readonly")
-        except Exception:
-            self._unsubscribe(connection, protocol.terminal_channel(key))
-            raise
+        else:
+            try:
+                size = self.hub.terminal_attach(key, viewer, cols, rows, vote=connection.access != "readonly")
+            except Exception:
+                self._unsubscribe(connection, protocol.terminal_channel(key))
+                raise
+        if theme:
+            self.hub.terminal_theme(key, theme)
+        return size
 
     def _terminal_resize(self, connection: Connection, params: dict):
         cols, rows = _terminal_grid(params)
@@ -947,6 +962,13 @@ class RemoteService:
         if len(data) > _TERMINAL_INPUT_MAX:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
         self.hub.terminal_input(_key(params), data)
+        return {"ok": True}
+
+    def _terminal_theme(self, connection: Connection, params: dict):
+        theme = _terminal_theme(params)
+        if not theme:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
+        self.hub.terminal_theme(_key(params), theme)
         return {"ok": True}
 
     def _terminal_detach(self, connection: Connection, params: dict):
@@ -1317,6 +1339,7 @@ _DATA_PAYLOAD_METHODS = frozenset(
     {
         protocol.M_SESSION_MESSAGES,
         protocol.M_SESSION_TOOL_DETAIL,
+        protocol.M_SESSION_USER_PROMPTS,
         protocol.M_SESSION_GET,
         protocol.M_SESSION_WATCH,
         protocol.M_SCREEN_WATCH,
@@ -1334,6 +1357,7 @@ _HANDLERS = {
     protocol.M_SESSION_TOOL_DETAIL: RemoteService._session_tool_detail,
     protocol.M_MEDIA_IMAGE: RemoteService._media_image,
     protocol.M_SESSION_PROMPTS: RemoteService._session_prompts,
+    protocol.M_SESSION_USER_PROMPTS: RemoteService._session_user_prompts,
     protocol.M_SESSION_WATCH: RemoteService._session_watch,
     protocol.M_SESSION_UNWATCH: RemoteService._session_unwatch,
     protocol.M_SESSION_MARK_READ: RemoteService._session_mark_read,
@@ -1346,6 +1370,7 @@ _HANDLERS = {
     protocol.M_TERMINAL_RESYNC: RemoteService._terminal_resync,
     protocol.M_TERMINAL_INPUT: RemoteService._terminal_input,
     protocol.M_TERMINAL_DETACH: RemoteService._terminal_detach,
+    protocol.M_TERMINAL_THEME: RemoteService._terminal_theme,
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,

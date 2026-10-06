@@ -37,6 +37,15 @@ class PureHelperTests(unittest.TestCase):
         self.assertIn("\x1b[5 q", modes)  # blinking bar
         self.assertNotIn("r", modes.split("H")[0])  # full-screen region is not re-sent
 
+    def test_theme_report_is_osc_11_then_10_and_needs_a_background(self) -> None:
+        self.assertEqual(
+            ts.theme_report("#FFFFFF", "#1f2328"),
+            b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b]10;rgb:1f1f/2323/2828\x07",
+        )
+        self.assertEqual(ts.theme_report("14171f"), b"\x1b]11;rgb:1414/1717/1f1f\x07")
+        self.assertIsNone(ts.theme_report("", "#ffffff"))
+        self.assertIsNone(ts.theme_report("white"))
+
     def test_snapshot_joins_lines_and_enters_alternate_screen_when_on(self) -> None:
         state = ts.PaneState(_STATE.replace("|1|0|1|0|1|", "|1|1|1|0|1|", 1))
         data = ts.build_snapshot(state, ["main 1", "main 2"], ["alt"]).decode()
@@ -127,6 +136,9 @@ class _TerminalHub:
     def terminal_resync(self, key):
         self.calls.append(("resync", key))
 
+    def terminal_theme(self, key, report):
+        self.calls.append(("theme", key, report))
+
     def terminal_input(self, key, data):
         self.calls.append(("input", key, data))
 
@@ -189,6 +201,26 @@ class ServiceTests(unittest.TestCase):
         blocked = self._call(connection, protocol.M_TERMINAL_INPUT, {"key": "codex:a", "data": "aGk="})
         self.assertEqual(blocked["e"]["code"], protocol.E_UNAUTHORIZED)
         self.assertNotIn(protocol.M_TERMINAL_INPUT, _READONLY_METHODS)
+
+    def test_attach_and_theme_report_the_viewer_colours(self) -> None:
+        connection = self._paired()
+        light = ts.theme_report("#ffffff", "#1f2328")
+        self._call(connection, protocol.M_TERMINAL_ATTACH,
+                   {"key": "codex:a", "cols": 80, "rows": 24, "background": "#ffffff", "foreground": "#1f2328"})
+        self.assertIn(("theme", "codex:a", light), self.hub.calls)
+        reply = self._call(connection, protocol.M_TERMINAL_THEME, {"key": "codex:a", "background": "#14171f"})
+        self.assertTrue(reply["ok"])
+        self.assertIn(("theme", "codex:a", ts.theme_report("#14171f")), self.hub.calls)
+        bad = self._call(connection, protocol.M_TERMINAL_THEME, {"key": "codex:a", "background": "dark"})
+        self.assertEqual(bad["e"]["code"], protocol.E_USAGE)
+
+    def test_readonly_device_does_not_report_colours(self) -> None:
+        connection = self._paired(mode="readonly")
+        self._call(connection, protocol.M_TERMINAL_ATTACH,
+                   {"key": "codex:a", "cols": 80, "rows": 24, "background": "#ffffff"})
+        self.assertFalse([c for c in self.hub.calls if c[0] == "theme"])
+        blocked = self._call(connection, protocol.M_TERMINAL_THEME, {"key": "codex:a", "background": "#ffffff"})
+        self.assertEqual(blocked["e"]["code"], protocol.E_UNAUTHORIZED)
 
     def test_bad_size_is_a_usage_error(self) -> None:
         connection = self._paired()
@@ -294,6 +326,28 @@ class RealTmuxStreamTests(unittest.TestCase):
         embed.desired_host_size(self.SESSION, "tui:1", 160, 30)
         self.assertEqual(self.stream.vote("remote:mac:1", 132, 40), (160, 30))
         self.stream.withdraw("remote:mac:1")
+
+    @unittest.skipUnless(embed.supports_theme_report(), "needs tmux >= 3.5")
+    def test_reported_colours_answer_the_agents_background_query(self) -> None:
+        self.stream.start()
+        self._wait(lambda e: e["kind"] == "snapshot")
+        self.stream.set_theme(ts.theme_report("#ffffff", "#1f2328"))
+        time.sleep(0.4)
+        probe = os.path.join(tempfile.mkdtemp(), "probe.py")
+        with open(probe, "w") as handle:
+            handle.write(
+                "import os, select, sys, termios, tty\n"
+                "fd = sys.stdin.fileno(); old = termios.tcgetattr(fd); tty.setraw(fd)\n"
+                "os.write(1, b'\\x1b]11;?\\x07'); buf = b''\n"
+                "while select.select([fd], [], [], 2)[0]:\n"
+                "    buf += os.read(fd, 64)\n"
+                "    if b'\\x07' in buf or b'\\x1b\\\\' in buf: break\n"
+                "termios.tcsetattr(fd, termios.TCSADRAIN, old)\n"
+                "print('BG=' + buf.decode('ascii', 'replace').split('rgb:')[-1][:14])\n"
+            )
+        subprocess.run(["tmux", "-L", self.SOCKET, "send-keys", "-t", self.SESSION,
+                        f"python3 {probe}", "Enter"], check=True)
+        self._wait(lambda e: e["kind"] == "output" and b"BG=ffff/ffff/ffff" in base64.b64decode(e["data"]))
 
     def test_alternate_screen_snapshot_keeps_both_screens(self) -> None:
         subprocess.run(["tmux", "-L", self.SOCKET, "send-keys", "-t", self.SESSION,

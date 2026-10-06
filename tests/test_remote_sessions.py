@@ -724,6 +724,53 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertEqual([item.text for item in added], ["追加一条"])
         self.hub.unwatch_conversation("claude:a")
 
+    def test_user_prompts_cover_whole_session_beyond_loaded_window(self) -> None:
+        """Your prompts lists every human prompt, not just the paged-in tail."""
+        path = Path(self._tmp.name) / "claude-prompts.jsonl"
+        lines = []
+        for index in range(600):
+            lines.append({
+                "type": "user",
+                "uuid": f"q{index}",
+                "message": {"role": "user", "content": f"提问-{index}"},
+            })
+            lines.append({
+                "type": "assistant",
+                "uuid": f"a{index}",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "回答"}],
+                },
+            })
+        lines.append({
+            "type": "user",
+            "uuid": "long",
+            "message": {"role": "user", "content": "长" * 2000},
+        })
+        path.write_text(
+            "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n",
+            encoding="utf-8",
+        )
+        session = _session(sid="p")
+        session["path"] = str(path)
+        with mock.patch.object(self.hub, "require_session", return_value=session):
+            page = self.hub.watch_conversation("claude:p")
+            self.assertTrue(page["has_more"])
+            result = self.hub.user_prompts("claude:p")
+            texts = [row["text"] for row in result["prompts"]]
+            self.assertEqual(texts[0], "提问-0")
+            self.assertEqual(texts[599], "提问-599")
+            self.assertEqual(result["total"], 601)
+            self.assertTrue(texts[-1].endswith("…"))
+            self.assertLessEqual(len(texts[-1]), remote_sessions.USER_PROMPT_TEXT_LIMIT + 1)
+            seqs = [row["seq"] for row in result["prompts"]]
+            self.assertEqual(seqs, sorted(seqs))
+            # Seqs share the message-page space: paging earlier reaches the first prompt.
+            earliest = self.hub.message_page("claude:p", before_seq=seqs[0] + 1, limit=1)
+            self.assertEqual(earliest["messages"][0]["seq"], seqs[0])
+            self.assertEqual(earliest["messages"][0]["text"], "提问-0")
+        self.hub.unwatch_conversation("claude:p")
+
     def test_require_session_follows_placeholder_key_migration(self) -> None:
         """占位卡转正后，手机仍拿着旧键也必须能找到会话，不能报已经不在列表里。"""
         real = _session(sid="real-id", title="正式会话")

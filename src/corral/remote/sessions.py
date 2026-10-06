@@ -61,6 +61,12 @@ MESSAGE_PAGE_LIMIT = 80
 MESSAGE_PAGE_LIMIT_MAX = 120
 MESSAGE_PAGE_BYTES = 256 * 1024
 MESSAGE_EVENT_BYTES = 64 * 1024
+# session.userPrompts: chunk size while filling a transcript back to its start,
+# per-prompt text cap, and the payload budget past which texts shrink further.
+_PROMPT_FILL_CHUNK = 400
+USER_PROMPT_TEXT_LIMIT = 500
+USER_PROMPT_SHORT_TEXT_LIMIT = 160
+USER_PROMPTS_BYTES = 1024 * 1024
 _MAX_IN_MEMORY_TRANSCRIPTS = 48
 _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
 # New session keys that first appear already terminal still notify if this fresh.
@@ -380,6 +386,29 @@ def _message_page(
         "generation": generation,
         "has_more": has_more,
     }
+
+
+def _user_prompt_rows(users: list[richmsg.RichMessage]) -> list[dict]:
+    """Wire rows for session.userPrompts, shrinking texts to stay within budget."""
+
+    def rows(limit: int) -> list[dict]:
+        out: list[dict] = []
+        for item in users:
+            text = item.text.strip()
+            row: dict = {
+                "seq": item.seq,
+                "role": "user",
+                "text": text if len(text) <= limit else text[:limit].rstrip() + "…",
+            }
+            if item.timestamp is not None:
+                row["ts"] = item.timestamp
+            out.append(row)
+        return out
+
+    wire = rows(USER_PROMPT_TEXT_LIMIT)
+    if _json_size({"prompts": wire}) > USER_PROMPTS_BYTES:
+        wire = rows(USER_PROMPT_SHORT_TEXT_LIMIT)
+    return wire
 
 
 def _continuous_after(
@@ -1338,6 +1367,50 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.image_unavailable")) from exc
         return preview.to_wire()
 
+    def user_prompts(self, key: str) -> dict:
+        """Every human prompt of the session, oldest first (clients' Your prompts).
+
+        Clients page history in windows, but Your prompts lists the whole session,
+        so the transcript is filled back to its start here. The I/O lock is taken
+        per chunk so other sessions keep opening meanwhile, and the cache is
+        written once at the end. Seqs share the ``session.messages`` space, which
+        lets a client page earlier up to a prompt before jumping to it.
+        """
+        from corral.ui.session_hud import is_injected_user_prompt
+
+        session = self.require_session(key)
+        transcript = self._ensure_transcript(session)
+        filled = False
+        while transcript.reader.has_earlier():
+            with self._transcript_io:
+                oldest = min((item.seq for item in transcript.messages), default=1)
+                try:
+                    earlier = transcript.reader.read_earlier(
+                        _PROMPT_FILL_CHUNK, before_seq=oldest
+                    )
+                except Exception:
+                    break
+                if not earlier:
+                    break
+                with self._lock:
+                    transcript.messages = earlier + transcript.messages
+                filled = True
+        if filled:
+            self._persist_transcript(transcript)
+        with self._lock:
+            users = [
+                item
+                for item in transcript.messages
+                if item.role == "user"
+                and (item.text or "").strip()
+                and not is_injected_user_prompt(item.text)
+            ]
+        return {
+            "prompts": _user_prompt_rows(users),
+            "generation": transcript.generation,
+            "total": len(users),
+        }
+
     def prompts(self, key: str) -> list[dict]:
         """当前仍待回答的提问型工具调用（含可点选项列表）。"""
         session = self.require_session(key)
@@ -1731,6 +1804,9 @@ class SessionHub:
 
     def terminal_resync(self, key: str) -> None:
         self._terminal(key).request_snapshot()
+
+    def terminal_theme(self, key: str, report: bytes) -> None:
+        self._terminal(key).set_theme(report)
 
     def terminal_input(self, key: str, data: bytes) -> None:
         if not data:
