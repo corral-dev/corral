@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "corral"
-version = "0.24.263"
+version = "0.24.264"
 description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,7 +41,7 @@ dependencies = [
   "websockets>=13",
   # Until SessKit is on PyPI, pip/git users install sesskit from GitHub; Homebrew
   # vendors it as a formula resource so offline brew installs still work.
-  "sesskit>=0.2.6",
+  "sesskit>=0.2.7",
 ]
 
 # 手机端接力（corral remote）需要的额外组件。刻意不进主依赖：只在终端里用 corral
@@ -69,7 +69,7 @@ dev = [
 # 非 uv 安装路径不受影响）。sesskit 的 URL 由 scripts/sesskit_dep.py 派生，
 # 该模块是唯一权威（`python3 scripts/sesskit_dep.py uv-source-table`）。
 [tool.uv.sources]
-sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.6/sesskit-0.2.6-py3-none-any.whl" }
+sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.7/sesskit-0.2.7-py3-none-any.whl" }
 
 [project.urls]
 Homepage = "https://github.com/x0c/corral"

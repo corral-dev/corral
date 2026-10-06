@@ -104,6 +104,17 @@ class BaseRuntime(ABC):
         也必须保留在结果里，否则 pinned 区会凭空少卡。
         """
 
+    def refresh_session(self, session: SessionInfo) -> SessionInfo | None:
+        """Re-derive one listed session from its native history; None when unavailable.
+
+        Same record the next ``scan_sessions`` would list for that history
+        (status, completion identity, excerpts) without rescanning the runtime.
+        Callers keep liveness and hosting annotations; see the SessKit contract.
+        """
+        from corral.runtime.sesskit_bridge import refresh_runtime_session
+
+        return refresh_runtime_session({**session, "source": self.id})
+
     @abstractmethod
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:
         """按时间顺序读取用户消息和每轮最终答复。"""

@@ -117,6 +117,28 @@ def _opencode_db_signature(session: dict) -> tuple:
     return tuple(signature)
 
 
+# Fields the per-session turn probe owns between full scans (status follows
+# native turn ends within the state tick, see REMOTE_KNOWLEDGE_BASE turn-end rule).
+_TURN_STATE_FIELDS = ("status_tag", "completion_id", "last_agent_msg", "last_user_msg")
+
+
+def _turn_evidence_stamp(session: dict) -> tuple | None:
+    """Cheap stat-only stamp of one session's history; None when not probeable."""
+    source = session.get("source")
+    if source in _FILE_STAT_RUNTIMES:
+        path = str(session.get("path") or "")
+        try:
+            info = os.stat(path) if path else None
+        except OSError:
+            info = None
+        return (info.st_size, info.st_mtime_ns) if info is not None else None
+    if source == "cursor":
+        return SessionStore._cursor_attention_signature(session)
+    if source == "opencode":
+        return _opencode_db_signature(session)
+    return None
+
+
 def _session_matches_keepalive_ident(session: dict, name: str) -> bool:
     """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。"""
     if session.get("source") == "codex":
@@ -152,6 +174,9 @@ class SessionStore:
         # 全部 JSONL/SQLite。值为 (失效签名, evidence)，只保留当前仍存在的会话。
         self._attention_evidence_cache: dict[str, tuple[tuple, AttentionEvidence]] = {}
         self._attention_lock = threading.Lock()
+        # Per-session turn probe: key -> (history stamp, refreshed turn fields).
+        # Fresher than any full scan of the same bytes; re-applied after merges.
+        self._turn_probe: dict[str, tuple[tuple, dict]] = {}
         self.display_titles: dict[str, str] = {}  # 跨运行时会话键 -> 当前展示标题
         self.dirty = threading.Event()
         self.title_state = title_state or titles.TitleState(mtime_fn=self._cache_file_mtime)
@@ -476,6 +501,8 @@ class SessionStore:
             else:
                 self._merge_scanned(scanned)
                 self._last_full_merge_at = now
+            # A shared snapshot can be older than the last per-session probe.
+            self._refresh_turn_state(self._probe_candidates())
             changed = self._sessions_signature() != before
             if changed:
                 self._save_sidebar_snapshot()
@@ -555,15 +582,10 @@ class SessionStore:
         with self.lock:
             if not self.loaded:
                 return False
-            now = time.time()
-            hot = [
-                session
-                for bucket in self.sessions.values()
-                for session in bucket
-                if _is_state_hot(session) or _recently_written(session, now)
-            ][:_STATE_PROBE_MAX_SESSIONS]
             before = self._state_signature()
+        hot = self._probe_candidates()
         _freshen_from_disk(hot)
+        self._refresh_turn_state(hot)
         if list_hosts:
             self._probe_hosts(hot)
         with self.lock:
@@ -581,6 +603,54 @@ class SessionStore:
         if changed:
             self._save_sidebar_snapshot()
         return changed
+
+    def _probe_candidates(self) -> list[dict]:
+        """Hot or recently written sessions the per-tick probes may touch."""
+        now = time.time()
+        with self.lock:
+            return [
+                session
+                for bucket in self.sessions.values()
+                for session in bucket
+                if _is_state_hot(session) or _recently_written(session, now)
+            ][:_STATE_PROBE_MAX_SESSIONS]
+
+    def _refresh_turn_state(self, sessions: list[dict]) -> None:
+        """Follow native turn ends of hot sessions between full scans.
+
+        When a session's history stamp moved since its last probe, re-derive
+        that one session through the runtime's single-session refresh and keep
+        status, completion identity and excerpts; an unchanged stamp re-applies
+        the probed fields so an older full scan or shared snapshot cannot
+        regress them. Liveness and hosting stay with the scan and probes.
+        """
+        probes: dict[str, tuple[tuple, dict]] = {}
+        for session in sessions:
+            if session.get("provisional"):
+                continue
+            key = session_key(session)
+            stamp = _turn_evidence_stamp(session)
+            if stamp is None:
+                continue
+            cached = self._turn_probe.get(key)
+            if cached is not None and cached[0] == stamp:
+                probes[key] = cached
+                continue
+            try:
+                fresh = self.registry.get(str(session.get("source") or "")).refresh_session(session)
+            except Exception:  # noqa: BLE001 — unknown runtime or read failure keeps the scan
+                fresh = None
+            if not fresh or str(fresh.get("id") or "") != str(session.get("id") or ""):
+                continue
+            probes[key] = (stamp, {field: fresh.get(field) for field in _TURN_STATE_FIELDS})
+        self._turn_probe = probes
+        if not probes:
+            return
+        with self.lock:
+            for session in sessions:
+                probe = probes.get(session_key(session))
+                if probe is not None:
+                    session.update(probe[1])
 
     def _probe_hosts(self, hot: list[dict]) -> None:
         """Drop host names whose tmux session is gone; adopt foreign new panes."""
@@ -608,6 +678,8 @@ class SessionStore:
                 bool(session.get("live")),
                 session.get("keepalive_name"),
                 session.get("attention_kind"),
+                session.get("status_tag"),
+                session.get("completion_id"),
             )
             for bucket in self.sessions.values()
             for session in bucket
@@ -650,6 +722,8 @@ class SessionStore:
                             session.get("attention_kind"),
                             session.get("attention_token"),
                             session.get("attention_updated_at"),
+                            session.get("status_tag"),
+                            session.get("completion_id"),
                         )
                         for session in bucket
                     ),

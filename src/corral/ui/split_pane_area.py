@@ -443,6 +443,9 @@ class PaneCell(Vertical):
             # Spec still said "hosted" after the store dropped it, selection
             # follow would remount a live embed and wipe the transcript again.
             self.spec.keepalive_name = None
+        # Failed at launch: the reason it printed beats an empty transcript.
+        if pane.exit_report is not None:
+            return
         if self._ended_fallback is not None:
             pane.show_detail(self._ended_fallback)
 
@@ -1076,6 +1079,10 @@ class SplitPaneArea(Vertical):
                 if live:
                     pane._detail_renderer = None  # noqa: SLF001
                     pane.invalidate_detail()
+                elif pane.dead and pane.exit_report is not None:
+                    # Failed at launch: keep showing why instead of the empty transcript.
+                    self.store.mark_hosted(make_session_key(session), None)
+                    cell.spec.keepalive_name = None
                 elif renderer is not None:
                     self.store.mark_hosted(make_session_key(session), None)
                     cell.spec.keepalive_name = None

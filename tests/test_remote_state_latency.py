@@ -149,6 +149,11 @@ class _Runtime:
     def scan_sessions(self, limit, **_kwargs):
         return [dict(item) for item in self.sessions]
 
+    def refresh_session(self, session):
+        self.refresh_calls = getattr(self, "refresh_calls", 0) + 1
+        fresh = getattr(self, "fresh", None)
+        return dict(fresh) if fresh else None
+
 
 class StoreRefreshStateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -196,6 +201,81 @@ class StoreRefreshStateTests(unittest.TestCase):
                 scan_all.assert_not_called()
         listed = store.all_sessions()[0]
         self.assertNotEqual(listed.get("attention_kind"), "working")
+
+    def _hot_claude(self, path: Path) -> dict:
+        return {
+            "source": "claude", "id": "t1", "short_id": "t1", "path": str(path),
+            "mtime": time.time(), "file_mtime": path.stat().st_mtime,
+            "size_bytes": path.stat().st_size, "size_kb": 0.0, "native_title": None,
+            "fallback_title": "t", "cwd": str(self.tmp), "live": True,
+            "pid": os.getpid(), "first_user_msg": "hi", "status_tag": "",
+            "completion_id": "", "last_agent_msg": "working on it",
+        }
+
+    def test_turn_end_status_reaches_store_without_a_scan(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        path = self.tmp / "t.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = self._hot_claude(path)
+        with mock.patch.object(
+            store_module, "inspect_session",
+            return_value=AttentionEvidence(phase="idle", observed_at=time.time(), source="history"),
+        ):
+            store = self._store([session])
+            runtime = store.registry.get("claude")
+            runtime.fresh = {**session, "status_tag": STATUS_DONE,
+                             "completion_id": "turn-1", "last_agent_msg": "all done"}
+            path.write_text("a" * 40, encoding="utf-8")  # the turn's final record
+            with mock.patch.object(store.registry, "scan_all") as scan_all:
+                self.assertTrue(store.refresh_state())
+                scan_all.assert_not_called()
+            listed = store.all_sessions()[0]
+            self.assertEqual(listed["status_tag"], STATUS_DONE)
+            self.assertEqual(listed["completion_id"], "turn-1")
+            self.assertEqual(listed["last_agent_msg"], "all done")
+            calls = runtime.refresh_calls
+            self.assertFalse(store.refresh_state())  # unchanged history: no reparse
+            self.assertEqual(runtime.refresh_calls, calls)
+
+    def test_older_full_scan_cannot_regress_probed_turn_end(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        path = self.tmp / "r.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = self._hot_claude(path)
+        with mock.patch.object(
+            store_module, "inspect_session",
+            return_value=AttentionEvidence(phase="idle", observed_at=time.time(), source="history"),
+        ):
+            store = self._store([session])
+            runtime = store.registry.get("claude")
+            runtime.fresh = {**session, "status_tag": STATUS_DONE, "completion_id": "turn-1"}
+            path.write_text("a" * 40, encoding="utf-8")
+            store.refresh_state()
+            store.refresh()  # the scan still returns the mid-turn record
+        listed = store.all_sessions()[0]
+        self.assertEqual(listed["status_tag"], STATUS_DONE)
+        self.assertEqual(listed["completion_id"], "turn-1")
+
+    def test_mismatched_or_missing_refresh_keeps_scan_values(self) -> None:
+        path = self.tmp / "m.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = self._hot_claude(path)
+        with mock.patch.object(
+            store_module, "inspect_session",
+            return_value=AttentionEvidence(phase="idle", observed_at=time.time(), source="history"),
+        ):
+            store = self._store([session])
+            runtime = store.registry.get("claude")
+            runtime.fresh = {**session, "id": "other", "status_tag": "x"}
+            path.write_text("a" * 40, encoding="utf-8")
+            store.refresh_state()
+            self.assertEqual(store.all_sessions()[0]["status_tag"], "")
+            runtime.fresh = None
+            path.write_text("a" * 50, encoding="utf-8")
+            store.refresh_state()
+        self.assertEqual(store.all_sessions()[0]["status_tag"], "")
 
     def test_exited_process_clears_live_without_a_scan(self) -> None:
         session = {

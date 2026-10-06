@@ -1546,5 +1546,75 @@ class HostSessionKeepaliveSmokeTests(unittest.TestCase):
                 keepalive.kill(name)
 
 
+@unittest.skipUnless(shutil.which("tmux"), "需要真实 tmux")
+class StartupFailureCaptureTests(unittest.TestCase):
+    """Real tmux: a failed launch leaves its reason, a clean exit leaves nothing.
+
+    Isolated socket; liveness must stay what it was before (session gone).
+    """
+
+    SOCKET = "corral-test-exit"
+
+    def setUp(self):
+        self._tmux("kill-server")
+        subprocess.run(
+            ["tmux", "-L", self.SOCKET, "-f", "/dev/null", "new-session", "-d", "-s", "keep",
+             "--", "sleep", "60"],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        patcher = mock.patch.object(
+            embed.keepalive, "tmux_argv", lambda name=None: ("tmux", "-L", self.SOCKET),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmux, "kill-server")
+        self.tmp = tempfile.mkdtemp(prefix="corral-test-exit-")
+
+    def _tmux(self, *args):
+        return subprocess.run(
+            ["tmux", "-L", self.SOCKET, *args],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+
+    def _launch(self, name: str, body: str) -> None:
+        script = os.path.join(self.tmp, f"{name}.sh")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n" + body + "\n")
+        os.chmod(script, 0o755)
+        embed._prepare_exit_capture(name)
+        subprocess.run(
+            ["tmux", "-L", self.SOCKET, "new-session", "-d", "-s", name, "-x", "100", "-y", "20",
+             "--", script],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    def test_failed_launch_reports_reason_and_session_is_gone(self):
+        self._launch("corral-codex-bad", 'echo "Error: Missing optional dependency x" >&2; exit 1')
+        report = embed.wait_for_startup_failure("corral-codex-bad", timeout=3.0)
+        self.assertIsNotNone(report)
+        self.assertEqual(report.status, 1)
+        self.assertTrue(report.startup_failure)
+        self.assertEqual(report.lines, ("Error: Missing optional dependency x",))
+        self.assertIn("Missing optional dependency x", embed.exit_summary(report))
+        self.assertEqual(embed.pane_liveness("corral-codex-bad"), "dead")
+        self.assertIsNone(embed.take_exit_report("corral-codex-bad"), "report is consumed")
+
+    def test_clean_exit_and_running_session_leave_no_report(self):
+        self._launch("corral-codex-ok", "echo fine; exit 0")
+        self._launch("corral-codex-live", "sleep 30")
+        self.assertIsNone(embed.wait_for_startup_failure("corral-codex-ok", timeout=1.0))
+        self.assertIsNone(embed.wait_for_startup_failure("corral-codex-live", timeout=0.3))
+        self.assertEqual(embed.pane_liveness("corral-codex-live"), "alive")
+        self.assertNotIn("corral-exit", self._tmux("list-buffers", "-F", "#{buffer_name}").stdout)
+
+    def test_reused_name_drops_stale_report(self):
+        self._launch("corral-codex-again", "echo first; exit 2")
+        deadline = time.monotonic() + 3.0
+        while embed.pane_liveness("corral-codex-again") != "dead" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self._launch("corral-codex-again", "sleep 30")
+        self.assertIsNone(embed.take_exit_report("corral-codex-again"))
+
+
 if __name__ == "__main__":
     unittest.main()

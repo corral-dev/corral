@@ -70,7 +70,7 @@ class ResolveActiveMarkerTests(unittest.TestCase):
                     resolve_active_marker(session, attention_kind=kind, now=now), kind
                 )
 
-    def test_normal_completion_keeps_existing_recent_policy(self) -> None:
+    def test_weak_completion_without_identity_keeps_recent_policy(self) -> None:
         from sesskit.titles import STATUS_DONE
 
         now = time.time()
@@ -78,6 +78,22 @@ class ResolveActiveMarkerTests(unittest.TestCase):
             "status_tag": STATUS_DONE, "keepalive_name": "retained",
             "mtime": now, "attention_kind": "none",
         }, now=now), "recent")
+
+    def test_native_completion_blocks_recent_fallback_but_allows_resumption(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        now = time.time()
+        session = {
+            "status_tag": STATUS_DONE, "completion_id": "turn-1",
+            "keepalive_name": "retained", "live": True, "mtime": now,
+            "attention_kind": "none",
+        }
+        self.assertIsNone(resolve_active_marker(session, now=now))
+        for kind in ("working", "waiting", "unread"):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    resolve_active_marker(session, attention_kind=kind, now=now), kind
+                )
 
 
 class CollectCandidatesTests(unittest.TestCase):

@@ -121,6 +121,18 @@ class ActionError(RuntimeError):
         self.message = message
 
 
+# Long enough for a broken install or a rejected flag to exit, short enough
+# that a healthy launch from the phone does not feel slower.
+_STARTUP_CHECK_SECONDS = 1.0
+
+
+def _raise_if_failed_at_start(name: str, message_key: str) -> None:
+    """Report an assistant that died right after launch with what it printed."""
+    report = embed.wait_for_startup_failure(name, timeout=_STARTUP_CHECK_SECONDS)
+    if report is not None:
+        raise ActionError("unavailable", t(message_key, error=embed.exit_summary(report)))
+
+
 class PartialInjectionError(RuntimeError):
     """Some input reached the pane but a later step failed — outcome is ambiguous."""
 
@@ -2360,6 +2372,7 @@ class SessionHub:
             name = embed.host_session(plan, runtime_id, ident, width, height)
         except embed.EmbedError as exc:
             raise ActionError("unavailable", t("remote.err.launch_failed", error=exc)) from exc
+        _raise_if_failed_at_start(name, "remote.err.launch_failed")
         session = self.store.register_hosted_session(
             runtime_id=runtime_id,
             keepalive_name=name,
@@ -2468,6 +2481,7 @@ class SessionHub:
             name = embed.host_session(plan, runtime.id, ident, width, height)
         except embed.EmbedError as exc:
             raise ActionError("unavailable", t("remote.err.resume_failed", error=exc)) from exc
+        _raise_if_failed_at_start(name, "remote.err.resume_failed")
         self.store.mark_hosted(canonical, name)
         refreshed = self.store.find_session(canonical) or session
         return self.session_payload(refreshed, self._layout())
@@ -2581,6 +2595,7 @@ class SessionHub:
             raise ActionError(
                 "unavailable", t("remote.err.restart_failed", error=exc)
             ) from exc
+        _raise_if_failed_at_start(new_name, "remote.err.restart_failed")
         self.store.mark_hosted(canonical, new_name)
         refreshed = self.store.find_session(canonical) or current
         return self.session_payload(refreshed, self._layout())

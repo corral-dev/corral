@@ -51,6 +51,11 @@ fi
 VERSION="${TAG#v}"
 echo "==> 发布 ${TAG}"
 
+# Never put a workspace or a later commit into an older release.
+[ -z "$(git status --porcelain)" ] || die "工作区尚未提交；先提交完整可发布状态再收尾"
+[ "$(git rev-parse HEAD)" = "$(git rev-parse "${TAG}^{commit}")" ] \
+  || die "当前提交与 ${TAG} 不一致；请发布当前完整提交对应的标签"
+
 # 发版硬门槛：与 CI 同源的 ruff + 全量单测。推送门禁若被 --no-verify 绕过且戳
 # 也失效，这里仍拦住「装坏包 / 把配方指到未经验证的 tag」。
 if python3 scripts/ci-test.py --check-stamp >/dev/null; then
@@ -87,12 +92,13 @@ if [ "$WT_VER" != "$VERSION" ]; then
 fi
 
 # ---- 1. Release 本体 ----
-if gh release view "$TAG" >/dev/null 2>&1; then
+if gh release view "$TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1; then
   echo "==> Release ${TAG} 已存在"
 else
   echo "==> 创建 Release ${TAG}"
-  gh release create "$TAG" --title "$TAG" --generate-notes
+  gh release create "$TAG" --repo "$SOURCE_REPO" --title "$TAG" --generate-notes --latest
 fi
+gh release edit "$TAG" --repo "$SOURCE_REPO" --latest
 
 # ---- 2. 安装包 ----
 if [ "${CORRAL_SKIP_WHEELS:-0}" = "1" ]; then
@@ -152,10 +158,10 @@ PY
   # 上传失败中断整个脚本——后面的 Homebrew 配方才是决定"用户能不能升级"的那一步，
   # 附件没传成最多是少个预编译包，配方停在旧版本才是真事故。
   # 2026-07-31 v0.24.29 实测踩到：脚本在这里退出，配方全靠 CI 恰好跑赢才没停在旧版。
-  if ! gh release upload "$TAG" "$DIST"/* --clobber; then
+  if ! gh release upload "$TAG" "$DIST"/* --repo "$SOURCE_REPO" --clobber; then
     echo "!!  上传失败，等 8 秒重试一次（多半是和 CI 的 release 工作流抢同名附件）"
     sleep 8
-    if ! gh release upload "$TAG" "$DIST"/* --clobber; then
+    if ! gh release upload "$TAG" "$DIST"/* --repo "$SOURCE_REPO" --clobber; then
       UPLOAD_FAILED=1
       echo "!!  安装包上传仍未成功；继续往下走，收尾核对会列出 Release 实际有几个附件"
     fi
@@ -237,12 +243,13 @@ restart_stale_remote
 
 echo
 echo "==> 收尾核对"
-gh release view "$TAG" --json tagName,assets \
+gh release view "$TAG" --repo "$SOURCE_REPO" --json tagName,assets \
   --jq '"Release \(.tagName)：\(.assets | length) 个附件"'
-curl -fsSL "https://raw.githubusercontent.com/${TAP_REPO}/main/Formula/corral.rb" \
-  | grep -E '^\s*url ' | sed 's/^/配方 /'
-curl -fsSL "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" \
-  | python3 -c 'import json,sys; print("最新 Release：" + json.load(sys.stdin)["tag_name"])'
+gh api "repos/${TAP_REPO}/contents/Formula/corral.rb" --jq .content \
+  | python3 -c 'import base64,sys; text=base64.b64decode(sys.stdin.read()).decode(); print("\n".join("配方 " + line.strip() for line in text.splitlines() if line.lstrip().startswith("url ")))'
+LATEST_TAG=$(gh api "repos/${SOURCE_REPO}/releases/latest" --jq .tag_name)
+[ "$LATEST_TAG" = "$TAG" ] || die "最新 Release 是 ${LATEST_TAG}，不是本次 ${TAG}"
+echo "最新 Release：${LATEST_TAG}"
 if [ "${UPLOAD_FAILED:-0}" = "1" ]; then
   echo "!!  注意：本机这轮安装包上传失败过，请对照上面的附件数量确认是否需要重跑本脚本"
   exit 1

@@ -91,6 +91,23 @@ class NativeResumeTests(_ResumeFixture, unittest.TestCase):
         self.assertNotIn(self.key, self.hub.store.hosted)
         self.assertNotIn("keepalive_name", self.session)
 
+    def test_assistant_dying_at_launch_reports_its_reason(self) -> None:
+        report = embed.ExitReport(
+            status=1, signal="", lifetime=0.3,
+            lines=("Error: Missing optional dependency @openai/codex-darwin-arm64.",),
+        )
+        with mock.patch.object(embed, "available", return_value=True), \
+             mock.patch.object(embed, "pane_liveness", return_value="dead"), \
+             mock.patch.object(embed, "close_channel"), \
+             mock.patch.object(embed, "forget_alive"), \
+             mock.patch.object(embed, "host_session", return_value="corral-claude-fresh"), \
+             mock.patch.object(embed, "wait_for_startup_failure", return_value=report):
+            with self.assertRaises(ActionError) as error:
+                self.hub.resume_session(self.key)
+        self.assertEqual(error.exception.code, "unavailable")
+        self.assertIn("codex-darwin-arm64", str(error.exception))
+        self.assertNotIn(self.key, self.hub.store.hosted)
+
     def test_simultaneous_resumes_create_only_one_process(self) -> None:
         entered, release = threading.Event(), threading.Event()
         results: list[dict] = []

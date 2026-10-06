@@ -58,3 +58,21 @@ def call_scan(
             kwargs[key] = value
 
     return scan_fn(**kwargs)
+
+
+def refresh_runtime_session(session: SessionInfo) -> SessionInfo | None:
+    """SessKit single-session refresh with the Corral host extension.
+
+    Older SessKit builds without ``refresh_session`` and any read failure
+    return None, so callers fall back to the full-scan result.
+    """
+    try:
+        from sesskit.registry import refresh_session
+    except ImportError:
+        return None
+    from corral.runtime.host_extension import corral_host_extension
+
+    try:
+        return refresh_session(dict(session), host=corral_host_extension())
+    except Exception:  # noqa: BLE001 — a refresh must never break the state probe
+        return None

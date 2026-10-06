@@ -90,12 +90,11 @@ Read the documents whose described content is relevant before deciding or changi
 
 - [Network UX implementation review](docs/reviews/NETWORK_UX_2026-09-10-review.md): **must read** before correcting, validating, or releasing the September 10 command-receipt and relay-lane changes; the four recorded findings were corrected in source (see that doc’s Corrections applied). Skipping it can reintroduce false delivery, duplicate execution, or shared disconnections.
 
-## 文档导航
+## CLI documentation
 
 Read the documents whose described content is relevant before deciding or editing.
 
 - [Task routing](docs/AGENT_TASK_ROUTING_GUIDE.md): Detailed domain preconditions, symptom routes and exceptions.
-- [Agent workflow](docs/AGENT_WORKFLOW_GUIDE.md): Readiness, process-owned resources, resumable operations and checkpoints.
 - [docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md): Checkout readiness, locked dependencies and SessKit artifact handoff.
 - [docs/TEST_ENVIRONMENT_GUIDE.md](docs/TEST_ENVIRONMENT_GUIDE.md): Isolated real-terminal fixtures, screenshots and behavioral assertions.
 - [docs/PUBLIC_PRESENTATION_GUIDE.md](docs/PUBLIC_PRESENTATION_GUIDE.md): Approved identity, brand assets and sanitized public presentation.
@@ -105,7 +104,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md](docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md): Live terminal capture, dimensions, control channels and theme detection.
 - [docs/SESSION_SCANNING_KNOWLEDGE_BASE.md](docs/SESSION_SCANNING_KNOWLEDGE_BASE.md): SessKit integration, runtime histories, identity, liveness and completion evidence.
 - [docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md](docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md): Pi/Codex ownership claims, managed identity and legacy migration.
-- [docs/design/WEB_TASK_BUTLER_DESIGN.md](docs/design/WEB_TASK_BUTLER_DESIGN.md): 本机网页 Markdown 想法编辑器，以及协调员（读文档、派任务、在文档里提问、确认完成）与执行者（每件任务一个助手会话）的需求、角色职责、已定边界、现有能力、风险实验（助手插话、编辑器与「未交给协调员的文字直接删除」、剪切粘贴后任务跟随、协调员判断与命令边界、完成须引用验证证据、长时间单会话、触发时机、MCP.
+- [docs/design/WEB_TASK_BUTLER_DESIGN.md](docs/design/WEB_TASK_BUTLER_DESIGN.md): Local Markdown task planning, coordinator/executor responsibilities, boundaries and validation experiments.
 - [docs/design/WINDOWS_COMPATIBILITY_DESIGN.md](docs/design/WINDOWS_COMPATIBILITY_DESIGN.md): Decision against Windows and dedicated WSL product support.
 - [docs/PERFORMANCE_KNOWLEDGE_BASE.md](docs/PERFORMANCE_KNOWLEDGE_BASE.md): Performance, caching, load, offline data and profiling.
 - [docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md](docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md): Native resume, cross-runtime handoff, launch plans and working directories.
@@ -113,7 +112,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/OBSERVABILITY_KNOWLEDGE_BASE.md](docs/OBSERVABILITY_KNOWLEDGE_BASE.md): Local diagnostics, event logs and error evidence.
 - [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md): Development, CI, dependency pins, installation and release verification.
 - [docs/REMOTE_KNOWLEDGE_BASE.md](docs/REMOTE_KNOWLEDGE_BASE.md): Pairing, encrypted remote protocol, delivery, relay boundaries and remote acceptance.
-- [docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): 规划、设计、评审或排查手机会话列表/历史加载慢、.
+- [docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live-data isolation, pagination and recovery.
 - [docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md](docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md): 实现、评审或联调 iOS 会话页右上菜单的复制（`session.copy`，新增）与接力（`session.handoff`，服务端已有）前必读.
 - [docs/SKILL.md](docs/SKILL.md): 修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）.
 - [PRIVACY.md](PRIVACY.md): 修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界.

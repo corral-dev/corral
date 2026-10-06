@@ -128,6 +128,7 @@ def host_session(
     keepalive.reap_pressure()
     keepalive.ensure_server()
     name = keepalive._session_name(runtime_id, ident)
+    _prepare_exit_capture(name)
     argv = [
         *keepalive.tmux_argv(), "-f", keepalive._ensure_config_file(),
         "new-session", "-d", "-P", "-F", "#{pane_id}",
@@ -361,6 +362,160 @@ def _ensure_manual_window_size(name: str) -> None:
             _manual_window_size_sockets.add(socket)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+# ---- startup failure capture ----
+#
+# A hosted assistant that dies right after launch (missing dependency, bad
+# flag, broken install) used to leave nothing behind: tmux destroyed the pane
+# together with everything it printed. The keepalive server now keeps panes of
+# failed programs just long enough for a global ``pane-died`` hook to copy the
+# screen and exit metadata into named buffers and kill the session, so liveness
+# and reaping observe exactly what they did before. Hook arguments are only
+# format-expanded through ``run-shell -C``; ``#{hook_session_name}`` is empty
+# inside ``pane-died``. See EMBEDDED_TERMINAL_KNOWLEDGE_BASE §6.
+
+STARTUP_FAILURE_WINDOW = 60.0
+EXIT_REPORT_LINES = 12
+_EXIT_BUFFER_PREFIX = "corral-exit-"
+_EXIT_META_PREFIX = "corral-exitmeta-"
+_EXIT_CAPTURE_HOOK = (
+    "run-shell -C \"capture-pane -J -S -200 -t '#{pane_id}' -b '"
+    + _EXIT_BUFFER_PREFIX + "#{session_name}'\" ; "
+    "run-shell -C \"set-buffer -b '" + _EXIT_META_PREFIX + "#{session_name}' "
+    "'#{pane_dead_status}|#{pane_dead_signal}|#{session_created}|#{pane_dead_time}'\" ; "
+    "run-shell -C \"kill-session -t '#{session_name}'\""
+)
+_DEAD_PANE_FOOTER_RE = re.compile(r"^Pane is dead \(")
+
+
+@dataclass(frozen=True)
+class ExitReport:
+    """What a hosted assistant left on screen when it exited with an error."""
+
+    status: int | None
+    signal: str
+    lifetime: float | None
+    lines: tuple[str, ...]
+
+    @property
+    def startup_failure(self) -> bool:
+        return self.lifetime is not None and self.lifetime <= STARTUP_FAILURE_WINDOW
+
+
+def exit_headline(report: ExitReport) -> str:
+    """"The assistant exited right after starting (exit code N)." in UI language."""
+    from corral.i18n import t
+
+    if report.status is not None:
+        reason = t("launch.exit_code", code=report.status)
+    else:
+        reason = t("launch.exit_signal", signal=report.signal or "?")
+    return t("launch.exited_at_start", reason=reason)
+
+
+def exit_summary(report: ExitReport) -> str:
+    """One line for launch errors: why it exited plus the line naming the error.
+
+    CLIs usually end with a generic "try --help" footer, so prefer the last
+    line that mentions an error and fall back to the last printed line.
+    """
+    summary = exit_headline(report)
+    printed = [line.strip() for line in report.lines if line.strip()]
+    errors = [line for line in printed if "error" in line.lower()]
+    detail = (errors or printed or [""])[-1]
+    return f"{summary} {detail}" if detail else summary
+
+
+def _prepare_exit_capture(name: str) -> None:
+    """Arm failed-exit capture on the server and drop stale reports for ``name``.
+
+    Runs before every ``new-session`` because a fast failure can beat any later
+    setup, and a running server never re-reads its config. Best effort: tmux
+    older than 3.3 rejects ``failed`` and simply keeps the old behaviour.
+    """
+    try:
+        subprocess.run(
+            [
+                *keepalive.tmux_argv(name),
+                "set-option", "-gw", "remain-on-exit", "failed", ";",
+                "set-hook", "-gw", "pane-died", _EXIT_CAPTURE_HOOK, ";",
+                "delete-buffer", "-b", _EXIT_META_PREFIX + name, ";",
+                "delete-buffer", "-b", _EXIT_BUFFER_PREFIX + name,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _show_buffer(name: str, buffer_name: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            [*keepalive.tmux_argv(name), "show-buffer", "-b", buffer_name],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.decode("utf-8", errors="replace")
+
+
+def _parse_exit_meta(raw: str) -> tuple[int | None, str, float | None]:
+    parts = raw.strip().split("|")
+    if len(parts) != 4:
+        return None, "", None
+    status_raw, signal, created_raw, dead_raw = parts
+    status = int(status_raw) if status_raw.strip().lstrip("-").isdigit() else None
+    try:
+        lifetime = max(0.0, float(dead_raw) - float(created_raw))
+    except ValueError:
+        lifetime = None
+    return status, signal.strip(), lifetime
+
+
+def _exit_report_lines(screen: str) -> tuple[str, ...]:
+    lines = [line.rstrip() for line in screen.splitlines()]
+    while lines and (not lines[-1] or _DEAD_PANE_FOOTER_RE.match(lines[-1])):
+        lines.pop()
+    while lines and not lines[0]:
+        lines.pop(0)
+    return tuple(lines[-EXIT_REPORT_LINES:])
+
+
+def take_exit_report(name: str) -> ExitReport | None:
+    """Read and consume the failed-exit report the server kept for ``name``."""
+    if not name:
+        return None
+    meta = _show_buffer(name, _EXIT_META_PREFIX + name)
+    if meta is None:
+        return None
+    screen = _show_buffer(name, _EXIT_BUFFER_PREFIX + name) or ""
+    _delete_paste_buffer(name, _EXIT_META_PREFIX + name)
+    _delete_paste_buffer(name, _EXIT_BUFFER_PREFIX + name)
+    status, signal, lifetime = _parse_exit_meta(meta)
+    return ExitReport(status, signal, lifetime, _exit_report_lines(screen))
+
+
+def wait_for_startup_failure(name: str, timeout: float = 1.0) -> ExitReport | None:
+    """Give a just-hosted assistant ``timeout`` seconds to fail at startup.
+
+    Returns the report when it died with an error inside the window; ``None``
+    while it is still running (or its state is unknown).
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if pane_liveness(name) == "dead":
+            report = take_exit_report(name)
+            return report if report is not None and report.startup_failure else None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
 
 
 def _host_viewers_path() -> Path:

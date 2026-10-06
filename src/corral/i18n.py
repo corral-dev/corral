@@ -409,6 +409,30 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Session ended — press Enter to restart it",
         "zh": "会话已结束 — 按回车重启",
     },
+    "launch.exited_at_start": {
+        "en": "The assistant exited right after starting ({reason}).",
+        "zh": "助手刚启动就退出了（{reason}）。",
+    },
+    "launch.exit_code": {
+        "en": "exit code {code}",
+        "zh": "退出码 {code}",
+    },
+    "launch.exit_signal": {
+        "en": "signal {signal}",
+        "zh": "信号 {signal}",
+    },
+    "launch.last_output": {
+        "en": "Last output:",
+        "zh": "最后的输出：",
+    },
+    "launch.no_output": {
+        "en": "It printed nothing.",
+        "zh": "它没有输出任何内容。",
+    },
+    "launch.restart_after_fix": {
+        "en": "Fix the problem above, then press Enter to start it again.",
+        "zh": "处理好上面的问题后，按回车重新启动。",
+    },
     "detail.restart_hint": {
         "en": "Press Enter to restart this session",
         "zh": "按回车重启该会话",

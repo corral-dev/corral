@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-from sesskit.titles import STATUS_ABORTED
+from sesskit.titles import STATUS_ABORTED, STATUS_DONE
 
 from corral.attention import AttentionKind, AttentionState
 from corral.display import JUST_NOW_SECONDS
@@ -77,7 +77,8 @@ def resolve_active_marker(
     """Active sessions 与侧栏圆点的共用判定。
 
       - 等回话 / 干活 / 未读 → 对应黄 / 绿 / 红（不要求本窗口托管，外部会话也可画点）
-      - 本窗口托管且「刚刚」窗口内仍有活动、但无待办信号 → ``recent``（绿点，与干活同色）
+      - 本窗口托管且「刚刚」窗口内仍有活动、但无待办信号 → ``recent``（绿点，与干活同色）；
+        当前轮已原生结束（中断，或带完成标识的已完成）时不给
       - 否则无标记
 
       Active sessions 看板只收录本窗口托管成员；圆点用同一函数，保证凡进 Active
@@ -93,9 +94,14 @@ def resolve_active_marker(
     kind = str(attention_kind or "none")
     if kind in BOARD_KINDS:
         return kind  # type: ignore[return-value]
-    # A retained process or metadata write cannot restart an interrupted turn.
-    # Fresh working/waiting evidence above still wins when the agent resumes.
-    if session is not None and session.get("status_tag") == STATUS_ABORTED:
+    # A retained process or metadata write cannot restart an ended turn: an
+    # aborted turn, or a completed one with native terminal evidence (non-empty
+    # completion id). Fresh working/waiting evidence above still wins when the
+    # agent resumes.
+    if session is not None and (
+        session.get("status_tag") == STATUS_ABORTED
+        or (session.get("status_tag") == STATUS_DONE and session.get("completion_id"))
+    ):
         return None
     if not hosted:
         return None

@@ -7823,7 +7823,7 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(before, 0)
             search.focus()
             search.value = "]11;rgb:1e1e/1e1e/2e2e"
-            await pilot.pause(delay=0.2)
+            await _wait_until(lambda: search.value == "")
             self.assertEqual(search.value, "")
             self.assertEqual(app.screen.nav.project_query, "")
             self.assertEqual(len(list_view.visible_sessions()), before)
@@ -7972,6 +7972,72 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(text.strip(), i18n.t("detail.session_ended"))
                 self.assertIsNone(store.hosted_name_for(key))
                 self.assertIsNone(area.cells()[0].spec.keepalive_name)
+
+    async def test_startup_failure_shows_reason_instead_of_transcript(self) -> None:
+        """An assistant that dies at launch must show why, not a blank cell.
+
+        Real case: Codex missing its platform binary exited in under a second;
+        the cell stayed empty and nothing told the user what went wrong.
+        """
+        from corral import embed
+
+        cwd = tempfile.mkdtemp(prefix="corral-test-startup-failure-")
+        sessions = [{
+            "source": "claude", "id": "failed-start", "short_id": "failed-start",
+            "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+            "native_title": None, "fallback_title": "Failed Start",
+            "cwd": cwd, "live": True, "keepalive_name": "corral-claude-failed",
+        }]
+        codex = mock.Mock()
+        codex.id = "codex"
+        codex.display_name = "Codex"
+        codex.is_available.return_value = True
+        codex.scan_sessions.return_value = []
+        codex.load_conversation.return_value = []
+        store, _ = _make_store(sessions=sessions, extra_runtimes=(codex,))
+        key = corral.session_key(sessions[0])
+        store.mark_hosted(key, "corral-claude-failed")
+        report = embed.ExitReport(
+            status=1, signal="", lifetime=0.4,
+            lines=("Error: Missing optional dependency @openai/codex-darwin-arm64.",),
+        )
+        app = CorralApp(store, embed_ok=True)
+        with (
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=False),
+            mock.patch("corral.liveness.is_alive", return_value=False),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                area = app.screen.query_one(SplitPaneArea)
+                area.show_hosted_group(
+                    cwd,
+                    [(
+                        sessions[0],
+                        "corral-claude-failed",
+                        app.screen._detail_renderer_for(sessions[0]),
+                    )],
+                    focus_key=key,
+                )
+                await _wait_until(
+                    lambda: area.cells()
+                    and area.cells()[0].embed_pane() is not None
+                    and area.cells()[0].embed_pane().session_name
+                    == "corral-claude-failed"
+                )
+                pane = area.cells()[0].embed_pane()
+                pane._apply_dead(pane._capture_generation, pane.session_name, report)  # noqa: SLF001
+                await pilot.pause()
+                await _wait_until(lambda: "codex-darwin-arm64" in pane.render().plain)
+                text = pane.render().plain
+                self.assertIn(embed.exit_headline(report), text)
+                self.assertIn(i18n.t("launch.restart_after_fix"), text)
+                self.assertTrue(pane._is_restart_target())  # noqa: SLF001
+                self.assertIsNone(store.hosted_name_for(key))
+                # A crash long after launch keeps the conversation fallback.
+                late = embed.ExitReport(status=1, signal="", lifetime=3600.0, lines=("boom",))
+                pane._apply_dead(pane._capture_generation, pane.session_name, late)  # noqa: SLF001
+                self.assertIsNone(pane.exit_report)
 
     async def test_enter_restarts_ended_member_of_session_group(self) -> None:
         """会话组里的已结束成员：回车必须重启它，而不是把会话组再摆一遍。

@@ -298,6 +298,22 @@ def forget_cached_screen(name: str | None) -> None:
         _screen_cache.pop(name, None)
 
 
+def _startup_failure_text(report: embed.ExitReport) -> Text:
+    """Dead cell for an assistant that failed at launch: reason, output, next step."""
+    from corral.i18n import t
+
+    text = Text(embed.exit_headline(report), style="bold")
+    text.append("\n\n")
+    if report.lines:
+        text.append(t("launch.last_output") + "\n", style="dim")
+        text.append("\n".join(report.lines))
+    else:
+        text.append(t("launch.no_output"), style="dim")
+    text.append("\n\n")
+    text.append(t("launch.restart_after_fix"), style="dim")
+    return text
+
+
 class EmbedPane(Widget):
     """右栏：托管 tmux 会话的实时画面。
 
@@ -325,6 +341,9 @@ class EmbedPane(Widget):
 
     session_name: reactive[str | None] = reactive(None)
     dead: reactive[bool] = reactive(False)
+    # Set on every confirmed death: what the assistant printed when it failed
+    # right after launch (None otherwise). Only rendered while ``dead``.
+    exit_report: embed.ExitReport | None = None
     # 实时会话画面但键盘焦点不在右栏：整格压暗，提示此刻输入不会到达助手。
     # 由 SplitPaneArea.sync_input_mask() 统一设置，本类只负责画。
     input_masked: reactive[bool] = reactive(False)
@@ -922,7 +941,8 @@ class EmbedPane(Widget):
                 if text is None:
                     misses += 1
                     if misses >= 3 and not liveness.is_alive(name):
-                        self.app.call_from_thread(self._apply_dead, generation, name)
+                        report = embed.take_exit_report(name)
+                        self.app.call_from_thread(self._apply_dead, generation, name, report)
                 else:
                     misses = 0
                     # resize 后冻结：镜像 Cursor 重排中间帧会像「疯狂滚动」；
@@ -1090,9 +1110,17 @@ class EmbedPane(Widget):
             return
         self._mouse_any, self._mouse_sgr, self._history_size = state[3], state[4], state[5]
 
-    def _apply_dead(self, generation: int, name: str) -> None:
+    def _apply_dead(
+        self, generation: int, name: str, report: embed.ExitReport | None = None,
+    ) -> None:
         if not self._capture_is_current(generation, name):
             return
+        # The capture loop keeps re-confirming a death; only the first call has
+        # the (consumed) report, later ones must not wipe it.
+        if report is not None:
+            self.exit_report = report if report.startup_failure else None
+        elif not self.dead:
+            self.exit_report = None
         # 会话确认结束，缓存的最后一屏必须丢掉：留着的话下次选中这条会话会先
         # 摆出一屏「像还在跑」的旧画面，比直接显示已结束更误导人。
         forget_cached_screen(name)
@@ -1229,6 +1257,8 @@ class EmbedPane(Widget):
         from corral.i18n import t
 
         if self.dead:
+            if self.exit_report is not None:
+                return _startup_failure_text(self.exit_report)
             return Text(t("detail.session_ended"))
         if self._detail_renderer is not None:
             rendered = self._detail_renderer()
@@ -1368,7 +1398,7 @@ class EmbedPane(Widget):
         else:
             key = (
                 self.session_name, self.dead, id(self._detail_renderer),
-                self.size, self.detail_offset, False,
+                self.size, self.detail_offset, False, id(self.exit_report),
             )
             if self._static_key == key and self._static_strips_cache is not None:
                 return self._static_strips_cache
