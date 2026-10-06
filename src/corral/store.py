@@ -177,6 +177,10 @@ class SessionStore:
         # Per-session turn probe: key -> (history stamp, refreshed turn fields).
         # Fresher than any full scan of the same bytes; re-applied after merges.
         self._turn_probe: dict[str, tuple[tuple, dict]] = {}
+        # Called (no lock held) right after a probe changed a session's status or
+        # completion identity, so the remote hub publishes without waiting for
+        # the rest of the tick (tmux listing, attention, housekeeping).
+        self.turn_state_listener = None
         self.display_titles: dict[str, str] = {}  # 跨运行时会话键 -> 当前展示标题
         self.dirty = threading.Event()
         self.title_state = title_state or titles.TitleState(mtime_fn=self._cache_file_mtime)
@@ -624,6 +628,7 @@ class SessionStore:
         the probed fields so an older full scan or shared snapshot cannot
         regress them. Liveness and hosting stay with the scan and probes.
         """
+        previous = self._turn_probe
         probes: dict[str, tuple[tuple, dict]] = {}
         for session in sessions:
             if session.get("provisional"):
@@ -646,11 +651,28 @@ class SessionStore:
         self._turn_probe = probes
         if not probes:
             return
+        moved = False
         with self.lock:
             for session in sessions:
                 probe = probes.get(session_key(session))
-                if probe is not None:
-                    session.update(probe[1])
+                if probe is None:
+                    continue
+                fields = probe[1]
+                # Compare with what the hub last saw: the probe's previous result,
+                # or the scanned value when this session had none (a full scan
+                # may already have copied the same end into the dict).
+                seen = previous.get(session_key(session))
+                seen_fields = seen[1] if seen is not None else session
+                moved = moved or any(
+                    seen_fields.get(name) != fields.get(name) for name in ("status_tag", "completion_id")
+                )
+                session.update(fields)
+        listener = self.turn_state_listener
+        if moved and listener is not None:
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 — publishing must never break the probe
+                pass
 
     def _probe_hosts(self, hot: list[dict]) -> None:
         """Drop host names whose tmux session is gone; adopt foreign new panes."""

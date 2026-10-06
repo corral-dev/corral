@@ -507,6 +507,7 @@ class SessionHub:
         # caller may inject the gateway-backed launcher; leaving it unset keeps
         # library construction side-effect free for tests and read-only users.
         self.store._title_spawn_fn = title_spawn_fn
+        self.store.turn_state_listener = self._on_turn_state
         self.registry = self.store.registry
         self.layout_db = default_layout_db()
         self._on_event = on_event or (lambda channel, data: None)
@@ -678,6 +679,19 @@ class SessionHub:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
                 self._emit_title_events(title_keys)
+
+    def _on_turn_state(self) -> None:
+        """A hot session's turn ended or restarted: notify and publish now.
+
+        Runs on the refresh thread from inside the store probe, before the rest
+        of the tick; the later per-tick detectors see no further change.
+        """
+        if not self._ready.is_set():
+            return
+        self._detect_status_changes()
+        self._detect_marker_changes()
+        if self._sessions_watchers:
+            self._on_event("sessions", self.list_snapshot())
 
     @staticmethod
     def _watcher_arrivals(watcher) -> int:

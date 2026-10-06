@@ -238,6 +238,31 @@ class StoreRefreshStateTests(unittest.TestCase):
             self.assertFalse(store.refresh_state())  # unchanged history: no reparse
             self.assertEqual(runtime.refresh_calls, calls)
 
+    def test_turn_end_notifies_listener_once(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        path = self.tmp / "l.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = self._hot_claude(path)
+        calls = []
+        with mock.patch.object(
+            store_module, "inspect_session",
+            return_value=AttentionEvidence(phase="idle", observed_at=time.time(), source="history"),
+        ):
+            store = self._store([session])
+            store.turn_state_listener = lambda: calls.append(store.all_sessions()[0]["status_tag"])
+            runtime = store.registry.get("claude")
+            runtime.fresh = dict(session)
+            store.refresh_state()  # first probe, unchanged status: silent
+            self.assertEqual(calls, [])
+            runtime.fresh = {**session, "status_tag": STATUS_DONE, "completion_id": "turn-1"}
+            path.write_text("a" * 40, encoding="utf-8")
+            store.refresh_state()
+            self.assertEqual(calls, [STATUS_DONE])  # fields applied before the call
+            path.write_text("a" * 50, encoding="utf-8")  # metadata append, same turn end
+            store.refresh_state()
+        self.assertEqual(calls, [STATUS_DONE])
+
     def test_older_full_scan_cannot_regress_probed_turn_end(self) -> None:
         from sesskit.titles import STATUS_DONE
 
