@@ -20,9 +20,12 @@ import uuid
 from pathlib import Path
 
 VERSION = "1.0.0"
-JSON_OUTPUT = not sys.stdout.isatty()
+JSON_OUTPUT = "--json" in sys.argv[1:] or not sys.stdout.isatty()
 IDENTIFIER = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}\Z")
 SECRET = re.compile(r"(?i)(?:--|\b)(?:password|token|secret|api[-_]key)(?:=|\s|$)")
+CHECKPOINT_SECRET = re.compile(
+    r"(?i)(?:--(?:password|token|secret|api[-_]key)(?:=|\s|$)|\b(?:password|token|secret|api[-_]key)\s*=)"
+)
 
 
 class Failure(Exception):
@@ -623,7 +626,7 @@ def main():
                     result["current_identity"] = identity(repo)
                     result["source_changed"] = result["identity"] != result["current_identity"]
                 else:
-                    if not args.next or SECRET.search(args.goal + args.next):
+                    if not args.next or CHECKPOINT_SECRET.search(args.goal + " " + args.next):
                         raise Failure(
                             "usage_error", "Provide a next action and keep credentials out of checkpoints.", 2
                         )

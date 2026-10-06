@@ -589,6 +589,14 @@ class HostViewRegistryTests(unittest.TestCase):
         narrow = embed.desired_host_size(name, f"{pid}:narrow", 80, 24)
         self.assertEqual(narrow, (240, 50), "较窄方必须跟最宽观看方，不能把窗压成 80 列")
 
+    def test_desired_host_size_takes_tallest_height_independently(self) -> None:
+        pid = os.getpid()
+        name = "corral-claude-tall"
+        embed.desired_host_size(name, f"{pid}:wide", 240, 50)
+        tall = embed.desired_host_size(name, f"{pid}:tall", 80, 64)
+        self.assertEqual(tall, (240, 64), "width from the widest viewer, height from the tallest")
+        self.assertEqual(embed.desired_host_size(name, f"{pid}:wide", 240, 50), (240, 64))
+
     def test_release_host_view_lets_remaining_viewer_shrink(self) -> None:
         pid = os.getpid()
         name = "corral-claude-release"

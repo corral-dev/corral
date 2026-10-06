@@ -16,9 +16,9 @@ stream): ``snapshot`` (reset the emulator to ``cols`` x ``rows`` and feed
 ``data``), ``output`` (feed ``data``), ``ended`` (the pane is gone). A client
 that sees a gap asks for ``terminal.resync``.
 
-Sizing: desktop viewers vote in the same widest-viewer registry the TUI windows
-use (`embed.desired_host_size`); the pane is resized to the winner. Read-only
-viewers watch without voting. The phone never uses this module.
+Sizing: desktop viewers vote in the same registry the TUI windows use
+(`embed.desired_host_size`: widest width, tallest height); the pane is resized
+to that. Read-only viewers watch without voting. The phone never uses this module.
 
 Colours: a desktop viewer reports its terminal background and foreground
 (``#rrggbb``); they are injected into the pane as OSC 11/10 answers, the same

@@ -109,7 +109,7 @@ class WorkflowTests(unittest.TestCase):
             "--task",
             "fixture",
             "--goal",
-            "Recover",
+            "Reduce token overhead",
             "--next",
             "Read evidence",
             "--dry-run",
@@ -126,6 +126,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("fixture-secret", json.dumps(value))
         self.cli("run", "--repo", self.repo, "--plan", bad, "--resource", "ignored", code=2)
         self.assertFalse(self.state.exists())
+
+    def test_explicit_json_usage_error_is_structured_on_a_terminal(self):
+        master, slave = os.openpty()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(ENTRY), "--json", "doctor"],
+                stdout=slave,
+                stderr=subprocess.PIPE,
+                timeout=15,
+            )
+            value = json.loads(os.read(master, 8192).decode())
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(value["error"]["code"], "usage_error")
+        finally:
+            os.close(slave)
+            os.close(master)
 
     def test_argv_never_uses_shell_and_output_stays_in_log(self):
         sentinel = self.root / "injected"

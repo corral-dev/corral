@@ -322,9 +322,12 @@ class RealTmuxStreamTests(unittest.TestCase):
         snapshot = self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 132)
         self.assertEqual(snapshot["rows"], 40)
         self.assertEqual(embed.pane_size(self.SESSION), (132, 40))
-        # A wider TUI viewer wins; the Mac crops instead of narrowing the pane.
+        # A wider TUI viewer sets the width (the Mac shrinks its font instead of
+        # narrowing the pane); the taller Mac sets the height.
         embed.desired_host_size(self.SESSION, "tui:1", 160, 30)
-        self.assertEqual(self.stream.vote("remote:mac:1", 132, 40), (160, 30))
+        self.assertEqual(self.stream.vote("remote:mac:1", 132, 40), (160, 40))
+        self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 160 and e["rows"] == 40)
+        self.assertEqual(embed.pane_size(self.SESSION), (160, 40))
         self.stream.withdraw("remote:mac:1")
 
     @unittest.skipUnless(embed.supports_theme_report(), "needs tmux >= 3.5")

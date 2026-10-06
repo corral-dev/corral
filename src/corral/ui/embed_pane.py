@@ -729,6 +729,16 @@ class EmbedPane(Widget):
         size = self.content_size
         return max(1, size.width), max(1, size.height)
 
+    def _live_row_offset(self) -> int:
+        """Host rows hidden above this pane when the shared grid is taller.
+
+        The shared pane takes the tallest viewer's height; a shorter pane shows
+        the bottom rows (the agent's input) and crops the top, like the Mac.
+        """
+        if self.session_name is None or self.dead or self._strips is None:
+            return 0
+        return max(0, len(self._strips) - self._pane_size()[1])
+
     def _capture_size(self) -> tuple[int, int]:
         """本轮抓帧应按什么尺寸解析终端画面。
 
@@ -1087,11 +1097,13 @@ class EmbedPane(Widget):
             self.refresh()
             return
         strips = self._strips
+        offset = self._live_row_offset()
         regions = []
         for y, (old_row, new_row) in enumerate(zip(old_grid, grid, strict=True)):
             if old_row != new_row:
                 strips[y] = _row_to_strip(new_row)
-                regions.append(Region(0, y, width, 1))
+                if y >= offset:
+                    regions.append(Region(0, y - offset, width, 1))
         self._grid = grid
         if regions:
             self.refresh(*regions)
@@ -1139,8 +1151,8 @@ class EmbedPane(Widget):
         if self.session_name is None or self.dead or self._grid is None:
             strips = self._ensure_static_strips()
             strip = strips[y] if 0 <= y < len(strips) else Strip.blank(width)
-        elif self._strips is not None and 0 <= y < len(self._strips):
-            strip = self._strips[y]
+        elif self._strips is not None and 0 <= y + (offset := self._live_row_offset()) < len(self._strips):
+            strip = self._strips[y + offset]
         else:
             strip = Strip.blank(width)
         # 窗口刚变宽/变窄、新抓帧尚未到达时，缓存行可能仍是旧宽度；按当前面板
@@ -1511,6 +1523,9 @@ class EmbedPane(Widget):
         cx, cy, visible = self._cursor
         if not visible:
             return None
+        cy -= self._live_row_offset()
+        if cy < 0:
+            return None  # cropped above a shorter pane
         pane_w, pane_h = self._pane_size()
         cx = max(0, min(cx, max(0, pane_w - 1)))
         cy = max(0, min(cy, max(0, pane_h - 1)))
@@ -1657,7 +1672,8 @@ class EmbedPane(Widget):
         if not name or self.dead:
             return
         if self._mouse_any:
-            col, row = int(x) + 1, int(y) + 1  # tmux SGR 坐标 1-based
+            # tmux SGR 坐标 1-based；较矮格子顶部裁掉的行要加回去
+            col, row = int(x) + 1, int(y) + self._live_row_offset() + 1
             embed.send_mouse_sequence(name, embed.sgr_mouse_sequence(sgr_button, col, row))
             return
         self._scroll(local_delta)

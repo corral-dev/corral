@@ -553,7 +553,13 @@ def _pid_is_alive(pid: int) -> bool:
 def desired_host_size(
     name: str, viewer_id: str, width: int, height: int,
 ) -> tuple[int, int]:
-    """登记本格观看尺寸，返回所有仍存活观看方里最宽（同宽取最大高）的尺寸。
+    """Register this viewer's size; return the widest width and, independently,
+    the tallest height among live viewers.
+
+    Width never follows a narrower viewer (narrow wraps burn into scrollback and
+    two windows fought over it, 2026-08-29). Height takes the tallest viewer so
+    no window is left with empty rows under the agent (2026-10-06); a shorter
+    viewer keeps the bottom rows and crops the top.
 
     库不可用时退回本格自己的宽高，不得阻断抓帧。低于下限的尺寸不登记，
     以免把有效尺寸拉到会污染 scrollback 的窄宽；若本格先前登记过更宽的尺寸，
@@ -625,8 +631,7 @@ def desired_host_size(
         if now - updated_at > _HOST_VIEW_STALE_SECONDS or not _pid_is_alive(pid):
             stale.append(str(other_id))
             continue
-        if (w, h) > (best[0], best[1]):
-            best = (w, h)
+        best = (max(best[0], w), max(best[1], h))
     if stale:
         _drop_host_viewers(name, stale)
     return best

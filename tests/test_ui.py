@@ -6885,6 +6885,49 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app.return_value)  # 仍停留在应用内，没有异常退出
 
 
+class EmbedPaneTallerHostTests(unittest.TestCase):
+    """The shared pane takes the tallest viewer's height (2026-10-06); a shorter
+    TUI pane must show the bottom rows (the agent's input), not the top."""
+
+    def _pane(self, rows: int, height: int) -> EmbedPane:
+        from textual.geometry import Size
+
+        pane = EmbedPane()
+        pane.session_name = "corral-claude-x"
+        size = mock.patch.object(EmbedPane, "size", new_callable=mock.PropertyMock, return_value=Size(20, height))
+        size.start()
+        self.addCleanup(size.stop)
+        content = mock.patch.object(
+            EmbedPane, "content_size", new_callable=mock.PropertyMock, return_value=Size(20, height),
+        )
+        content.start()
+        self.addCleanup(content.stop)
+        text = "\n".join(f"row{i}" for i in range(rows))
+        from corral import embed
+
+        pane._sync_strips(embed.parse_screen_rows(text, 20, rows))
+        return pane
+
+    def test_shorter_pane_shows_bottom_rows(self):
+        pane = self._pane(rows=6, height=4)
+        self.assertEqual([pane.render_line(y).text.rstrip() for y in range(4)], ["row2", "row3", "row4", "row5"])
+
+    def test_cursor_and_wheel_map_through_the_cropped_rows(self):
+        pane = self._pane(rows=6, height=4)
+        pane._cursor = (3, 5, True)
+        self.assertEqual(tuple(pane._cursor_local_offset()), (3, 3))
+        pane._cursor = (3, 1, True)
+        self.assertIsNone(pane._cursor_local_offset(), "cursor in a cropped row is not shown")
+        pane._mouse_any = True
+        with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
+            pane._wheel(64, 0.0, 0.0, 3)
+        send_mock.assert_called_once_with("corral-claude-x", "\x1b[<64;1;3M")
+
+    def test_pane_as_tall_as_the_grid_is_unchanged(self):
+        pane = self._pane(rows=4, height=4)
+        self.assertEqual(pane.render_line(0).text.rstrip(), "row0")
+
+
 class EmbedPaneWheelTests(unittest.TestCase):
     """滚轮转发回归：2026-07-19 卡顿根因——主线程每事件同步 fork 两次 tmux
     （还多发了 xterm 规范里不存在的滚轮 release 序列），触控板惯性滚动把界面堵死。"""
