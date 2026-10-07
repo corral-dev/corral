@@ -1600,12 +1600,14 @@ class EmbedPane(Widget):
             return
         event.stop()
         event.prevent_default()
-        if self.history_offset > 0 and event.key in ("up", "down"):
-            # 回滚状态下方向键先退回直播画面，和旧版「按键直接发往会话」一致，
-            # 但滚轮之外的操作应先让用户看清直播画面再决定是否继续操作
+        if self.history_offset > 0:
+            # Typing returns to the live screen, as in iTerm2 and Terminal.app
+            # (a shell `clear` must show its prompt at the top). Up/Down only
+            # return: the person should see the live screen before moving on.
             self.history_offset = 0
-            self._request_immediate_capture()
-            return
+            if event.key in ("up", "down"):
+                self._request_immediate_capture()
+                return
         self._request_immediate_capture()
         if event.is_printable and event.character:
             embed.send_literal(name, event.character)
@@ -1631,6 +1633,7 @@ class EmbedPane(Widget):
             self._paste_image_worker(self.session_name, image_bytes)
         else:
             embed.paste(self.session_name, event.text)
+        self.history_offset = 0
         self._request_immediate_capture()
         event.stop()
 

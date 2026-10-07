@@ -334,7 +334,11 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 ## 全文搜索索引
 
-`search.ConversationIndex` 是全文搜索弹窗（`Ctrl+F`）的内存索引。它**不自己读历史文件**，一律经 `SessionStore.get_conversation()` 拿正文，因此天然复用进程内 dict 缓存和 SQLite 派生缓存里的对话；新增的磁盘读取量为零。
+### Native search latency requirement (2026-10-07)
+
+The native Mac full-text search must return useful, complete results in under 500 ms on an indexed host. The reported nearly one-minute wait requires measuring first-use and repeated-query latency separately. Optimize the shared host search path (and its upstream parser only if measured necessary); preserve literal substring matching, one/two-character Chinese queries, whitespace-AND semantics, current titles, exact total counts, and updated conversations. Initial preparation must run outside the interactive request path and a daemon restart must reuse a persisted derived search index. Measured decision: keep the existing substring matcher (893 real sessions: warm queries 5–14 ms; isolated cold-cache profiling 28.6 s, of which 28.3 s is conversation loading). Persist prepared search entries in the existing private, bounded derived cache, restore them by signature/provider cohort, warm them after the host list becomes ready, and refresh on a separate background owner. Queries against a ready index read the last complete snapshot without waiting for changed histories to parse. Initial index creation may still need preparation; do not report a partial corpus as complete. Changed scans schedule refresh and completion remains atomic. Do not introduce FTS5/inverted indexing for this measured corpus: it cannot remove history parsing and adds short-query semantics without a query bottleneck. iPhone list filtering and TUI full-text search must be checked against the same scenario.
+
+`search.ConversationIndex` serves TUI full-text search and the native Mac host endpoint. It keeps an immutable in-memory text snapshot and compressed prepared entries in `PerformanceCache.search_entry`. A cache miss reads through `SessionStore.get_conversation()`, preserving the runtime parser and conversation-cache boundary. Prepared rows are private derived data, keyed by session, signature, format revision and provider cohort; corruption/disablement degrades to a cache miss. `corral cache clear` removes them with the other derived data.
 
 关键结论：正文体量远小于历史文件体量，别被 JSONL 的大小吓退。本机实测（默认 `limit=50` 共 168 个会话；`limit=200` 共 461 个会话）：
 
@@ -350,12 +354,12 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 由此定下的约定：
 
-- **不引入倒排索引 / FTS5 / 外部搜索库。** 语料量级下朴素子串匹配就是毫秒级，额外索引结构只会增加维护面。SQLite FTS5 的 trigram 分词器对中文尤其不划算——1～2 个字的查询（中文最常见的查询长度）根本索引不到，还得再挂 `LIKE` 兜底。
+- **Current measured choice: no inverted index / FTS5 / external search library.** 语料量级下朴素子串匹配就是毫秒级，额外索引结构只会增加维护面。SQLite FTS5 的 trigram 分词器对中文尤其不划算——1～2 个字的查询（中文最常见的查询长度）根本索引不到，还得再挂 `LIKE` 兜底。
 - **`search()` 必须先判定+排序、再只对要展示的前 `top` 条提取命中行。** 命中行提取（逐行 lower + 定位 + 开窗）是整个查询里最贵的一步，对着几百条命中全做一遍会把界面线程实打实卡住：461 个会话搜单字母实测 305～441 ms，改成只算前 60 条后降到 35 ms。排序键只依赖会话时间、不依赖命中行，所以先排后截不改变前 `top` 条的内容。`SearchOutcome.total` 仍是命中总数，状态行据此如实告诉用户「还有多少条没显示」，不做静默截断。
 - **`_clean()` 用 `str.translate` + 懒查表，不要写回逐字符 `unicodedata.category()` 循环。** 建索引原本 90% 的时间花在那个循环上（461 个会话 1289 ms）；查表后整轮建索引降了一半以上。两种写法在 8672 条真实消息上逐条比对过，替换结果完全等价。
 - **索引构建必须在后台线程**（`MainScreen._warm_search_index`，`@work(thread=True)`），且**要等首屏画完再开始**（`_schedule_search_index_warm`，延后 `_SEARCH_INDEX_WARM_DELAY`）。后台线程也受 GIL 影响：解析正文期间界面每帧多滞后 4～5 ms（p95 9～14 ms），直接在首屏那一秒开跑实测让首次出卡片慢了 110～165 ms，而首屏目标本来就只有 1 秒。
-- **按会话签名增量重建**：签名取扫描结果里的 `path` / `size_bytes` / `file_mtime`，不额外 `stat`（真正读取时 `get_conversation` 自己会校验文件签名）。增量刷新只要 0.5～1.2 ms，所以**每次打开弹窗都要刷一遍**——否则首屏预热之后新产生的会话和新追加的消息永远搜不到（这是最容易漏的一条：索引建好后不再刷新，corral 开着不动几小时就搜不到当天的新会话）。
-- `refresh()` 内部持锁串行，预热与弹窗侧的刷新同时触发也不会把同一批会话解析两遍。
+- **Incremental freshness:** include scanned path/size/time plus the actual file/WAL signature, detecting writes between catalog scans and same-size replacements. Shared OpenCode databases use their existing per-session time/size; unrelated database writes must not invalidate every conversation. The host owns a separate low-priority search worker: warm after list readiness, wake after full catalog refresh, and reconcile signatures every two seconds. Warm RPCs query the last complete text snapshot without waiting for this worker. New content appears after the next successful refresh; its duration can exceed two seconds for a large changed history. The TUI still refreshes in its existing background worker whenever its search panel opens. Library hubs that never call `start()` retain synchronous freshness.
+- `refresh()` serializes index builders; readers keep the previous immutable snapshot. Before any complete snapshot exists, a search can still wait for first preparation. A transient parser exception is not persisted as an empty success and retries at the next refresh. Snippet selection counts every matching line but computes highlight spans only for the displayed lines.
 - 搜索结果只带会话键和正文命中，展示用的标题 / 时间 / 运行中状态由调用方从当前 `store` 快照取；索引里不存展示态，避免建索引那一刻的旧标题被钉死。
 - **内存**：索引把正文存两份（原始大小写的行 + 小写 blob）。默认规模下 6.8 MB，不值得为省这点内存改成「只存 blob、命中再切行」——那样会丢掉角色和时间戳，命中时还得回头重读对话。另外 `_build_entry` 走 `store.get_conversation`，会把全部会话的对话灌进 `store.conversations`（该 dict 无淘汰），预热后实测净增约 10 MB；会话数量级再上一个台阶时，要先给这个 dict 加淘汰，而不是先动索引。
 - **JSON 解析一律用标准库**，不要试图为建索引再引入原生 JSON 加速，原因见下面「Rust 的适用边界」里的实测记录。
@@ -364,7 +368,7 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 - 默认位置：`~/.cache/corral/performance-cache.sqlite3`；遵循 `XDG_CACHE_HOME`，也可用 `CORRAL_CACHE_DIR` 改目录。
 - **库路径在每次连接时按当前环境解析，不在导入时锁定。** 2026-10-05 事故：进程级单例 `_CACHE` 在 `import corral.cache` 那一刻就把路径定成真实 `~/.cache/corral`，而 `tests/test_ui.py` 先 `from corral import …` 再设 `CORRAL_CACHE_DIR`，隔离形同虚设；界面测试 mock 的「测试问题 / 测试回复」被写进真实缓存，键是本机托管窗格里真实 Claude 会话的 key 与文件签名，签名一直有效，于是侧栏标题正确、预览格子却是假对话（Enter restart 的已结束会话最明显）。修法：未显式传路径时 `path` 属性每次取 `cache_path()`，路径变了就丢弃本线程旧连接重连。残留脏行用 `corral cache clear` 或删除 payload 恰为夹具的行清理。同日第二个缺口：`scripts/ci-test.py` 只给界面类分片设私有 `CORRAL_CACHE_DIR`，模块分片与串行剩余仍写真实缓存（18:08–18:11 实测写入 `fake:*`、`claude:share-1` 等临时路径行）；现由 `ci-test.py` 主入口在未设置时为整轮检查建私有缓存目录并在结束时删除，所有子进程继承。直接 `python -m unittest` 跑单个模块不经过这道保护，需自行设 `CORRAL_CACHE_DIR`。
-- 默认上限 256 MiB；可用 `CORRAL_CACHE_MAX_MB` 调整，最小 16 MiB。超过上限时优先淘汰完整对话，元数据保留以保障启动速度。
+- Default budget: 256 MiB (`CORRAL_CACHE_MAX_MB`, minimum 16 MiB). Under pressure evict full-conversation rows first, then prepared-search rows; retain list metadata for startup. Prepared search writes are batched per refresh, not per session.
 - 文件签名包含设备、inode、字节数和纳秒修改时间；Codex 额外包含标题索引签名，Cursor 额外包含提示历史和正文数据库签名。任一输入变化都视为未命中。
 - 缓存目录权限为当前用户独占，数据库为当前用户读写。内容只来自用户本来可读的本机会话历史，不上传、不进入项目日志。
 - 数据库损坏、锁竞争、只读文件系统或原生扩展缺失都必须降级为未命中，不能阻断原始历史读取。

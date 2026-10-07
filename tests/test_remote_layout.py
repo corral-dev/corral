@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -104,6 +105,13 @@ class LayoutHubTests(unittest.TestCase):
 
 
 class FulltextSearchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        isolated = tempfile.TemporaryDirectory()
+        self.addCleanup(isolated.cleanup)
+        env = mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": isolated.name, "CORRAL_CACHE": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_body_hits_come_back_with_lines_and_spans(self) -> None:
         from test_remote_sessions import _session
 
@@ -132,6 +140,68 @@ class FulltextSearchTests(unittest.TestCase):
         from corral.remote.service import _READONLY_METHODS
 
         self.assertIn(protocol.M_SEARCH_FULLTEXT, _READONLY_METHODS)
+
+    def test_warm_search_returns_during_slow_incremental_parse_then_updates(self) -> None:
+        from test_remote_sessions import _session
+
+        from corral.models import ConversationMessage
+
+        hub = SessionHub(scan_limit=10)
+        session = _session(sid="incremental")
+        hub.store.sessions = {"claude": [session]}
+        parsing, release, published, returned = (threading.Event() for _ in range(4))
+        index = hub._search_index()
+        original_refresh = index.refresh
+
+        def slow_read(_session):
+            parsing.set()
+            if not release.wait(5):
+                raise TimeoutError("test did not release parsing")
+            return [ConversationMessage("user", "new searchable message", 2)]
+
+        def refresh(*args):
+            result = original_refresh(*args)
+            published.set()
+            return result
+
+        def cleanup():
+            hub._stop.set()
+            hub._search_refresh.set()
+            release.set()
+            for thread in hub._threads:
+                thread.join(5)
+
+        self.addCleanup(cleanup)
+        with mock.patch.object(hub.store, "get_title", return_value="Title"):
+            with mock.patch.object(hub.store, "get_conversation", return_value=[
+                ConversationMessage("user", "old searchable message", 1),
+            ]):
+                self.assertEqual(hub.fulltext_search("old")["total"], 1)
+            session["file_mtime"] = (session.get("file_mtime") or 0) + 1
+            with (mock.patch.object(hub.store, "get_conversation", side_effect=slow_read),
+                  mock.patch.object(index, "refresh", side_effect=refresh)):
+                worker = threading.Thread(target=hub._search_loop, daemon=True)
+                hub._threads = [worker]
+                worker.start()
+                self.assertTrue(parsing.wait(3))
+                results = []
+
+                def query():
+                    results.append(hub.fulltext_search("old"))
+                    returned.set()
+
+                request = threading.Thread(target=query, daemon=True)
+                request.start()
+                try:
+                    self.assertTrue(returned.wait(1), "search blocked behind history parsing")
+                    self.assertEqual(results[0]["total"], 1)
+                finally:
+                    release.set()
+                    request.join(5)
+                self.assertTrue(published.wait(3))
+                self.assertEqual(hub.fulltext_search("new")["total"], 1)
+                self.assertEqual(hub.fulltext_search("old")["total"], 0)
+                cleanup()
 
 
 class TerminalTypingEchoTests(unittest.TestCase):

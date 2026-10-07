@@ -237,6 +237,14 @@ class PerformanceCache:
                 PRIMARY KEY(runtime, session_key)
             );
             CREATE INDEX IF NOT EXISTS conversation_lru ON conversation(accessed_at);
+            CREATE TABLE IF NOT EXISTS search_entry (
+                session_key TEXT PRIMARY KEY,
+                signature TEXT NOT NULL,
+                parser_version TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                accessed_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS search_entry_lru ON search_entry(accessed_at);
             """
         )
         conn.execute(
@@ -406,6 +414,36 @@ class PerformanceCache:
             conn.commit()
         self.prune()
 
+    def get_search_entries(self, keys: list[str]) -> dict[str, tuple[str, bytes]]:
+        """Read prepared search text in batches; failed reads are cache misses."""
+        result = {}
+        with self._connect() as conn:
+            if conn is not None:
+                for start in range(0, len(keys), 400):
+                    batch = keys[start:start + 400]
+                    rows = conn.execute(
+                        "SELECT session_key, signature, payload FROM search_entry "
+                        f"WHERE parser_version=? AND session_key IN ({','.join('?' * len(batch))})",
+                        (provider_cohort(), *batch),
+                    ).fetchall()
+                    result.update((key, (signature, payload)) for key, signature, payload in rows)
+        return result
+
+    def put_search_entries(self, entries: list[tuple[str, str, bytes]]) -> None:
+        """One transaction per refresh, rather than one commit per conversation."""
+        if not entries:
+            return
+        cohort, now = provider_cohort(), time.time()
+        with self._connect() as conn:
+            if conn is not None:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO search_entry "
+                    "(session_key, signature, payload, parser_version, accessed_at) VALUES(?,?,?,?,?)",
+                    [(key, signature, payload, cohort, now) for key, signature, payload in entries],
+                )
+                conn.commit()
+        self.prune()
+
     def prune(self) -> None:
         def total_size() -> int:
             return sum(
@@ -432,7 +470,12 @@ class PerformanceCache:
                     "(SELECT rowid FROM conversation ORDER BY accessed_at LIMIT 64)"
                 ).rowcount
                 if not deleted:
-                    break
+                    deleted = conn.execute(
+                        "DELETE FROM search_entry WHERE rowid IN "
+                        "(SELECT rowid FROM search_entry ORDER BY accessed_at LIMIT 64)"
+                    ).rowcount
+                    if not deleted:
+                        break
                 conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
@@ -519,6 +562,7 @@ class PerformanceCache:
             if conn is not None:
                 result["session_count"] = conn.execute("SELECT count(*) FROM session_meta").fetchone()[0]
                 result["conversation_count"] = conn.execute("SELECT count(*) FROM conversation").fetchone()[0]
+                result["search_index_count"] = conn.execute("SELECT count(*) FROM search_entry").fetchone()[0]
         return result
 
     def clear(self, *, dry_run: bool = False) -> dict:
@@ -530,13 +574,15 @@ class PerformanceCache:
             Path(str(remote_base) + "-shm"),
         )
         remote_exists = any(path.exists() for path in remote_files)
-        existed = bool(status["session_count"] or status["conversation_count"] or remote_exists)
+        existed = bool(status["session_count"] or status["conversation_count"]
+                       or status["search_index_count"] or remote_exists)
         if dry_run or not existed:
             return {"status": "would_clear" if dry_run and existed else "unchanged", **status}
         with self._connect(create=False) as conn:
             if conn is not None:
                 conn.execute("DELETE FROM conversation")
                 conn.execute("DELETE FROM session_meta")
+                conn.execute("DELETE FROM search_entry")
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         for candidate in remote_files:

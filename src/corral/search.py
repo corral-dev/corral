@@ -5,18 +5,21 @@ _filter_sessions_by_query`），本模块搜的是会话里真正说过的话，
 展示「命中的那一行」。
 
 正文本身不重复解析：一律经 `SessionStore.get_conversation` 拿，那条路已经带
-进程内缓存 + SQLite 派生缓存，所以首次建索引是「解析一遍没缓存过的会话」的
-成本，之后（含换个进程重开）基本是零。索引只活在内存里，不落盘。
+进程内缓存 + SQLite 派生缓存。整理后的搜索正文也按签名落进派生缓存，重启或
+TUI / 远程服务切换时直接恢复，不必重新解析全部历史。
 
 本模块不感知任何具体运行时，和 `keepalive` / `embed` 同属运行时无关层。
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import unicodedata
+import zlib
 from dataclasses import dataclass
 
+from corral.cache import get_cache, history_signature
 from corral.models import session_key
 from corral.projects import session_project_label
 
@@ -125,12 +128,13 @@ def _clean(text: str) -> str:
 
 
 def _signature(session: dict) -> tuple:
-    """判定「这个会话的正文要不要重读」的轻量签名，直接用扫描结果里的字段，
-    不额外 stat 磁盘（真正读取时 `get_conversation` 自己会校验文件签名）。"""
+    """Include file/WAL replacement; shared OpenCode DBs use per-session versions."""
+    path = str(session.get("path") or "")
     return (
-        str(session.get("path") or ""),
+        path,
         session.get("size_bytes"),
         session.get("file_mtime"),
+        history_signature(path) if path and session.get("source") != "opencode" else None,
     )
 
 
@@ -213,19 +217,32 @@ class ConversationIndex:
             pending = list(store.all_sessions()) if sessions is None else list(sessions)
             previous = self._entries
             fresh: dict[str, _Entry] = {}
+            signatures = {session_key(session): _signature(session) for session in pending}
+            missing = [key for key, signature in signatures.items()
+                       if key not in previous or previous[key].signature != signature]
+            persisted = get_cache().get_search_entries(missing) if missing else {}
+            writes = []
             total = len(pending)
             for done, session in enumerate(pending, start=1):
                 key = session_key(session)
-                signature = _signature(session)
+                signature = signatures[key]
                 cached = previous.get(key)
                 if cached is not None and cached.signature == signature:
                     fresh[key] = cached
                 else:
-                    fresh[key] = _build_entry(store, session, signature)
+                    encoded_signature = json.dumps([1, signature], separators=(",", ":"))
+                    restored = _restore_entry(persisted.get(key), encoded_signature, signature)
+                    entry = restored or _build_entry(store, session, signature)
+                    fresh[key] = entry
+                    if restored is None and entry.signature == signature:
+                        payload = zlib.compress(json.dumps(entry.lines, ensure_ascii=False,
+                                                           separators=(",", ":")).encode(), 1)
+                        writes.append((key, encoded_signature, payload))
                 if progress is not None:
                     progress(done, total)
             self._entries = fresh
             self._ready = True
+            get_cache().put_search_entries(writes)
             return len(fresh)
 
     def search(
@@ -289,7 +306,9 @@ def _build_entry(store, session: dict, signature: tuple) -> _Entry:
     try:
         messages = store.get_conversation(session)
     except Exception:
-        messages = []
+        # A transient read failure must neither persist an empty conversation
+        # nor mark this signature current forever. Retry on the next refresh.
+        return _Entry((), (), "")
     lines: list[tuple[str, str, float | None]] = []
     for message in messages:
         for raw in _clean(message.text or "").splitlines():
@@ -298,6 +317,25 @@ def _build_entry(store, session: dict, signature: tuple) -> _Entry:
                 lines.append((message.role, stripped, message.timestamp))
     blob = "\n".join(line[1] for line in lines).lower()
     return _Entry(signature, tuple(lines), blob)
+
+
+def _restore_entry(row: tuple[str, bytes] | None, encoded_signature: str,
+                   signature: tuple) -> _Entry | None:
+    if row is None or row[0] != encoded_signature:
+        return None
+    try:
+        raw = json.loads(zlib.decompress(row[1]))
+        if not isinstance(raw, list) or any(
+            not isinstance(line, list) or len(line) != 3
+            or not isinstance(line[0], str) or not isinstance(line[1], str)
+            or (line[2] is not None and not isinstance(line[2], (int, float)))
+            for line in raw
+        ):
+            return None
+        lines = tuple(tuple(line) for line in raw)
+        return _Entry(signature, lines, "\n".join(line[1] for line in lines).lower())
+    except (ValueError, TypeError, zlib.error):
+        return None
 
 
 def _collect_lines(
@@ -309,22 +347,24 @@ def _collect_lines(
     """
     if entry is None or max_lines <= 0:
         return (), 0
-    exact: list[MatchLine] = []
-    partial: list[MatchLine] = []
+    exact: list[tuple[str, str, float | None]] = []
+    partial: list[tuple[str, str, float | None]] = []
     total = 0
     for role, text, timestamp in entry.lines:
         lowered = text.lower()
-        spans = _spans_in(lowered, keywords)
-        if not spans:
+        if not any(keyword in lowered for keyword in keywords):
             continue
         total += 1
-        windowed, shifted = _window(text, spans)
-        line = MatchLine(role, windowed, shifted, timestamp)
         if all(keyword in lowered for keyword in keywords):
-            exact.append(line)
+            if len(exact) < max_lines:
+                exact.append((role, text, timestamp))
         elif len(partial) < max_lines:
-            partial.append(line)
+            partial.append((role, text, timestamp))
     picked = exact[:max_lines]
     if len(picked) < max_lines:
         picked = picked + partial[: max_lines - len(picked)]
-    return tuple(picked), total
+    result = []
+    for role, text, timestamp in picked:
+        windowed, shifted = _window(text, _spans_in(text.lower(), keywords))
+        result.append(MatchLine(role, windowed, shifted, timestamp))
+    return tuple(result), total

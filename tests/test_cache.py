@@ -85,6 +85,31 @@ class PerformanceCacheTests(unittest.TestCase):
         self.assertIsNone(broken.get_session("claude", str(history)))
         self.assertEqual(broken.status()["session_count"], 0)
 
+    def test_prepared_search_entries_round_trip_clear_and_provider_change(self):
+        self.cache.put_search_entries([("claude:a", "signature", b"compressed text")])
+        self.assertEqual(self.cache.get_search_entries(["claude:a", "missing"]),
+                         {"claude:a": ("signature", b"compressed text")})
+        self.assertEqual(self.cache.status()["search_index_count"], 1)
+        with mock.patch("corral.cache.provider_cohort", return_value="upgraded"):
+            self.assertEqual(self.cache.get_search_entries(["claude:a"]), {})
+        self.assertEqual(self.cache.clear(dry_run=True)["status"], "would_clear")
+        self.assertEqual(self.cache.status()["search_index_count"], 1)
+        self.assertEqual(self.cache.clear()["status"], "cleared")
+        self.assertEqual(self.cache.status()["search_index_count"], 0)
+        self.assertEqual(self.cache.clear()["status"], "unchanged")
+
+    def test_prepared_search_reads_span_sqlite_parameter_batches(self):
+        entries = [(f"claude:{n}", "signature", b"text") for n in range(900)]
+        self.cache.put_search_entries(entries)
+        self.assertEqual(len(self.cache.get_search_entries([row[0] for row in entries])), 900)
+
+    def test_prepared_search_cache_errors_and_disabled_cache_are_misses(self):
+        self.path.write_bytes(b"not sqlite")
+        self.assertEqual(self.cache.get_search_entries(["claude:a"]), {})
+        self.cache.put_search_entries([("claude:a", "signature", b"text")])
+        with mock.patch.dict(os.environ, {"CORRAL_CACHE": "0"}):
+            self.assertEqual(self.cache.get_search_entries(["claude:a"]), {})
+
 
 class DefaultCacheLocationTests(unittest.TestCase):
     """The default instance exists from import; it must follow CORRAL_CACHE_DIR set later."""

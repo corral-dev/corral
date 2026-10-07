@@ -7,8 +7,12 @@ test_ui.py 里用 Pilot 验证。
 
 from __future__ import annotations
 
+import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from corral.models import ConversationMessage
 from corral.search import ConversationIndex, split_keywords
@@ -62,6 +66,10 @@ class SplitKeywordsTests(unittest.TestCase):
 
 class ConversationIndexTests(unittest.TestCase):
     def setUp(self) -> None:
+        isolated = tempfile.TemporaryDirectory()
+        self.addCleanup(isolated.cleanup)
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": isolated.name, "CORRAL_CACHE": "1"}).start()
         self.sessions = [
             _session("a", title="侧边栏改造", cwd="/Users/x/corral", mtime=300),
             _session("b", title="字幕优化", cwd="/Users/x/LiveCaption", mtime=200),
@@ -251,6 +259,99 @@ class ConversationIndexTests(unittest.TestCase):
         self.assertEqual(
             [m.session["id"] for m in index.search(self.sessions, "筛选")], ["a"],
         )
+
+    def test_new_index_restores_text_without_loading_conversations(self) -> None:
+        self.index.refresh(self.store)
+        expected = self.index.search(self.sessions, "全文搜索 性能")
+        self.store.reads.clear()
+        restored = ConversationIndex()
+        restored.refresh(self.store)
+        self.assertEqual(self.store.reads, [])
+        self.assertEqual(restored.search(self.sessions, "全文搜索 性能"), expected)
+
+    def test_persistent_index_invalidates_only_changed_session(self) -> None:
+        self.index.refresh(self.store)
+        self.store.reads.clear()
+        self.sessions[0]["file_mtime"] += 1
+        self.conversations["a"] = [ConversationMessage("user", "新内容", 10)]
+        restored = ConversationIndex()
+        restored.refresh(self.store)
+        self.assertEqual(self.store.reads, ["a"])
+        self.assertEqual(restored.search(self.sessions, "新内容").total, 1)
+        self.assertEqual(restored.search(self.sessions, "全文搜索").total, 0)
+
+    def test_corrupt_entry_falls_back_to_original_conversation(self) -> None:
+        from corral.cache import get_cache
+
+        self.index.refresh(self.store)
+        signature, _ = get_cache().get_search_entries(["claude:a"])["claude:a"]
+        get_cache().put_search_entries([("claude:a", signature, b"corrupt")])
+        self.store.reads.clear()
+        restored = ConversationIndex()
+        restored.refresh(self.store)
+        self.assertEqual(self.store.reads, ["a"])
+        self.assertEqual(restored.search(self.sessions, "全文搜索").total, 1)
+
+    def test_provider_change_invalidates_persisted_entries(self) -> None:
+        self.index.refresh(self.store)
+        self.store.reads.clear()
+        with mock.patch("corral.cache.provider_cohort", return_value="changed-provider"):
+            ConversationIndex().refresh(self.store)
+        self.assertEqual(sorted(self.store.reads), ["a", "b", "c"])
+
+    def test_disabled_cache_does_not_restore_previous_index(self) -> None:
+        self.index.refresh(self.store)
+        self.store.reads.clear()
+        with mock.patch.dict(os.environ, {"CORRAL_CACHE": "0"}):
+            ConversationIndex().refresh(self.store)
+        self.assertEqual(sorted(self.store.reads), ["a", "b", "c"])
+
+    def test_transient_read_failure_is_retried_without_signature_change(self) -> None:
+        with mock.patch.object(self.store, "get_conversation", side_effect=OSError("temporary")):
+            self.index.refresh(self.store)
+        self.index.refresh(self.store)
+        self.assertEqual(self.index.search(self.sessions, "全文搜索").total, 1)
+
+    def test_wal_append_invalidates_text_between_catalog_scans(self) -> None:
+        path = Path(os.environ["CORRAL_CACHE_DIR"]) / "conversation.db"
+        path.write_bytes(b"database")
+        self.sessions[0]["path"] = str(path)
+        self.index.refresh(self.store)
+        Path(str(path) + "-wal").write_bytes(b"new message")
+        self.store.reads.clear()
+        self.conversations["a"] = [ConversationMessage("user", "新增正文", 10)]
+        self.index.refresh(self.store)
+        self.assertEqual(self.store.reads, ["a"])
+        self.assertEqual(self.index.search(self.sessions, "新增正文").total, 1)
+
+    def test_shared_opencode_database_write_does_not_reload_unchanged_session(self) -> None:
+        path = Path(os.environ["CORRAL_CACHE_DIR"]) / "opencode.db"
+        path.write_bytes(b"database")
+        self.sessions[0].update(source="opencode", path=str(path))
+        self.index.refresh(self.store)
+        path.write_bytes(b"unrelated session changed")
+        self.store.reads.clear()
+        self.index.refresh(self.store)
+        self.assertEqual(self.store.reads, [])
+
+    def test_short_chinese_literals_and_punctuation_survive_restore(self) -> None:
+        self.conversations["a"] = [ConversationMessage("user", "搜 搜索 %_ \\\n部署成功", 1)]
+        self.index.refresh(self.store)
+        restored = ConversationIndex()
+        restored.refresh(self.store)
+        for query in ("搜", "搜索", "%_", "部署 成功"):
+            self.assertEqual(restored.search(self.sessions, query).total, 1, query)
+
+    def test_only_displayed_lines_compute_highlight_spans(self) -> None:
+        from corral.search import _spans_in
+
+        self.conversations["a"] = [ConversationMessage("user", "关键词\n" * 2000, 1)]
+        self.index.refresh(self.store)
+        with mock.patch("corral.search._spans_in", wraps=_spans_in) as spans:
+            match = self.index.search(self.sessions, "关键词", max_lines=3)[0]
+        self.assertEqual(match.total_hits, 2000)
+        self.assertEqual(len(match.lines), 3)
+        self.assertEqual(spans.call_count, 3)
 
 
 if __name__ == "__main__":

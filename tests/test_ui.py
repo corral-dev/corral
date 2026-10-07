@@ -7017,6 +7017,24 @@ class EmbedPaneWheelTests(unittest.TestCase):
         self.assertTrue(pane._is_hosted_fallback())
         self.assertTrue(pane._uses_detail_window())
 
+    def test_typing_while_scrolled_back_returns_to_live_screen(self):
+        """iTerm2/Terminal.app: a key typed into scrollback shows the live screen
+        again and still reaches the program (a shell `clear` then shows its
+        prompt at the top); Up/Down only return."""
+        import asyncio
+
+        pane = EmbedPane()
+        pane.session_name = "corral-shell-x"
+        pane._request_immediate_capture = mock.Mock()
+        for key, character, sent in (("l", "l", True), ("up", None, False)):
+            pane.history_offset = 5
+            event = events.Key(key, character)
+            with mock.patch("corral.embed.send_literal") as literal_mock, \
+                    mock.patch("corral.embed.send_key") as key_mock:
+                asyncio.run(pane._on_key(event))
+            self.assertEqual(pane.history_offset, 0, key)
+            self.assertEqual(literal_mock.called or key_mock.called, sent, key)
+
     def test_scroll_handlers_preserve_sgr_direction_without_local_scroll(self):
         pane = EmbedPane()
         pane.session_name = "corral-claude-x"

@@ -4,3 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| Native full-text search latency | 验证中 | search.py, cache.py, remote/sessions.py, search/cache tests, PERFORMANCE_KNOWLEDGE_BASE.md; prepared cli .venv; Apple read-only acceptance | 13:19 | 2026-10-07 13:27 | Codex primary; 62 focused tests passed; persistent entries + host background refresh; full suite and native acceptance next |

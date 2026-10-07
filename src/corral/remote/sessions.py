@@ -526,6 +526,7 @@ class SessionHub:
         self._layout_thread: threading.Thread | None = None
         self._layout_revision_seen: int | None = None
         self._stop = threading.Event()
+        self._search_refresh = threading.Event()
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
@@ -559,7 +560,7 @@ class SessionHub:
             self._snapshot_status()
         finally:
             self._ready.set()
-        for target in (self._refresh_loop, self._screen_loop, self._conversation_loop):
+        for target in (self._refresh_loop, self._screen_loop, self._conversation_loop, self._search_loop):
             thread = threading.Thread(target=target, daemon=True, name=f"remote-{target.__name__}")
             thread.start()
             self._threads.append(thread)
@@ -573,6 +574,7 @@ class SessionHub:
 
     def stop(self) -> None:
         self._stop.set()
+        self._search_refresh.set()
         with self._lock:
             terminals = [stream for stream, _ in self._terminals.values()]
             self._terminals.clear()
@@ -596,6 +598,37 @@ class SessionHub:
         self._status_hook = hook
 
     # -- 后台循环 ---------------------------------------------------------
+
+    def _search_index(self):
+        from corral.search import ConversationIndex
+
+        with self._lock:
+            index = getattr(self, "_fulltext_index", None)
+            if index is None:
+                index = ConversationIndex()
+                self._fulltext_index = index
+            return index
+
+    def _search_sessions(self) -> list[dict]:
+        return [session for session in self.store.all_sessions()
+                if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS]
+
+    def _search_loop(self) -> None:
+        """Own parsing outside RPC threads; publish only complete index snapshots."""
+        from corral import observe
+        from corral.schedprio import demote_background
+
+        demote_background()
+        index = self._search_index()
+        while not self._stop.is_set():
+            self._search_refresh.clear()
+            try:
+                index.refresh(self.store, self._search_sessions())
+            except Exception as exc:
+                observe.event("search_index_refresh_failed", error=str(exc))
+            # Also validate file/WAL signatures between catalog scans so fresh
+            # messages in a known session do not wait for the next full scan.
+            self._search_refresh.wait(2.0)
 
     def _refresh_loop(self) -> None:
         """One thread owns list state: a 1 s state probe plus the throttled full scan.
@@ -660,6 +693,7 @@ class SessionHub:
                     # History scan failures must not block state or title propagation.
                     pass
                 last_scan = time.monotonic()
+                self._search_refresh.set()
                 self._reclaim_inactive_hosts()
                 title_keys.update(self.store.poll_title_updates())
                 last_title_poll = time.monotonic()
@@ -1624,22 +1658,14 @@ class SessionHub:
     def fulltext_search(self, query: str, top: int = 40) -> dict:
         """Conversation-body search with hit lines, shared with the TUI's Ctrl+F.
 
-        The index keeps per-session signatures, so only changed conversations
-        are re-read; the first call parses uncached histories once.
+        Daemons warm and maintain a persisted index on a dedicated background
+        thread. Queries never wait for changed histories once a snapshot exists.
+        Library callers without start() retain synchronous refresh semantics.
         """
-        from corral.search import ConversationIndex
-
-        with self._lock:
-            index = getattr(self, "_fulltext_index", None)
-            if index is None:
-                index = ConversationIndex()
-                self._fulltext_index = index
-        sessions = [
-            session
-            for session in self.store.all_sessions()
-            if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS
-        ]
-        index.refresh(self.store, sessions)
+        index = self._search_index()
+        sessions = self._search_sessions()
+        if not self._threads or not index.ready:
+            index.refresh(self.store, sessions)
         titles = {session_key(session): self.store.get_title(session) for session in sessions}
         outcome = index.search(sessions, query, titles=titles, top=max(1, min(int(top), 100)))
         return {
