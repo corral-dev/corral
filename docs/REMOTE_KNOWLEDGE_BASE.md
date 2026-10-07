@@ -413,3 +413,11 @@ python3 scripts/phone_remote_acceptance.py \
 3. 无手机时用 `cli/scripts/phone_remote_acceptance.py` 经当前配置的中继跑完整表订阅，并**每个助手各打开一条详情**；`device_probe.py` 只作握手对照。
 
 <!-- 该文档整理/压缩于 2026-09-29 -->
+
+## Rebuilt conversation sequences (2026-10-07)
+
+A native-reader rebuild may assign different normalized sequence numbers than incremental projection (for example Codex tool hosts grouped differently across poll batches). These numbers are scoped to one projection generation. Rebuilt cards must replace the prior generation, never merge into its sequence slots. Otherwise newer user prompts overwrite earlier rows while an old assistant tail remains at larger sequence numbers: the reader appears to swallow prompts or move new prompts above old replies. Original history remains intact.
+
+The reader signals a replacement when a previously assigned sequence changes message identity or disappears. SessionHub atomically replaces canonical history, increments generation, clears replay deltas and sends a bounded history-reset snapshot to active clients. Native clients apply it as a tail snapshot and preserve only their unconfirmed local echoes across generations. New uncached transcripts use a non-repeating generation seed so a host restart or parser-cache invalidation cannot be mistaken for the old generation. Status-only tool updates stay deltas. Invalidate old derived transcript caches containing mixed generations. TUI's direct history projection does not use this remote merge path.
+
+Reproduction uses a temporary copy of the affected Codex history (original unchanged): incremental projection yielded 62 cards, rematerialization yielded 47, and overlapping sequence slots changed identity. The replacement signal fired and retained all 11 human prompts. Focused host tests (65) and portable native tests (349) pass. This confirms a code defect independently of which GUI build supplied the original screenshot.

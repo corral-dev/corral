@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-10-01.4"  # claude non-empty thinking shown as reply text
+PARSER_VERSION = "2026-10-07.1"  # invalidate mixed sequence generations after rebuild
 _SCHEMA_VERSION = 1
 
 

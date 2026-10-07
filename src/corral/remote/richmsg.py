@@ -554,8 +554,16 @@ class RichReader:
         self._cc_fps: dict[int, tuple] = {}
         self._cc_full: list[RichMessage] | None = None
         self._cc_floor: int | None = None
+        self._replacement_messages: list[RichMessage] | None = None
+
+    def take_replacement(self) -> list[RichMessage] | None:
+        """Consume a rematerialized generation, including an empty history."""
+        replacement = self._replacement_messages
+        self._replacement_messages = None
+        return replacement
 
     def reset(self) -> None:
+        self._replacement_messages = None
         self._offset = 0
         self._rowid = 0
         self._seq = 0
@@ -1669,6 +1677,20 @@ def _normalize_pi_fp(value: object) -> tuple:
     return (str(role or ""), str(text or ""), tuple(tool_fps))
 
 
+def _note_replacement(reader: RichReader, previous: dict, fresh: list[RichMessage]) -> None:
+    """Sequence slots cannot merge across a changed projection identity."""
+    def identity(fingerprint: tuple) -> tuple:
+        role, text, tools = fingerprint
+        return role, text, tuple(tool[0] for tool in tools)
+
+    current = {item.seq: _pi_fingerprint(item) for item in fresh}
+    if previous and any(
+        seq not in current or identity(old) != identity(current[seq])
+        for seq, old in previous.items()
+    ):
+        reader._replacement_messages = list(fresh)
+
+
 # --- Pi via SessKit -------------------------------------------------------
 
 _PI_SESSKIT_READER: bool | None = None
@@ -2275,6 +2297,7 @@ def _pi_rebuild_from_events(reader: RichReader, events: object) -> list[RichMess
         if host is not None and is_new:
             fresh.append(host)
     new_fps = {message.seq: _pi_fingerprint(message) for message in fresh}
+    _note_replacement(reader, prev_fps, fresh)
     out = [
         message
         for message in fresh
@@ -2414,6 +2437,7 @@ def _cc_rebuild(
     reader._seq = 0
     fresh = _project_typed_batch(reader, runtime, events, {})
     new_fps = {item.seq: _pi_fingerprint(item) for item in fresh}
+    _note_replacement(reader, prev_fps, fresh)
     out = [
         item
         for item in fresh
@@ -2597,6 +2621,7 @@ def _co_rebuild(
     reader._seq = 0
     fresh = _project_typed_batch(reader, runtime, _co_filter_events(runtime, events), {})
     new_fps = {item.seq: _pi_fingerprint(item) for item in fresh}
+    _note_replacement(reader, prev_fps, fresh)
     out = [
         item
         for item in fresh

@@ -851,10 +851,7 @@ class SessionHub:
                         new_messages = watch.reader.poll()
                 except Exception:
                     continue
-                if new_messages:
-                    self._publish_new_messages(
-                        watch.canonical_key or watch.key, new_messages
-                    )
+                self._publish_reader_update(watch.canonical_key or watch.key, watch.reader, new_messages)
 
     # -- 会话查询 ---------------------------------------------------------
 
@@ -1224,6 +1221,36 @@ class SessionHub:
             for event in _wire_message_batches(new_messages, session_key=watch.key):
                 self._on_event(f"session:{watch.key}", event)
 
+    def _publish_reader_update(
+        self, key: str, reader: richmsg.RichReader, messages: list[richmsg.RichMessage]
+    ) -> None:
+        replacement = reader.take_replacement()
+        if replacement is None:
+            if messages:
+                self._publish_new_messages(key, messages)
+            return
+        with self._lock:
+            transcript = self._transcripts.get(key)
+            if transcript is None or transcript.reader is not reader:
+                return
+            transcript.messages = replacement
+            transcript.generation += 1
+            transcript.signature = history_signature(transcript.path) if transcript.path else None
+            targets = [watch for watch in self._conversations.values()
+                       if watch.watchers > 0 and (watch.key == key or watch.canonical_key == key)]
+            for watch in targets:
+                watch.generation = transcript.generation
+                watch.deltas.clear()
+            page = _message_page(
+                replacement, limit=MESSAGE_PAGE_LIMIT, generation=transcript.generation,
+                has_earlier=reader.has_earlier(),
+            )
+        self._persist_transcript(transcript)
+        for watch in targets:
+            self._on_event(f"session:{watch.key}", {
+                **page, "kind": "history_reset", "session": watch.key, "resume": "tail",
+            })
+
     def _ensure_transcript(self, session: dict) -> _Transcript:
         """返回当前会话的规范化消息缓存；文件没变就不重新解析。"""
         key = session_key(session)
@@ -1257,11 +1284,10 @@ class SessionHub:
             )
             reader = current.reader if current is not None else None
             messages = current.messages if current is not None else None
-            generation = current.generation if current is not None else 1
+            generation = current.generation if current is not None else time.time_ns() // 1_000
         if incremental and reader is not None and messages is not None and current is not None:
             new_messages = reader.poll()
-            if new_messages:
-                self._publish_new_messages(key, new_messages)
+            self._publish_reader_update(key, reader, new_messages)
             with self._lock:
                 stored = self._transcripts.get(key)
                 if stored is not None and stored.reader is reader:
@@ -1283,16 +1309,15 @@ class SessionHub:
             transcript = _Transcript(key, path, signature, generation, reader, messages)
             self._remember_transcript(transcript)
             new_messages = reader.poll()
-            if new_messages:
-                self._publish_new_messages(key, new_messages)
-            else:
+            self._publish_reader_update(key, reader, new_messages)
+            if not new_messages:
                 self._persist_transcript(transcript)
             return transcript
 
         reader = richmsg.RichReader(session)
         messages = reader.read_all(limit=MESSAGE_PAGE_LIMIT)
         rebuilt = current is not None and not incremental
-        generation = generation + 1 if rebuilt else 1
+        generation = generation + 1 if rebuilt else generation
         transcript = _Transcript(key, path, signature, generation, reader, messages)
         self._remember_transcript(transcript)
         self._persist_transcript(transcript)
