@@ -23,7 +23,7 @@ class HistoryResetTests(unittest.TestCase):
         self.assertIsNone(reader.take_replacement())
 
     def test_codex_tools_across_polls_reset_to_chronological_user_turns(self):
-        from tests.test_remote_richmsg_codex_baseline import (
+        from test_remote_richmsg_codex_baseline import (
             _assistant_item,
             _function_call,
             _session,

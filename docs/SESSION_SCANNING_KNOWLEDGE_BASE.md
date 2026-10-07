@@ -155,6 +155,8 @@ Legacy Corral managed Codex panes may have no app-server identity claim. A scan 
 
 ### 2.4 会话时间与排序
 
+**Codex metadata-only updates (2026-10-07).** List timestamps and date buckets must follow real conversation/turn activity; restoring a session or applying thread settings without a new turn cannot promote historical sessions to Today. SessKit owns this distinction; all three clients consume its effective `mtime`. Preserve raw `file_mtime` for history/cache invalidation. A timestamp backfill must not widen status/completion evidence. See [SessKit listing contract](~/Codes/SessKit/docs/CONTRACT.md#listing-modes).
+
 `effective_session_time(file_mtime, event_time)` 统一处理“文件看似刚更新、真实对话却很久以前”的情况：
 
 ```mermaid

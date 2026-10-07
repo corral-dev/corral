@@ -318,6 +318,105 @@ class StoreRefreshStateTests(unittest.TestCase):
             self.assertTrue(store.refresh_state())
         self.assertFalse(store.all_sessions()[0]["live"])
 
+    def test_probe_keeps_evidence_cache_so_full_refresh_rereads_only_changes(self) -> None:
+        cold_paths = []
+        sessions = []
+        for index in range(5):
+            path = self.tmp / f"c{index}.jsonl"
+            path.write_text("x" * 10, encoding="utf-8")
+            cold_paths.append(path)
+            sessions.append({
+                "source": "claude", "id": f"c{index}", "short_id": f"c{index}",
+                "path": str(path), "mtime": 1.0, "file_mtime": 1.0, "size_bytes": 10,
+                "size_kb": 0.0, "fallback_title": "t", "cwd": str(self.tmp),
+                "live": False, "first_user_msg": "hi",
+            })
+        hot_path = self.tmp / "h.jsonl"
+        hot_path.write_text("x" * 10, encoding="utf-8")
+        sessions.append(self._hot_claude(hot_path))
+        inspected: list[str] = []
+
+        def inspect(candidate):
+            inspected.append(str(candidate.get("id")))
+            return AttentionEvidence(phase="idle", observed_at=time.time(), source="history")
+
+        with mock.patch.object(store_module, "inspect_session", side_effect=inspect):
+            store = self._store(sessions)
+            hot_path.write_text("x" * 20, encoding="utf-8")
+            store.refresh_state()  # partial: only the hot session
+            inspected.clear()
+            store._last_full_merge_at = None  # force the full merge path
+            store.refresh()
+        # Before 2026-10-07 the probe shrank the cache to its hot subset and this
+        # full refresh re-read every cold history (5–67 s under memory pressure).
+        self.assertEqual([name for name in inspected if name.startswith("c")], [])
+
+    def test_submitted_turn_is_working_until_native_evidence_takes_over(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        path = self.tmp / "sub.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = {**self._hot_claude(path), "status_tag": STATUS_DONE, "completion_id": "turn-1"}
+        phase = {"value": "idle"}
+        with mock.patch.object(
+            store_module, "inspect_session",
+            side_effect=lambda candidate: AttentionEvidence(
+                phase=phase["value"], observed_at=time.time(), source="history"),
+        ):
+            store = self._store([session])
+            runtime = store.registry.get("claude")
+            self.assertTrue(store.mark_turn_submitted("claude:t1"))
+            self.assertEqual(store.all_sessions()[0]["attention_kind"], "working")
+            path.write_text("a" * 20, encoding="utf-8")  # the prompt row; agent not yet busy
+            store.refresh_state()
+            self.assertEqual(store.all_sessions()[0]["attention_kind"], "working")
+            # A fast turn ends between probes: the new completion releases the mark.
+            runtime.fresh = {**session, "status_tag": STATUS_DONE, "completion_id": "turn-2"}
+            path.write_text("a" * 40, encoding="utf-8")
+            store.refresh_state()
+            self.assertNotEqual(store.all_sessions()[0].get("attention_kind"), "working")
+            # Native working evidence takes over a later submit directly.
+            self.assertTrue(store.mark_turn_submitted("claude:t1"))
+            phase["value"] = "working"
+            path.write_text("a" * 50, encoding="utf-8")
+            store.refresh_state()
+            self.assertNotIn("claude:t1", store._submitted_turns)
+            self.assertEqual(store.all_sessions()[0]["attention_kind"], "working")
+
+    def test_submit_that_never_starts_a_turn_is_released_after_quiet_history(self) -> None:
+        path = self.tmp / "quiet.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = self._hot_claude(path)
+        with mock.patch.object(
+            store_module, "inspect_session",
+            return_value=AttentionEvidence(phase="idle", observed_at=time.time(), source="history"),
+        ):
+            store = self._store([session])
+            store.mark_turn_submitted("claude:t1")
+            store.refresh_state()
+            self.assertEqual(store.all_sessions()[0]["attention_kind"], "working")
+            store._submitted_turns["claude:t1"]["changed_at"] -= store_module._SUBMIT_QUIET_RELEASE_SECONDS
+            store.refresh_state()
+        self.assertNotEqual(store.all_sessions()[0].get("attention_kind"), "working")
+        self.assertNotIn("claude:t1", store._submitted_turns)
+
+    def test_swapped_in_scan_records_keep_probed_attention_and_turn_state(self) -> None:
+        from sesskit.titles import STATUS_DONE
+
+        path = self.tmp / "swap.jsonl"
+        path.write_text("a" * 10, encoding="utf-8")
+        session = self._hot_claude(path)
+        store = self._store([])
+        current = {**session, "attention_kind": "working", "attention_token": "tok"}
+        store.sessions["claude"] = [current]
+        store._turn_probe = {"claude:t1": (store_module._turn_evidence_stamp(current),
+                                           {"status_tag": STATUS_DONE, "completion_id": "turn-1"})}
+        scanned = {"claude": [dict(session)]}
+        with store.lock:
+            store._carry_probed_state(scanned)
+        self.assertEqual(scanned["claude"][0]["attention_kind"], "working")
+        self.assertEqual(scanned["claude"][0]["completion_id"], "turn-1")
+
     def test_partial_injection_keeps_cold_session_attention(self) -> None:
         store = self._store([])
         cold = {"source": "claude", "id": "c", "attention_kind": "unread"}
@@ -407,6 +506,86 @@ class RemoteLoopTests(unittest.TestCase):
                 worker.join(5.0)
         full_scan.assert_not_called()
         self.assertIn(("sessions", {"kind": "list"}), events)
+
+    def test_slow_full_scan_never_holds_the_state_probe(self) -> None:
+        from corral.remote import sessions as remote_sessions
+
+        events: list = []
+        hub = self._hub(events)
+        hub._history_watcher = None  # every slice is due for a full scan
+        scan_started = threading.Event()
+        release = threading.Event()
+        probes: list[float] = []
+
+        def slow_scan():
+            scan_started.set()
+            release.wait(10.0)
+            return False
+
+        def refresh_state(**_kwargs):
+            probes.append(time.monotonic())
+            return False
+
+        with (
+            mock.patch("corral.schedprio.demote_background"),
+            mock.patch.object(remote_sessions, "_STATE_TICK", 0.02),
+            mock.patch.object(remote_sessions, "_TITLE_POLL_SLICE", 0.01),
+            mock.patch.object(hub.store, "refresh", side_effect=slow_scan),
+            mock.patch.object(hub.store, "refresh_state", side_effect=refresh_state),
+            mock.patch.object(hub.store, "poll_title_updates", return_value=set()),
+            mock.patch.object(hub, "_reclaim_inactive_hosts"),
+            mock.patch.object(hub, "list_snapshot", return_value={"kind": "list"}),
+        ):
+            worker = threading.Thread(target=hub._refresh_loop, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(scan_started.wait(5.0))
+                during = len(probes)
+                time.sleep(0.3)
+                self.assertGreater(len(probes) - during, 3, "probe stalled behind the scan")
+            finally:
+                release.set()
+                hub._stop.set()
+                worker.join(5.0)
+
+    def test_submit_publishes_working_without_waiting_for_a_tick(self) -> None:
+        from corral.remote import sessions as remote_sessions
+
+        events: list = []
+        hub = self._hub(events)
+        hub._history_watcher = None
+        session = {"source": "claude", "id": "s1", "short_id": "s1", "live": True,
+                   "keepalive_name": "k", "fallback_title": "t", "mtime": time.time(),
+                   "cwd": "/tmp", "first_user_msg": "hi"}
+        hub.store.sessions["claude"] = [session]
+        hub.store.loaded = True
+        with (
+            mock.patch("corral.schedprio.demote_background"),
+            mock.patch.object(remote_sessions, "_STATE_TICK", 30.0),  # no regular tick in this test
+            mock.patch.object(hub.store, "refresh", return_value=False),
+            mock.patch.object(hub.store, "refresh_state", return_value=False),
+            mock.patch.object(hub.store, "poll_title_updates", return_value=set()),
+            mock.patch.object(hub, "_reclaim_inactive_hosts"),
+        ):
+            worker = threading.Thread(target=hub._refresh_loop, daemon=True)
+            worker.start()
+            try:
+                time.sleep(0.1)
+                events.clear()
+                hub._emit_provisional_working("claude:s1")
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and not any(
+                    channel == "sessions" for channel, _payload in events
+                ):
+                    time.sleep(0.01)
+            finally:
+                hub._stop.set()
+                worker.join(5.0)
+        self.assertEqual(session["attention_kind"], "working")
+        rows = [payload for channel, payload in events if channel == "sessions"]
+        self.assertTrue(rows, "submit did not wake the state loop")
+        listed = {row.get("key"): row for row in rows[-1].get("sessions", [])}
+        self.assertEqual(listed["claude:s1"]["marker"], "working")
 
     def test_new_history_file_triggers_a_scan_once_the_index_moves(self) -> None:
         from corral.remote import sessions as remote_sessions
