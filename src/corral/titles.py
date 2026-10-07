@@ -292,7 +292,7 @@ def _is_low_value_title(text: str | None) -> bool:
     line = _title_line(text)
     if not line:
         return True
-    if line in {"...", "…"}:
+    if not any(char.isalnum() for char in line):
         return True
     if line.startswith(("{", "[")):
         return True  # 结构化 JSON/数组片段；截断或被 pretty-print 折行后未必能 fullmatch 闭合括号
@@ -463,6 +463,11 @@ def _compact_title(text: str | None) -> str | None:
         parts = parts[1:]
     if parts and len(parts[0]) >= 4:
         line = parts[0]
+    # A clipped attachment path can pass the initial check, then become only
+    # an ellipsis after reference removal. Never let it outrank the real task
+    # or suppress generation by returning an unusable temporary title.
+    if _is_low_value_title(line) or _is_machine_slug(line):
+        return None
     if len(line) > _TEMP_TITLE_LEN:
         return line[:_TEMP_TITLE_LEN] + "…"
     return line

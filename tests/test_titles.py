@@ -27,6 +27,39 @@ def _session(**overrides) -> dict:
 
 
 class TemporaryTitleRankingTests(unittest.TestCase):
+    def test_clipped_attachment_fallback_yields_to_real_request_for_every_runtime(self) -> None:
+        request = "/tmp/captures/screenshot.png 修复会话标题"
+        for runtime in ("claude", "codex", "opencode", "cursor", "pi"):
+            with self.subTest(runtime=runtime):
+                session = _session(
+                    source=runtime,
+                    fallback_title="/tmp/captures/screenshot…",
+                    first_user_msg=request,
+                )
+                title, needs = titles.resolve_initial_title(session, {})
+                self.assertEqual(title, "修复会话标题")
+                self.assertTrue(needs)
+
+    def test_removed_references_cannot_become_punctuation_titles(self) -> None:
+        for source in (
+            "/tmp/captures/screenshot…",
+            "@~/captures/screenshot...",
+            "/tmp/one.png /tmp/two.png ⋯",
+        ):
+            with self.subTest(source=source):
+                self.assertIsNone(titles._compact_title(source))
+        self.assertEqual(titles._compact_title("截图：https://example.com/screenshot.png"), "截图")
+
+    def test_punctuation_cache_is_repaired_but_valid_success_is_preserved(self) -> None:
+        session = _session(first_user_msg="修复会话标题", fallback_title="/tmp/screenshot…")
+        for punctuation in ("...", "…", "⋯", ". . .", "。。。", "---", "🖼️"):
+            with self.subTest(punctuation=punctuation):
+                cache = {"cursor:sample": {"title": punctuation}}
+                self.assertEqual(titles.resolve_initial_title(session, cache), ("修复会话标题", True))
+                self.assertFalse(titles.has_usable_cached_title(session, cache))
+        cache = {"cursor:sample": {"title": "Fix session titles"}}
+        self.assertEqual(titles.resolve_initial_title(session, cache), ("Fix session titles", False))
+
     def test_insult_prefix_does_not_beat_the_real_task(self) -> None:
         session = _session(
             native_title="Assemble annotated UI change requests",
@@ -375,6 +408,19 @@ class TitlePromptTests(unittest.TestCase):
 
 
 class TitleGenerationStateTests(unittest.TestCase):
+    def test_punctuation_model_output_records_invalid_and_keeps_readable_fallback(self) -> None:
+        session = _session(first_user_msg="修复会话标题", fallback_title="/tmp/screenshot…")
+        for punctuation in ("...", "…", "⋯", ". . .", "。。。", "---"):
+            with self.subTest(punctuation=punctuation):
+                generator = mock.Mock()
+                generator.id = "fixture"
+                generator.generate.return_value = '{"cursor:sample": "' + punctuation + '"}'
+                cache: dict = {}
+                with mock.patch.object(titles, "save_cache"):
+                    self.assertEqual(titles.refresh_titles([session], cache, generator=generator), {})
+                self.assertEqual(cache["cursor:sample"]["failure_reason"], "invalid")
+                self.assertEqual(titles.resolve_initial_title(session, cache), ("修复会话标题", False))
+
     def test_insufficient_result_waits_for_new_content(self) -> None:
         session = _session(
             id="thin",
