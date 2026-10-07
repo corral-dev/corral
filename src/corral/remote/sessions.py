@@ -849,9 +849,11 @@ class SessionHub:
                 try:
                     with self._transcript_io:
                         new_messages = watch.reader.poll()
+                        self._publish_reader_update(
+                            watch.canonical_key or watch.key, watch.reader, new_messages
+                        )
                 except Exception:
                     continue
-                self._publish_reader_update(watch.canonical_key or watch.key, watch.reader, new_messages)
 
     # -- 会话查询 ---------------------------------------------------------
 

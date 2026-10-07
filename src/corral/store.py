@@ -600,7 +600,7 @@ class SessionStore:
                 if _is_state_hot(session) and not session.get("provisional")
             ][:_STATE_PROBE_MAX_SESSIONS]
         if hot:
-            states = self._reconcile_attention(hot)
+            states = self._reconcile_attention(hot, partial=True)
             self._inject_partial_attention_states(states)
         with self.lock:
             changed = self._state_signature() != before
@@ -780,8 +780,18 @@ class SessionStore:
                 signature.append((os.path.basename(candidate), None, None))
         return tuple(signature)
 
-    def _reconcile_attention(self, sessions: list[dict]) -> dict[str, AttentionState]:
-        """在仓库锁外提取证据并持久化，再由调用方把结果注入展示字典。"""
+    def _reconcile_attention(
+        self, sessions: list[dict], *, partial: bool = False,
+    ) -> dict[str, AttentionState]:
+        """在仓库锁外提取证据并持久化，再由调用方把结果注入展示字典。
+
+        ``partial`` (the per-second hot probe) updates only the sessions it was
+        given; a full call also drops cache entries of vanished sessions. A
+        partial call must never shrink the cache: replacing it with the hot
+        subset made every full refresh re-read all history tails (2026-10-07,
+        5–67 s under memory pressure). History reads for cache misses run
+        outside ``_attention_lock`` so a slow full refresh cannot stall the probe.
+        """
         with self._attention_lock:
             prepared: list[tuple[dict, tuple]] = []
             current_cursor_signatures: dict[str, tuple] = {}
@@ -839,25 +849,37 @@ class SessionStore:
                 else:
                     evidence_signature = base_signature
                 prepared.append((candidate, evidence_signature))
-            self._cursor_attention_signatures = current_cursor_signatures
-
+            if partial:
+                self._cursor_attention_signatures.update(current_cursor_signatures)
+            else:
+                self._cursor_attention_signatures = current_cursor_signatures
             evidence_by_key: dict[str, AttentionEvidence] = {}
-            next_evidence_cache: dict[str, tuple[tuple, AttentionEvidence]] = {}
+            fresh_cache: dict[str, tuple[tuple, AttentionEvidence]] = {}
+            misses: list[tuple[dict, tuple]] = []
             for session, evidence_signature in prepared:
                 key = session_key(session)
                 cached = self._attention_evidence_cache.get(key)
                 if cached is not None and cached[0] == evidence_signature:
                     evidence_by_key[key] = cached[1]
-                    next_evidence_cache[key] = cached
-                    continue
-                try:
-                    evidence = inspect_session(session)
-                except Exception:
-                    # 状态圆点是派生能力，任何运行时格式异常都不能阻断主扫描。
-                    continue
-                evidence_by_key[key] = evidence
-                next_evidence_cache[key] = (evidence_signature, evidence)
-            self._attention_evidence_cache = next_evidence_cache
+                    fresh_cache[key] = cached
+                else:
+                    misses.append((session, evidence_signature))
+
+        for session, evidence_signature in misses:
+            try:
+                evidence = inspect_session(session)
+            except Exception:
+                # 状态圆点是派生能力，任何运行时格式异常都不能阻断主扫描。
+                continue
+            key = session_key(session)
+            evidence_by_key[key] = evidence
+            fresh_cache[key] = (evidence_signature, evidence)
+
+        with self._attention_lock:
+            if partial:
+                self._attention_evidence_cache.update(fresh_cache)
+            else:
+                self._attention_evidence_cache = fresh_cache
             prepared_sessions = [session for session, _signature in prepared]
             try:
                 return self.attention_store.reconcile(prepared_sessions, evidence_by_key)
