@@ -881,6 +881,52 @@ class ControlModeTests(unittest.TestCase):
         # first + 队列上限 12 条（seq18..seq29，最旧的 seq0..seq17 被丢弃）
         self.assertEqual(delivered, ["first"] + [f"seq{i}" for i in range(18, 30)])
 
+    def test_mouse_click_sequence_sgr_and_x10(self):
+        code = embed.mouse_button_code(1)
+        self.assertEqual(embed.mouse_click_sequence(code, 5, 3, sgr=True),
+                         "\x1b[<0;5;3M\x1b[<0;5;3m")
+        right_ctrl = embed.mouse_button_code(3, ctrl=True)
+        self.assertEqual(right_ctrl, 18)
+        self.assertEqual(embed.mouse_click_sequence(right_ctrl, 1, 1, sgr=False),
+                         "\x1b[M2!!\x1b[M3!!")
+        self.assertIsNone(embed.mouse_click_sequence(code, 96, 1, sgr=False),
+                          "X10 cannot carry 7-bit-unsafe coordinates")
+
+    def test_send_mouse_queue_cap_never_drops_clicks(self):
+        """积压时只丢滚轮；点击的 press/release 对必须全部送达且保持顺序。"""
+        gate = threading.Event()
+        drained = threading.Event()
+        delivered = []
+
+        def fake_send(name, seq, *, force_fork=False):
+            if not delivered:
+                gate.wait(2.0)
+            delivered.append(seq)
+            if seq == "wheel-last":
+                drained.set()
+
+        with mock.patch.object(embed, "send_literal", side_effect=fake_send), \
+                mock.patch.object(embed, "_WHEEL_SEND_INTERVAL", 0):
+            embed.send_mouse_sequence("sc-claude-2", "first")
+            for _ in range(200):
+                with embed._wheel_lock:
+                    if not embed._wheel_queues.get("sc-claude-2"):
+                        break
+                time.sleep(0.01)
+            time.sleep(0.05)
+            embed.send_mouse_sequence("sc-claude-2", "click-a", droppable=False)
+            for i in range(20):
+                embed.send_mouse_sequence("sc-claude-2", f"wheel{i}")
+            embed.send_mouse_sequence("sc-claude-2", "click-b", droppable=False)
+            embed.send_mouse_sequence("sc-claude-2", "wheel-last")
+            gate.set()
+            self.assertTrue(drained.wait(5.0))
+        self.assertEqual(delivered[0], "first")
+        self.assertIn("click-a", delivered)
+        self.assertIn("click-b", delivered)
+        self.assertLess(delivered.index("click-a"), delivered.index("click-b"))
+        self.assertEqual(len(delivered), 1 + embed._WHEEL_QUEUE_MAX)
+
     def test_supports_theme_report_version_gate(self):
         for ver, expected in ((b"tmux 3.5a\n", True), (b"tmux 3.4\n", False),
                               (b"tmux next-3.7\n", True), (b"tmux 2.9\n", False)):

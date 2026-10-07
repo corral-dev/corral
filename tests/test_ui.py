@@ -6928,6 +6928,86 @@ class EmbedPaneTallerHostTests(unittest.TestCase):
         self.assertEqual(pane.render_line(0).text.rstrip(), "row0")
 
 
+class EmbedMouseClickTests(unittest.IsolatedAsyncioTestCase):
+    """单击转发给申请了鼠标捕获的助手；拖拽留给 Corral 选词复制（2026-10-07）。"""
+
+    def _app(self, *, mouse_any: bool = True, sgr: bool = True):
+        from textual.app import App, ComposeResult
+
+        class _Host(App):
+            def compose(self) -> ComposeResult:
+                yield EmbedPane(id="pane")
+
+        patcher = mock.patch.object(EmbedPane, "_capture_loop", lambda self: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        app = _Host()
+
+        def prime(pane: EmbedPane) -> None:
+            pane.session_name = "corral-opencode-x"
+            pane._mouse_any = mouse_any
+            pane._mouse_sgr = sgr
+
+        return app, prime
+
+    async def test_click_forwards_press_and_release_at_the_cell(self) -> None:
+        app, prime = self._app()
+        async with app.run_test(size=(60, 20)) as pilot:
+            pane = app.query_one(EmbedPane)
+            prime(pane)
+            with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
+                await pilot.click(EmbedPane, offset=(4, 2))
+                await pilot.pause()
+            send_mock.assert_called_once_with(
+                "corral-opencode-x", "\x1b[<0;5;3M\x1b[<0;5;3m", droppable=False)
+            self.assertTrue(pane.has_focus, "the same click still focuses the pane")
+
+    async def test_drag_stays_a_corral_selection(self) -> None:
+        app, prime = self._app()
+        async with app.run_test(size=(60, 20)) as pilot:
+            prime(app.query_one(EmbedPane))
+            with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
+                await pilot.mouse_down(EmbedPane, offset=(2, 2))
+                await pilot.hover(EmbedPane, offset=(10, 2))
+                await pilot.mouse_up(EmbedPane, offset=(10, 2))
+                await pilot.pause()
+            send_mock.assert_not_called()
+
+    async def test_double_click_goes_to_the_agent_not_select_all(self) -> None:
+        app, prime = self._app()
+        async with app.run_test(size=(60, 20)) as pilot:
+            prime(app.query_one(EmbedPane))
+            with (mock.patch("corral.embed.send_mouse_sequence") as send_mock,
+                  mock.patch.object(EmbedPane, "text_select_all") as select_all):
+                await pilot.click(EmbedPane, offset=(3, 1), times=2)
+                await pilot.pause()
+            self.assertEqual(send_mock.call_count, 2)
+            select_all.assert_not_called()
+
+    async def test_no_forward_without_mouse_capture_or_while_in_history(self) -> None:
+        app, prime = self._app(mouse_any=False)
+        async with app.run_test(size=(60, 20)) as pilot:
+            pane = app.query_one(EmbedPane)
+            prime(pane)
+            with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
+                await pilot.click(EmbedPane, offset=(4, 2))
+                pane._mouse_any = True
+                pane.history_offset = 5
+                await pilot.click(EmbedPane, offset=(4, 2))
+                await pilot.pause()
+            send_mock.assert_not_called()
+
+    async def test_x10_encoding_when_agent_did_not_ask_for_sgr(self) -> None:
+        app, prime = self._app(sgr=False)
+        async with app.run_test(size=(60, 20)) as pilot:
+            prime(app.query_one(EmbedPane))
+            with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
+                await pilot.click(EmbedPane, offset=(0, 0), button=3)
+                await pilot.pause()
+            send_mock.assert_called_once_with(
+                "corral-opencode-x", "\x1b[M\"!!\x1b[M#!!", droppable=False)
+
+
 class EmbedPaneWheelTests(unittest.TestCase):
     """滚轮转发回归：2026-07-19 卡顿根因——主线程每事件同步 fork 两次 tmux
     （还多发了 xterm 规范里不存在的滚轮 release 序列），触控板惯性滚动把界面堵死。"""

@@ -57,7 +57,7 @@ from rich.text import Text
 from textual import events, work
 from textual.dom import NoScreen
 from textual.filter import LineFilter
-from textual.geometry import Region
+from textual.geometry import Offset, Region
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -321,8 +321,9 @@ class EmbedPane(Widget):
     处理，与焦点无关——列表聚焦时把鼠标移到右栏仍可滚预览或会话历史。
 
     刻意不设 ALLOW_SELECT=False：保留 Textual 内置拖拽选词（抬起自动复制，Ctrl+C 可再复制）
-    （见 ui/app.py 的 CorralApp 说明）。本类自己只接管滚轮/按键/粘贴/resize，
-    不处理 MouseDown/Move/Up，这几类事件会照常落到 Textual 的默认选择逻辑上。
+    （见 ui/app.py 的 CorralApp 说明）。本类接管滚轮/按键/粘贴/resize；MouseDown/Up
+    只用来识别「同格按下又松开」的单击并转发给申请了鼠标捕获的助手，从不 stop，
+    拖拽照常落到 Textual 的默认选择逻辑上（见 `on_mouse_up`）。
     """
 
     DEFAULT_CSS = """
@@ -397,6 +398,9 @@ class EmbedPane(Widget):
         self._mouse_any = False
         self._mouse_sgr = False
         self._history_size = 0
+        # 单击转发：按下时记下 (屏幕坐标, 按钮码)，松开在同一格才算单击。
+        self._click_down: tuple[Offset, int] | None = None
+        self._click_forwarded = False
 
         self._poke = threading.Event()  # 输入/滚动/resize 后立即唤醒抓帧线程补抓一帧
         self._stop = threading.Event()
@@ -1529,7 +1533,6 @@ class EmbedPane(Widget):
         pane_w, pane_h = self._pane_size()
         cx = max(0, min(cx, max(0, pane_w - 1)))
         cy = max(0, min(cy, max(0, pane_h - 1)))
-        from textual.geometry import Offset
         return Offset(cx, cy)
 
     def _on_focus(self, event: events.Focus) -> None:
@@ -1680,6 +1683,54 @@ class EmbedPane(Widget):
             embed.send_mouse_sequence(name, embed.sgr_mouse_sequence(sgr_button, col, row))
             return
         self._scroll(local_delta)
+
+    def _click_forwardable(self) -> bool:
+        """助手申请了鼠标捕获、且画面正是直播（不在应用层历史或对话预览里）。"""
+        return (
+            self._mouse_any
+            and bool(self.session_name)
+            and not self.dead
+            and self.history_offset == 0
+            and not self._uses_detail_window()
+        )
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        # 不 stop：同一次按下还要交给 Textual 做聚焦与拖拽选词。
+        self._click_down = None
+        if event.button in (1, 2, 3) and self._click_forwardable():
+            code = embed.mouse_button_code(
+                event.button, shift=event.shift, meta=event.meta, ctrl=event.ctrl)
+            self._click_down = (event.screen_offset, code)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """同格按下又松开 = 单击，转发给助手；移动过 = 拖拽选词，留给 Textual 复制。
+
+        拖拽不转发：内层程序的选区复制只写进 tmux，到不了系统剪贴板。
+        press 与 release 在松开时一起发出，经后台队列且不可丢弃。
+        """
+        down, self._click_down = self._click_down, None
+        self._click_forwarded = False
+        if down is None or down[0] != event.screen_offset or not self._click_forwardable():
+            return
+        name = self.session_name
+        col = int(event.x) + 1
+        row = int(event.y) + self._live_row_offset() + 1
+        if self._tmux_pane_size is not None:
+            pane_w, pane_h = self._tmux_pane_size
+            if col > pane_w or row > pane_h:
+                return  # 点在比托管 pane 更宽 / 更高的留白上，不对应任何格子
+        seq = embed.mouse_click_sequence(down[1], col, row, sgr=self._mouse_sgr)
+        if seq is None:
+            return
+        embed.send_mouse_sequence(name, seq, droppable=False)
+        self._click_forwarded = True
+        self._request_immediate_capture()
+
+    def on_click(self, event: events.Click) -> None:
+        if self._click_forwarded:
+            # 连击已经交给助手自己解释，别再让 Textual 双击全选整格并复制。
+            self._click_forwarded = False
+            event.prevent_default()
 
     def _scroll(self, delta: int) -> None:
         name = self.session_name

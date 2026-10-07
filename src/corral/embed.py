@@ -1673,6 +1673,32 @@ def sgr_mouse_sequence(button: int, x: int, y: int) -> str:
     return f"\x1b[<{button};{x};{y}M"
 
 
+# Classic X10 encoding stores each value as one byte offset by 32. send-keys -l
+# would UTF-8-encode anything past 127, so only 7-bit-safe coordinates are sent.
+_X10_MAX_COORD = 127 - 32
+
+
+def mouse_button_code(button: int, *, shift: bool = False, meta: bool = False,
+                      ctrl: bool = False) -> int:
+    """xterm button code for a Textual button (1 left, 2 middle, 3 right) plus modifiers."""
+    return (button - 1) | (4 if shift else 0) | (8 if meta else 0) | (16 if ctrl else 0)
+
+
+def mouse_click_sequence(code: int, x: int, y: int, *, sgr: bool) -> str | None:
+    """Press + release for one click at 1-based pane cell (x, y).
+
+    SGR (1006) keeps the button on release and ends it with ``m``; classic X10
+    reports release as button 3. Returns None when X10 cannot encode the cell.
+    """
+    if sgr:
+        return f"\x1b[<{code};{x};{y}M\x1b[<{code};{x};{y}m"
+    if not (1 <= x <= _X10_MAX_COORD and 1 <= y <= _X10_MAX_COORD):
+        return None
+    release = (code & ~0b11) | 3
+    cx, cy = chr(32 + x), chr(32 + y)
+    return f"\x1b[M{chr(32 + code)}{cx}{cy}\x1b[M{chr(32 + release)}{cx}{cy}"
+
+
 # ---- SGR 鼠标序列后台发送 ----
 #
 # 新版 Claude Code（v2.1.88 起默认全屏渲染并申请鼠标捕获）下，滚轮事件要转成
@@ -1687,19 +1713,27 @@ def sgr_mouse_sequence(button: int, x: int, y: int) -> str:
 _WHEEL_SEND_INTERVAL = 0.02  # 发送限速（秒）：内层程序每个滚轮事件都要整屏重绘，更快没意义
 _WHEEL_QUEUE_MAX = 12        # 单会话积压上限，超出丢最旧
 _wheel_lock = threading.Lock()
-_wheel_queues: dict[str, collections.deque[str]] = {}
+# Each entry is (sequence, droppable). Wheel steps may be skipped under backlog;
+# clicks never are, or the inner program would miss a press or a release.
+_wheel_queues: dict[str, collections.deque[tuple[str, bool]]] = {}
 _wheel_wake = threading.Event()
 _wheel_thread: threading.Thread | None = None
 
 
-def send_mouse_sequence(name: str, seq: str) -> None:
-    """非阻塞发送 SGR 鼠标序列：排队到后台线程发送，UI 主线程可安全调用。"""
+def send_mouse_sequence(name: str, seq: str, *, droppable: bool = True) -> None:
+    """非阻塞发送鼠标序列：排队到后台线程发送，UI 主线程可安全调用。
+
+    积压超限时只丢最旧的可丢弃项（滚轮）；``droppable=False``（点击）必达。
+    """
     global _wheel_thread
     with _wheel_lock:
         queue = _wheel_queues.setdefault(name, collections.deque())
-        queue.append(seq)
+        queue.append((seq, droppable))
         while len(queue) > _WHEEL_QUEUE_MAX:
-            queue.popleft()
+            oldest = next((item for item in queue if item[1]), None)
+            if oldest is None:
+                break
+            queue.remove(oldest)
         if _wheel_thread is None or not _wheel_thread.is_alive():
             _wheel_thread = threading.Thread(
                 target=_wheel_send_loop, daemon=True, name="embed-mouse-sender")
@@ -1714,7 +1748,7 @@ def _wheel_send_loop() -> None:
     while True:
         with _wheel_lock:
             name = next((n for n, q in _wheel_queues.items() if q), None)
-            seq = _wheel_queues[name].popleft() if name is not None else None
+            seq = _wheel_queues[name].popleft()[0] if name is not None else None
             if name is not None and not _wheel_queues[name]:
                 del _wheel_queues[name]
         if seq is None:
