@@ -184,8 +184,7 @@ class TerminalStream:
         with self._votes_lock:
             viewers = list(self._votes)
             self._votes.clear()
-        for viewer in viewers:
-            embed.release_host_view(self.name, viewer)
+        self._release_views(viewers)
         channel = self._channel
         if channel is not None and channel.on_data == self._on_data:
             channel.on_data = None
@@ -208,6 +207,17 @@ class TerminalStream:
         with self._votes_lock:
             had = self._votes.pop(viewer, None) is not None
         if had:
+            embed.release_host_view(self.name, viewer)
+
+    def _effective_size(self, votes: dict[str, tuple[int, int]]) -> tuple[int, int] | None:
+        """Renew every vote in the shared registry; the last answer is the winner."""
+        effective = None
+        for viewer, (cols, rows) in votes.items():
+            effective = embed.desired_host_size(self.name, viewer, cols, rows)
+        return effective
+
+    def _release_views(self, viewers: list[str]) -> None:
+        for viewer in viewers:
             embed.release_host_view(self.name, viewer)
 
     def request_snapshot(self) -> None:
@@ -258,9 +268,7 @@ class TerminalStream:
             return
         with self._votes_lock:
             votes = dict(self._votes)
-        effective = None
-        for viewer, (cols, rows) in votes.items():
-            effective = embed.desired_host_size(self.name, viewer, cols, rows)
+        effective = self._effective_size(votes)
         if effective is not None:
             self._apply_size(effective)
         result = channel.request("display-message", "-p", "-t", self.name, "#{pane_width}|#{pane_height}")

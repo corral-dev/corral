@@ -27,7 +27,7 @@ from corral.activity_board import resolve_active_marker
 from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
-from corral.remote import questions, richmsg, transcript_cache
+from corral.remote import questions, richmsg, shell_terminal, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
@@ -1809,10 +1809,11 @@ class SessionHub:
     def terminal_attach(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool) -> dict:
         """Start (or join) the session's raw stream; a snapshot event follows."""
         name = self._keepalive_name(key)
+        stream_class = shell_terminal.ShellTerminalStream if shell_terminal.is_shell_key(key) else TerminalStream
         with self._lock:
             entry = self._terminals.get(key)
             if entry is None:
-                stream = TerminalStream(
+                stream = stream_class(
                     key,
                     name,
                     emit=lambda payload, key=key: self._on_event(f"term:{key}", payload),
@@ -1834,11 +1835,13 @@ class SessionHub:
     def terminal_theme(self, key: str, report: bytes) -> None:
         self._terminal(key).set_theme(report)
 
-    def terminal_input(self, key: str, data: bytes) -> None:
+    def terminal_input(self, key: str, data: bytes, viewer: str = "") -> None:
         if not data:
             raise ActionError("usage_error", t("remote.err.no_content"))
         with self._lock:
             entry = self._terminals.get(key)
+        if entry is not None and viewer and isinstance(entry[0], shell_terminal.ShellTerminalStream):
+            entry[0].activate(viewer)  # typing makes this viewer the shell's size source
         name = entry[0].name if entry is not None else self._keepalive_name(key)
         if not embed.send_bytes(name, data):
             raise ActionError("unavailable", t("remote.err.session_not_running"))
@@ -1876,6 +1879,9 @@ class SessionHub:
         return {"cols": effective[0], "rows": effective[1]}
 
     def _hosted_name(self, key: str) -> str:
+        if shell_terminal.is_shell_key(key):
+            name = shell_terminal.name_for_key(key)
+            return name if name and shell_terminal.alive(name) else ""
         session = self.store.find_session(self.resolve_session_key(key)) or {}
         return str(session.get("keepalive_name") or "")
 
@@ -1901,6 +1907,8 @@ class SessionHub:
         target-not-found only) the binding is cleared and the SAME conversation
         is natively resumed once. Uncertainty (timeouts) never resumes.
         """
+        if shell_terminal.is_shell_key(key):
+            return self._shell_name(key)
         session = self.require_session(key)
         name = str(session.get("keepalive_name") or "")
         if name:
@@ -1914,6 +1922,13 @@ class SessionHub:
                     resumed.append(True)
                 return name
         raise ActionError("unavailable", t("remote.err.session_not_running"))
+
+    @staticmethod
+    def _shell_name(key: str) -> str:
+        name = shell_terminal.name_for_key(key)
+        if not name or not shell_terminal.alive(name):
+            raise ActionError("not_found", t("remote.err.shell_ended"))
+        return name
 
     @staticmethod
     def _pane_proven_dead(name: str) -> bool:
@@ -2082,6 +2097,14 @@ class SessionHub:
 
     # -- 输入 -------------------------------------------------------------
 
+    def _send_shell_text(self, key: str, text: str, submit: bool) -> None:
+        """Paste into a project shell (bracketed when the shell asked for it)."""
+        name = self._shell_name(key)
+        if text and not embed.paste_detailed(name, text).ok:
+            raise ActionError("unavailable", t("remote.err.shell_ended"))
+        if submit and not embed.send_key(name, "Enter"):
+            raise PartialInjectionError(t("remote.err.inject_partial"))
+
     def send_text(self, key: str, text: str, submit: bool = True) -> None:
         """把一段文本送进会话。
 
@@ -2100,6 +2123,9 @@ class SessionHub:
         A certain paste failure on a proven-dead binding clears it and natively
         resumes the same conversation once, then retries once on the new pane.
         """
+        if shell_terminal.is_shell_key(key):
+            self._send_shell_text(key, text, submit)
+            return
         woke: list[bool] = []
         name = self._keepalive_name(key, resume_if_needed=True, resumed=woke)
         session = self.store.find_session(self.resolve_session_key(key)) or {}

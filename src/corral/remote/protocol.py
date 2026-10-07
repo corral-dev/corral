@@ -216,6 +216,9 @@ CAPABILITY_TERMINAL_STREAM = "terminal_stream"
 # Every human prompt of a session (session.userPrompts), independent of the
 # history window a client has paged in. Old hosts lack the method entirely.
 CAPABILITY_USER_PROMPTS = "user_prompts"
+# Project shells (remote/shell_terminal.py): shell.* below; their output, input,
+# sizing and colours use terminal.* with keys ``shell:<id>``. Full pairings only.
+CAPABILITY_PROJECT_SHELL = "project_shell"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -282,6 +285,10 @@ M_TERMINAL_DETACH = "terminal.detach"   # {key}
 # {key, background, foreground?} (#rrggbb): the viewer's terminal colours, answered to the
 # agent's OSC 10/11 queries; attach accepts the same two fields.
 M_TERMINAL_THEME = "terminal.theme"
+
+M_SHELL_LIST = "shell.list"      # {} → {shells:[{key, project, name, cwd, command, busy, created}]}
+M_SHELL_OPEN = "shell.open"      # {cwd, cols?, rows?} → {shell}: login shell in an existing folder
+M_SHELL_CLOSE = "shell.close"    # {key} → {ok}
 
 M_PROJECTS_LIST = "projects.list"
 M_SEARCH = "search"

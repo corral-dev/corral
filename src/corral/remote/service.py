@@ -24,7 +24,7 @@ import time
 from corral import __version__, observe
 from corral.i18n import t
 from corral.remote import config as remote_config
-from corral.remote import crypto, protocol, ratelimit
+from corral.remote import crypto, protocol, ratelimit, shell_terminal
 from corral.remote.command_receipts import (
     DEFAULT_LEASE_SEC,
     MAX_LEASE_SEC,
@@ -102,6 +102,31 @@ def _terminal_grid(params: dict) -> tuple[int, int]:
     if cols < 1 or rows < 1:
         raise ActionError(protocol.E_USAGE, t("remote.err.bad_terminal_size"))
     return cols, rows
+
+
+# Project shells are reachable only through the terminal stream, paste and
+# their own close: never through session, layout, pin, read-state or image
+# methods (a shell is not a session and must not enter TUI stores).
+_SHELL_KEY_METHODS = frozenset(
+    {
+        protocol.M_TERMINAL_ATTACH,
+        protocol.M_TERMINAL_RESIZE,
+        protocol.M_TERMINAL_RESYNC,
+        protocol.M_TERMINAL_INPUT,
+        protocol.M_TERMINAL_DETACH,
+        protocol.M_TERMINAL_THEME,
+        protocol.M_INPUT_TEXT,
+        protocol.M_SHELL_CLOSE,
+    }
+)
+
+
+def _reject_misplaced_shell_keys(method: str, params: dict) -> None:
+    keys = [params.get("key")]
+    if isinstance(params.get("keys"), list):
+        keys += params["keys"]
+    if method not in _SHELL_KEY_METHODS and any(shell_terminal.is_shell_key(str(k or "")) for k in keys):
+        raise ActionError(protocol.E_USAGE, t("remote.err.shell_key_not_session"))
 
 
 # 需要二次确认的破坏性操作
@@ -647,8 +672,11 @@ class RemoteService:
         wait_ready = getattr(self.hub, "wait_ready", None)
         if wait_ready is not None and not wait_ready(_HUB_READY_WAIT):
             raise ActionError(protocol.E_UNAVAILABLE, t("remote.err.host_starting"))
-        if connection.access == "readonly" and method not in _READONLY_METHODS:
+        if connection.access == "readonly" and (
+            method not in _READONLY_METHODS or shell_terminal.is_shell_key(params.get("key"))
+        ):
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
+        _reject_misplaced_shell_keys(method, params)
         if method in _CONFIRM_METHODS and not bool(params.get("confirm")):
             raise ActionError(
                 protocol.E_USAGE,
@@ -748,6 +776,7 @@ class RemoteService:
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
                 protocol.CAPABILITY_USER_PROMPTS: True,
+                protocol.CAPABILITY_PROJECT_SHELL: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -961,7 +990,7 @@ class RemoteService:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content")) from exc
         if len(data) > _TERMINAL_INPUT_MAX:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
-        self.hub.terminal_input(_key(params), data)
+        self.hub.terminal_input(_key(params), data, _terminal_viewer(connection))
         return {"ok": True}
 
     def _terminal_theme(self, connection: Connection, params: dict):
@@ -975,6 +1004,34 @@ class RemoteService:
         key = _key(params)
         if self._unsubscribe(connection, protocol.terminal_channel(key)):
             self.hub.terminal_detach(key, _terminal_viewer(connection))
+        return {"ok": True}
+
+    # -- project shells ---------------------------------------------------
+
+    def _shell_list(self, connection: Connection, params: dict):
+        return {"shells": shell_terminal.list_shells()}
+
+    def _shell_open(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        cols = _int_param(params, "cols", 100, max_value=1000) or 100
+        rows = _int_param(params, "rows", 30, max_value=500) or 30
+        try:
+            shell = shell_terminal.open_shell(str(params.get("cwd") or ""), cols, rows)
+        except shell_terminal.ShellError as exc:
+            code, message = {
+                "folder_missing": (protocol.E_NOT_FOUND, t("remote.err.shell_folder_missing")),
+                "limit": (protocol.E_UNAVAILABLE, t("remote.err.shell_limit")),
+            }.get(exc.code, (protocol.E_UNAVAILABLE, t("remote.err.shell_start_failed", detail=exc.detail)))
+            raise ActionError(code, message) from exc
+        observe.event("remote_shell_open", key=shell["key"])
+        return {"shell": shell}
+
+    def _shell_close(self, connection: Connection, params: dict):
+        key = _key(params)
+        if not shell_terminal.name_for_key(key):
+            raise ActionError(protocol.E_USAGE, t("remote.err.missing_session_key"))
+        shell_terminal.close_shell(key)
         return {"ok": True}
 
     def _input_text(self, connection: Connection, params: dict):
@@ -1393,6 +1450,9 @@ _HANDLERS = {
     protocol.M_LAYOUT_PIN_GROUP: RemoteService._layout_pin_group,
     protocol.M_LAYOUT_COLLAPSE: RemoteService._layout_collapse,
     protocol.M_LAYOUT_RENAME_GROUP: RemoteService._layout_rename_group,
+    protocol.M_SHELL_LIST: RemoteService._shell_list,
+    protocol.M_SHELL_OPEN: RemoteService._shell_open,
+    protocol.M_SHELL_CLOSE: RemoteService._shell_close,
     protocol.M_PROJECTS_LIST: RemoteService._projects_list,
     protocol.M_RUNTIMES_LIST: RemoteService._runtimes_list,
     protocol.M_SEARCH: RemoteService._search,

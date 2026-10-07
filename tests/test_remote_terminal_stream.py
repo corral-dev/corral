@@ -139,7 +139,7 @@ class _TerminalHub:
     def terminal_theme(self, key, report):
         self.calls.append(("theme", key, report))
 
-    def terminal_input(self, key, data):
+    def terminal_input(self, key, data, viewer=""):
         self.calls.append(("input", key, data))
 
     def terminal_detach(self, key, viewer):

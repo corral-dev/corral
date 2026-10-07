@@ -42,6 +42,10 @@ LEGACY_SOCKET_NAMES: tuple[str, ...] = ("pickup-keepalive",)
 ALL_SOCKET_NAMES: tuple[str, ...] = (SOCKET_NAME, *LEGACY_SOCKET_NAMES)
 
 SESSION_PREFIX = "corral-"
+# Project shells (remote/shell_terminal.py): same server, a prefix every agent
+# path ignores (it does not start with "corral-"), so scanning, adoption and
+# reclaim never see them.
+SHELL_SESSION_PREFIX = "corralsh-"
 LEGACY_SESSION_PREFIXES: tuple[str, ...] = ("pickup-", "sc-")
 ALL_SESSION_PREFIXES: tuple[str, ...] = (SESSION_PREFIX, *LEGACY_SESSION_PREFIXES)
 # 仅更旧的 SessionContinue 前缀（部分测试/注释仍单独提到它）
@@ -209,7 +213,7 @@ def tmux_base_argv(socket: str | None = None) -> tuple[str, ...]:
 
 def socket_for_session(name: str) -> str:
     """按会话名前缀选 socket：``corral-*`` 走新 socket，其余存量走过渡 socket。"""
-    if name.startswith(SESSION_PREFIX):
+    if name.startswith((SESSION_PREFIX, SHELL_SESSION_PREFIX)):
         return SOCKET_NAME
     return LEGACY_SOCKET_NAMES[0]
 

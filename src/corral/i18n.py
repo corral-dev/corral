@@ -1742,6 +1742,26 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "You are not currently watching this session's screen",
         "zh": "还没有在看这条会话的画面",
     },
+    "remote.err.shell_folder_missing": {
+        "en": "That folder does not exist on this computer",
+        "zh": "这台电脑上没有这个文件夹",
+    },
+    "remote.err.shell_limit": {
+        "en": "Too many terminals are open; close one first",
+        "zh": "打开的终端太多了，请先关掉一个",
+    },
+    "remote.err.shell_key_not_session": {
+        "en": "A terminal is not a session",
+        "zh": "终端不是会话",
+    },
+    "remote.err.shell_ended": {
+        "en": "This terminal has ended",
+        "zh": "这个终端已经结束",
+    },
+    "remote.err.shell_start_failed": {
+        "en": "Could not start a terminal: {detail}",
+        "zh": "无法启动终端：{detail}",
+    },
     "remote.err.session_not_running": {
         "en": "This session is not running in the background",
         "zh": "这条会话没有在后台运行",
