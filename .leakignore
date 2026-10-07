@@ -3,3 +3,14 @@
 rule:internal-endpoint:AGENTS.md
 rule:internal-endpoint:**/AGENTS.md
 fp:24972d42abb655eb
+# 2026-10-07 tag 推送门禁回扫 300 提交历史的误报：以下全是早已公开的内容，
+# 与本次改动无关。逐项核对过：排查文档里的示例内网地址、私网段判定常量、
+# 单测 fixture 地址、英文正文里的 paste 一词。
+fp:5fb42bcb6b23505a
+fp:cbdcb4c9a2677c22
+fp:e27a5b2c38e5acdb
+fp:fc4f3254fffe1155
+fp:3bf924126cfced6a
+fp:6c862f5701c0ebad
+fp:70c92f7457843c6d
+fp:8469ab757382362c
