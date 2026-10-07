@@ -120,6 +120,12 @@ def _opencode_db_signature(session: dict) -> tuple:
 # Fields the per-session turn probe owns between full scans (status follows
 # native turn ends within the state tick, see REMOTE_KNOWLEDGE_BASE turn-end rule).
 _TURN_STATE_FIELDS = ("status_tag", "completion_id", "last_agent_msg", "last_user_msg")
+# A chat submit is working on the host at once. The mark holds until native
+# evidence shows the new turn (working/waiting, or a new completion/abort id),
+# or the history stays quiet this long with non-working evidence (the submit
+# never started a turn).
+_SUBMIT_QUIET_RELEASE_SECONDS = 15.0
+_ATTENTION_FIELDS = ("attention_kind", "attention_token", "attention_updated_at")
 
 
 def _turn_evidence_stamp(session: dict) -> tuple | None:
@@ -181,6 +187,8 @@ class SessionStore:
         # completion identity, so the remote hub publishes without waiting for
         # the rest of the tick (tmux listing, attention, housekeeping).
         self.turn_state_listener = None
+        # Chat submits awaiting native turn evidence: key -> mark (see mark_turn_submitted).
+        self._submitted_turns: dict[str, dict] = {}
         self.display_titles: dict[str, str] = {}  # 跨运行时会话键 -> 当前展示标题
         self.dirty = threading.Event()
         self.title_state = title_state or titles.TitleState(mtime_fn=self._cache_file_mtime)
@@ -505,8 +513,6 @@ class SessionStore:
             else:
                 self._merge_scanned(scanned)
                 self._last_full_merge_at = now
-            # A shared snapshot can be older than the last per-session probe.
-            self._refresh_turn_state(self._probe_candidates())
             changed = self._sessions_signature() != before
             if changed:
                 self._save_sidebar_snapshot()
@@ -1029,6 +1035,7 @@ class SessionStore:
         未被取代的占位卡继续插回列表最前。返回需要迁移关注态的
         (运行时, 旧占位 id, 新真实 id) 三元组列表，供调用方在锁外执行迁移。
         """
+        self._carry_probed_state(scanned)
         self.sessions.update(scanned)
         claimed_keepalive = {
             str(session.get("keepalive_name")): session
@@ -1324,12 +1331,16 @@ class SessionStore:
             self.attention_states = {
                 key: state for key, state in states.items() if key in current_keys
             }
+            now = time.time()
             for bucket in self.sessions.values():
                 for session in bucket:
-                    self._inject_attention(
-                        session,
-                        self.attention_states.get(session_key(session), AttentionState()),
+                    key = session_key(session)
+                    state = self._hold_submitted(
+                        session, self.attention_states.get(key, AttentionState()), now,
                     )
+                    if key in self._submitted_turns:
+                        self.attention_states[key] = state
+                    self._inject_attention(session, state)
 
     def _inject_partial_attention_states(self, states: dict[str, AttentionState]) -> None:
         """Like ``_inject_attention_states`` for a subset; other sessions keep theirs."""
@@ -1339,8 +1350,94 @@ class SessionStore:
                     key = session_key(session)
                     if key not in states:
                         continue
-                    self.attention_states[key] = states[key]
-                    self._inject_attention(session, states[key])
+                    state = self._hold_submitted(session, states[key], time.time())
+                    self.attention_states[key] = state
+                    self._inject_attention(session, state)
+
+    def mark_turn_submitted(self, key: str) -> bool:
+        """A chat submit reached the agent: show it working on every client now.
+
+        Called after ``input.text`` with submit succeeded. The mark holds until
+        native evidence shows the new turn (see ``_hold_submitted``); False when
+        the session is unknown.
+        """
+        now = time.time()
+        key = self.canonical_session_key(key)
+        with self.lock:
+            session = next(
+                (
+                    candidate
+                    for bucket in self.sessions.values()
+                    for candidate in bucket
+                    if session_key(candidate) == key
+                ),
+                None,
+            )
+            if session is None:
+                return False
+            key = session_key(session)
+            self._submitted_turns[key] = {
+                "at": now,
+                "stamp": _turn_evidence_stamp(session),
+                "changed_at": now,
+                "completion": session.get("completion_id") or "",
+                "status": session.get("status_tag") or "",
+            }
+            state = AttentionState(kind="working", activity_token=f"submit:{now}", updated_at=now)
+            self.attention_states[key] = state
+            self._inject_attention(session, state)
+        return True
+
+    def _hold_submitted(self, session: dict, state: AttentionState, now: float) -> AttentionState:
+        """Keep a submitted turn working until native evidence takes over; caller holds the lock."""
+        key = session_key(session)
+        mark = self._submitted_turns.get(key)
+        if mark is None:
+            return state
+        if state.kind in ("working", "waiting"):
+            self._submitted_turns.pop(key, None)
+            return state
+        completion = session.get("completion_id") or ""
+        status = session.get("status_tag") or ""
+        if completion and completion != mark["completion"]:
+            self._submitted_turns.pop(key, None)  # the new turn already ended
+            return state
+        if status == titles.STATUS_ABORTED and status != mark["status"]:
+            self._submitted_turns.pop(key, None)
+            return state
+        stamp = _turn_evidence_stamp(session)
+        if stamp != mark["stamp"]:
+            mark["stamp"] = stamp
+            mark["changed_at"] = now
+        if now - mark["changed_at"] >= _SUBMIT_QUIET_RELEASE_SECONDS:
+            self._submitted_turns.pop(key, None)
+            return state
+        return AttentionState(kind="working", activity_token=f"submit:{mark['at']}", updated_at=mark["at"])
+
+    def _carry_probed_state(self, scanned: dict[str, list[dict]]) -> None:
+        """Carry probe results onto freshly scanned records; caller holds the lock.
+
+        Scanned records come from a slower scan (often an older shared
+        snapshot) and carry no attention. Without this, a full merge would
+        briefly regress dots, Working and turn state until the next probe —
+        visible now that the probe runs on its own thread.
+        """
+        previous = {
+            session_key(session): session
+            for bucket in self.sessions.values()
+            for session in bucket
+        }
+        for bucket in scanned.values():
+            for session in bucket:
+                key = session_key(session)
+                old = previous.get(key)
+                if old is not None and "attention_kind" not in session:
+                    for field in _ATTENTION_FIELDS:
+                        if field in old:
+                            session[field] = old[field]
+                probe = self._turn_probe.get(key)
+                if probe is not None and probe[0] == _turn_evidence_stamp(session):
+                    session.update(probe[1])
 
     def projects(self) -> list[dict]:
         """跨所有来源聚合的项目文件夹列表（新建会话 / 侧边栏用），惰性计算并缓存。

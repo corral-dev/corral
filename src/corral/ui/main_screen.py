@@ -704,7 +704,15 @@ class MainScreen(
             else REFRESH_RECONCILE_FALLBACK
         )
         last_refresh = 0.0
-        last_probe = (0.0, 0)
+        # Hot-session probes run on their own thread: a full refresh under
+        # memory pressure can take tens of seconds and must not hold dots,
+        # Working or Ended (2026-10-07).
+        import threading as _threading
+
+        probe_thread = _threading.Thread(
+            target=self._state_probe_loop, args=(worker,), daemon=True, name="tui-state-probe",
+        )
+        probe_thread.start()
         try:
             while not worker.is_cancelled:
                 # Back off the polling floor under memory pressure (once per
@@ -721,18 +729,14 @@ class MainScreen(
                         break
                     if worker.cancelled_event.is_set():
                         return
-                    last_probe = self._probe_session_state(last_probe)
                 if worker.is_cancelled:
                     return
                 while last_refresh > 0:
                     gap = min_gap - (_time.monotonic() - last_refresh)
                     if gap <= 0:
                         break
-                    # Dots and hosted state keep moving while the full scan waits
-                    # out its (pressure-scaled) minimum gap.
                     if worker.cancelled_event.wait(min(STATE_PROBE_INTERVAL, gap)):
                         return
-                    last_probe = self._probe_session_state(last_probe)
                 # 托管刚成功（新建/重启）：pid 快照变化让签名必穿，紧接着的
                 # 全量重扫（秒级，握住 GIL）会和首帧抓取抢时间片。跳过这一轮
                 # 扫描，让首帧先上屏；FS 事件仍保留（watcher.clear 照常），
@@ -766,8 +770,14 @@ class MainScreen(
             if self._history_watcher is watcher:
                 self._history_watcher = None
 
+    def _state_probe_loop(self, worker) -> None:
+        """Run the hot-session probe every interval until the refresh worker stops."""
+        last_probe = (0.0, 0)
+        while not worker.cancelled_event.wait(STATE_PROBE_INTERVAL):
+            last_probe = self._probe_session_state(last_probe)
+
     def _probe_session_state(self, last_probe: tuple[float, int]) -> tuple[float, int]:
-        """Hot-session state probe between full scans (refresh worker thread only).
+        """Hot-session state probe between full scans (state probe thread only).
 
         ``store.refresh_state`` re-stats live histories, drops exited pids and
         re-derives dots without rescanning, so it is exempt from the memory

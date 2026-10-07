@@ -536,6 +536,11 @@ class SessionHub:
         self._last_status: dict[str, str] = {}
         self._last_completion: dict[str, str] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
+        # Refresh loop -> state loop handoff; the state loop alone publishes.
+        self._state_wake = threading.Event()
+        self._scan_results_lock = threading.Lock()
+        self._scan_changed = False
+        self._scan_title_keys: set[str] = set()
         self._history_watcher = None
         # Set once the first scan is loaded. Library users that never call
         # `start()` are ready immediately; the daemon clears it before it opens
@@ -574,6 +579,7 @@ class SessionHub:
 
     def stop(self) -> None:
         self._stop.set()
+        self._state_wake.set()
         self._search_refresh.set()
         with self._lock:
             terminals = [stream for stream, _ in self._terminals.values()]
@@ -631,18 +637,22 @@ class SessionHub:
             self._search_refresh.wait(2.0)
 
     def _refresh_loop(self) -> None:
-        """One thread owns list state: a 1 s state probe plus the throttled full scan.
+        """Full history scans on this thread; the state probe on its own thread.
 
-        Dots, Working, Ended and newly hosted panes come from
-        ``store.refresh_state`` every tick, independent of memory pressure (owner
-        budget: about 2 s to every client). Only the full history scan keeps the
-        FS-event / reconcile / min-gap cadence that backs off under pressure.
-        A new session history file is the exception: follow the shared index
-        for a short window so the arrival lists as soon as the worker publishes.
+        Dots, Working, Ended, turn ends and newly hosted panes come from
+        ``_state_loop`` (``store.refresh_state`` every tick or on a submit wake),
+        which never waits for a scan: a full refresh under memory pressure has
+        taken tens of seconds (2026-10-07), and sharing one thread held every
+        client's green dot and Working for that long. This thread keeps the
+        FS-event / reconcile / min-gap cadence that backs off under pressure,
+        follows the shared index for a short window after a new history file,
+        polls titles and ticks reclaim; it hands results to the state loop.
         """
         from corral.history_watch import memory_pressured, pressure_cadence
         from corral.schedprio import demote_background
 
+        state = threading.Thread(target=self._state_loop, daemon=True, name="remote-state")
+        state.start()
         demote_background()
         watcher = self._history_watcher
         last_scan = time.monotonic()  # start() just loaded
@@ -650,60 +660,85 @@ class SessionHub:
         arrival_seen = self._watcher_arrivals(watcher)
         arrival_until = 0.0
         index_stamp = _scan_index_stamp()
+        try:
+            while not self._stop.is_set():
+                # Fixed tick: FS events are read via ``watcher.is_set()`` below, so a
+                # write burst cannot spin this loop faster than once per second.
+                if self._stop.wait(_STATE_TICK):
+                    return
+                now = time.monotonic()
+                reconcile, min_gap = pressure_cadence(
+                    _REFRESH_RECONCILE, _REFRESH_MIN_GAP, memory_pressured(),
+                )
+                if watcher is None:
+                    reconcile = min_gap = _TITLE_POLL_SLICE
+                arrivals = self._watcher_arrivals(watcher)
+                if arrivals != arrival_seen:
+                    arrival_seen = arrivals
+                    arrival_until = now + _ARRIVAL_FOLLOW_SECONDS
+                since_scan = now - last_scan
+                full = since_scan >= reconcile or (
+                    watcher is not None and watcher.is_set() and since_scan >= min_gap
+                )
+                if not full and now < arrival_until and since_scan >= _ARRIVAL_MIN_GAP:
+                    stamp = _scan_index_stamp()
+                    full = stamp != index_stamp
+                title_keys: set[str] = set()
+                if now - last_title_poll >= _TITLE_POLL_SLICE and not full:
+                    # Title updates are independent of history; ~0.2 s per poll here,
+                    # so keep the old 15 s slice instead of the state tick.
+                    title_keys = self.store.poll_title_updates()
+                    last_title_poll = now
+                changed = False
+                if full:
+                    if watcher is not None:
+                        watcher.clear()
+                    # Stamp before scanning: a publish that lands during this (multi-
+                    # second) refresh must still trigger the next arrival-follow scan.
+                    index_stamp = _scan_index_stamp()
+                    try:
+                        changed = self.store.refresh()
+                    except Exception:
+                        # History scan failures must not block state or title propagation.
+                        pass
+                    last_scan = time.monotonic()
+                    self._search_refresh.set()
+                    self._reclaim_inactive_hosts()
+                    title_keys.update(self.store.poll_title_updates())
+                    last_title_poll = time.monotonic()
+                if changed or title_keys:
+                    with self._scan_results_lock:
+                        self._scan_changed = self._scan_changed or changed
+                        self._scan_title_keys.update(title_keys)
+                    self._state_wake.set()
+        finally:
+            self._state_wake.set()
+            state.join(timeout=5.0)
+
+    def _state_loop(self) -> None:
+        """Probe hot sessions and publish every tick, or at once on a submit wake.
+
+        The only thread that runs the change detectors, so their baselines never
+        race. Scan and title results arrive from ``_refresh_loop``.
+        """
         tick = 0
         while not self._stop.is_set():
-            # Fixed tick: FS events are read via ``watcher.is_set()`` below, so a
-            # write burst cannot spin this loop faster than once per second.
-            if self._stop.wait(_STATE_TICK):
+            self._state_wake.wait(_STATE_TICK)
+            self._state_wake.clear()
+            if self._stop.is_set():
                 return
-            now = time.monotonic()
             tick += 1
-            reconcile, min_gap = pressure_cadence(
-                _REFRESH_RECONCILE, _REFRESH_MIN_GAP, memory_pressured(),
-            )
-            if watcher is None:
-                reconcile = min_gap = _TITLE_POLL_SLICE
-            arrivals = self._watcher_arrivals(watcher)
-            if arrivals != arrival_seen:
-                arrival_seen = arrivals
-                arrival_until = now + _ARRIVAL_FOLLOW_SECONDS
-            since_scan = now - last_scan
-            full = since_scan >= reconcile or (
-                watcher is not None and watcher.is_set() and since_scan >= min_gap
-            )
-            if not full and now < arrival_until and since_scan >= _ARRIVAL_MIN_GAP:
-                stamp = _scan_index_stamp()
-                full = stamp != index_stamp
-            title_keys: set[str] = set()
-            if now - last_title_poll >= _TITLE_POLL_SLICE and not full:
-                # Title updates are independent of history; ~0.2 s per poll here,
-                # so keep the old 15 s slice instead of the state tick.
-                title_keys = self.store.poll_title_updates()
-                last_title_poll = now
-            changed = False
-            if full:
-                if watcher is not None:
-                    watcher.clear()
-                # Stamp before scanning: a publish that lands during this (multi-
-                # second) refresh must still trigger the next arrival-follow scan.
-                index_stamp = _scan_index_stamp()
-                try:
-                    changed = self.store.refresh()
-                except Exception:
-                    # History scan failures must not block state or title propagation.
-                    pass
-                last_scan = time.monotonic()
-                self._search_refresh.set()
-                self._reclaim_inactive_hosts()
-                title_keys.update(self.store.poll_title_updates())
-                last_title_poll = time.monotonic()
-            else:
-                try:
-                    changed = self.store.refresh_state(
-                        list_hosts=tick % _STATE_HOSTS_EVERY_TICKS == 0,
-                    )
-                except Exception:
-                    changed = False
+            try:
+                changed = self.store.refresh_state(
+                    list_hosts=tick % _STATE_HOSTS_EVERY_TICKS == 0,
+                )
+            except Exception:
+                changed = False
+            with self._scan_results_lock:
+                changed = changed or self._scan_changed
+                title_keys = self._scan_title_keys
+                self._scan_changed = False
+                self._scan_title_keys = set()
             self._follow_key_migrations()
             self._detect_attention_changes()
             self._detect_live_changes()
@@ -717,7 +752,7 @@ class SessionHub:
     def _on_turn_state(self) -> None:
         """A hot session's turn ended or restarted: notify and publish now.
 
-        Runs on the refresh thread from inside the store probe, before the rest
+        Runs on the state loop from inside the store probe, before the rest
         of the tick; the later per-tick detectors see no further change.
         """
         if not self._ready.is_set():
@@ -2222,13 +2257,15 @@ class SessionHub:
             )
 
     def _emit_provisional_working(self, key: str) -> None:
-        """Tell every watcher the turn started the moment input was submitted.
+        """The submit reached the agent: show the session working everywhere now.
 
-        The scanner only reports working once the agent writes its transcript,
-        which can lag the submit by seconds. This hint does not touch the
-        authoritative attention, the list payload, or push decisions; clients
-        expire it themselves when no confirmation follows.
+        The store marks it working on the host (dots, Working, list rows for
+        every client) until native evidence takes over, and the state loop is
+        woken to publish at once instead of at the next tick. The provisional
+        hint stays for older clients and arrives before the confirmed state.
         """
+        if self.store.mark_turn_submitted(key):
+            self._state_wake.set()
         self._on_event(
             f"session:{key}",
             {
