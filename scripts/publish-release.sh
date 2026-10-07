@@ -29,6 +29,13 @@
 #   HOMEBREW_TAP_TOKEN     写 tap 仓库用的令牌（默认取 `gh auth token`）
 set -euo pipefail
 
+# universal2 needs rustup's toolchain (it carries the x86_64 std); Homebrew's
+# rustc does not and fails at compile time. Six releases hit this (see
+# MAINTAINER_GUIDE "本机打 universal2 时 PATH"), so put rustup first when present.
+if [ -x "$HOME/.cargo/bin/rustc" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
