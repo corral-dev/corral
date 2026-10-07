@@ -356,7 +356,7 @@ Real-path verification (2026-10-07): an already-paired read-only encrypted local
 
 由此定下的约定：
 
-- **Current measured choice: no inverted index / FTS5 / external search library.** 语料量级下朴素子串匹配就是毫秒级，额外索引结构只会增加维护面。SQLite FTS5 的 trigram 分词器对中文尤其不划算——1～2 个字的查询（中文最常见的查询长度）根本索引不到，还得再挂 `LIKE` 兜底。
+- **Current measured choice: no inverted index / FTS5 / external search library.** 语料量级下朴素子串匹配就是毫秒级，额外索引结构只会增加维护面。[SQLite FTS5 trigram documentation](https://www.sqlite.org/fts5.html#the_trigram_tokenizer) specifies that full-text queries shorter than three Unicode characters do not match through that index; one/two-character Chinese queries therefore still need a substring-scan fallback.
 - **`search()` 必须先判定+排序、再只对要展示的前 `top` 条提取命中行。** 命中行提取（逐行 lower + 定位 + 开窗）是整个查询里最贵的一步，对着几百条命中全做一遍会把界面线程实打实卡住：461 个会话搜单字母实测 305～441 ms，改成只算前 60 条后降到 35 ms。排序键只依赖会话时间、不依赖命中行，所以先排后截不改变前 `top` 条的内容。`SearchOutcome.total` 仍是命中总数，状态行据此如实告诉用户「还有多少条没显示」，不做静默截断。
 - **`_clean()` 用 `str.translate` + 懒查表，不要写回逐字符 `unicodedata.category()` 循环。** 建索引原本 90% 的时间花在那个循环上（461 个会话 1289 ms）；查表后整轮建索引降了一半以上。两种写法在 8672 条真实消息上逐条比对过，替换结果完全等价。
 - **索引构建必须在后台线程**（`MainScreen._warm_search_index`，`@work(thread=True)`），且**要等首屏画完再开始**（`_schedule_search_index_warm`，延后 `_SEARCH_INDEX_WARM_DELAY`）。后台线程也受 GIL 影响：解析正文期间界面每帧多滞后 4～5 ms（p95 9～14 ms），直接在首屏那一秒开跑实测让首次出卡片慢了 110～165 ms，而首屏目标本来就只有 1 秒。
