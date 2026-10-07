@@ -541,6 +541,7 @@ def _print_pairing(state, code: str, public_key: bytes, local_port: int, *, mode
     print(t("remote.pair.scan", mode_hint=mode_hint))
     if qr:
         print(qr)
+        print(t("remote.pair.link", url=url))
         print(t("remote.pair.code_manual", code=code))
     else:
         print(pairing.render_fallback(url, code))

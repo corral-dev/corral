@@ -73,5 +73,5 @@ def render_qr(text: str) -> str | None:
 
 
 def render_fallback(text: str, code: str) -> str:
-    """没有二维码库时的替代方案：手机端也支持手动输入配对码。"""
+    """没有二维码库时的替代方案：手机端粘贴完整配对链接（不支持只输配对码）。"""
     return t("remote.pair.fallback", url=text, code=code)

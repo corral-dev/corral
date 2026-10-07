@@ -1129,9 +1129,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": " (read-only: view sessions and screens only; no input or session changes)",
         "zh": "（只读：只能看会话与画面，不能输入或改会话）",
     },
+    "remote.pair.link": {
+        "en": "Can't scan? Copy this whole link to your phone and tap Paste:\n{url}",
+        "zh": "扫不了码？把下面整串链接复制到手机上点粘贴：\n{url}",
+    },
     "remote.pair.code_manual": {
-        "en": "Pairing code (type it if you cannot scan): {code}",
-        "zh": "配对码（扫不了码时手动输入）：{code}",
+        "en": "Pairing code (reference only, the phone needs the link above — typing this alone won't pair): {code}",
+        "zh": "配对码（仅供核对，手机端请粘贴上面的完整链接，只输这个码配不上）：{code}",
     },
     "remote.pair.valid_ten_minutes": {
         "en": "Valid for ten minutes.\n",
@@ -1156,16 +1160,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "remote.pair.fallback": {
         "en": (
-            "(QR library is not installed on this machine; pair manually)\n"
-            "Pairing URL: {url}\n"
-            "Pairing code: {code}\n"
-            "On your phone, choose “Enter manually” and type the code above."
+            "(QR library is not installed on this machine; paste the link manually)\n"
+            "Pairing link: {url}\n"
+            "Pairing code (reference only): {code}\n"
+            "On your phone, paste the link above with the Paste button."
         ),
         "zh": (
-            "（开发机上没有装二维码组件，改用手动配对）\n"
+            "（开发机上没有装二维码组件，改用手动粘贴）\n"
             "配对链接：{url}\n"
-            "配对码：{code}\n"
-            "在手机上选「手动输入」，填入上面的配对码即可。"
+            "配对码（仅供核对）：{code}\n"
+            "在手机上用粘贴按钮粘贴上面的完整链接，不能只输配对码。"
         ),
     },
     "remote.status.host": {
