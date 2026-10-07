@@ -157,6 +157,8 @@ Legacy Corral managed Codex panes may have no app-server identity claim. A scan 
 
 **Codex metadata-only updates (2026-10-07).** List timestamps and date buckets must follow real conversation/turn activity; restoring a session or applying thread settings without a new turn cannot promote historical sessions to Today. SessKit owns this distinction; all three clients consume its effective `mtime`. Preserve raw `file_mtime` for history/cache invalidation. A timestamp backfill must not widen status/completion evidence. See [SessKit listing contract](~/Codes/SessKit/docs/CONTRACT.md#listing-modes).
 
+Verified evidence: a September 28 Codex conversation received an October 7 settings-only record. SessKit 0.2.9 corrected its effective time to September 28 18:04 without changing the aborted completion or quota error. Corral 0.24.271 consumes the fix through SessKit 0.2.10. The installed host's encrypted client list and message history returned the same original timestamp; the TUI placed it after the Older header (nine calendar days). Read-only history requests succeeded for all five active runtimes. The phone was in use in another app, so its affected screen was not brought forward; native Mac list date rendering was reviewed, but the exact historical row was not visually exercised. These are remaining screen-acceptance limits, not substitutes for the verified host data path. Upstream regressions cover metadata-only suffixes, midnight boundaries, long metadata tails and genuine activity advancing the clock.
+
 `effective_session_time(file_mtime, event_time)` 统一处理“文件看似刚更新、真实对话却很久以前”的情况：
 
 ```mermaid
