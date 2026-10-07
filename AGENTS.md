@@ -32,6 +32,15 @@ Read the documents whose described content is relevant before deciding or changi
 | `apple/` | SwiftUI | 活跃 |
 | `relay/` | Go | 活跃（零知识中继 + APNs） Remote：`ssh://git@forgejo.caozc.top:2222/Max/corral-relay.git` |
 
+## SessKit and Corral ownership
+
+- Before changing session behavior, identify the owning layer and state where the fix belongs. A symptom appearing in Corral does not make its implementation Corral-owned.
+- **SessKit owns native history interpretation and reusable session semantics:** runtime file/database formats, session and message extraction, real activity timestamps, native completion/error evidence, normalized schemas, transcript/activity projections and incremental history readers. Fix these in `~/Codes/SessKit`, with its parser tests and contract; never duplicate the fix in Corral scanners, remote handlers or Apple clients.
+- **Corral owns product behavior:** runtime launch/resume/handoff, managed-session ownership and claims, tmux hosting, generated titles, attention/read/notification policy, product cache storage, remote transport, and client presentation, filtering, sorting and date grouping. Consume SessKit's normalized evidence; do not reinterpret raw history to bypass an upstream defect. Generic evidence belongs upstream; product decisions remain here.
+- Keep the dependency direction **Corral → SessKit**. Corral's scan aliases and bridge adapt/delegate; they are not a second parser. Pass host-specific behavior through explicit extension contracts. Never move Corral UI, relay, hosting or product policy into SessKit, and never make SessKit depend on Corral.
+- Runtime support is decided per product: Corral's five-runtime allowlist and dormant compatibility do not narrow SessKit's independent runtime support.
+- For an upstream fix, publish a versioned SessKit artifact, update Corral's complete dependency pin, invalidate derived caches through the provider version, and verify the installed host plus affected clients. For an independent Corral fix, do not change SessKit merely because it supplies the data. Integration details: [session scanning knowledge base](~/Codes/Corral/cli/docs/SESSION_SCANNING_KNOWLEDGE_BASE.md).
+
 ## 领域地图（doc-init）
 
 <!-- 覆盖度复核基线：2026-09-29 · 源码指纹 扫描 673 文件 / Python 190 · Swift 86 · Go 23 / 3 子模块 -->
