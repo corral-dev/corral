@@ -289,6 +289,7 @@ stateDiagram-v2
 |---|---|---|---|
 | Textual 后台 worker | 首屏加载 | `MainScreen._await_initial_load()` | 先显示界面骨架，等待后台扫描完成，支持退出取消 |
 | Textual 后台 worker | 会话刷新 | `MainScreen._background_refresh_worker()` | 每 3 秒起步，连续空闲后最多退避到 10 秒；扫描变化才重建 |
+| 状态探针线程 | 圆点 / Working / 已结束 | `MainScreen._state_probe_loop()` → `store.refresh_state` | 每秒独立运行，不排在完整重扫后面（2026-10-07：重扫在内存紧张时可达数十秒，曾把圆点拖晚 10 秒以上）；规则见远程知识库「Turn start and end are never held behind a scan」 |
 | Textual 定时器 | 标题缓存轮询 | `MainScreen._poll_cache()`，0.5 秒 | 后台标题生成完成后原地刷新标题，不重扫完整历史；侧边栏不画生成中动画 |
 | Textual 定时器 | 会话小窗同步 | `MainScreen._sync_hud()`，1 秒 | 只做一次 `stat` + 内存缓存判定；缓存按 mtime 失效时才按 `HUD_WARM_INTERVAL`（3 秒）起一次后台解析（`_warm_hud`），并在解析期间继续显示上一版摘要 |
 | Textual 定时器 | 红点已读确认 | 主屏就绪轮询（约 0.1 秒） | 右侧内容一就绪即清；分屏下所有可见格一起观察；选择变化、预览失败或应用失焦时取消 |
