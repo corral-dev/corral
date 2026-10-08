@@ -50,6 +50,12 @@ flowchart TD
 4. 需要确认用户实际看见的布局或画面时，让用户在真实 TUI 内按 F12，再结合同一时间段的日志排查。
 5. 默认信息不足时，设置 `CORRAL_DEBUG=1` 或 `CORRAL_LOG=debug` 后重启 TUI，复现一次并读取新增的 debug 事件。
 
+### Hosted assistant startup errors
+
+`host_session` with `ok: true` confirms that Corral hosted the child process; it does not confirm that the assistant completed its own account initialization. The startup-failure panel preserves the child exit code and output, as described in [the embedded terminal knowledge base](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md). Correlate the failure time before treating `corral diagnose`'s `last_error` as relevant: it can describe an older, unrelated Corral exception.
+
+Codex errors containing `account/read failed during TUI bootstrap` and `workspace routing discovery timed out` require native account/request evidence. The shared authority is [the account-routing timeout investigation](~/.config/agentsync/docs/troubleshooting/2026-10-08-codex-workspace-routing-bootstrap-timeout.md), including SubSwap attribution, native SQLite log discovery, read-only account recovery and its verification limits. Corral's [launch ownership rules](CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md#1-业务目标与不可变边界) explain the separate direct embedded launch and private app-server proxy paths. Do not change Corral launch behavior merely because it surfaced an upstream error.
+
 ## §3 代码入口索引
 
 | 场景 | 入口 | 作用 |
