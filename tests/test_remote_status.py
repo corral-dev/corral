@@ -36,6 +36,11 @@ class RemoteConfigEmptyDirTests(unittest.TestCase):
 
 class RemoteStatusRelayOnlineTests(unittest.TestCase):
     def setUp(self) -> None:
+        fixture = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture.cleanup)
+        isolation = mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": fixture.name})
+        isolation.start()
+        self.addCleanup(isolation.stop)
         # Fixture LAN stub (same boundary as the service/receipt suites):
         # status without snapshot hints resolves the hostname. Relay-online
         # assertions never inspect hint content; LAN coverage is test_remote_lan.
@@ -246,6 +251,8 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         with (
             mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
             mock.patch.object(remote_config, "load_state", return_value=state),
+            mock.patch.object(remote_config, "save_state") as save,
+            mock.patch.object(remote_cli.remote_autostart, "enable", return_value="") as enable,
             mock.patch.object(remote_config, "load_or_create_identity", return_value=object()),
             mock.patch.object(remote_config, "write_pairing") as write_pairing,
             mock.patch.object(remote_config, "read_pid", return_value=99),
@@ -256,6 +263,8 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
             self.assertEqual(remote_cli._cmd_pair(args), 0)
 
         write_pairing.assert_called_once_with("新配对码", remote_cli._PAIRING_TTL, mode="full")
+        save.assert_called_once_with(state)
+        enable.assert_called_once_with(restart_existing=False)
         print_pairing.assert_called_once_with(
             state, "新配对码", b"public-key", 8737, mode="full"
         )

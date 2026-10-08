@@ -1018,8 +1018,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "仅演练，不做任何更改",
     },
     "remote.help.pair": {
-        "en": "Generate a pairing QR code (service must be on to connect after scanning)",
-        "zh": "生成配对二维码（扫码后要服务已打开才能连上）",
+        "en": "Turn phone handoff on if needed and print a pairing QR code",
+        "zh": "生成配对二维码（手机接力没开时会自动打开）",
     },
     "remote.help.readonly": {
         "en": "Read-only pairing: the phone can view sessions and screens, but cannot type, create, or delete",
@@ -1151,12 +1151,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "只扫这台机器上显示的码。\n"
         ),
     },
-    "remote.pair.service_not_running": {
-        "en": (
-            "Note: phone handoff is off. "
-            "Run corral remote on before the phone can connect after scanning.\n"
-        ),
-        "zh": "提示：手机接力还没打开。扫码后要先执行 corral remote on 才能连上。\n",
+    "remote.pair.service_started": {
+        "en": "Phone handoff turned on (pid {pid}).\n",
+        "zh": "已打开手机接力（pid {pid}）。\n",
     },
     "remote.pair.fallback": {
         "en": (

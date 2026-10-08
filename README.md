@@ -121,11 +121,10 @@ Leave the desk and keep your agents moving: read conversations, send a follow-up
 With a companion build and the remote dependencies installed on your host:
 
 ```bash
-corral remote on
 corral remote pair
 ```
 
-Pair on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Phone traffic is end-to-end encrypted. See the [remote setup guide](docs/REMOTE_KNOWLEDGE_BASE.md) for pairing and relay configuration.
+Pairing automatically turns remote access on. Pair on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Phone traffic is end-to-end encrypted. See the [remote setup guide](docs/REMOTE_KNOWLEDGE_BASE.md) for pairing and relay configuration.
 
 ## Privacy
 

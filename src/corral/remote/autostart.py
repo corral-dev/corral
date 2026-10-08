@@ -54,12 +54,12 @@ def is_installed() -> bool:
     return False
 
 
-def enable() -> str:
+def enable(*, restart_existing: bool = True) -> str:
     """Arm autostart and ensure the service is loaded. Empty string on success."""
     if not autostart_allowed():
         return ""
     if sys.platform == "darwin":
-        return _darwin_enable()
+        return _darwin_enable(restart_existing=restart_existing)
     if sys.platform.startswith("linux"):
         return _linux_enable()
     return ""
@@ -173,10 +173,14 @@ def _darwin_run(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _darwin_enable() -> str:
+def _darwin_enable(*, restart_existing: bool = True) -> str:
     path = _darwin_write_plist()
     domain = _darwin_domain()
     target = f"{domain}/{_LABEL}"
+    # Pairing refreshes login persistence without disconnecting active clients.
+    # The new plist takes effect at the next login; explicit on still reloads it.
+    if not restart_existing and _darwin_run(["launchctl", "print", target]).returncode == 0:
+        return ""
     # Replace any prior registration so the plist on disk is what runs.
     _darwin_run(["launchctl", "bootout", target])
     # bootout returns before the job finishes unloading; bootstrapping too

@@ -166,6 +166,78 @@ class RemoteDryRunTests(unittest.TestCase):
         payload = json.loads(buf.getvalue())
         self.assertTrue(payload["data"]["dry_run"])
         self.assertNotIn("code", payload["data"])  # 演练不给假码
+        self.assertTrue(payload["data"]["would_start_service"])
+
+    def _run_pair(self, state, *, pid_reads, spawn_ok=True, readonly=False, relay_error=None):
+        args = argparse.Namespace(readonly=readonly, json=True, dry_run=False)
+        with (
+            mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
+            mock.patch.object(remote_config, "load_state", return_value=state),
+            mock.patch.object(remote_config, "save_state") as save,
+            mock.patch.object(remote_config, "load_or_create_identity", return_value=b"k"),
+            mock.patch.object(remote_cli.crypto, "public_key_bytes", return_value=b"\x01" * 32),
+            mock.patch.object(remote_config, "write_pairing") as write_pairing,
+            mock.patch.object(remote_config, "read_pid", side_effect=pid_reads),
+            mock.patch.object(remote_cli, "_wait_until_running",
+                              side_effect=[None, 5151 if spawn_ok else None]),
+            mock.patch.object(remote_cli, "_spawn_background_daemon") as spawn,
+            mock.patch.object(remote_cli.remote_autostart, "enable", return_value=None) as enable,
+            mock.patch.object(remote_cli, "_register_with_relay", return_value=relay_error),
+        ):
+            spawn.return_value.poll.return_value = None if spawn_ok else 1
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = remote_cli._cmd_pair(args)
+        return code, json.loads(buf.getvalue()), save, write_pairing, spawn, enable
+
+    def test_pair_turns_remote_on_when_off(self) -> None:
+        state = _state(wanted=False)
+        code, payload, save, write_pairing, spawn, enable = self._run_pair(state, pid_reads=[None])
+        self.assertEqual(code, 0)
+        self.assertTrue(state.wanted)
+        save.assert_called()
+        enable.assert_called_once()
+        spawn.assert_called_once()
+        write_pairing.assert_called_once()
+        self.assertTrue(payload["data"]["service_started"])
+        self.assertEqual(payload["data"]["service_pid"], 5151)
+        self.assertIn("code", payload["data"])
+
+    def test_pair_keeps_running_service(self) -> None:
+        state = _state(wanted=True)
+        code, payload, _save, write_pairing, spawn, enable = self._run_pair(state, pid_reads=[4242])
+        self.assertEqual(code, 0)
+        spawn.assert_not_called()
+        enable.assert_called_once_with(restart_existing=False)
+        write_pairing.assert_called_once()
+        self.assertFalse(payload["data"]["service_started"])
+        self.assertEqual(payload["data"]["service_pid"], 4242)
+
+    def test_pair_mints_no_code_when_service_fails(self) -> None:
+        state = _state(wanted=False)
+        code, payload, _save, write_pairing, _spawn, _enable = self._run_pair(
+            state, pid_reads=[None], spawn_ok=False)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(payload["ok"])
+        write_pairing.assert_not_called()
+
+    def test_pair_mints_no_code_when_relay_registration_fails(self) -> None:
+        code, payload, _save, write_pairing, spawn, enable = self._run_pair(
+            _state(relay_enabled=True, relay_url="wss://relay.example.com"),
+            pid_reads=[None], relay_error="registration failed")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(payload["error"]["code"], "account_error")
+        write_pairing.assert_not_called()
+        spawn.assert_not_called()
+        enable.assert_not_called()
+
+    def test_readonly_pair_starts_service_with_restricted_pairing(self) -> None:
+        code, payload, _save, write_pairing, spawn, _enable = self._run_pair(
+            _state(), pid_reads=[None], readonly=True)
+        self.assertEqual(code, 0)
+        spawn.assert_called_once()
+        self.assertEqual(write_pairing.call_args.kwargs["mode"], "readonly")
+        self.assertEqual(payload["data"]["access"], "readonly")
 
     def test_unpair_dry_run_removes_nothing(self) -> None:
         from types import SimpleNamespace

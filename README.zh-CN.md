@@ -121,11 +121,10 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 已有客户端安装包，并在开发机装好远程功能所需依赖后，运行：
 
 ```bash
-corral remote on
 corral remote pair
 ```
 
-先在同一局域网配对。外出使用需要自行部署中继；Corral 不内置共享公共中继。手机通信采用端到端加密。配对及中继配置见[远程使用指南](docs/REMOTE_KNOWLEDGE_BASE.md)。
+配对时会自动开启远程连接。先在同一局域网配对。外出使用需要自行部署中继；Corral 不内置共享公共中继。手机通信采用端到端加密。配对及中继配置见[远程使用指南](docs/REMOTE_KNOWLEDGE_BASE.md)。
 
 ## 隐私
 

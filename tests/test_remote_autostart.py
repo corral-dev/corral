@@ -29,6 +29,25 @@ def _fast_run(args: list[str]) -> mock.Mock:
 
 
 class RemoteAutostartTests(unittest.TestCase):
+    def test_pairing_preserves_loaded_macos_job(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(autostart, "_home", return_value=Path(tmp)),
+            mock.patch.object(autostart, "_darwin_run", return_value=_ok()) as run,
+        ):
+            self.assertEqual(autostart._darwin_enable(restart_existing=False), "")
+            self.assertTrue(autostart._darwin_plist_path().is_file())
+        self.assertEqual([call.args[0][1] for call in run.call_args_list], ["print"])
+
+    def test_pairing_registers_missing_macos_job(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(autostart, "_home", return_value=Path(tmp)),
+            mock.patch.object(autostart, "_darwin_run", side_effect=_fast_run) as run,
+        ):
+            self.assertEqual(autostart._darwin_enable(restart_existing=False), "")
+        self.assertIn("bootstrap", [call.args[0][1] for call in run.call_args_list])
+
     def test_autostart_skipped_under_cache_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": tmp}, clear=False):

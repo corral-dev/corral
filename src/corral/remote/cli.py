@@ -301,6 +301,55 @@ def _remember_wanted(state: remote_config.RemoteState, wanted: bool) -> None:
     remote_config.save_state(state)
 
 
+def _register_with_relay(state: remote_config.RemoteState, skip_relay: bool = False) -> str | None:
+    """Register this host with its relay when one is on; returns the error message."""
+    if not state.relay_enabled or skip_relay:
+        return None
+    from corral.remote import account as remote_account
+
+    ok, message = remote_account.register_host(state)
+    return None if ok else message
+
+
+def _start_background(autostart_error: str | None) -> tuple[int | None, str]:
+    """Wait for the autostart unit, else spawn the service; returns (pid, error)."""
+    pid = _wait_until_running(timeout=2.0) if not autostart_error else None
+    child = None
+    if not pid:
+        try:
+            child = _spawn_background_daemon()
+        except OSError as exc:
+            return None, t("remote.on.spawn_failed", error=exc)
+        pid = _wait_until_running()
+    if not pid:
+        # 子进程可能立刻挂了；尽量带上它的退出码。
+        code = child.poll() if child is not None else None
+        detail = f"exit {code}" if code is not None else (autostart_error or "no pid")
+        return None, t("remote.on.not_ready", detail=detail)
+    return pid, ""
+
+
+def _ensure_service_on(state: remote_config.RemoteState) -> tuple[int | None, bool, str, str]:
+    """Turn remote on for pairing, as `on` would; returns (pid, started, error, code)."""
+    running = remote_config.read_pid()
+    if running:
+        _remember_wanted(state, True)
+        remote_autostart.enable(restart_existing=False)
+        return running, False, "", "ok"
+    if state.relay_enabled:
+        try:
+            # A saved ws:// relay was already opted into with --insecure-relay.
+            state.relay_url = remote_config.validate_relay_url(state.relay_url, allow_insecure=True)
+        except ValueError as exc:
+            return None, False, str(exc), "usage_error"
+    _remember_wanted(state, True)
+    registration_error = _register_with_relay(state)
+    if registration_error:
+        return None, False, registration_error, "account_error"
+    pid, error = _start_background(remote_autostart.enable())
+    return pid, bool(pid), error, "ok" if pid else "remote_error"
+
+
 def _cmd_on(args) -> int:
     dry_run = _is_dry_run(args)
     if dry_run:
@@ -376,13 +425,10 @@ def _cmd_on(args) -> int:
         _stop_pid(running)
         remote_config.clear_pid()
 
-    if state.relay_enabled and not args.no_relay:
-        from corral.remote import account as remote_account
-
-        ok, message = remote_account.register_host(state)
-        if not ok:
-            return _fail(message, args.json, code="account_error",
-                         next_commands=[f"{_bin()} remote status --json"])
+    registration_error = _register_with_relay(state, args.no_relay)
+    if registration_error:
+        return _fail(registration_error, args.json, code="account_error",
+                     next_commands=[f"{_bin()} remote status --json"])
 
     # Arm OS autostart before starting so a crash mid-on still comes back after reboot.
     autostart_error = remote_autostart.enable()
@@ -412,19 +458,9 @@ def _cmd_on(args) -> int:
             print(t("remote.on.foreground_hint"))
         return _run_daemon_foreground(state)
 
-    pid = _wait_until_running(timeout=2.0) if not autostart_error else None
-    child = None
+    pid, start_error = _start_background(autostart_error)
     if not pid:
-        try:
-            child = _spawn_background_daemon()
-        except OSError as exc:
-            return _fail(t("remote.on.spawn_failed", error=exc), args.json)
-        pid = _wait_until_running()
-    if not pid:
-        # 子进程可能立刻挂了；尽量带上它的退出码。
-        code = child.poll() if child is not None else None
-        detail = f"exit {code}" if code is not None else (autostart_error or "no pid")
-        return _fail(t("remote.on.not_ready", detail=detail), args.json)
+        return _fail(start_error, args.json)
 
     data = {
         "enabled": True,
@@ -564,8 +600,10 @@ def _cmd_pair(args) -> int:
             hint, next_commands = _dependency_hint(_missing_dependencies())
             return _fail(missing, args.json, code="missing_dependencies",
                          hint=hint, next_commands=next_commands)
+        running = bool(remote_config.read_pid())
         data = {
-            "service_running": bool(remote_config.read_pid()),
+            "service_running": running,
+            "would_start_service": not running,
             "dependencies_ok": True,
             "mode": mode,
             "dry_run": True,
@@ -582,18 +620,24 @@ def _cmd_pair(args) -> int:
         hint, next_commands = _dependency_hint(missing) if missing else (None, None)
         return _fail(problem, args.json, code="missing_dependencies",
                      hint=hint, next_commands=next_commands)
-    state = remote_config.load_state()
     public_key = crypto.public_key_bytes(remote_config.load_or_create_identity())
+    # A code is useless until the service runs, so pairing turns remote on first.
+    service_pid, started, error, error_code = _ensure_service_on(remote_config.load_state())
+    if not service_pid:
+        return _fail(error, args.json, code=error_code,
+                     next_commands=[f"{_bin()} remote status --json"])
+    state = remote_config.load_state()
     code = crypto.new_pairing_code()
-    mode = "readonly" if args.readonly else "full"
     remote_config.write_pairing(code, _PAIRING_TTL, mode=mode)
     if args.json:
         payload = json.loads(pairing.as_json(state, code, public_key, state.local_port))
         payload["access"] = mode
+        payload["service_started"] = started
+        payload["service_pid"] = service_pid
         print(_envelope(True, payload))
         return EXIT_OK
-    if not remote_config.read_pid():
-        print(t("remote.pair.service_not_running"))
+    if started:
+        print(t("remote.pair.service_started", pid=service_pid))
     _print_pairing(state, code, public_key, state.local_port, mode=mode)
     return EXIT_OK
 

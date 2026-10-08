@@ -293,7 +293,7 @@ corral remote off --dry-run --json   # 先看会关掉哪个 pid，再决定是�
 corral remote unpair <id> --dry-run --json
 ```
 
-  `on`/`off` 已是开关语义（重复执行收敛到 `changed: false`）；`unpair` 找不到设备报退出码 3（`not_found`）；`login`/`logout` 是鉴权引导步骤，不支持 `--dry-run`。`--json` 下 envelope 与读命令同形状（含 `error.code`/`hint`/`next_commands` 与 `meta.version`）。
+  `pair` automatically turns the service on before generating a code; `--dry-run` reports `would_start_service` without changes. `on`/`off` 已是开关语义（重复执行收敛到 `changed: false`）；`unpair` 找不到设备报退出码 3（`not_found`）；`login`/`logout` 是鉴权引导步骤，不支持 `--dry-run`。`--json` 下 envelope 与读命令同形状（含 `error.code`/`hint`/`next_commands` 与 `meta.version`）。
 - `corral cache clear --dry-run`：预览将清理的缓存，不删除；`corral shim install/uninstall --dry-run`：预览将改的 shell 配置，不写文件。
 - `corral --json`（TUI 根命令的扁平数组）是兼容保留，新集成一律用 `corral list`（带状态枚举、`short_id` 与稳定 envelope）。
 
