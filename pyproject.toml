@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "corral"
 version = "0.24.277"
-description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
+description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,7 +14,6 @@ keywords = [
   "claude-code",
   "codex-cli",
   "opencode",
-  "kimi-code",
   "cursor-cli",
   "pi-agent",
   "terminal",

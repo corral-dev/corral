@@ -6319,7 +6319,7 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             brand = footer.query_one("#footer-brand", _FooterBrand)
             version = footer.query_one("#footer-version", Label)
             self.assertEqual(str(brand.content), BRAND_LABEL)
-            self.assertEqual(BRAND_LABEL, "x0c/corral")
+            self.assertEqual(BRAND_LABEL, "corral-dev/corral")
             self.assertEqual(str(version.content), f"v{corral.__version__}")
             self.assertFalse(brand.can_focus)
             right = footer.query_one("#footer-right")

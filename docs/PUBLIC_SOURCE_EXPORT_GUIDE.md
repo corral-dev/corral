@@ -116,6 +116,15 @@ Synthetic or public keys (example tokens, `YOUR-...` placeholders, public-key bl
 treated as secrets: only the personal-path pattern above is built in, everything else comes from
 the maintainer's explicit forbidden lists.
 
+## Repository owner
+
+The exporter itself hardcodes no repository owner: every GitHub path it emits comes from the
+committed tree or the recipe. Post-migration defaults live outside this tool — `install.sh`,
+`scripts/publish-release.sh`, `scripts/homebrew_formula.py`, `src/corral/updater.py` and the
+package metadata now target `corral-dev/corral` (tap `x0c/homebrew-tap` and upstream
+`x0c/sesskit` unchanged). Recipe authors should likewise write `corral-dev/corral` paths;
+GitHub Transfer redirects keep old `x0c/corral` links working for existing installs.
+
 ## Keeping private material out of the public repository
 
 - Store recipes, replacement files, checker inputs and receipts under a private directory such as

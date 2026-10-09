@@ -107,6 +107,8 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md](docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md): Checkout readiness, locked dependencies and SessKit artifact handoff.
 - [docs/TEST_ENVIRONMENT_GUIDE.md](docs/TEST_ENVIRONMENT_GUIDE.md): Isolated real-terminal fixtures, screenshots and behavioral assertions.
 - [docs/PUBLIC_PRESENTATION_GUIDE.md](docs/PUBLIC_PRESENTATION_GUIDE.md): Approved identity, brand assets and sanitized public presentation.
+- [Public source export](docs/PUBLIC_SOURCE_EXPORT_GUIDE.md): Committed snapshots, privacy recipes, copy-only UI assets and fresh public history.
+- [Organization profile](docs/organization/profile/README.md): Public component routes, installation and client availability, with aligned Chinese copy.
 - [docs/design/SESSION_TITLE_DESIGN.md](docs/design/SESSION_TITLE_DESIGN.md): Shared title policy, gateway generation and synchronization.
 - [README.md](README.md): 使用、修改、评审或扩展会话扫描、会话关注圆点、Cursor 状态观察、终端界面、标题生成、运行时适配和跨运行时接力.
 - [docs/TERMINAL_UI_KNOWLEDGE_BASE.md](docs/TERMINAL_UI_KNOWLEDGE_BASE.md): TUI sidebar, split panes, focus, shortcuts, selection and visual acceptance.
