@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 一键安装 corral（不使用 Homebrew 的场景，例如 Linux 或未装 Homebrew 的 macOS）。
-# 用法：curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
+# 用法：curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash
 set -euo pipefail
 
-REPO="${CORRAL_REPO:-x0c/corral}"
+REPO="${CORRAL_REPO:-corral-dev/corral}"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "错误：未找到 python3，请先安装 Python 3.10 及以上版本" >&2

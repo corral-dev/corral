@@ -243,7 +243,7 @@ def build_formula(version: str, slots: dict) -> str:
         "  include Language::Python::Virtualenv",
         "",
         f'  desc "{DESC}"',
-        '  homepage "https://github.com/x0c/corral"',
+        '  homepage "https://github.com/corral-dev/corral"',
         f'  version "{version}"',
         '  license "MIT"',
         "",
@@ -286,7 +286,7 @@ def main() -> int:
     parser.add_argument("--tag", required=True, help="版本标签，如 v0.24.144")
     parser.add_argument("--tap-dir", help="tap 仓库目录（写入 Formula/corral.rb，含防回退）")
     parser.add_argument("--output", help="只把配方写到该文件（不写 tap）")
-    parser.add_argument("--repo", default="x0c/corral", help="GitHub 源码仓（owner/name）")
+    parser.add_argument("--repo", default="corral-dev/corral", help="GitHub 源码仓（owner/name）")
     parser.add_argument("--assets-json", help=argparse.SUPPRESS)
     parser.add_argument("--sha256sums", help=argparse.SUPPRESS)
     parser.add_argument("--source-sha256", help=argparse.SUPPRESS)

@@ -3,8 +3,8 @@ name = "corral-native"
 version = "0.24.277"
 edition = "2021"
 description = "Native hot-path accelerator for corral"
-homepage = "https://github.com/x0c/corral"
-repository = "https://github.com/x0c/corral"
+homepage = "https://github.com/corral-dev/corral"
+repository = "https://github.com/corral-dev/corral"
 license = "MIT"
 
 [lib]

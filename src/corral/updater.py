@@ -24,7 +24,7 @@ from typing import Literal
 
 from corral.legacy_names import cache_dir as product_cache_dir
 
-REPO = "x0c/corral"
+REPO = "corral-dev/corral"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 TAG_RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
 _FETCH_TIMEOUT = 3.0  # 秒；慢网络/无网不能拖住后台 worker

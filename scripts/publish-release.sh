@@ -40,7 +40,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 TAP_REPO="${CORRAL_TAP_REPO:-x0c/homebrew-tap}"
-SOURCE_REPO="${CORRAL_REPO:-x0c/corral}"
+SOURCE_REPO="${CORRAL_REPO:-corral-dev/corral}"
 
 die() { echo "错误：$*" >&2; exit 1; }
 

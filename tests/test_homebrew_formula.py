@@ -13,22 +13,22 @@ SPEC.loader.exec_module(homebrew_formula)
 class HomebrewFormulaTest(unittest.TestCase):
     def setUp(self):
         self.source = (
-            "https://github.com/x0c/corral/archive/refs/tags/v0.24.144.tar.gz",
+            "https://github.com/corral-dev/corral/archive/refs/tags/v0.24.144.tar.gz",
             "source-sha",
             False,
         )
         self.macos = (
-            "https://github.com/x0c/corral/releases/download/v0.24.144/corral-macos-universal2.whl",
+            "https://github.com/corral-dev/corral/releases/download/v0.24.144/corral-macos-universal2.whl",
             "mac-sha",
             True,
         )
         self.linux_x86 = (
-            "https://github.com/x0c/corral/releases/download/v0.24.144/corral-manylinux-x86_64.whl",
+            "https://github.com/corral-dev/corral/releases/download/v0.24.144/corral-manylinux-x86_64.whl",
             "x86-sha",
             True,
         )
         self.linux_arm = (
-            "https://github.com/x0c/corral/releases/download/v0.24.144/corral-manylinux-aarch64.whl",
+            "https://github.com/corral-dev/corral/releases/download/v0.24.144/corral-manylinux-aarch64.whl",
             "arm-sha",
             True,
         )
@@ -82,8 +82,8 @@ class HomebrewFormulaTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             formula = pathlib.Path(tmp) / "corral.rb"
             formula.write_text(
-                '  url "https://github.com/x0c/corral/archive/refs/tags/v0.24.120.tar.gz"\n'
-                '    url "https://github.com/x0c/corral/releases/download/v0.24.144/corral.whl"\n',
+                '  url "https://github.com/corral-dev/corral/archive/refs/tags/v0.24.120.tar.gz"\n'
+                '    url "https://github.com/corral-dev/corral/releases/download/v0.24.144/corral.whl"\n',
                 encoding="utf-8",
             )
 

@@ -200,7 +200,7 @@ class InstallSpecTests(unittest.TestCase):
         with self._urlopen(self._release_payload(["corral-0.21.0.tar.gz"])):
             self.assertEqual(
                 updater.install_spec("0.21.0"),
-                "git+https://github.com/x0c/corral.git@v0.21.0",
+                "git+https://github.com/corral-dev/corral.git@v0.21.0",
             )
 
     def test_network_failure_falls_back_to_source(self) -> None:
@@ -210,7 +210,7 @@ class InstallSpecTests(unittest.TestCase):
         ):
             self.assertEqual(
                 updater.install_spec("0.21.0"),
-                "git+https://github.com/x0c/corral.git@v0.21.0",
+                "git+https://github.com/corral-dev/corral.git@v0.21.0",
             )
 
 
@@ -473,7 +473,7 @@ class CliUpdateTests(unittest.TestCase):
     def test_dev_channel_prints_manual_hint_and_exits_nonzero(self) -> None:
         code, out = self._capture(detect_channel=lambda: "dev")
         self.assertEqual(code, 1)
-        self.assertIn("x0c/corral", out)
+        self.assertIn("corral-dev/corral", out)
 
     def test_network_failure_prints_check_failed_and_exits_nonzero(self) -> None:
         code, out = self._capture(
