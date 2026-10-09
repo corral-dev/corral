@@ -115,7 +115,7 @@ sequenceDiagram
 
 ### 2.2 运行中判定
 
-“运行中”是会话关联进程是否存活的二值事实，而不是会话对话状态。
+“运行中”是会话关联进程是否存活的二值事实。过程存活、历史结局、托管归属与注意力是四组独立事实，见全局 [Agent Session Integration Guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#state-and-outcome-are-separate)。本地绑定：`live` 只表示当前关联进程的存活观测，`status_tag` / 机器接口英文状态描述已落盘末轮的结局；两者互不推导。
 
 | 助手 | 判活来源 | 归属规则 | 降级行为 |
 |---|---|---|---|
@@ -365,7 +365,7 @@ Claude continued-in session recovery (2026-09-30 incident): Claude Code 2.1.284 
 - **AI 易错点**【禁止】把 `corral share` 接到 `load_conversation`，或按 Cursor `store.db` 的 rowid 假定 tool-call 一定早于 tool-result → share 走 `transcript.py`，tool-result 可能先落盘，必须按 `toolCallId` 配对后再按 call→result 发出（原因：本机真实历史里 result 的 rowid 可以更小）。
 - **AI 易错点**【禁止】以 `dict.get(key, 默认值)` 单独防范历史字段缺失 → 嵌套 JSON 取值统一使用 `value or 默认值` 并先验类型（原因：key 存在但值可能是 JSON `null`；否则会崩溃或把 `None` 显示成字面量 `"None"`）。
 - **AI 易错点**【禁止】将对话预览按会话键永久缓存 → 必须将历史入口 mtime 与缓存中的 mtime 比较，变化时重新调用 `load_conversation`（原因：会话可在 corral 打开期间继续写入）。
-- **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：前者只表示关联进程当前是否活着（`live`），后两者描述最后一轮对话的完成、待回复或中断语义；两者不能相互推导或互相替换。
+- **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：见全局 [Agent Session Integration Guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#state-and-outcome-are-separate)。本地绑定不变：`live` = 当前关联进程存活观测，`status_tag` / 英文状态 = 已落盘末轮结局；两者互不推导或替换。
 - **AI 易错点**【产品裁定·2026-09-15 · CLI 已落地】手机端「会话/本轮结束后发系统通知」**必须基于 SessKit 结束状态能力**（开发机 `PushNotifier.on_status_change`）（正常结束 = `status_tag` 已完成；异常结束 = 已中断 + `last_agent_msg` 报错摘要），覆盖成功与额度/限流/供应商失败。禁止另造进程退出、关注圆点或助手私有钩子当唯一触发。**禁止**用 `status_tag=已完成` / 裸 `DONE` 单独当作「活儿干完了可推送」→ 额度用尽等在原生历史上常仍带“完成”类标记；SessKit ≥0.1.5 已把 Codex usage-limit / Pi 429 标成中断并保留原文（`~/Codes/SessKit/docs/CONTRACT.md`「Status tags and abnormal endings」）。通知层必须区分成功完成与异常结束。**短会话**：新 key 首次扫到已是终端态时，若历史 `mtime` 约 5 分钟内仍要推（`v0.24.216+`），否则会漏掉扫描间隙里已结束的短会话；陈旧存量终端态不推。远程推送链路见 `REMOTE_KNOWLEDGE_BASE.md` 产品边界同条。
 - **AI 易错点**【消歧】关注状态圆点是第三套面向注意力的本地状态：黄=结构化问题待回答、绿=当前轮执行、红=新结果未读。它不得覆盖或改写 `live`、`status`、`status_tag`，也不得参与会话排序。**禁止**用「进程还在」或「最后一条消息是谁发的」冒充绿点：Claude/Codex/Kimi/OpenCode 只认历史里最近的明确执行/等待/结束证据（工具未收束、step 未结束、结构化提问）；**Pi** 历史同样只认未收束工具/结构化提问，但 Working 出现在 assistant 落盘之前——必须另认身份扩展 claim 的可选字段 `agentPhase`（`agent_start`→working、`agent_settled`→idle、`ui_prompt_*`→waiting；extension `1.1.0+`），由 `_inspect_pi` 合成 `source=observer` 证据；证据缓存签名须含 `agent_phase`/`agent_phase_at`，否则 jsonl 未变时绿点不刷新。已运行的 Pi 要 `/reload` 或重开才会加载新扩展。Cursor 绿点优先来自观察器（`beforeSubmitPrompt`），但进程仍在且历史里最新是未完成/刚发生的非提问工具活动时，历史扫描必须推导 `working`——否则中间助手正文把观察器 working 冲成 idle 后，只回 `unknown` 会让 Globbing/Running 整轮没有绿点。历史若已有最终可见答复（正文新于工具）仍须给 idle，否则常驻 `agent` 会把旧 working 钉死。空闲常驻 TUI 的 `live` 仍可为 True（右栏才能进真实窗口），关注态不得因此为绿。
 - **AI 易错点**【禁止】把 OpenCode 在 `finish=tool-calls` 之后插入的空助手行当成执行中 → v1 没有 part / 没有 running 工具就是常驻空转。进程已死且没有完成标记时给 idle，不要把 unknown 留给侧栏。提问已从历史消失时，只有历史仍是 unknown 才能回落到 working；历史已经 idle 则不得因进程还在强行亮绿。**v2 同理但证据形态不同**：v2 没有 part 表，执行中只认尾部 assistant 行的 `finish=tool-calls`（live 才 working）或无 finish 但有文本/工具的落盘中行；`finish=stop`/非空 error/用户尾一律 idle。v2 question 工具只有 completed/error 终态：completed + `state.metadata.answers` 为空才算未答等待（作答后落盘带 answers 数组；error=驳回/参数错不算等待），不能套 v1 的 pending/running 口径。

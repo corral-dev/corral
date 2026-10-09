@@ -4,4 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Mobile creation and delivery reliability | 发布中 | store/liveness; remote receipts/startup; tests; remote docs; release | 10:51 | 2026-10-09 11:30 | Python dev environment, Xcode; isolated tmux acceptance; console locked |
+| kh agent_sessions phase2 doc migration | 进行中 | docs/SESSION_SCANNING_KNOWLEDGE_BASE.md §2.2+§6 spans; docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md §6+§7-step8 spans; no code/tests | 11:37 | 2026-10-09 11:37 | coordinator-ordered doc migration to global session guide; foreign row untouched |
