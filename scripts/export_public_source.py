@@ -97,9 +97,17 @@ def normalize_ui_path(path: str) -> str:
 
 
 def is_ui_path(path: str) -> bool:
-    """Application UI source must only ever be copied byte-identically."""
+    """Public byte-identical paths: SwiftUI views, client shells, resources.
+
+    Only Shared/UI, Shared/Resources and the iOS/macOS Swift shells are
+    copy-only. Shared/Core stays transformable so an explicit recipe can
+    redact non-UI details (for example a hardcoded team access group) while
+    every other covered file keeps byte equality with the commit.
+    """
     candidate = normalize_ui_path(path)
-    if candidate == "Shared" or candidate.startswith("Shared/"):
+    if candidate == "Shared/UI" or candidate.startswith("Shared/UI/"):
+        return True
+    if candidate == "Shared/Resources" or candidate.startswith("Shared/Resources/"):
         return True
     if candidate.endswith(".swift") and (
         candidate.startswith("iOS/") or candidate.startswith("macOS/") or "/UI/" in candidate

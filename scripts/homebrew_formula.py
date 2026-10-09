@@ -33,6 +33,7 @@ Release 上传各平台预编译 wheel（macOS universal2 一个包通吃双架�
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 import pathlib
@@ -43,9 +44,12 @@ import urllib.request
 _SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
-import sesskit_dep
+# Path-dependent sibling import: importlib keeps the required sys.path setup
+# without tripping E402 (module import after runtime code). Name binding and
+# behavior are identical to a plain `import sesskit_dep`.
+sesskit_dep = importlib.import_module("sesskit_dep")
 
-DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code, Cursor, and Pi"
+DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Cursor, and Pi"
 
 # 纯 Python 运行时依赖（textual 及其传递依赖）。Homebrew 安装阶段禁止联网，
 # 每个依赖都要一个 resource 块（下载地址 + sha256）。依赖升级时同步改这里

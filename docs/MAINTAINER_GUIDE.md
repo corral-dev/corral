@@ -618,7 +618,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 ### Maintainer script diagnostic scope
 
-The supported Ruff gate checks `src` and `tests`. A wider manual `ruff check ... scripts` (2026-10-09) also reports E402 at `scripts/homebrew_formula.py`'s `sesskit_dep` import and `scripts/verify_clean_install.py`'s `sesskit_dep` import. Both deliberately insert their own script directory before importing the canonical pin helper so file-based loading from another working directory resolves it. This is a diagnostic of bootstrap ordering, not an observed runtime defect; the product gate is unchanged and no suppression is added. Their remaining import-path risk is bounded to maintainer tools and covered by formula/helper tests plus the real clean-install release gate. Reassess each import if the script-loading contract changes.
+The supported Ruff gate checks `src` and `tests`. A wider manual `ruff check ... scripts` (2026-10-09) reported two E402 diagnostics. `scripts/homebrew_formula.py` now loads the canonical pin helper with `importlib.import_module` after inserting its own script directory; formula/helper tests preserve file-based loading from another working directory. `scripts/verify_clean_install.py` retains the delayed `sesskit_dep` import because it deliberately inserts its own script directory first. That remaining diagnostic describes bootstrap ordering, not an observed runtime defect; no suppression is added. Its import-path risk is bounded to the maintainer tool and covered by the real clean-install release gate. Reassess the import if the script-loading contract changes.
 
 ### UI, terminal, and data acceptance
 

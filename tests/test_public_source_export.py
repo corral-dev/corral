@@ -258,35 +258,67 @@ class PrivacyTests(ExportHarness):
         result, output = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_ui_source_cannot_be_transformed(self):
-        ui_file = self.repo / "apple" / "Shared" / "Widget.swift"
+    def test_ui_and_resources_cannot_be_transformed(self):
+        ui_file = self.repo / "apple" / "Shared" / "UI" / "Widget.swift"
         ui_file.parent.mkdir(parents=True)
         ui_file.write_text("struct Widget {}\n")
+        resources = self.repo / "apple" / "Shared" / "Resources" / "strings.xcstrings"
+        resources.parent.mkdir(parents=True)
+        resources.write_text("{}\n")
         view = self.repo / "apple" / "iOS" / "SessionView.swift"
         view.parent.mkdir(parents=True)
         view.write_text("struct SessionView {}\n")
         (self.repo / "tool.py").write_text("tool\n")
         self.commit_all("base")
         recipe = self.root / "recipe.json"
+        for target, old in (
+            ("apple/Shared/UI/Widget.swift", "Widget"),
+            ("apple/Shared/Resources/strings.xcstrings", "{}"),
+            ("apple/iOS/SessionView.swift", "View"),
+        ):
+            recipe.write_text(
+                json.dumps({"replace": {target: {"replacements": [{"old": old, "new": "Changed"}]}}})
+            )
+            result, output = self.export(extra=("--recipe", str(recipe)))
+            self.assertEqual(result.returncode, 2, target)
+            self.assertFalse(output.exists())
+        recipe.write_text(json.dumps({"exclude": ["apple/Shared/UI/Widget.swift"]}))
+        result, output = self.export(output_name="public-excl", extra=("--recipe", str(recipe)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((output / "apple" / "Shared" / "UI" / "Widget.swift").exists())
+        self.assertEqual((output / "apple" / "iOS" / "SessionView.swift").read_text(), "struct SessionView {}\n")
+
+    def test_core_transform_allowed(self):
+        adapter = self.repo / "apple" / "Shared" / "Core" / "Store" / "HostKeychain.swift"
+        adapter.parent.mkdir(parents=True)
+        adapter.write_text('let group = "HARDCODED-TEAM-ACCESS-GROUP"\n')
+        (self.repo / "apple" / "Shared" / "UI" / "Widget.swift").parent.mkdir(parents=True)
+        (self.repo / "apple" / "Shared" / "UI" / "Widget.swift").write_text("struct Widget {}\n")
+        self.commit_all("base")
+        replacement = self.root / "public-adapter.swift"
+        replacement.write_text("let group = infoPlistSharedAccessGroup()\n")
+        recipe = self.root / "recipe.json"
         recipe.write_text(
-            json.dumps({"replace": {"apple/Shared/Widget.swift": {
-                "replacements": [{"old": "Widget", "new": "Gadget"}],
-            }}})
+            json.dumps(
+                {
+                    "replace": {
+                        "apple/Shared/Core/Store/HostKeychain.swift": {"replacement_file": "public-adapter.swift"}
+                    }
+                }
+            )
         )
         result, output = self.export(extra=("--recipe", str(recipe)))
-        self.assertEqual(result.returncode, 2)
-        self.assertFalse(output.exists())
-        recipe.write_text(
-            json.dumps({"replace": {"apple/iOS/SessionView.swift": {"replacements": [{"old": "View", "new": "Pane"}]}}})
-        )
-        result, output = self.export(output_name="public2", extra=("--recipe", str(recipe)))
-        self.assertEqual(result.returncode, 2)
-        self.assertFalse(output.exists())
-        recipe.write_text(json.dumps({"exclude": ["apple/Shared/Widget.swift"]}))
-        result, output = self.export(output_name="public3", extra=("--recipe", str(recipe)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((output / "apple" / "Shared" / "Widget.swift").exists())
-        self.assertEqual((output / "apple" / "iOS" / "SessionView.swift").read_text(), "struct SessionView {}\n")
+        self.assertEqual(
+            (output / "apple" / "Shared" / "Core" / "Store" / "HostKeychain.swift").read_text(),
+            "let group = infoPlistSharedAccessGroup()\n",
+        )
+        self.assertEqual((output / "apple" / "Shared" / "UI" / "Widget.swift").read_text(), "struct Widget {}\n")
+        receipt = self.receipt_of(result)
+        self.assertEqual(
+            receipt["transforms"],
+            {"apple/Shared/Core/Store/HostKeychain.swift": ["replacement_file"]},
+        )
 
 
 class ReceiptShapeTests(ExportHarness):

@@ -87,16 +87,22 @@ separately from the recipe.
 
 ## UI source is copy-only
 
-Application UI files may only be copied byte-identically, never transformed. A recipe replacement
-targeting them is rejected before any mutation:
+The following application paths may only be copied byte-identically, never transformed — a
+recipe replacement targeting them is rejected before any mutation:
 
-- anything under `Shared/` (also `apple/Shared/`),
-- `*.swift` under `iOS/` or `macOS/`,
-- `*.swift` with `/UI/` in the path.
+- SwiftUI views: anything under `Shared/` `UI` (also `apple/Shared/UI`), and any `*.swift`
+  path containing `/UI/`,
+- client shells: `*.swift` under `iOS/` or `macOS/`,
+- shared resources: anything under `Shared/Resources`.
 
-Excluding a UI file is allowed; editing one is not. Configuration, build scripts, developer docs
-and test fixtures may be redacted. There is no automatic private-IP global replacement: network
-behavior must only change through explicit per-path recipe entries.
+Excluding such a file is allowed; editing one is not. `Shared/Core` stays transformable so an
+explicit recipe can redact non-UI details while views, shells and resources keep byte equality
+with the commit: the audit flow replaces the Keychain adapter carrying the hardcoded team
+access group with a PUBLIC SNAPSHOT ONLY adapter that reads the build-expanded Info.plist
+shared access group (see the Apple `PUBLIC_BUILD_GUIDE`; private signing configuration and
+installed clients are unchanged). Configuration, build scripts, developer docs and test
+fixtures may likewise be redacted. There is no automatic private-IP global replacement:
+network behavior must only change through explicit per-path recipe entries.
 
 ## Privacy preflight
 
