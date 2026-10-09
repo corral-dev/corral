@@ -6,6 +6,7 @@ import io
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -39,6 +40,150 @@ class GitScanTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         projects.clear_filesystem_cache()
+
+    @contextmanager
+    def _forbid_scan_access(self, paths: list[Path]):
+        """Reject protected metadata, marker and enumeration access, not just results."""
+        forbidden = [str(path) for path in paths]
+        scandir = os.scandir
+        isdir = os.path.isdir
+        readlink = os.readlink
+        lstat = os.lstat
+        marker = projects._has_git_marker
+
+        def check(path):
+            text = os.fspath(path)
+            for parent in forbidden:
+                self.assertFalse(text == parent or text.startswith(parent + os.sep), text)
+
+        def checked_isdir(path):
+            check(path)
+            return isdir(path)
+
+        def checked_marker(path):
+            check(path)
+            return marker(path)
+
+        def checked_readlink(path, **kwargs):
+            check(path)
+            return readlink(path, **kwargs)
+
+        def checked_lstat(path, **kwargs):
+            check(path)
+            return lstat(path, **kwargs)
+
+        def checked_scandir(path):
+            check(path)
+            with scandir(path) as entries:
+                for entry in entries:
+                    wrapped = mock.Mock(wraps=entry)
+                    wrapped.name = entry.name
+                    wrapped.path = entry.path
+
+                    def checked_entry_isdir(*, follow_symlinks=True, item=entry):
+                        check(item.path)
+                        if follow_symlinks:
+                            check(os.path.realpath(item.path))
+                        return item.is_dir(follow_symlinks=follow_symlinks)
+
+                    wrapped.is_dir.side_effect = checked_entry_isdir
+                    yield wrapped
+
+        with (
+            mock.patch.object(projects.os, "scandir", side_effect=checked_scandir),
+            mock.patch.object(projects.os.path, "isdir", side_effect=checked_isdir),
+            mock.patch.object(projects.os, "readlink", side_effect=checked_readlink),
+            mock.patch.object(projects.os, "lstat", side_effect=checked_lstat),
+            mock.patch.object(projects, "_has_git_marker", side_effect=checked_marker),
+        ):
+            yield
+
+    def test_home_discovery_never_probes_personal_folders_or_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = _temp_root(td)
+            protected = [home / name for name in (
+                "Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", "Library",
+            )]
+            for index, path in enumerate(protected):
+                _touch_git(path / "PrivateRepo")
+                (home / f"alias{index}").symlink_to(path)
+            (home / "deep_alias").symlink_to(home / "Documents" / "PrivateRepo")
+            (home / "chain_alias").symlink_to("deep_alias")
+            workspace = home / "Codes" / "VisibleRepo"
+            _touch_git(workspace)
+            with mock.patch.dict(os.environ, {"HOME": str(home)}), self._forbid_scan_access(protected):
+                found = projects.scan_git_roots([str(home)], depth=4, use_cache=False)
+            self.assertEqual(found, [str(workspace)])
+
+    def test_safe_symlink_resolution_preserves_relative_parent_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = _temp_root(td)
+            _touch_git(root / "real" / "VisibleRepo")
+            (root / "links").mkdir()
+            (root / "links" / "relative").symlink_to("../real")
+            (root / "links" / "chain").symlink_to("relative/VisibleRepo/..")
+            found = projects.scan_git_roots([str(root / "links")], depth=4, use_cache=False)
+            self.assertEqual(found, [str(root / "real" / "VisibleRepo")])
+
+    def test_discovery_never_probes_media_packages_or_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = _temp_root(td)
+            packages = [root / name for name in (
+                "Family.photoslibrary", "Archive.PHOTOLIBRARY", "Collection.musiclibrary",
+            )]
+            for index, package in enumerate(packages):
+                _touch_git(package / "Internals")
+                (root / f"alias{index}").symlink_to(package)
+            _touch_git(root / "VisibleRepo")
+            with self._forbid_scan_access(packages):
+                found = projects.scan_git_roots([str(root)], depth=4, use_cache=False)
+                for package in packages:
+                    self.assertEqual(projects.scan_git_roots([str(package)], use_cache=False), [])
+                    self.assertEqual(
+                        projects.scan_git_roots([str(package / "Internals")], use_cache=False), [],
+                    )
+                self.assertEqual(projects.scan_git_roots([str(root / "alias0")], use_cache=False), [])
+            self.assertEqual(found, [str(root / "VisibleRepo")])
+
+    def test_configured_personal_project_root_is_explicit_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = _temp_root(td)
+            selected = home / "Documents" / "Projects"
+            _touch_git(selected / "VisibleRepo")
+            package = selected / "Family.photoslibrary"
+            _touch_git(package / "Internals")
+            other = home / "Downloads"
+            _touch_git(other / "PrivateRepo")
+            with (
+                mock.patch.dict(os.environ, {"HOME": str(home), "CORRAL_PROJECT_ROOTS": str(selected)}),
+                self._forbid_scan_access([package, other]),
+            ):
+                found = projects.scan_git_roots(use_cache=False)
+            self.assertEqual(found, [str(selected / "VisibleRepo")])
+
+    def test_personal_session_cwd_survives_without_filesystem_probes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = _temp_root(td)
+            personal = home / "Documents"
+            known = personal / "KnownRepo"
+            _touch_git(known)
+            with mock.patch.dict(os.environ, {"HOME": str(home)}), self._forbid_scan_access([personal]):
+                found = projects.discover([str(known)], roots=[str(home)], use_cache=False)
+            self.assertEqual([project.path for project in found], [str(known)])
+            self.assertEqual(found[0].sources, frozenset({"session"}))
+
+    def test_implicit_scan_prunes_macos_volumes_before_metadata(self) -> None:
+        entry = mock.Mock(name="volume")
+        entry.name = "Volumes"
+        entry.path = "/Volumes"
+        with (
+            mock.patch.object(projects.sys, "platform", "darwin"),
+            mock.patch.object(projects.os, "scandir", return_value=[entry]),
+            mock.patch.object(projects, "_has_git_marker", return_value=False) as marker,
+        ):
+            projects._scan_one_root("/", 1, [], False, {})
+        entry.is_dir.assert_not_called()
+        marker.assert_called_once_with("/")
 
     def test_scan_finds_git_roots_and_skips_nested(self) -> None:
         with tempfile.TemporaryDirectory() as td:

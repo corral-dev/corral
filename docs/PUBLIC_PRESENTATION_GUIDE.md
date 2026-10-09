@@ -1,5 +1,15 @@
 # Public presentation
 
+## GitHub organization and publication boundary
+
+Owner decision (2026-10-09): group Corral's existing CLI, Apple-client and relay repositories under the `corral-dev` GitHub organization and publish the currently private components. Keep `corral-dev/corral` as the primary product entry, `corral-dev/corral-apple` for the iPhone and Mac clients together, and `corral-dev/corral-relay` for self-hosting. SessKit remains an independent upstream project. The owner created the Free organization; active administrator membership was verified before repository transfer.
+
+Publication must avoid disclosing credentials, personal paths, device identifiers, private infrastructure or private planning documents. Inspect tracked content, images, generated archives and reachable Git history before publication. Apple and relay publication starts from a sanitized current-source history; their original private history stays private. Do not push private tags, branches or maintainer-only artifacts to the public repositories. Preserve the adopted licenses: CLI MIT, Apple GPL-3.0 and relay AGPL-3.0, with contributor agreements for Apple and relay and a separate name/icon policy.
+
+Title generation requires an explicitly configured gateway URL and virtual key. Public source has no fleet endpoint fallback. With either value missing, no catalog or completion request is made; local titles and accepted cached titles remain available. Preserve existing maintainer configuration outside the repository before removing any baked-in endpoint.
+
+Repository migration must preserve the existing CLI repository through GitHub Transfer, update release/install/update references and verify public clone, install and cross-component documentation routes. Public clients default to LAN access and user-configured self-hosted relays; maintainer service endpoints and signing credentials remain outside public source.
+
 ## Product identity
 
 Owner decision (2026-10-01, supersedes the plain cream-yellow background): use the independently refined Floral 04 identity as Corral's unified brand mark. It combines the approved forest-green and warm-yellow cowboy hat with a cream-yellow background covered by dense small scalloped flowers in pale sage and golden yellow. Preserve the accepted refinement's full composition, hat geometry, palette and flower scale; do not reuse the old solid-background optical shift. Synchronize the production master, both README languages, social preview, relay presentation and iOS app icon. The former arrow, horse and blue-background unicorn identities remain retired.

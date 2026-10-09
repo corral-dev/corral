@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import json
 import os
@@ -16,6 +15,7 @@ from dataclasses import dataclass
 # 这里不再重复设置：本模块的 `from corral import ...` 一定先执行包初始化。
 from corral import agent_api, cursor_observer, embed, keepalive, observe, titles, updater
 from corral import theme as theme_mod
+from corral.cli_help import build_main_parser, build_update_parser
 from corral.i18n import t
 from corral.legacy_names import getenv, pop_env, setenv_primary
 from corral.models import LaunchPlan, LaunchRequest, NewSessionRequest
@@ -420,6 +420,7 @@ def main() -> None:
 
     # `corral update`：手动触发客户端自动更新，不放进只读的 agent_api。
     if len(sys.argv) > 1 and sys.argv[1] == "update":
+        build_update_parser().parse_args(sys.argv[2:])
         sys.exit(updater.cli_update())
 
     # `corral claude …` / `corral codex …`（可选前置 --no-keepalive）是直启透传子命令，同样整体
@@ -433,28 +434,7 @@ def main() -> None:
         _dispatch_direct_launch(_direct_launch_argv, _direct_launch_registry)
         return
 
-    parser = argparse.ArgumentParser(
-        description=t("cli.help.description"),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=t("cli.help.epilog"),
-    )
-    parser.add_argument("--limit", type=int, default=50, help=t("cli.help.limit"))
-    parser.add_argument("--json", action="store_true", dest="json_mode",
-                        help=t("cli.help.json"))
-    parser.add_argument("--no-input", action="store_true", dest="no_input",
-                        help=t("cli.help.no_input"))
-    parser.add_argument("--no-keepalive", action="store_true", dest="no_keepalive",
-                        help=t("cli.help.no_keepalive"))
-    parser.add_argument("--no-color", action="store_true", dest="no_color",
-                        help=t("cli.help.no_color"))
-    parser.add_argument("-d", "--debug", "--verbose", action="store_true", dest="debug",
-                        help=t("cli.help.debug"))
-    parser.add_argument("-q", "--quiet", action="store_true", dest="quiet",
-                        help=t("cli.help.quiet"))
-    parser.add_argument("--version", "-V", "-v", action="store_true", dest="show_version",
-                        help=t("cli.help.version"))
-    parser.add_argument("--generate-titles", action="store_true", dest="generate_titles",
-                        help=argparse.SUPPRESS)  # 内部用途：TUI 拉起的后台标题生成进程
+    parser = build_main_parser()
     args = parser.parse_args()
 
     # 通用 CLI 开关先于任何输出和 TUI 导入生效；quiet 与 debug 同时出现时以 quiet 为准。

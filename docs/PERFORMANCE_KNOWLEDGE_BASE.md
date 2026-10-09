@@ -1,5 +1,9 @@
 # corral 性能知识库
 
+## Lightweight help and cache binding
+
+Help and version queries must not import SessKit parsers or initialize the history cache bridge. The package initializer previously called `_wire_sesskit_cache()` unconditionally, which pulled SessKit's parser package into every command despite the lightweight bootstrap. Keep the binding function available, but invoke it from `corral.scan` package initialization, immediately before the Corral scanner aliases are used. This preserves Corral's cache provider for real scans while keeping help independent of session parsing. Verify both a fresh help process without parser imports and scanner initialization with the existing cache provider attached.
+
 ## 什么时候读
 
 改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、**侧边栏列表重建与分屏加格**、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 corral 卡、自身占用却不高」「corral 内新开任何助手都慢、外面直接启动秒开」「新开会话要等半分钟 / 内存被托管会话占满 / swap 爆 / 整机 load 两百多」「自身 CPU 占用过高 / 风扇狂转 / 两个窗口特别吃 CPU」「Cursor 进程过多 / 活动监视器一堆 agent / cursor-agent」「同类会话管理 / 内嵌终端 TUI 的性能坑」「打开大历史第一次解析整份 JSONL / 详情把通道堵住」时也读**（见「系统高负载下的调度优先级」、「托管子进程被限流」、「Slow new sessions / laggy UI = machine out of memory」、「自身占用过高」与「同类应用踩坑地图」）。**性能优化动手前先做一轮外部调研**（同类 TUI / 终端工具的公开优化经验），再结合本地计时拆解，不要只靠本地 profile 闭门造车（机主 2026-08-17 纠正；本地计时的做法见「新开分屏（加格）链路」节）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。

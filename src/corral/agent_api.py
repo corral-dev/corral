@@ -969,7 +969,7 @@ COMMANDS = [
         "help": "结构化列出已注册运行时的会话",
         "risk": "read",
         "args": [
-            {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / kimi / cursor）"}},
+            {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / cursor / pi）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
@@ -983,7 +983,7 @@ COMMANDS = [
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
         ],
         "fields": {
-            "runtime": "运行时标识（claude / codex / opencode / kimi / cursor）",
+            "runtime": "运行时标识（claude / codex / opencode / cursor / pi）",
             "id": "会话完整 ID",
             "short_id": "会话短 ID（前 8 位）",
             "title": "会话标题（缓存的生成标题或本地兜底标题，不触发新生成）",
@@ -1074,7 +1074,7 @@ COMMANDS = [
         "args": [
             {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：2026-07-20 / '2026-07-20 15:30' / 7d、24h、30m（距今）/ Unix 时间戳；省略则不设下界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since；只给日期时按当天 23:59:59 计；省略则不设上界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
-            {"flags": ["--runtime"], "kwargs": {"help": "只导出指定运行时（claude / codex / opencode / kimi / cursor）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            {"flags": ["--runtime"], "kwargs": {"help": "只导出指定运行时（claude / codex / opencode / cursor / pi）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档

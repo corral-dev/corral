@@ -3,7 +3,7 @@
 Config file (optional): ``~/.config/corral/llm-gateway.json``
 
 Keys:
-- ``base_url`` — OpenAI-compatible root (default ``http://10.10.10.2:18081/v1``)
+- ``base_url`` — explicitly configured OpenAI-compatible root
 - ``api_key`` — gateway virtual key (required for generation; never logged)
 - ``model`` — optional gateway alias override; when omitted the live
   ``/v1/models`` catalog is queried and ``budget-chat`` is preferred when present
@@ -27,7 +27,7 @@ ENV_GATEWAY_URL = "CORRAL_LLM_GATEWAY_URL"
 ENV_GATEWAY_KEY = "CORRAL_LLM_GATEWAY_KEY"
 ENV_MODEL = "CORRAL_TITLE_MODEL"
 ENV_CONFIG = "CORRAL_LLM_GATEWAY_CONFIG"
-DEFAULT_GATEWAY_URL = "http://10.10.10.2:18081/v1"
+DEFAULT_GATEWAY_URL = ""
 DEFAULT_CONFIG_PATH = Path("~/.config/corral/llm-gateway.json").expanduser()
 PREFERRED_MODEL_ALIAS = "budget-chat"
 _MODEL_CATALOG_TTL_SECONDS = 60.0
@@ -128,9 +128,9 @@ class TitleGenerator(ABC):
     executable = ""
 
     def is_available(self) -> bool:
-        # A virtual key is required to call the gateway. The model alias can be
-        # resolved from the live catalog at request time.
-        return gateway_key() is not None
+        # Both the destination and virtual key must be explicitly configured.
+        # The model alias can be resolved from the live catalog at request time.
+        return bool(gateway_url()) and gateway_key() is not None
 
     @abstractmethod
     def generate(self, prompt: str, timeout: int) -> str | None:
@@ -141,6 +141,8 @@ class GatewayTitleGenerator(TitleGenerator):
     """Submit one bounded request to the shared gateway."""
 
     def generate(self, prompt: str, timeout: int) -> str | None:
+        if not self.is_available():
+            return None
         key = gateway_key()
         model = title_model()
         if not key or not model:

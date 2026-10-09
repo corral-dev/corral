@@ -176,8 +176,19 @@ class GatewayTitleGeneratorTests(unittest.TestCase):
         with self._env(), mock.patch.dict(os.environ, {titlegen.ENV_MODEL: "default-chat"}, clear=False):
             self.assertEqual(titlegen.title_model(), "default-chat")
 
-    def test_default_gateway_url_targets_fleet(self) -> None:
-        self.assertEqual(titlegen.DEFAULT_GATEWAY_URL, "http://10.10.10.2:18081/v1")
+    def test_missing_url_with_key_makes_no_request(self) -> None:
+        for model in (None, "budget-chat"):
+            config = {"api_key": "vk-test"}
+            if model:
+                config["model"] = model
+            Path(self.config.name).write_text(json.dumps(config), encoding="utf-8")
+            with self.subTest(model=model), self._env(), mock.patch.object(
+                titlegen.urllib.request, "urlopen"
+            ) as request:
+                self.assertEqual(titlegen.available_generators(), ())
+                self.assertFalse(titlegen.GatewayTitleGenerator().is_available())
+                self.assertIsNone(titlegen.GatewayTitleGenerator().generate("prompt", 1))
+                request.assert_not_called()
 
 
 if __name__ == "__main__":

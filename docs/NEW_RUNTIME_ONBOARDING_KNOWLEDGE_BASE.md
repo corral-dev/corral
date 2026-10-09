@@ -188,7 +188,7 @@ sequenceDiagram
 - **观察（2026-09-29，未修；2026-09-30 机主决定暂不跟进 Kimi，SessKit 也不再做 Kimi 新适配）**：Kimi Code 2.1.1 在 Corral 保活 tmux 里启动时提示 `tmux extended-keys is off. Modified Enter keys may not work`——保活配置（`keepalive.py` 生成的 `keepalive.tmux.conf`）没有开 `extended-keys`，托管 Kimi 里 Shift+Enter 之类带修饰键的回车可能不生效。改配置前先确认对其它助手与内嵌终端转发的影响（见 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`）。另：不带 Corral 配置的裸 tmux 里，Kimi 的信任确认框收不到回车，实验时要用保活配置启动。
 - 【消歧】「同助手恢复」与「跨助手接力」不是同一能力：前者复用原会话 ID 与原生命令，后者启动全新目标会话并给出源历史位置；不能为了统一命令外观把后者伪装成恢复。
 - **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉要让占位 ident 与真实会话身份可精确对齐；Pi 在默认项目目录内可用 `--session-id`，否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 或 mtime 把新进程猜到同目录历史。**Pi 的 per-session `--session-dir` / `PI_CODING_AGENT_SESSION_DIR` 隔离已于 2026-08-26 裁定废弃**：它会破坏 `/resume`，并让 subagent 抢走主 pane；新运行时接入不得复制这条历史做法，见 [Pi 会话身份扩展设计](design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md)（扫描如何消费 claim 见 [会话扫描知识库 §2.2.1](SESSION_SCANNING_KNOWLEDGE_BASE.md#221-扫描如何消费托管身份症状入口仍走这里)）。不要为了消掉 Pi 新建时的 `Warning: No project session found with id '…'` 去掉 `--session-id`；恢复旧会话则用找不到即失败的 `--session`。
-- **AI 易错点**【必须】实现 `delete_session` 前先判定该助手历史的存储形态：共享存储的删除约束见全局 [Agent Session Integration Guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#session-deletion-in-shared-stores)（先查 `SessionInfo.path` 的真实含义，再选受支持的删除操作或显式不支持；本地示例：同一助手的多条会话若 `path` 指向同一个文件——如 OpenCode 的 `opencode.db`——就是共享存储，不得直接删文件）。
+- **AI pitfall** [Required] Before implementing `delete_session`, determine the storage shape: see global [Agent Session Integration Guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#session-deletion-in-shared-stores). Local binding: `SessionInfo.path` is the inspection lead (a shared path suggests shared storage; not sole proof of ownership). Local example: OpenCode's `opencode.db` is a shared store.
 
 ## §7 验证路径
 
@@ -228,7 +228,7 @@ sequenceDiagram
    - Kimi：工作区/会话目录与协议事件流，接力到目标时可能只能非交互运行；
    - Cursor：CLI 历史目录与按需 SQLite 预览，恢复命令为 `agent --resume`。
 
-8. **删除能力验证（若实现了 `delete_session`）**：删除不可恢复，验证一律用临时构造的假会话（见全局受支持删除操作与幸存者断言口径），不要碰真实历史。至少覆盖：调用受支持的删除操作后该会话确实移除（文件删除 / 目录整体删除 / 存储对应行删除按该运行时的受支持形态）；共享存储的助手额外断言删除后**其他会话仍能正常扫描且内容未变**（防止误删连带其他会话）；未实现 `delete_session` 时终端界面按 `x` 应提示「尚未支持删除会话」而不是崩溃。
+8. **Delete-capability verification (only if `delete_session` is implemented)**: verification per global [Agent Session Integration Guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#session-deletion-in-shared-stores); never touch real histories. When `delete_session` is not implemented, terminal `x` must report "尚未支持删除会话" (delete not supported) instead of crashing.
 
 ## §8 关联文档
 

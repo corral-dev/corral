@@ -33,6 +33,18 @@ def _migrate_pi_history() -> None:
 
 def main() -> None:
     argv = sys.argv[1:]
+    # Runtime help after --no-keepalive belongs to the runtime passthrough route.
+    runtime_passthrough = (
+        argv[:1] == ["--no-keepalive"] and len(argv) > 1 and not argv[1].startswith("-")
+    )
+    if (
+        argv and argv[0].startswith("-") and not runtime_passthrough
+        and any(arg in {"--help", "-h"} for arg in argv)
+    ):
+        from corral.cli_help import build_main_parser
+
+        build_main_parser().parse_args(argv)
+        return
     if argv and argv[0] in {"--version", "-V", "-v"}:
         _fast_version()
         return
@@ -45,6 +57,9 @@ def main() -> None:
 
         raise SystemExit(dispatch(argv))
     if argv[:1] == ["update"]:
+        from corral.cli_help import build_update_parser
+
+        build_update_parser().parse_args(argv[1:])
         from corral.updater import cli_update
 
         raise SystemExit(cli_update())
@@ -56,12 +71,16 @@ def main() -> None:
     if argv and argv[0] in {"login", "logout", "whoami"}:
         from corral.remote.cli import main as remote_main
 
-        raise SystemExit(remote_main(argv))
+        raise SystemExit(remote_main(argv, prog="corral"))
     if argv[:1] == ["shim"]:
         # 命令拦截的安装/卸载/检查只读写 shell 配置，不碰扫描器、Textual 和 tmux。
         from corral.shim import cli_main as shim_main
 
         raise SystemExit(shim_main(argv[1:]))
+    if argv[:1] == ["observer"]:
+        from corral.cursor_observer import cli_main as observer_main
+
+        raise SystemExit(observer_main(argv[1:]))
     # 命令拦截默认关闭：只有用户显式 `corral shim install` 才写 shell 配置。
     # 交互启动仍可补齐旧 Pi 历史；Agent 只读接口、管道和版本查询不碰迁移。
     if sys.stdin.isatty() and sys.stdout.isatty():

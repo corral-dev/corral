@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import os
 import sys
@@ -147,6 +148,9 @@ HARD_SKIP_DIR_NAMES = frozenset({
     "build",
 })
 
+_PERSONAL_HOME_DIRS = ("Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", "Library")
+_DATA_PACKAGE_SUFFIXES = (".photoslibrary", ".photolibrary", ".musiclibrary")
+
 _SOURCE_SESSION = "session"
 _SOURCE_FILESYSTEM = "filesystem"
 
@@ -213,6 +217,63 @@ def _realpath(path: str) -> str:
         return os.path.normpath(path)
 
 
+def _is_data_package(path: str) -> bool:
+    return any(part.lower().endswith(_DATA_PACKAGE_SUFFIXES) for part in path.split(os.sep))
+
+
+def _within_path(path: str, parent: str) -> bool:
+    if sys.platform == "darwin":
+        path, parent = path.casefold(), parent.casefold()
+    return path == parent or path.startswith(parent + os.sep)
+
+
+def _protected_scan_paths(root: str) -> tuple[str, ...]:
+    # Construct exclusions without inspecting protected directories. A selected
+    # root inside one is explicit scope; scanning its ancestor is not.
+    home = _realpath(os.path.expanduser("~"))
+    protected = [os.path.join(home, name) for name in _PERSONAL_HOME_DIRS]
+    if sys.platform == "darwin":
+        protected.append("/Volumes")
+    return tuple(path for path in protected if not _within_path(root, path))
+
+
+def _skip_scan_path(path: str, protected: tuple[str, ...]) -> bool:
+    return _is_data_package(path) or any(_within_path(path, parent) for parent in protected)
+
+
+def _resolve_scan_path(path: str, protected: tuple[str, ...]) -> str | None:
+    # Like POSIX realpath, resolve components and relative symlink targets in
+    # order. Unlike realpath, stop before any syscall inside a pruned subtree.
+    absolute = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    pending = absolute.split(os.sep)[::-1]
+    resolved = os.sep
+    links = 0
+    while pending:
+        part = pending.pop()
+        if not part or part == ".":
+            continue
+        if part == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        candidate = os.path.join(resolved, part)
+        if _skip_scan_path(candidate, protected):
+            return None
+        try:
+            target = os.readlink(candidate)
+        except OSError as exc:
+            if exc.errno != errno.EINVAL:
+                return None
+            resolved = candidate
+            continue
+        links += 1
+        if links > 40:
+            return None
+        if os.path.isabs(target):
+            resolved = os.sep
+        pending.extend(target.split(os.sep)[::-1])
+    return resolved
+
+
 def _should_skip_dir(name: str, abs_path: str, extra_excludes: list[str]) -> bool:
     if name in HARD_SKIP_DIR_NAMES:
         return True
@@ -257,9 +318,11 @@ def scan_git_roots(
 
     seen: dict[str, None] = {}
     for root in root_list:
-        if not root:
+        if not root or _is_data_package(root):
             continue
-        root_clean = _realpath(root)
+        root_clean = _resolve_scan_path(root, ())
+        if root_clean is None:
+            continue
         if not os.path.isdir(root_clean):
             continue
         _scan_one_root(root_clean, max_depth, excludes, allow_nested, seen)
@@ -289,6 +352,7 @@ def _scan_one_root(
 
     visited: set[str] = {_realpath(root)}
     stack: list[tuple[str, int]] = [(root, 0)]
+    protected = _protected_scan_paths(root)
 
     while stack:
         dirpath, depth = stack.pop()
@@ -299,14 +363,25 @@ def _scan_one_root(
         except OSError:
             continue
         for entry in entries:
+            # Prune before is_dir(follow_symlinks=True) or .git probes: even a
+            # metadata check through a symlink can trigger a privacy prompt.
+            if _should_skip_dir(entry.name, entry.path, extra_excludes):
+                continue
+            if _skip_scan_path(entry.path, protected):
+                continue
             try:
-                if not entry.is_dir(follow_symlinks=True):
+                linked = entry.is_symlink()
+                if not linked and not entry.is_dir(follow_symlinks=False):
                     continue
             except OSError:
                 continue
-            if _should_skip_dir(entry.name, entry.path, extra_excludes):
+            child = _resolve_scan_path(entry.path, protected) if linked else entry.path
+            if child is None:
                 continue
-            child = _realpath(entry.path)
+            if _should_skip_dir(os.path.basename(child), child, extra_excludes):
+                continue
+            if linked and not os.path.isdir(child):
+                continue
             if child in visited:
                 continue
             visited.add(child)

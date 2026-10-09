@@ -936,37 +936,45 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # 远程 CLI 给人看的输出（argparse / print / _fail）
     "remote.cli.description": {
         "en": (
-            "Connect this development machine to your phone: view sessions, live screens, "
+            "Pair Apple clients with this development machine: view sessions, live screens, "
             "send messages, start new sessions, and hand off.\n"
-            "The machine connects out to the relay — no open ports, public IP, or VPN required."
+            "LAN access is the default. For access across networks, configure your own relay."
         ),
         "zh": (
-            "把这台开发机接到手机上：手机能看会话、看实时画面、发消息、新建和接力。\n"
-            "开发机主动往外连中继，不需要开端口、不需要公网 IP、不需要 VPN。"
+            "将 Apple 客户端与开发机配对：查看会话和实时画面、发消息、新建和接力。\n"
+            "默认走局域网直连；跨网络连接需配置你自己的中继。"
         ),
     },
     "remote.cli.epilog": {
         "en": (
             "Common flow:\n"
-            "  corral login               # sign in to the public relay (GitHub device flow)\n"
-            "  corral remote on           # turn the phone handoff service on (background)\n"
-            "  corral remote pair         # print a pairing QR code\n"
+            "  corral remote on           # enable remote access in the background\n"
+            "  corral remote pair         # start service if needed and print a pairing QR code\n"
             "  corral remote pair --readonly  # read-only pairing (no input/delete)\n"
             "  corral remote status       # check whether it is on\n"
             "  corral remote rename NAME  # rename this machine's display name\n"
             "  corral remote rotate-key   # rotate the relay registration key\n"
             "  corral remote off          # turn it off\n"
+            "\n"
+            "Self-hosted relay (optional):\n"
+            "  corral remote on --relay-url wss://relay.example.com\n"
+            "  corral login --relay-url wss://relay.example.com  # multi-tenant login only\n"
+            "Use corral remote <command> --help for options, including --json and --dry-run.\n"
         ),
         "zh": (
             "常用流程：\n"
-            "  corral login               # 登录公共中继（GitHub 设备码）\n"
-            "  corral remote on           # 打开手机接力服务（后台常驻）\n"
-            "  corral remote pair         # 打出配对二维码\n"
+            "  corral remote on           # 打开远程连接（后台常驻）\n"
+            "  corral remote pair         # 必要时打开服务，再显示配对二维码\n"
             "  corral remote pair --readonly  # 只读配对（不能输入/删改）\n"
             "  corral remote status       # 看看开着没有\n"
             "  corral remote rename 名字   # 改这台开发机的显示名\n"
             "  corral remote rotate-key   # 轮换中继注册密钥\n"
             "  corral remote off          # 关掉\n"
+            "\n"
+            "自建中继（可选）：\n"
+            "  corral remote on --relay-url wss://relay.example.com\n"
+            "  corral login --relay-url wss://relay.example.com  # 仅多租户中继需要登录\n"
+            "用 corral remote <命令> --help 查看选项，包括 --json 和 --dry-run。\n"
         ),
     },
     "remote.help.on": {
@@ -1042,8 +1050,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "轮换中继 Ed25519 注册密钥",
     },
     "remote.help.login": {
-        "en": "Sign in to the public relay with GitHub (device code)",
-        "zh": "用 GitHub 设备码登录公共中继",
+        "en": "Sign in to your own multi-tenant relay with GitHub (device code)",
+        "zh": "用 GitHub 设备码登录你自己的多租户中继",
     },
     "remote.help.logout": {
         "en": "Forget the saved relay account credential",
@@ -1627,73 +1635,113 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "cli.help.description": {
         "en": (
-            "corral: a terminal session handoff tool.\n"
-            "List recent Claude Code / Codex / OpenCode / Kimi Code / Cursor sessions, "
-            "then resume natively or hand off across runtimes.\n"
-            "Starts an interactive TUI (Textual) by default and needs a real terminal; "
-            "falls back to JSON when it is not a real terminal.\n"
-            "For structured queries from LLM agents, use the list/search/show/context/describe subcommands."
+            "Browse, resume and hand off Claude Code, Codex, OpenCode, Cursor and Pi sessions.\n"
+            "With no command, opens the terminal UI; without a terminal, prints a legacy JSON list."
         ),
         "zh": (
-            "corral：终端会话接力工具。\n"
-            "列出 Claude Code / Codex / OpenCode / Kimi Code / Cursor 最近的会话，选择后原生恢复或跨运行时接力。\n"
-            "默认启动交互式 TUI（Textual），需要真实终端；非真实终端自动退化为 JSON。\n"
-            "大模型 Agent 结构化查询请用 list/search/show/context/describe 子命令。"
+            "查看、恢复和接力 Claude Code、Codex、OpenCode、Cursor 与 Pi 会话。\n"
+            "不带命令时打开终端界面；非终端环境输出兼容保留的 JSON 列表。"
         ),
     },
     "cli.help.epilog": {
         "en": (
-            "Examples:\n"
-            "  corral                 # Start the TUI, pick a session interactively, and take over the terminal\n"
-            "  corral --json          # Print a JSON session list and exit without starting the TUI (legacy format)\n"
-            "  corral --json --limit 5  # JSON mode, at most 5 sessions per runtime\n"
-            "  corral describe        # Show usage for list/search/show/context and other subcommands\n"
-            "  corral shim status     # Inspect/install command intercept "
-            "so typing claude/codex/… is routed through corral\n"
+            "Session data (read-only JSON):\n"
+            "  list                 List sessions; --limit scans per runtime, --top limits results\n"
+            "  search WORDS         Search sessions; --deep includes full conversations\n"
+            "  show SESSION         Read a conversation; --full for all messages\n"
+            "  export               Export conversations by time range\n"
+            "  share SESSION        Export a transcript with thinking and tool calls\n"
+            "  context SESSION      Build a handoff context package\n"
+            "  plan continue        Build a continuation plan without executing it\n"
+            "  describe [COMMAND]   Describe session-data arguments and output fields\n"
             "\n"
-            "JSON output fields:\n"
-            "  runtime        Runtime id (claude / codex / opencode / kimi / cursor)\n"
-            "  id             Session ID\n"
-            "  title          Session title (local fallback; does not call AI)\n"
-            "  cwd            Original session working directory\n"
-            "  time           Last update time (human-readable)\n"
-            "  mtime          Last update time (Unix timestamp)\n"
-            "  size_kb        History file size (KB)\n"
-            "  status         Session status (done / awaiting reply / interrupted)\n"
-            "  resume_command Full shell command to resume this session (can be run as-is)\n"
-            "  history_path   History file path (JSONL for Claude/Codex/Kimi; SQLite database for OpenCode)\n"
+            "Launch assistants:\n"
+            "  claude / codex / opencode / cursor / pi\n"
+            "    No arguments: launch in the current directory. PROJECT: match a known project.\n"
+            "    Flags are passed to the assistant; Cursor aliases: agent, cursor-agent.\n"
+            "    Put --no-keepalive before the assistant to disable tmux hosting.\n"
+            "\n"
+            "Remote access:\n"
+            "  remote               Pair Apple clients; manage service, devices and relay settings\n"
+            "  login / logout / whoami   Manage an account on your own multi-tenant relay\n"
+            "\n"
+            "Maintenance:\n"
+            "  shim                 Install, remove or inspect opt-in shell command interception\n"
+            "  observer             Inspect, install or remove Cursor state hooks\n"
+            "  cache                Inspect, prune or clear derived caches\n"
+            "  diagnose             Read local diagnostics without opening the UI\n"
+            "  update               Update the installed CLI\n"
+            "\n"
+            "Examples:\n"
+            "  corral list --runtime pi --limit 100 --top 5 --compact\n"
+            "  corral search authentication --deep --top 5\n"
+            "  corral show codex:SESSION_ID --full\n"
+            "  corral claude PROJECT\n"
+            "  corral remote pair          # starts remote access if needed, then prints a QR code\n"
+            "  corral remote status\n"
+            "  corral shim status\n"
+            "\n"
+            "Use corral <command> --help for command options (assistant help is passed through).\n"
+            "Use corral remote --help for on/off, pairing, devices and self-hosted relay setup.\n"
+            "Default-mode options above do not apply to every subcommand.\n"
         ),
         "zh": (
-            "示例：\n"
-            "  corral                 # 启动 TUI，交互式选择并接管终端\n"
-            "  corral --json          # 输出 JSON 会话列表后退出，不启动 TUI（旧格式）\n"
-            "  corral --json --limit 5  # JSON 模式，每个运行时最多 5 条\n"
-            "  corral describe        # 查看 list/search/show/context 等子命令的用法\n"
-            "  corral shim status     # 查看/安装命令拦截：敲 claude/codex 等原命令自动走 corral\n"
+            "会话数据（只读 JSON）：\n"
+            "  list                 列出会话；--limit 是每个运行时的扫描深度，--top 是返回条数\n"
+            "  search 关键词        搜索会话；--deep 包含完整对话\n"
+            "  show 会话            读取对话；--full 显示全部消息\n"
+            "  export               按时间范围导出对话\n"
+            "  share 会话           导出含思考与工具调用的 transcript\n"
+            "  context 会话         生成接力上下文数据包\n"
+            "  plan continue        生成续接计划，不执行\n"
+            "  describe [命令]      查看会话数据接口的参数和输出字段\n"
             "\n"
-            "JSON 输出字段说明：\n"
-            "  runtime        运行时标识（claude / codex / opencode / kimi / cursor）\n"
-            "  id             会话 ID\n"
-            "  title          会话标题（本地临时兜底，不调用 AI）\n"
-            "  cwd            原会话工作目录\n"
-            "  time           最后更新时间（人类可读）\n"
-            "  mtime          最后更新时间（Unix 时间戳）\n"
-            "  size_kb        历史文件大小（KB）\n"
-            "  status         会话状态（已完成 / 待回复 / 已中断）\n"
-            "  resume_command 恢复该会话的完整 shell 命令（可直接执行）\n"
-            "  history_path   历史文件路径（Claude/Codex/Kimi 为 JSONL；OpenCode 为 SQLite 数据库）\n"
+            "启动助手：\n"
+            "  claude / codex / opencode / cursor / pi\n"
+            "    不带参数：在当前目录启动。项目名：匹配已知项目后启动。\n"
+            "    选项透传给助手；Cursor 别名：agent、cursor-agent。\n"
+            "    --no-keepalive 放在助手名前可关闭 tmux 托管。\n"
+            "\n"
+            "远程连接：\n"
+            "  remote               配对 Apple 客户端；管理服务、设备和中继设置\n"
+            "  login / logout / whoami   管理你自己部署的多租户中继账号\n"
+            "\n"
+            "维护：\n"
+            "  shim                 安装、移除或检查需主动开启的 shell 命令拦截\n"
+            "  observer             检查、安装或移除 Cursor 状态观察钩子\n"
+            "  cache                查看、整理或清空派生缓存\n"
+            "  diagnose             读取本地诊断信息，不打开界面\n"
+            "  update               更新已安装的 CLI\n"
+            "\n"
+            "示例：\n"
+            "  corral list --runtime pi --limit 100 --top 5 --compact\n"
+            "  corral search authentication --deep --top 5\n"
+            "  corral show codex:SESSION_ID --full\n"
+            "  corral claude 项目名\n"
+            "  corral remote pair          # 必要时打开远程服务，再显示二维码\n"
+            "  corral remote status\n"
+            "  corral shim status\n"
+            "\n"
+            "用 corral <命令> --help 查看参数（助手帮助会透传给助手）。\n"
+            "用 corral remote --help 查看开关、配对、设备和自建中继用法。\n"
+            "上方默认模式的选项并非适用于所有子命令。\n"
         ),
+    },
+    "cli.help.update_description": {
+        "en": "Check for a newer release and update the installed Corral CLI using its install channel.",
+        "zh": "检查新版本，并通过当前安装渠道更新 Corral CLI。",
+    },
+    "cli.help.update_epilog": {
+        "en": "Run corral update to check and install. Source checkouts are updated through Git.",
+        "zh": "运行 corral update 检查并安装更新。源码检出请通过 Git 更新。",
     },
     "cli.help.limit": {
-        "en": "Maximum number of sessions to list per source",
-        "zh": "每个来源最多列出多少条",
+        "en": "Maximum sessions scanned per runtime in default mode (default: 50)",
+        "zh": "默认模式中每个运行时的会话扫描上限（默认 50）",
     },
     "cli.help.json": {
-        "en": (
-            "Print the session list as JSON and exit without starting the TUI "
-            "(legacy flat array; new integrations should use `corral list`)"
-        ),
-        "zh": "以 JSON 格式输出会话列表后退出，不启动 TUI（兼容保留的扁平数组；新集成请用 `corral list`）",
+        "en": "Print the legacy JSON session array; use corral list for structured queries",
+        "zh": "输出兼容保留的 JSON 会话数组；结构化查询请用 corral list",
     },
     "cli.json.legacy_hint": {
         "en": (
@@ -1707,8 +1755,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "禁用交互并输出 JSON 会话列表，适合脚本和 Agent 调用",
     },
     "cli.help.no_keepalive": {
-        "en": "Do not wrap this launch in background keepalive (tmux); the session ends if SSH disconnects",
-        "zh": "本次启动不把会话包进后台保活（tmux），SSH 断开会话会跟着中断",
+        "en": "Disable tmux hosting for this launch (also before an assistant command)",
+        "zh": "关闭本次启动的 tmux 托管（也可放在助手命令前）",
     },
     "cli.help.no_color": {
         "en": "Disable color output; you can also set the NO_COLOR environment variable",
@@ -1719,12 +1767,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "启用详细诊断日志，也可设置 CORRAL_DEBUG=1",
     },
     "cli.help.quiet": {
-        "en": "Hide non-essential startup hints and diagnostic output",
-        "zh": "隐藏非必要的启动提示和诊断输出",
+        "en": "Hide non-essential terminal UI startup hints and debug output",
+        "zh": "隐藏非必要的终端界面启动提示与调试输出",
     },
     "cli.help.version": {
-        "en": "Show version, install path, and channel, then exit",
-        "zh": "显示版本、安装路径与渠道后退出",
+        "en": "Show version, package path and Python interpreter, then exit",
+        "zh": "显示版本、包路径与 Python 解释器后退出",
     },
     # 开发机报给手机的错误（ActionError / ValueError / RuntimeError 人话）
     "remote.err.session_gone": {

@@ -1027,9 +1027,9 @@ def _add_service_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, include_internal: bool = False, prog: str = "corral remote") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="corral remote",
+        prog=prog,
         description=t("remote.cli.description"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=t("remote.cli.epilog"),
@@ -1053,8 +1053,9 @@ def build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     stop.set_defaults(func=_cmd_off)
 
-    serve = sub.add_parser("_serve", help=argparse.SUPPRESS)
-    serve.set_defaults(func=_cmd_serve)
+    if include_internal:
+        serve = sub.add_parser("_serve")
+        serve.set_defaults(func=_cmd_serve)
 
     pair = sub.add_parser("pair", help=t("remote.help.pair"))
     pair.add_argument(
@@ -1103,8 +1104,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str]) -> int:
-    parser = build_parser()
+def main(argv: list[str], *, prog: str = "corral remote") -> int:
+    parser = build_parser(
+        include_internal=argv[:1] == ["_serve"],
+        prog=prog,
+    )
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         parser.print_help()
