@@ -2193,6 +2193,82 @@ class SessionHub:
         if submit and not embed.send_key(name, "Enter"):
             raise PartialInjectionError(t("remote.err.inject_partial"))
 
+    def delivery_binding(self, key: str) -> str:
+        """Serialize old and canonical keys that address the same terminal."""
+        if shell_terminal.is_shell_key(key):
+            return key
+        session = self.require_session(key)
+        return str(session.get("keepalive_name") or self.resolve_session_key(key))
+
+    def prepare_text_delivery(self, key: str, deadline: float) -> tuple[str, int, int, str]:
+        """Capture native evidence before dispatch; empty panes must first draw a composer.
+
+        Screen markers are only a conservative startup guard. Delivery is proven
+        separately by normalized history, never by a quiet screen or prompt.
+        """
+        if shell_terminal.is_shell_key(key):
+            return ("shell", 0, 0, "")
+        name = self._keepalive_name(key, resume_if_needed=True)
+        session = self.require_session(key)
+        if session.get("provisional"):
+            runtime = str(session.get("source") or "")
+            markers = {
+                "codex": ("›",), "claude": ("❯",),
+                "opencode": ("Ask anything",), "cursor": ("→", "->"),
+            }.get(runtime)
+            stable_since = time.monotonic()
+            last = ""
+            while time.monotonic() < deadline - 1.0:
+                if embed.pane_liveness(name) == "dead":
+                    report = embed.take_exit_report(name)
+                    detail = embed.exit_summary(report) if report else t("remote.err.session_gone")
+                    raise ActionError("unavailable", t("remote.err.launch_failed", error=detail))
+                plain = _plain_pane_text(embed.capture(name, 0, 0))
+                if plain != last:
+                    last, stable_since = plain, time.monotonic()
+                ready = any(marker in plain for marker in markers) if markers else bool(plain.strip())
+                if ready and time.monotonic() - stable_since >= _RESUME_SETTLE_QUIET:
+                    break
+                time.sleep(_TURN_READY_POLL)
+            else:
+                raise ActionError("unavailable", t("remote.err.startup_not_ready"))
+        if time.monotonic() >= deadline:
+            raise ActionError("unavailable", t("remote.err.delivery_not_started"))
+        transcript = self._ensure_transcript(self.require_session(key))
+        return (
+            transcript.path, transcript.generation,
+            max((m.seq for m in transcript.messages), default=0), name,
+        )
+
+    def confirm_text_delivery(
+        self, key: str, text: str, baseline: tuple[str, int, int, str], deadline: float,
+    ) -> None:
+        """Require a new native user record; never resend an uncertain instruction."""
+        path, generation, newest, original_name = baseline
+        if path == "shell":
+            return
+        expected = text.replace("\r\n", "\n").strip()
+        while True:
+            session = self.store.find_session(self.resolve_session_key(key))
+            if session:
+                transcript = self._ensure_transcript(session)
+                # A pre-existing transcript reset cannot prove a new submission.
+                compatible = not path or (transcript.path == path and transcript.generation == generation)
+                if compatible and any(
+                    m.seq > newest and m.role == "user"
+                    and m.text.replace("\r\n", "\n").strip() == expected
+                    for m in transcript.messages
+                ):
+                    return
+            name = str((session or {}).get("keepalive_name") or original_name)
+            if name and embed.pane_liveness(name) == "dead":
+                report = embed.take_exit_report(name)
+                detail = embed.exit_summary(report) if report else ""
+                raise PartialInjectionError(t("remote.err.native_unconfirmed", detail=detail))
+            if self._stop.is_set() or time.monotonic() >= deadline:
+                raise PartialInjectionError(t("remote.err.native_unconfirmed", detail=""))
+            time.sleep(_TURN_READY_POLL)
+
     def send_text(self, key: str, text: str, submit: bool = True) -> None:
         """把一段文本送进会话。
 

@@ -1831,6 +1831,31 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Input may have been partially delivered; outcome is unknown",
         "zh": "输入可能只送进了一部分，结果不确定",
     },
+    "remote.err.delivery_busy": {
+        "en": "The previous input is still being confirmed. Wait for its outcome before sending again.",
+        "zh": "上一条输入仍在确认中，请等结果明确后再发送。",
+    },
+    "remote.err.delivery_not_started": {
+        "en": "Input was not sent before the request expired. Please try again.",
+        "zh": "请求到期前输入没有发出，请重试。",
+    },
+    "remote.err.startup_not_ready": {
+        "en": "The assistant has not finished starting. Your input was not sent; please try again when it is ready.",
+        "zh": "助手尚未启动完成，输入没有发出；请等启动完成后重试。",
+    },
+    "remote.err.native_unconfirmed": {
+        "en": "Input reached the terminal, but the assistant has not confirmed it. "
+        "Check the conversation before resending. {detail}",
+        "zh": "输入已送进终端，但助手尚未确认收到。请先查看会话再决定是否重发。{detail}",
+    },
+    "remote.err.device_revoked": {
+        "en": "This device no longer has permission to send input.",
+        "zh": "这台设备已没有发送输入的权限。",
+    },
+    "remote.err.creation_unknown": {
+        "en": "The session may have been created. Check the session list before starting another one.",
+        "zh": "会话可能已经创建，请先查看会话列表再决定是否另建。",
+    },
     "remote.err.inject_transient": {
         "en": "Could not deliver input to the session ({detail}); nothing was restarted, safe to retry",
         "zh": "没能把输入送进会话（{detail}）；没有重启任何东西，可以重试",

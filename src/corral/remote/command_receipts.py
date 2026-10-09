@@ -60,6 +60,10 @@ def digest_for_text(*, key: str, text: str, submit: bool) -> str:
     return canonical_digest({"m": "input.text", "key": key, "text": text, "submit": bool(submit)})
 
 
+def digest_for_creation(*, runtime: str, cwd: str | None) -> str:
+    return canonical_digest({"m": "session.new", "runtime": runtime, "cwd": cwd or ""})
+
+
 def digest_for_keys(*, key: str, keys: list[str]) -> str:
     return canonical_digest({"m": "input.keys", "key": key, "keys": list(keys)})
 
@@ -100,6 +104,7 @@ class Receipt:
     created_at: float = 0.0
     updated_at: float = 0.0
     accepted_host_run_id: str = ""
+    result: dict[str, Any] | None = None
 
     def to_wire(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -114,6 +119,8 @@ class Receipt:
             out["message"] = self.detail
         if self.retryable is not None:
             out["retryable"] = self.retryable
+        if self.result is not None:
+            out["result"] = self.result
         return out
 
     def to_record(self) -> dict[str, Any]:
@@ -133,6 +140,7 @@ class Receipt:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "accepted_host_run_id": self.accepted_host_run_id or self.host_run_id,
+            "result": self.result,
         }
 
     @classmethod
@@ -153,6 +161,7 @@ class Receipt:
             created_at=float(raw.get("created_at") or 0.0),
             updated_at=float(raw.get("updated_at") or 0.0),
             accepted_host_run_id=str(raw.get("accepted_host_run_id") or raw.get("host_run_id") or ""),
+            result=raw.get("result") if isinstance(raw.get("result"), dict) else None,
         )
 
 
@@ -380,11 +389,12 @@ class CommandReceiptStore:
             self._write(receipt)
             return receipt
 
-    def mark_delivered(self, receipt: Receipt) -> Receipt:
+    def mark_delivered(self, receipt: Receipt, *, result: dict | None = None) -> Receipt:
         with self._lock:
             if receipt.status in (STATUS_REJECTED, STATUS_UNKNOWN, STATUS_DELIVERED):
                 return receipt
             receipt.status = STATUS_DELIVERED
+            receipt.result = result
             receipt.reason = None
             receipt.retryable = None
             receipt.host_run_id = self.host_run_id

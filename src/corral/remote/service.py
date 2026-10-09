@@ -30,6 +30,7 @@ from corral.remote.command_receipts import (
     MAX_LEASE_SEC,
     STATUS_DISPATCHING,
     CommandReceiptStore,
+    digest_for_creation,
     digest_for_image,
     digest_for_keys,
     digest_for_text,
@@ -258,6 +259,9 @@ class RemoteService:
         self._data_binds: dict[str, _DataBind] = {}
         self.host_run_id = new_host_run_id()
         self.receipts = CommandReceiptStore(self.host_run_id)
+        self._input_slots = threading.BoundedSemaphore(32)
+        self._input_targets: set[str] = set()
+        self._input_lock = threading.Lock()
 
     # -- 状态同步 ---------------------------------------------------------
 
@@ -773,6 +777,7 @@ class RemoteService:
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
+                protocol.CAPABILITY_SESSION_CREATE_RECEIPTS: True,
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
                 protocol.CAPABILITY_USER_PROMPTS: True,
@@ -1047,6 +1052,9 @@ class RemoteService:
             self.hub.send_text(key, text, submit)
             return {"ok": True}
         digest = digest_for_text(key=key, text=text, submit=submit)
+        prepare = getattr(self.hub, "prepare_text_delivery", None)
+        confirm = getattr(self.hub, "confirm_text_delivery", None)
+        track_native = bool(text.strip() and submit and callable(prepare) and callable(confirm))
         return self._run_receipted_input(
             connection,
             params,
@@ -1054,6 +1062,9 @@ class RemoteService:
             target_key=key,
             digest=digest,
             side_effect=lambda: self.hub.send_text(key, text, submit),
+            prepare=(lambda deadline: prepare(key, deadline)) if track_native else None,
+            confirm=(lambda baseline, deadline: confirm(key, text, baseline, deadline))
+            if track_native else None,
         )
 
     def _input_keys(self, connection: Connection, params: dict):
@@ -1149,6 +1160,8 @@ class RemoteService:
         target_key: str,
         digest: str,
         side_effect,
+        prepare=None,
+        confirm=None,
     ) -> dict:
         command_id = str(params.get("command_id") or "").strip()
         if not command_id:
@@ -1179,12 +1192,86 @@ class RemoteService:
             raise ActionError(protocol.E_USAGE, str(exc)) from exc
         if not is_new:
             return receipt.to_wire()
+        if prepare is not None:
+            binding = getattr(self.hub, "delivery_binding", None)
+            try:
+                active_target = binding(canonical_key) if callable(binding) else canonical_key
+            except ActionError as exc:
+                return self.receipts.mark_rejected(
+                    receipt, reason=exc.code, retryable=False, detail=_receipt_detail(exc.message),
+                ).to_wire()
+            with self._input_lock:
+                admitted = active_target not in self._input_targets and self._input_slots.acquire(False)
+                if admitted:
+                    self._input_targets.add(active_target)
+            if not admitted:
+                return self.receipts.mark_rejected(
+                    receipt, reason="busy", retryable=True,
+                    detail=t("remote.err.delivery_busy"),
+                ).to_wire()
+
+            def execute() -> None:
+                try:
+                    baseline = prepare(receipt.lease_expires_mono)
+                    state = self.refresh_state()
+                    if not any(
+                        d.public_key == connection.device_public_key and d.access == "full"
+                        for d in state.devices
+                    ):
+                        raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_revoked"))
+                    self._dispatch_receipted_input(
+                        connection, receipt, method, target_key, side_effect,
+                        confirm=lambda: confirm(baseline, receipt.lease_expires_mono),
+                    )
+                except ActionError as exc:
+                    self.receipts.mark_rejected(
+                        receipt, reason=exc.code, retryable=True, detail=_receipt_detail(exc.message),
+                    )
+                except Exception:
+                    if receipt.status == STATUS_DISPATCHING:
+                        self.receipts.mark_unknown(
+                            receipt, reason="ambiguous", detail=t("remote.err.native_unconfirmed", detail=""),
+                        )
+                    else:
+                        self.receipts.mark_rejected(
+                            receipt, reason="preflight_failed", retryable=True,
+                            detail=t("remote.err.delivery_not_started"),
+                        )
+                finally:
+                    with self._input_lock:
+                        self._input_targets.discard(active_target)
+                        self._input_slots.release()
+
+            pending_wire = receipt.to_wire()
+            try:
+                threading.Thread(target=execute, name="corral-input-confirmation", daemon=True).start()
+            except RuntimeError:
+                with self._input_lock:
+                    self._input_targets.discard(active_target)
+                    self._input_slots.release()
+                return self.receipts.mark_rejected(
+                    receipt, reason="worker_unavailable", retryable=True,
+                    detail=t("remote.err.delivery_not_started"),
+                ).to_wire()
+            return pending_wire
+        return self._dispatch_receipted_input(connection, receipt, method, target_key, side_effect)
+
+    def _dispatch_receipted_input(
+        self, connection, receipt, method, target_key, side_effect, *, confirm=None,
+    ) -> dict:
         receipt = self.receipts.mark_dispatching(receipt)
         if receipt.status != STATUS_DISPATCHING:
+            if receipt.reason == "lease_expired":
+                receipt = self.receipts.mark_rejected(
+                    receipt, reason="lease_expired", retryable=False,
+                    detail=t("remote.err.delivery_not_started"),
+                )
             return receipt.to_wire()
         started_mono = time.perf_counter()
         try:
             side_effect()
+            if confirm is not None:
+                confirm()
         except PartialInjectionError as exc:
             # Paste may have landed; Enter (or a later step) did not — do not claim delivered.
             receipt = self.receipts.mark_unknown(
@@ -1246,15 +1333,43 @@ class RemoteService:
         return {"ok": True}
 
     def _session_new(self, connection: Connection, params: dict):
-        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.new_session_rate_limited"))
         runtime = str(params.get("runtime") or "").strip()
         if not runtime:
             raise ActionError(protocol.E_USAGE, t("remote.err.pick_assistant"))
         cwd = params.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise ActionError(protocol.E_USAGE, t("remote.err.bad_project_path"))
-        return {"session": self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)}
+        command_id = str(params.get("command_id") or "").strip()
+        if not command_id:
+            if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+                raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.new_session_rate_limited"))
+            return {"session": self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)}
+        receipt, is_new = self.receipts.begin(
+            device_key=connection.device_public_key, command_id=command_id,
+            payload_digest=digest_for_creation(runtime=runtime, cwd=cwd),
+            target_key="", method=protocol.M_SESSION_NEW,
+        )
+        if is_new:
+            if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+                receipt = self.receipts.mark_rejected(
+                    receipt, reason="rate_limited", retryable=True,
+                    detail=t("remote.err.new_session_rate_limited"),
+                )
+            else:
+                receipt = self.receipts.mark_dispatching(receipt)
+                if receipt.status == STATUS_DISPATCHING:
+                    try:
+                        session = self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)
+                        receipt = self.receipts.mark_delivered(receipt, result={"session": session})
+                    except ActionError as exc:
+                        receipt = self.receipts.mark_rejected(
+                            receipt, reason=exc.code, retryable=True, detail=_receipt_detail(exc.message),
+                        )
+                    except Exception:
+                        receipt = self.receipts.mark_unknown(
+                            receipt, reason="creation_unconfirmed", detail=t("remote.err.creation_unknown"),
+                        )
+        return {**receipt.to_wire(), **(receipt.result or {})}
 
     def _session_resume(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):

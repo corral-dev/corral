@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -361,9 +363,13 @@ class CommandReceiptWireTests(unittest.TestCase):
 
         connection = self._pair_with_receipts()
         real_hub = SessionHub(on_event=lambda *_: None)
+        real_hub.store.register_hosted_session(
+            runtime_id="codex", ident="abc", keepalive_name="fake-pane", title="fixture", cwd=None,
+        )
         self.service.hub = real_hub  # type: ignore[assignment]
         with (
             mock.patch.object(real_hub, "_keepalive_name", return_value="fake-pane"),
+            mock.patch.object(real_hub, "prepare_text_delivery", return_value=("", 0, 0)),
             mock.patch(
                 "corral.embed.subprocess.run",
                 side_effect=OSError("injection failed"),
@@ -379,6 +385,13 @@ class CommandReceiptWireTests(unittest.TestCase):
                     "command_id": "cmd-oserr",
                 },
             )
+            deadline = time.monotonic() + 2
+            while self.service.receipts.status(connection.device_public_key, "cmd-oserr")["status"] in (
+                "accepted", "dispatching",
+            ):
+                self.assertLess(time.monotonic(), deadline)
+                threading.Event().wait(.01)
+            reply["d"] = self.service.receipts.status(connection.device_public_key, "cmd-oserr")
         self.assertTrue(reply["ok"])
         self.assertNotEqual(reply["d"]["status"], STATUS_DELIVERED)
         self.assertIn(reply["d"]["status"], (STATUS_REJECTED, STATUS_UNKNOWN))
@@ -393,6 +406,9 @@ class CommandReceiptWireTests(unittest.TestCase):
 
         connection = self._pair_with_receipts()
         real_hub = SessionHub(on_event=lambda *_: None)
+        real_hub.store.register_hosted_session(
+            runtime_id="codex", ident="abc", keepalive_name="fake-pane", title="fixture", cwd=None,
+        )
         self.service.hub = real_hub  # type: ignore[assignment]
 
         def _run(argv, **_kwargs):
@@ -406,6 +422,7 @@ class CommandReceiptWireTests(unittest.TestCase):
 
         with (
             mock.patch.object(real_hub, "_keepalive_name", return_value="fake-pane"),
+            mock.patch.object(real_hub, "prepare_text_delivery", return_value=("", 0, 0)),
             mock.patch("corral.embed.subprocess.run", side_effect=_run),
             mock.patch("corral.remote.sessions.time.sleep", return_value=None),
             mock.patch("corral.embed._active_channel", return_value=None),
@@ -420,6 +437,13 @@ class CommandReceiptWireTests(unittest.TestCase):
                     "command_id": "cmd-partial",
                 },
             )
+            deadline = time.monotonic() + 2
+            while self.service.receipts.status(connection.device_public_key, "cmd-partial")["status"] in (
+                "accepted", "dispatching",
+            ):
+                self.assertLess(time.monotonic(), deadline)
+                threading.Event().wait(.01)
+            reply["d"] = self.service.receipts.status(connection.device_public_key, "cmd-partial")
         self.assertTrue(reply["ok"])
         self.assertEqual(reply["d"]["status"], STATUS_UNKNOWN)
         self.assertEqual(reply["d"]["reason"], "partial_injection")

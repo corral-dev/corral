@@ -686,9 +686,21 @@ class SessionStore:
             with liveness.tmux_list_wave():
                 hosts = liveness.list_managed_hosts()
                 names = {str(host.get("name") or "") for host in hosts}
+                by_name = {str(host.get("name") or ""): host for host in hosts}
                 for session in hot:
                     name = session.get("keepalive_name")
-                    if not name or session.get("provisional") or name in names:
+                    if session.get("provisional") and name:
+                        host = by_name.get(str(name))
+                        if host and host.get("created_at"):
+                            self._set_provisional_time(session, float(host["created_at"]))
+                        elif not host:
+                            from corral import embed
+
+                            if embed.pane_liveness(str(name)) == "dead":
+                                with self.lock:
+                                    self._drop_provisional(session_key(session), session)
+                        continue
+                    if not name or name in names:
                         continue
                     # An empty listing may be a tmux timeout under load; trust it
                     # only for sessions whose own process is already gone.
@@ -1004,6 +1016,7 @@ class SessionStore:
                 title=t("session.title.new", name=display),
                 cwd=host.get("cwd"),
                 ident=ident,
+                created_at=host.get("created_at") or 0.0,
             )
             claimed.add(name)
 
@@ -1055,13 +1068,12 @@ class SessionStore:
                 self._provisional.pop(key, None)
                 self.hosted.pop(key, None)
                 continue
-            if key not in self.hosted and not liveness.is_alive(str(name)):
-                # Only drop a placeholder when this window is no longer hosting
-                # it *and* tmux confirmed the pane is gone. A has-session
-                # timeout while the user is looking at another session must
-                # not turn a just-opened live session into Ended preview.
-                self._provisional.pop(key, None)
-                self.hosted.pop(key, None)
+            from corral import embed
+
+            if embed.pane_liveness(str(name)) == "dead":
+                # A local mapping is ownership, not proof that the child lives.
+                # Probe uncertainty must preserve the card.
+                self._drop_provisional(key, provisional)
                 continue
             runtime_id = str(provisional.get("source") or "")
             bucket = self.sessions.setdefault(runtime_id, [])
@@ -1605,6 +1617,7 @@ class SessionStore:
         title: str,
         cwd: str | None,
         ident: str | None = None,
+        created_at: float | None = None,
     ) -> dict:
         """跨运行时接力 / 空白新建：在扫描出真实历史前插入「运行中(托管)」占位卡。
 
@@ -1615,7 +1628,7 @@ class SessionStore:
         from corral.scan.common import shorten_cwd
 
         session_id = ident or keepalive_name.rsplit("-", 1)[-1]
-        now = time.time()
+        now = time.time() if created_at is None else created_at
         cwd_text = str(cwd or "").strip()
         session = {
             "source": runtime_id,
@@ -1666,6 +1679,34 @@ class SessionStore:
             self.generating.discard(key)
             self.attention_states[key] = attention_state
         return session
+
+    @staticmethod
+    def _set_provisional_time(session: dict, created_at: float) -> None:
+        from corral.models import format_message_time
+
+        session.update(
+            mtime=created_at, event_time=created_at, file_mtime=created_at,
+            display_time=format_message_time(created_at), time_source="provisional",
+        )
+
+    def _drop_provisional(self, key: str, session: dict) -> None:
+        """Drop a derived empty card, never native history. Caller holds self.lock."""
+        self._provisional.pop(key, None)
+        self.hosted.pop(key, None)
+        runtime = str(session.get("source") or "")
+        self.sessions[runtime] = [
+            item for item in self.sessions.get(runtime, [])
+            if session_key(item) != key or not item.get("provisional")
+        ]
+        if not any(session_key(item) == key for item in self.sessions[runtime]):
+            self._order = [item for item in self._order if item != key]
+            self.display_titles.pop(key, None)
+            self.generating.discard(key)
+            self.conversations.pop(key, None)
+            self.attention_states.pop(key, None)
+            self._cursor_attention_signatures.pop(key, None)
+            self._attention_evidence_cache.pop(key, None)
+            self._projects = None
 
     def mark_hosted(self, key: str, name: str | None) -> dict | None:
         """原子登记/清除托管会话，并同步更新当前扫描快照中的展示字段。

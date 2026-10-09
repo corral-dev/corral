@@ -4,3 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| Mobile creation and delivery reliability | 发布中 | store/liveness; remote receipts/startup; tests; remote docs; release | 10:51 | 2026-10-09 11:30 | Python dev environment, Xcode; isolated tmux acceptance; console locked |

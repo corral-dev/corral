@@ -225,7 +225,9 @@ def list_managed_hosts() -> list[dict]:
     if os.environ.get("CORRAL_ISOLATE_MANAGED_HOSTS") == "1":
         return []
     hosts: list[dict] = []
-    for row in _list_tmux_sessions("#{session_name}|#{pane_pid}|#{pane_current_path}"):
+    for row in _list_tmux_sessions(
+        "#{session_name}|#{pane_pid}|#{pane_current_path}|#{session_created}"
+    ):
         if not row:
             continue
         name = row[0]
@@ -240,6 +242,10 @@ def list_managed_hosts() -> list[dict]:
             except ValueError:
                 pane_pid = None
         cwd = row[2].strip() if len(row) > 2 and row[2] else ""
+        try:
+            created_at = float(row[3]) if len(row) > 3 else None
+        except ValueError:
+            created_at = None
         hosts.append(
             {
                 "name": name,
@@ -247,6 +253,7 @@ def list_managed_hosts() -> list[dict]:
                 "ident": ident,
                 "cwd": cwd or None,
                 "pane_pid": pane_pid,
+                "created_at": created_at,
             }
         )
     return hosts

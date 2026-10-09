@@ -197,6 +197,7 @@ CAPABILITY_PLANES = [PLANE_CONTROL, PLANE_DATA]
 DATA_BIND_TTL_SEC = 120              # data_bind 最长存活秒数；一次性且绑定设备公钥
 # Durable input receipts (Slice A). Host advertises; client opts in with want_command_receipts.
 CAPABILITY_COMMAND_RECEIPTS = "command_receipts"
+CAPABILITY_SESSION_CREATE_RECEIPTS = "session_create_receipts"
 # History wire omits tool bodies; client fetches via session.toolDetail when needed.
 CAPABILITY_TOOL_DETAIL = "tool_detail"
 # Host supports per-device completion/abort notification prefs via push.register.

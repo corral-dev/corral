@@ -3742,6 +3742,7 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertNotIn("claude:s0", store._force_ended)
         self.assertFalse(store.find_session("claude:s0").get("live"))
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_register_hosted_session_survives_refresh_until_real_session_claims(self) -> None:
         """跨运行时接力占位卡：磁盘尚无历史时重扫不能抹掉；真实会话挂上同名托管后退役。"""
         cursor_runtime = mock.Mock()
@@ -3788,6 +3789,7 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIsNotNone(store.find_session("cursor:real-uuid"))
         self.assertNotIn(key, store._provisional)
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_foreign_tmux_host_is_adopted_as_interactive_provisional(self) -> None:
         """Other-process hosted panes (phone remote) must appear interactive before history.
 
@@ -3855,6 +3857,7 @@ class TuiLayoutTests(unittest.TestCase):
                 store.refresh()
         self.assertIsNone(store.find_session("claude:0badf00d"))
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_foreign_adopted_provisional_retires_onto_real_history(self) -> None:
         """Adopted remote provisional must retire when formal history appears."""
         cursor_runtime = mock.Mock()
@@ -3901,6 +3904,7 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertEqual(real_card.get("keepalive_name"), "corral-cursor-cafebabe")
         self.assertTrue(real_card.get("live"))
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_cursor_fresh_listed_session_retires_provisional_without_duplicate(self) -> None:
         """正式 Cursor 历史先于占位卡进列表时，仍须退役占位，避免侧栏双卡。
 
@@ -3971,6 +3975,7 @@ class TuiLayoutTests(unittest.TestCase):
         # 同目录更早的旧卡不得被误认领。
         self.assertIsNone(store.find_session("cursor:old-uuid").get("keepalive_name"))
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_pi_unique_newcomer_retires_provisional_instead_of_duplicating(self) -> None:
         """Pi 落盘 uuid 与占位 ident 不同、又没 pid 可 annotate 时，同 cwd 唯一新卡应退役占位。
 
@@ -4016,6 +4021,7 @@ class TuiLayoutTests(unittest.TestCase):
             "corral-pi-abcd1234",
         )
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_pi_two_newcomers_same_cwd_do_not_cross_claim(self) -> None:
         """同目录两个新建 Pi 同时落盘时不能靠 cwd 猜，否则分屏两格会串台。"""
         pi_runtime = mock.Mock()
@@ -4064,6 +4070,7 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIsNone(store.find_session("pi:uuid-a").get("keepalive_name"))
         self.assertIsNone(store.find_session("pi:uuid-b").get("keepalive_name"))
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_pi_session_dir_newcomers_claim_without_crossing(self) -> None:
         """同 cwd 两个占位卡按 corral-<ident> 目录各领各的真实卡，不再因两条新卡放弃。"""
         from corral.runtime.host_extension import hosted_session_dir
@@ -4122,6 +4129,7 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertEqual(claimed_a.get("keepalive_name"), "corral-pi-aaa11111")
         self.assertEqual(claimed_b.get("keepalive_name"), "corral-pi-bbb22222")
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "alive")
     def test_pi_same_ident_after_session_id_does_not_duplicate(self) -> None:
         """`--session-id` 让落盘 id 与占位 ident 相同时，只留一张卡。"""
         pi_runtime = mock.Mock()
@@ -4190,6 +4198,7 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertEqual(store.find_session("claude:s1").get("keepalive_name"), "corral-claude-s1")
         self.assertEqual(store.hosted.get("claude:s1"), "corral-claude-s1")
 
+    @mock.patch("corral.embed.pane_liveness", new=lambda _: "unknown")
     def test_refresh_keeps_provisional_when_hosted_even_if_is_alive_false(self) -> None:
         """刚开的占位卡：探活假阴性不得在切走期间把卡退役成已结束。"""
         cursor_runtime = mock.Mock()
