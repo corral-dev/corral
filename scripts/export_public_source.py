@@ -314,7 +314,11 @@ def load_transforms(
         entries = recipe.get(key, [])
         if not isinstance(entries, list) or any(not isinstance(item, str) for item in entries):
             raise fail_usage(f"recipe '{key}' must be an array of strings")
-    return exclusions, transforms, check_forbidden_entries(recipe.get("forbidden_strings", []), "recipe forbidden_strings")
+    return (
+        exclusions,
+        transforms,
+        check_forbidden_entries(recipe.get("forbidden_strings", []), "recipe forbidden_strings"),
+    )
 
 
 def apply_transforms(data: bytes, path: str, spec: dict) -> tuple[bytes, list[str]]:

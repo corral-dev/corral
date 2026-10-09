@@ -1,5 +1,7 @@
 # Task routing
 
+- [Public source export](PUBLIC_SOURCE_EXPORT_GUIDE.md): Committed-snapshot export, private recipes, privacy checks, copy-only UI source and receipts for sanitized public repositories.
+
 
 - [docs/DEVELOPMENT_ENVIRONMENT_GUIDE.md](DEVELOPMENT_ENVIRONMENT_GUIDE.md): Development/runtime readiness via `scripts/dev_env.py` (`doctor`/`check`/`prepare`/`run`, `--repo` required, `--json` envelope, `--dry-run` for `prepare`/`run`); native `uv lock --check`, `--locked` sync, and pinned SessKit handoff.
 - [docs/TEST_ENVIRONMENT_GUIDE.md](TEST_ENVIRONMENT_GUIDE.md): Isolated acceptance via `scripts/acceptance.py` (`--json`, read-only `--dry-run`, unique `corral-accept` socket, real tmux capture with enforced close-scroll assertions); focused probe only, never a replacement for the full suite, `selftest.sh`, or clean-install checks.

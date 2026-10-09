@@ -5,11 +5,11 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>Run all your coding agents from one terminal — and pick them up from your phone.</strong></p>
-<p align="center">Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Pi side by side. They keep running when you step away, and you can see which one is waiting for you.</p>
+<p align="center">Claude Code, Codex, Cursor, OpenCode, and Pi side by side. They keep running when you step away, and you can see which one is waiting for you.</p>
 
 <p align="center">
-  <a href="https://github.com/x0c/corral/releases/latest"><img src="https://img.shields.io/github/v/release/x0c/corral" alt="Latest release"></a>
-  <a href="https://github.com/x0c/corral/actions/workflows/test.yml"><img src="https://github.com/x0c/corral/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="Latest release"></a>
+  <a href="https://github.com/corral-dev/corral/actions/workflows/test.yml"><img src="https://github.com/corral-dev/corral/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -22,12 +22,13 @@
   <img src="docs/screenshots/list.png" alt="Corral sidebar with Claude Code, Codex, and other coding-agent sessions next to a conversation preview" width="100%">
 </p>
 
-## Three parts
+## Components
 
 | Part | What it does | Status |
 | --- | --- | --- |
-| **Terminal app** | Run, watch, and switch between all your coding agents in one terminal. | Available — install below |
-| **iPhone and Mac app** | Follow your agents and answer them away from the terminal. | iPhone: in development, no public download · Mac: planned |
+| **[Terminal app](https://github.com/corral-dev/corral)** | Run, watch, and switch between all your coding agents in one terminal. | Available — install below |
+| **[iPhone and Mac app](https://github.com/corral-dev/corral-apple)** | Follow your agents and answer them away from the terminal. | Open-source beta · self-build with Xcode |
+| **[Relay](https://github.com/corral-dev/corral-relay)** | Connect your host and clients across networks. | Self-hosted · AGPL-3.0 |
 | **Corral Ideas** | Jot loose ideas on one local page; a coordinating agent turns them into tasks and hands them to coding agents. | Planned |
 
 ## Install
@@ -47,7 +48,7 @@ Use the full tap name: `brew install corral` installs an unrelated project. Home
 Install **Python 3.10+** and **tmux 3.2+**, then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash
 corral
 ```
 
@@ -63,7 +64,7 @@ Install and sign in to at least one supported coding assistant separately. Corra
 - **Work side by side.** Open up to four sessions together, group related work, and pin what matters.
 - **Keep agents running.** Hosted sessions keep going after you close Corral or disconnect SSH, as long as the host stays awake.
 - **Hand work to another assistant.** Pass a task with its conversation history to a new session in a different assistant — for example, Claude implements and Codex reviews.
-- **Continue from your phone.** Read replies, send a follow-up, or answer a question away from your desk. The iPhone app is still in development; see below.
+- **Continue from your phone.** Read replies, send a follow-up, or answer a question away from your desk. Self-build the Apple client; see below.
 - **Find past conversations.** Search what you said across every assistant's history, or filter by project and title.
 
 ## Start using it
@@ -74,7 +75,7 @@ Press `Ctrl+N` to start something new. From your shell you can also choose the a
 
 ```bash
 corral claude
-# Also: corral codex | corral opencode | corral kimi | corral cursor | corral pi
+# Also: corral codex | corral opencode | corral cursor | corral pi
 ```
 
 Select two to four sessions with `Space`, then press `Enter` to open them side by side. Closing a pane hides that view; it does not stop a hosted agent.
@@ -111,12 +112,9 @@ Sidebar shortcuts apply while the sidebar has focus. The footer shows actions av
 
 Leave the desk and keep your agents moving: read conversations, send a follow-up, or answer a question from your iPhone.
 
-**The iPhone app is still in development; this repository does not provide a public app download.** Installing the CLI does not install the companion app.
+**[Apple client source](https://github.com/corral-dev/corral-apple) is available for self-building with Xcode.** Installing the CLI does not install the companion app; a public App Store or TestFlight download is not available yet.
 
-<p align="center">
-  <img src="docs/screenshots/ios-sessions.png" alt="iPhone session list" width="220">
-  <img src="docs/screenshots/ios-chat.png" alt="iPhone conversation and agent question" width="220">
-</p>
+
 
 With a companion build and the remote dependencies installed on your host:
 
@@ -151,7 +149,7 @@ See the [command reference](docs/SKILL.md) for JSON output, export, and handoff 
 - [Terminal guide](docs/TERMINAL_UI_KNOWLEDGE_BASE.md) — panes, groups, focus, and shortcuts
 - [Remote guide](docs/REMOTE_KNOWLEDGE_BASE.md) — phone pairing and self-hosted access
 - [Maintainer guide](docs/MAINTAINER_GUIDE.md) — development, testing, and releases
-- [Report a bug or suggest an improvement](https://github.com/x0c/corral/issues) — include your OS, terminal, Corral version, and steps to reproduce. Remove private conversation content from reports.
+- [Report a bug or suggest an improvement](https://github.com/corral-dev/corral/issues) — include your OS, terminal, Corral version, and steps to reproduce. Remove private conversation content from reports.
 
 If Corral belongs in your daily workflow, a star helps other developers discover it.
 

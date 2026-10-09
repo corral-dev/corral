@@ -5,11 +5,11 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>在一个终端里运行所有编程助手，离开电脑也能用手机接着做。</strong></p>
-<p align="center">Claude Code、Codex、Cursor、OpenCode、Kimi Code 和 Pi 并排工作。你走开后它们继续运行，哪个在等你回复一眼就能看到。</p>
+<p align="center">Claude Code、Codex、Cursor、OpenCode 和 Pi 并排工作。你走开后它们继续运行，哪个在等你回复一眼就能看到。</p>
 
 <p align="center">
-  <a href="https://github.com/x0c/corral/releases/latest"><img src="https://img.shields.io/github/v/release/x0c/corral" alt="最新版本"></a>
-  <a href="https://github.com/x0c/corral/actions/workflows/test.yml"><img src="https://github.com/x0c/corral/actions/workflows/test.yml/badge.svg" alt="测试"></a>
+  <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="最新版本"></a>
+  <a href="https://github.com/corral-dev/corral/actions/workflows/test.yml"><img src="https://github.com/corral-dev/corral/actions/workflows/test.yml/badge.svg" alt="测试"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT 许可证"></a>
 </p>
 
@@ -22,12 +22,13 @@
   <img src="docs/screenshots/list.png" alt="Corral 侧栏列出 Claude Code、Codex 等编程助手会话，旁边是对话预览" width="100%">
 </p>
 
-## 三个部分
+## 组件
 
 | 部分 | 用途 | 状态 |
 | --- | --- | --- |
-| **终端应用** | 在一个终端里运行、查看、切换所有编程助手。 | 已可用，安装方法见下文 |
-| **iPhone 与 Mac 应用** | 离开终端也能跟进助手、回答它的提问。 | iPhone：开发中，暂无公开下载 · Mac：规划中 |
+| **[终端应用](https://github.com/corral-dev/corral)** | 在一个终端里运行、查看、切换所有编程助手。 | 已可用，安装方法见下文 |
+| **[iPhone 与 Mac 应用](https://github.com/corral-dev/corral-apple)** | 离开终端也能跟进助手、回答它的提问。 | 开源测试版 · 使用 Xcode 自行构建 |
+| **[中继](https://github.com/corral-dev/corral-relay)** | 跨网络连接开发机与客户端。 | 自行部署 · AGPL-3.0 |
 | **Corral Ideas** | 在一个本地页面里随手记想法，由一个统筹助手整理成任务，交给编程助手去做。 | 规划中 |
 
 ## 安装
@@ -47,7 +48,7 @@ corral
 先安装 **Python 3.10+** 和 **tmux 3.2+**，然后运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash
 corral
 ```
 
@@ -63,7 +64,7 @@ corral
 - **同时推进多个任务。** 最多四个会话分屏，相关任务可以分组、置顶。
 - **走开了助手照样跑。** 关掉 Corral 或断开 SSH 后，托管会话继续运行，开发机需要保持唤醒。
 - **换个助手接着做。** 把任务连同对话历史交给另一个助手新开会话，比如 Claude 写完交给 Codex 检查。
-- **用手机接着做。** 离开电脑也能查看回复、追问，或回答助手的提问。iPhone 客户端仍在开发中，见下文。
+- **用手机接着做。** 离开电脑也能查看回复、追问，或回答助手的提问。可自行构建 Apple 客户端，见下文。
 - **找回以前的对话。** 跨所有助手搜索聊过的内容，也可以按项目和标题筛选。
 
 ## 开始使用
@@ -74,7 +75,7 @@ corral
 
 ```bash
 corral claude
-# 也支持：corral codex | corral opencode | corral kimi | corral cursor | corral pi
+# 也支持：corral codex | corral opencode | corral cursor | corral pi
 ```
 
 用 `Space` 选中二至四个会话，再按 `Enter` 分屏打开。关掉其中一个显示区域只是收起画面，不会结束正在托管的助手。
@@ -111,12 +112,9 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 离开电脑，助手也不用停下：在 iPhone 上查看对话、回复助手，或回答它提出的问题。
 
-**iPhone 客户端仍在开发中；本仓库暂不提供公开的 App 下载。** 安装命令行工具不会同时安装手机客户端。
+**[Apple 客户端源码](https://github.com/corral-dev/corral-apple)已公开，可使用 Xcode 自行构建。** 安装命令行工具不会同时安装客户端；目前尚无公开的 App Store 或 TestFlight 下载。
 
-<p align="center">
-  <img src="docs/screenshots/ios-sessions.png" alt="iPhone 会话列表" width="220">
-  <img src="docs/screenshots/ios-chat.png" alt="iPhone 对话和助手提问" width="220">
-</p>
+
 
 已有客户端安装包，并在开发机装好远程功能所需依赖后，运行：
 
@@ -151,7 +149,7 @@ JSON 输出、导出及接力计划详见[命令参考](docs/SKILL.md)。
 - [终端指南](docs/TERMINAL_UI_KNOWLEDGE_BASE.md)：分屏、分组、焦点与快捷键
 - [远程指南](docs/REMOTE_KNOWLEDGE_BASE.md)：手机配对与自建中继
 - [维护指南](docs/MAINTAINER_GUIDE.md)：开发、测试与发布
-- [报告问题或提出建议](https://github.com/x0c/corral/issues)：请附系统、终端、Corral 版本和复现步骤，并去除对话中的隐私内容
+- [报告问题或提出建议](https://github.com/corral-dev/corral/issues)：请附系统、终端、Corral 版本和复现步骤，并去除对话中的隐私内容
 
 如果 Corral 成了你日常工作的一部分，欢迎点一个 Star，让更多开发者发现它。
 
