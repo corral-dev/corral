@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
+from urllib.parse import unquote
 
 from corral import embed, keepalive
 from corral.legacy_names import SHELL_SESSION_PREFIX
@@ -37,13 +38,22 @@ KEY_PREFIX = "shell:"
 MAX_SHELLS = 16
 _ID = re.compile(r"[0-9a-f]{8}")
 _TIMEOUT = 3.0
-# Unit / record separators: folder names may contain tabs and newlines.
-_SEP = "\x1f"
-_END = "\x1e"
-_LIST_FORMAT = _SEP.join((
-    "#{session_name}", "#{session_created}", "#{@corral_project}",
-    "#{pane_current_path}", "#{pane_current_command}",
-)) + _END
+_SEP = "|"
+
+
+def _list_field_format(field: str) -> str:
+    """Encode before tmux 3.4's output quoting changes control bytes."""
+    value = "#{" + field + "}"
+    for char in ("%", "\\", _SEP, *(chr(i) for i in range(1, 32)), chr(127)):
+        pattern = "\\" + char if char in ("\\", "|") else char
+        value = "#{s~" + pattern + "~%" + f"{ord(char):02X}" + "~:" + value + "}"
+    return value
+
+
+_LIST_FORMAT = _SEP.join(_list_field_format(field) for field in (
+    "session_name", "session_created", "@corral_project",
+    "pane_current_path", "pane_current_command",
+))
 
 
 class ShellError(Exception):
@@ -100,8 +110,8 @@ def list_shells() -> list[dict]:
     if proc is None or proc.returncode != 0:
         return []
     shells = []
-    for record in proc.stdout.decode("utf-8", "replace").split(_END):
-        parts = record.lstrip("\n").split(_SEP)
+    for record in proc.stdout.decode("utf-8", "replace").split("\n"):
+        parts = [unquote(part) for part in record.split(_SEP)]
         if len(parts) != 5 or not parts[0].startswith(SHELL_SESSION_PREFIX):
             continue
         name, created, project, cwd, command = parts

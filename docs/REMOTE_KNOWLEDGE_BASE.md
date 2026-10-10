@@ -2,13 +2,14 @@
 
 覆盖「手机连开发机看会话 / 输入 / 推送 / 配对 / 局域网直连 / **换网不可用与中继** / **开源默认中继 / 不要暴露维护者服务器 / 别人要用自己搭中继**」。
 
-配套客户端：`../ios/`（见 `../ios/AGENTS.md`）。零知识中继：`../relay/`（开源自建看其 README）。维护者本人的多租户公网实例运维只写在私有 agentsync 基础设施知识库，**禁止**写进公开 GitHub 门面当默认地址。
+配套客户端：`../apple/`（见 `../apple/AGENTS.md`）。零知识中继：`../relay/`（开源自建看其 README）。维护者本人的多租户公网实例运维只写在私有 agentsync 基础设施知识库，**禁止**写进公开 GitHub 门面当默认地址。
 
 ## §0 目录索引
 
 - [Task execution reliability](#task-execution-reliability)
 - [开源中继硬规则](#开源中继硬规则2026-09-12-用户裁定-记牢)
 - [产品边界](#产品边界)
+- [Project-shell list portability](#project-shell-list-portability)
 - [Native agent questions: implemented paths](#native-agent-questions-implemented-paths-2026-09-29)
 - [命令入口](#命令入口)
 - [协议分层](#协议分层)
@@ -41,7 +42,7 @@ Phone-submitted tasks must continue through normal Agent execution; delivery ack
 
 ## 产品边界
 
-- **Every Apple client (iPhone, iPad, Mac) is a remote client of the host** (owner decision 2026-10-01): it pairs, lists, reads and sends input; starting, forking or handing off a session is always a host request (`session.new` / `session.copy` / `session.handoff`). A Mac client never runs agents, tmux or SessKit locally. Adaptation plan: [iPad and Mac client adaptation](../../ios/docs/design/MULTIPLATFORM_CLIENT_DESIGN.md).
+- **Every Apple client (iPhone, iPad, Mac) is a remote client of the host** (owner decision 2026-10-01): it pairs, lists, reads and sends input; starting, forking or handing off a session is always a host request (`session.new` / `session.copy` / `session.handoff`). A Mac client never runs agents, tmux or SessKit locally. Adaptation plan: [iPad and Mac client adaptation](../../apple/docs/design/MULTIPLATFORM_CLIENT_DESIGN.md).
 - 开发机远程服务是**开关**：`corral remote on` 打开、`corral remote off` 关掉，都幂等。打开后进程在**后台**常驻，命令立刻返回；不要把 `on` 当成前台守护进程，也不要因为命令马上结束就以为服务没起来——用 `corral remote status` 看是否 on。
 - **开关必须记住**：`on` 把「想要开着」写入状态，并登记开机/登录自启（macOS LaunchAgent `com.x0c.corral.remote`，Linux `systemd --user` 的 `corral-remote.service`）；`off` 清掉记忆并撤销自启。重启、重新登录或进程崩溃后，只要上次是开，就必须自动回来——禁止要求用户每次开机再敲一次 `on`。排查「重启后手机立刻 failed / 本机远程 Status: off」先看开关记忆与自启是否在，不要先怪中继。**调度档（2026-09-30 裁定，已实施）：macOS 侧 plist 固定 `ProcessType=Interactive`，不用 Adaptive**——官方 `launchd.plist(5)`：不填则限 CPU 与 I/O 带宽；Adaptive 只按 XPC 连接活跃度在 Background/Interactive 间升降（https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5 ），而守护进程经 websocket/中继服务手机、无 XPC，只会永远钉在 Background；手机在等请求结果，属于响应性依赖，用 Interactive（与保活 server 的 `tmux_server.py` 同口径）。后台扫描线程照旧 `demote_background()` 让路。`enable()` 每次重写 plist 并 bootout/bootstrap，升级后对正在用的机器再执行一次 `corral remote on` 即换档重启；缺该键的旧 plist 会被 `is_installed()` 判为未登记以提示补 `on`。
 - **配对与开关拆开**：二维码 / 手动配对码只由 `corral remote pair`（或 `pair --readonly`）输出。`on` / `off` / 再次 `on` **不得**顺带打开配对窗口。**反方向（2026-10-08 机主要求）：`pair` 必须自动打开远程服务**——服务没开时先按 `on` 的同一路径打开（记住开关、登记自启、有中继先登记主机、后台拉起），再打码；已开着则不重启、只补开关记忆与自启。打开失败就报错退出、不打码（扫了也连不上）。`--dry-run` 只预报 `would_start_service`，不改任何状态；JSON 回包带 `service_started` 与 `service_pid`。 Pairing must preserve an already loaded macOS job while refreshing its on-disk login registration; only explicit `on` keeps the existing replacement-registration behavior. On Linux, `enable --now` preserves an active service. Tests of pairing must isolate both remote state writes and OS autostart registration, including pre-existing status tests.二维码仍是一次性、十分钟有效的 v2 载荷（含中继地址），不得为方便展示而弱化配对或换网可达性。
@@ -68,6 +69,31 @@ Phone-submitted tasks must continue through normal Agent execution; delivery ack
 - 中继只做路由与代发推送，**看不到**会话明文；推送正文在手机本地用设备私钥解开。
 - 手机与桌面共享同一个保活窗格时，**手机端禁止发 `screen.resize`**——否则会把电脑正在看的窗口挤窄。服务端即使收到也会以 `usage_error` 拒绝，**不会**改桌面窗口尺寸（不挂真实 resize 实现）。Mac 终端视图不走 `screen.*`：它用下面「桌面终端原始流」的 `terminal.*`，像 TUI 窗口一样按「宽取最宽、高取最高」参与定尺寸；手机仍永不改尺寸。
 - 远程能力的组件（`cryptography` / `websockets` / `segno`）不进主安装包：首次执行会启动服务或配对的命令时，必须自动、幂等地补齐到 **当前 `corral` 命令实际使用的安装副本**。不得误装到系统 Python 后仍报缺依赖；只有网络或软件源不可用时才报清晰失败原因与可重试提示。只读状态查询不得为检查而改动安装环境。
+
+## Project-shell list portability
+
+Project terminals run on the paired host; `shell.list` must return their original
+project folder and current working directory on supported macOS and Linux tmux
+versions, including folders containing tabs, newlines, literal percent escapes,
+backslashes, control bytes and non-ASCII text. This is Corral host transport
+behavior, not SessKit history interpretation. Both Apple clients consume the
+same host RPC; the TUI starts its own local shell panes through a separate path.
+
+A shell can start successfully yet disappear from the list with tmux 3.4:
+[`cmdq_print_data`](https://github.com/tmux/tmux/blob/3.4/cmd-queue.c) calls
+[`server_client_print`](https://github.com/tmux/tmux/blob/3.4/server-client.c)
+with `parse=0`, which escapes the unit/record separator bytes used by the old
+listing format. Current tmux 3.7 prints those bytes directly. Do not skip the
+real-tmux test or require a tmux upgrade to hide this difference. Frame rows
+with printable separators, percent-encode separators, percent signs,
+backslashes and ASCII controls inside tmux's documented substitution formats,
+and decode each field exactly once. Keep the existing host metadata, RPC
+schema, shell lifecycle, permissions and sizing behavior.
+
+Verification uses disposable sockets and synthetic folders only: list/reopen,
+output, resize, close and shell exit must pass against old and current tmux.
+Never probe or terminate a user's active project shell. Architecture and client
+behavior: [project terminal design](../../apple/docs/design/PROJECT_TERMINAL_DESIGN.md).
 
 ## Native agent questions: implemented paths (2026-09-29)
 

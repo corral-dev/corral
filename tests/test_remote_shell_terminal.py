@@ -201,6 +201,20 @@ class RealTmuxShellTests(unittest.TestCase):
         self.assertEqual(listed[shell["key"]]["project"], odd)
         st.close_shell(shell["key"])
 
+    def test_folder_metadata_survives_literal_escapes_and_control_bytes(self) -> None:
+        for leaf in ("literal%09%1F\\037", "a|b\x1fc\x1ed\x7f", "中文🦉\u0085folder", "a\r\x07\x1bz"):
+            with self.subTest(leaf=leaf):
+                folder = os.path.join(self.folder, leaf)
+                os.mkdir(folder)
+                shell = st.open_shell(folder, 80, 24)
+                try:
+                    listed = {s["key"]: s for s in st.list_shells()}
+                    self.assertEqual(listed[shell["key"]]["project"], folder)
+                    self.assertEqual(listed[shell["key"]]["cwd"], folder)
+                    self.assertTrue(st.alive(st.name_for_key(shell["key"])))
+                finally:
+                    st.close_shell(shell["key"])
+
     def test_exit_ends_the_shell(self) -> None:
         shell = st.open_shell(self.folder, 80, 24)
         name = st.name_for_key(shell["key"])

@@ -577,6 +577,11 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - Outcome (2026-09-30, coordinator-measured, final runner): target MET. COMPLETE prepared-local run outer wall 95.83s (internal 94.9s), exit 0, 2027/2027 exact-once, 0 first-pass failures, lint included in the wall. Boundaries above stand as built: 42 proven UI classes sharded, unproven classes kept in the single-process serial remainder; same source+environment stamp reused.
 - Cloud follow-up requirement (2026-09-30, GitHub run 36701368694 FAILED on macos-3.14 while macos-3.10 went green): the local ≤120s target stands and full coverage plus semantic asserts are retained, but cloud acceptance is NOT complete — the macOS 3.14 failure and the measured cloud walls (630.5s green / 650.5s failed, jobs=3) are the current unresolved limits, and no cloud ≤120s claim may be made from local evidence. Host-discovery unit fixtures must avoid unneeded network waits while preserving dedicated discovery coverage (`test_remote_lan` stays the LAN-coverage home; stub only at narrow discovery boundaries, never the RPC receipt/control/status assertions). Runner errors must be diagnosable (real assertion tracebacks on both original-pass and retry failures, failure exit stays nonzero) and the total final suite wall includes retries.
 
+For Ubuntu-only project-shell list failures with a successful shell start,
+check the tmux version and format output before changing the test: tmux 3.4
+escapes raw unit/record separators. The host wire-format contract and isolated
+old/current-version verification are in [project-shell list portability](REMOTE_KNOWLEDGE_BASE.md#project-shell-list-portability).
+
 ### Readiness and dependency handoff
 
 - Before expensive checks, prepare and verify the declared development/test environment with `python3 scripts/dev_env.py check --repo .` (converge first with `python3 scripts/dev_env.py prepare --repo .`; read-only `doctor --repo . --json` for diagnostics, `run --repo . -- <cmd>` to execute inside the checkout venv); use [the test guide](TEST_ENVIRONMENT_GUIDE.md) (`python3 scripts/acceptance.py --json`, read-only `--dry-run`) for isolated acceptance. Keep development, test, and build dependencies explicit in project metadata or the owning guide. A setup/dependency failure is not a product failure and must not be reported as a passing check.
