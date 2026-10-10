@@ -499,7 +499,7 @@ Implementation notes locked with approval: place host receipts beside existing r
 | Host `command_receipts` unit suite | 15/15 pass (project venv) | Slice 1 host side is ready for phone opt-in |
 | Relay `AttachHostLane` + queued sink tests | `go test` hub/protocol/server pass | Slice 3 code can stay in-repo; async queue removes reader-blocking structure |
 | Microbench: enqueue 20 frames while 50 ms/frame consumer | ~0.02 ms to enqueue vs ~1 s if synchronous | Confirms Slice 3 queue value independent of geography |
-| Device → public relay `wss://pickup-relay.caozc.top` | HTTP **503** on WebSocket (retry same) | Host still reports relay online — **do not upgrade public relay** until device path is healthy; treat host-online ≠ phone-reachable |
+| Device → public relay `wss://relay.example.com` (historical deployment) | HTTP **503** on WebSocket (retry same) | Host still reports relay online — **do not upgrade public relay** until device path is healthy; treat host-online ≠ phone-reachable |
 | Live LAN hello/list probe | Handshake frames OK; full RPC timed out on this probe identity | Need paired probe + restarted host process before claiming end-to-end UX numbers |
 
 Phone hello must send `want_command_receipts: true` or receipted sends never enable. Extend `after_seq`/`generation`; do not add a second event cursor in Slice 2.

@@ -419,7 +419,7 @@ async def run(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--relay", required=True, help="中继地址，例如 wss://pickup-relay.caozc.top")
+    parser.add_argument("--relay", required=True, help="Your self-hosted relay URL, for example wss://relay.example.com")
     parser.add_argument("--key", required=True, help="开发机长期公钥")
     parser.add_argument("--host", default="", help="开发机路由标识；省略时从公钥派生")
     parser.add_argument("--code", default="", help="配对码；已配对过的探针钥匙不用给")

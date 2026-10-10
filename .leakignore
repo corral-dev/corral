@@ -14,3 +14,9 @@ fp:3bf924126cfced6a
 fp:6c862f5701c0ebad
 fp:70c92f7457843c6d
 fp:8469ab757382362c
+
+# tests/test_public_source_export.py: literal PRIVATE-TOKEN-abc123 is an invented exporter-redaction fixture; no credential is used.
+fp:76edac4e95cc6c4f
+
+# tests/test_remote_restart.py: corral-claude-abc12345 is a synthetic tmux pane name in an assertion, not an API key.
+fp:549be037545370ce

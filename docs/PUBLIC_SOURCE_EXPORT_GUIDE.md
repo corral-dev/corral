@@ -139,3 +139,7 @@ GitHub Transfer redirects keep old `x0c/corral` links working for existing insta
   coordinator; spot-check that no private filename survived as a path.
 - The exporter writes no `.git` directory. Initializing the fresh public history from the exported
   tree is the coordinator's separate step.
+
+## Public navigation checks
+
+A partial path replacement can leave `../https://...` in nested Markdown. After export, inspect links in the full documentation tree, not only the README: cross-repository links must be complete public URLs, while links within one repository must resolve from the containing document. Do not preserve stale claims that a now-public component is private or unavailable. Check generated client settings after XcodeGen as described in the Apple public-build guide; source-file presence alone does not verify a self-build route.

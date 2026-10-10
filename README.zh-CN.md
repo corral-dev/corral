@@ -5,7 +5,7 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>在一个终端里运行所有编程助手，离开电脑也能用手机接着做。</strong></p>
-<p align="center">Claude Code、Codex、Cursor、OpenCode 和 Pi 并排工作。你走开后它们继续运行，哪个在等你回复一眼就能看到。</p>
+<p align="center">Claude Code、Codex、OpenCode、Cursor 和 Pi 并排工作。看到哪个助手需要你，同时打开多个会话，关闭工作区后托管的助手也能继续运行。</p>
 
 <p align="center">
   <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="最新版本"></a>
@@ -16,19 +16,19 @@
 <p align="center">
   <img src="docs/screenshots/demo.gif" alt="在 Corral 里切换编程助手会话、搜索，并把两个会话并排打开" width="100%">
 </p>
-<p align="center"><em>演示来自真实终端界面，使用的是虚构会话，不是你电脑上的实际记录。</em></p>
+<p align="center"><em>在一个侧栏中查看助手，阅读对话，或并排打开多个会话。</em></p>
 
 <p align="center">
   <img src="docs/screenshots/list.png" alt="Corral 侧栏列出 Claude Code、Codex 等编程助手会话，旁边是对话预览" width="100%">
 </p>
 
-## 组件
+## 选择安装哪些部分
 
 | 部分 | 用途 | 状态 |
 | --- | --- | --- |
 | **[终端应用](https://github.com/corral-dev/corral)** | 在一个终端里运行、查看、切换所有编程助手。 | 已可用，安装方法见下文 |
 | **[iPhone 与 Mac 应用](https://github.com/corral-dev/corral-apple)** | 离开终端也能跟进助手、回答它的提问。 | 开源测试版 · 使用 Xcode 自行构建 |
-| **[中继](https://github.com/corral-dev/corral-relay)** | 跨网络连接开发机与客户端。 | 自行部署 · AGPL-3.0 |
+| **[中继](https://github.com/corral-dev/corral-relay)** | 跨网络连接开发机与客户端。 | 自行部署 · AGPL-3.0-only |
 | **Corral Ideas** | 在一个本地页面里随手记想法，由一个统筹助手整理成任务，交给编程助手去做。 | 规划中 |
 
 ## 安装
@@ -114,15 +114,13 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 **[Apple 客户端源码](https://github.com/corral-dev/corral-apple)已公开，可使用 Xcode 自行构建。** 安装命令行工具不会同时安装客户端；目前尚无公开的 App Store 或 TestFlight 下载。
 
-
-
-已有客户端安装包，并在开发机装好远程功能所需依赖后，运行：
+安装好 Apple 客户端后，在运行助手的开发机上执行：
 
 ```bash
 corral remote pair
 ```
 
-配对时会自动开启远程连接。先在同一局域网配对。外出使用需要自行部署中继；Corral 不内置共享公共中继。手机通信采用端到端加密。配对及中继配置见[远程使用指南](docs/REMOTE_KNOWLEDGE_BASE.md)。
+配对会开启远程连接，并补齐缺少的远程组件。在同一局域网中，用 Apple 客户端扫描配对码。外出使用需要自行部署中继；Corral 不内置共享公共中继。手机通信采用端到端加密。跨网络访问请按[中继快速开始](https://github.com/corral-dev/corral-relay#quick-start)配置。若设备只需查看会话，可使用 `corral remote pair --readonly` 配对。
 
 ## 隐私
 
@@ -143,14 +141,14 @@ corral show <session-id-prefix> --messages 10 --compact
 
 JSON 输出、导出及接力计划详见[命令参考](docs/SKILL.md)。
 
-## 文档
+## 获取帮助与参与贡献
 
 - [命令参考](docs/SKILL.md)：命令行用法与自动化
 - [终端指南](docs/TERMINAL_UI_KNOWLEDGE_BASE.md)：分屏、分组、焦点与快捷键
 - [远程指南](docs/REMOTE_KNOWLEDGE_BASE.md)：手机配对与自建中继
-- [维护指南](docs/MAINTAINER_GUIDE.md)：开发、测试与发布
-- [报告问题或提出建议](https://github.com/corral-dev/corral/issues)：请附系统、终端、Corral 版本和复现步骤，并去除对话中的隐私内容
+- [参与贡献](CONTRIBUTING.md)：开发与提交改动
+- [报告问题或提出建议](https://github.com/corral-dev/corral/issues/new/choose)：请附系统、终端、Corral 版本和复现步骤，并去除对话中的隐私内容
 
-如果 Corral 成了你日常工作的一部分，欢迎点一个 Star，让更多开发者发现它。
+如果 Corral 适合你的工作方式，可以点 Star 收藏，方便以后找到。
 
 [MIT 许可证](LICENSE)

@@ -5,7 +5,7 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>Run all your coding agents from one terminal — and pick them up from your phone.</strong></p>
-<p align="center">Claude Code, Codex, Cursor, OpenCode, and Pi side by side. They keep running when you step away, and you can see which one is waiting for you.</p>
+<p align="center">Claude Code, Codex, OpenCode, Cursor, and Pi side by side. See which agent needs you, open several sessions together, and keep hosted agents running when you close the workspace.</p>
 
 <p align="center">
   <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="Latest release"></a>
@@ -16,19 +16,19 @@
 <p align="center">
   <img src="docs/screenshots/demo.gif" alt="Switching between coding-agent sessions, searching, and opening two side by side in Corral" width="100%">
 </p>
-<p align="center"><em>Captured from the real terminal UI with sample conversations — not a recording of your machine.</em></p>
+<p align="center"><em>One sidebar for your agents. Read a conversation or open sessions side by side.</em></p>
 
 <p align="center">
   <img src="docs/screenshots/list.png" alt="Corral sidebar with Claude Code, Codex, and other coding-agent sessions next to a conversation preview" width="100%">
 </p>
 
-## Components
+## Choose what to install
 
 | Part | What it does | Status |
 | --- | --- | --- |
 | **[Terminal app](https://github.com/corral-dev/corral)** | Run, watch, and switch between all your coding agents in one terminal. | Available — install below |
-| **[iPhone and Mac app](https://github.com/corral-dev/corral-apple)** | Follow your agents and answer them away from the terminal. | Open-source beta · self-build with Xcode |
-| **[Relay](https://github.com/corral-dev/corral-relay)** | Connect your host and clients across networks. | Self-hosted · AGPL-3.0 |
+| **[iPhone and Mac app](https://github.com/corral-dev/corral-apple)** | Follow your agents and answer them away from the terminal. | Source beta · self-build with Xcode |
+| **[Relay](https://github.com/corral-dev/corral-relay)** | Connect your host and clients across networks. | Self-hosted · AGPL-3.0-only |
 | **Corral Ideas** | Jot loose ideas on one local page; a coordinating agent turns them into tasks and hands them to coding agents. | Planned |
 
 ## Install
@@ -114,15 +114,13 @@ Leave the desk and keep your agents moving: read conversations, send a follow-up
 
 **[Apple client source](https://github.com/corral-dev/corral-apple) is available for self-building with Xcode.** Installing the CLI does not install the companion app; a public App Store or TestFlight download is not available yet.
 
-
-
-With a companion build and the remote dependencies installed on your host:
+With the Apple client installed, run this on the machine hosting your agents:
 
 ```bash
 corral remote pair
 ```
 
-Pairing automatically turns remote access on. Pair on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Phone traffic is end-to-end encrypted. See the [remote setup guide](docs/REMOTE_KNOWLEDGE_BASE.md) for pairing and relay configuration.
+Pairing starts remote access and installs any missing remote components. Scan the code in the Apple client on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Phone traffic is end-to-end encrypted. For access across networks, follow the [relay setup](https://github.com/corral-dev/corral-relay#quick-start). Use `corral remote pair --readonly` when a device should only view sessions.
 
 ## Privacy
 
@@ -143,14 +141,14 @@ corral show <session-id-prefix> --messages 10 --compact
 
 See the [command reference](docs/SKILL.md) for JSON output, export, and handoff planning.
 
-## Documentation
+## Help and contribute
 
 - [Command reference](docs/SKILL.md) — CLI usage and automation
 - [Terminal guide](docs/TERMINAL_UI_KNOWLEDGE_BASE.md) — panes, groups, focus, and shortcuts
 - [Remote guide](docs/REMOTE_KNOWLEDGE_BASE.md) — phone pairing and self-hosted access
-- [Maintainer guide](docs/MAINTAINER_GUIDE.md) — development, testing, and releases
-- [Report a bug or suggest an improvement](https://github.com/corral-dev/corral/issues) — include your OS, terminal, Corral version, and steps to reproduce. Remove private conversation content from reports.
+- [Contributing](CONTRIBUTING.md) — development and pull requests
+- [Report a bug or suggest an improvement](https://github.com/corral-dev/corral/issues/new/choose) — include your OS, terminal, Corral version, and steps to reproduce. Remove private conversation content from reports.
 
-If Corral belongs in your daily workflow, a star helps other developers discover it.
+If Corral fits your workflow, star the repository to find it again.
 
 [MIT License](LICENSE)

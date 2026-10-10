@@ -14,6 +14,16 @@ Repository migration must preserve the existing CLI repository through GitHub Tr
 
 Publication status (2026-10-10): [CLI](https://github.com/corral-dev/corral), [Apple clients](https://github.com/corral-dev/corral-apple) and [relay](https://github.com/corral-dev/corral-relay) have public source on their default branches. The organization profile is maintained in [corral-dev/.github](https://github.com/corral-dev/.github). Apple and relay source releases use fresh public tags; do not infer an empty repository from delayed GitHub size metadata. Verify the default-branch tree and anonymous source download instead.
 
+## Visitor decisions and discovery
+
+Write every public sentence for someone deciding whether to install, use or keep Corral. Retain a sentence only when removing it would change that decision or the next action. Keep publication/audit narration, directory inventories, process claims and explanations of how the README was produced in maintainer guides. Show platform and client availability near installation because they determine whether the reader can use the product. Match complete English and Simplified Chinese versions.
+
+The terminal repository remains the main entry. The organization profile routes visitors by task: run agents, use the native clients, or reach the host across networks. Each component explains its prerequisites, first working action and links back to the other components. Put optional operator/developer detail behind links or folds; do not make readers guess remote dependency installation. Reuse the current product demo and accepted icon without presenting the terminal recording as a native-client screenshot.
+
+Maintain GitHub descriptions and topics separately from source. Use the five supported runtime names, the real task category and supported platforms; avoid speculative capabilities and keyword lists in prose. GitHub's [repository-search documentation](https://docs.github.com/en/search-github/searching-on-github/searching-for-repositories) says an unqualified search matches names, descriptions and topics; README content requires `in:readme`. Record search/traffic baselines privately and report actual readbacks, without claiming higher rankings or adoption from a wording change.
+
+Use the organization `.github` repository for short default bug/feature forms. A report should identify the component, version, platform, expected result and reproduction. Direct sensitive findings to the affected repository's private security reporting; never request raw conversation archives, keys or pairing codes.
+
 ## Product identity
 
 Owner decision (2026-10-01, supersedes the plain cream-yellow background): use the independently refined Floral 04 identity as Corral's unified brand mark. It combines the approved forest-green and warm-yellow cowboy hat with a cream-yellow background covered by dense small scalloped flowers in pale sage and golden yellow. Preserve the accepted refinement's full composition, hat geometry, palette and flower scale; do not reuse the old solid-background optical shift. Synchronize the production master, both README languages, social preview, relay presentation and iOS app icon. The former arrow, horse and blue-background unicorn identities remain retired.
@@ -43,7 +53,9 @@ Do not claim title generation launches installed assistant CLIs. The public priv
 ## Structural references
 
 - [Sesh](https://github.com/joshmedeski/sesh): concise identity and task-oriented feature summaries; adopt these patterns, not its configuration-heavy page length.
-- [Lazygit](https://github.com/jesseduffield/lazygit): show the actual terminal product early and link deeper usage; do not copy sponsor blocks or badge volume.
+- [Lazygit](https://github.com/jesseduffield/lazygit): use real terminal demonstrations and link deeper usage; do not copy sponsor blocks or badge volume.
+- [Ghostty](https://github.com/ghostty-org/ghostty): keep native-client installation and documentation easy to find; do not copy its platform claims or unmeasured performance comparisons.
+- [Rathole](https://github.com/rathole-org/rathole): give server and host distinct quick-start steps, then show the observable result; keep Corral's own pairing and encryption boundaries rather than copying a generic proxy protocol.
 
 README quality improves the explanation offered to visitors; it does not demonstrate increased discovery or stars. Measure those separately.
 
