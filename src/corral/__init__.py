@@ -29,7 +29,7 @@ def _wire_sesskit_cache() -> None:
         pass
 
 
-__version__ = "0.24.279"
+__version__ = "0.24.280"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "liveness", "titles", "updater", "split_layout", "observe", "theme", "search",

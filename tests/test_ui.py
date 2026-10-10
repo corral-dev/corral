@@ -7759,19 +7759,24 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             pane = _primary_embed_pane(app.screen)
+            # This fixture has no host; finish capture before injecting live state.
+            pane._stop.set()  # noqa: SLF001
+            pane._poke.set()  # noqa: SLF001
+            await asyncio.to_thread(pane._capture_thread.join, 2.0)  # noqa: SLF001
+            self.assertFalse(pane._capture_thread.is_alive())  # noqa: SLF001
             pane.session_name = "corral-cursor-hold"
             pane.dead = False
             pane._grid = [[Cell("x")]]  # noqa: SLF001
             with (
-                mock.patch("corral.embed.resize"),
+                mock.patch("corral.embed.resize") as resize,
                 mock.patch("corral.embed.capture", return_value=None),
             ):
                 pane._on_resize(events.Resize(Size(60, 22), Size(60, 22)))
                 await pilot.pause(delay=embed_pane_mod._RESIZE_TMUX_DEBOUNCE + 0.05)
+                self.assertFalse(pane.dead)
+                resize.assert_called_once_with("corral-cursor-hold", 60, 22)
             self.assertTrue(pane._resize_hold_active)  # noqa: SLF001
-            # 停掉抓帧线程对 hold 状态的并发改写，再单测放行条件
             pane.session_name = None
-            pane._stop.set()  # noqa: SLF001
             # 重排中的变化帧不得放行
             self.assertFalse(pane._resize_hold_allows_display("frame-a"))  # noqa: SLF001
             self.assertFalse(pane._resize_hold_allows_display("frame-b"))  # noqa: SLF001

@@ -59,6 +59,18 @@ replacement test framework.
   machine-specific interpreter or reintroduce bare `python3` in a tmux
   launch line.
 
+## Resize-hold fixture ownership
+
+A synthetic session name and a prefilled live grid are unit-test inputs, not a
+running tmux host. Stop, wake and join the pane's capture worker before injecting
+that state into a resize-hold test. Otherwise a slow runner can accumulate three
+`capture=None` misses, correctly mark the nonexistent host dead, and cancel the
+pending resize before the hold assertion. The same failure is reproducible with
+a longer debounce and shorter polling interval; it is not evidence that a real
+live host loses its hold. Keep the real Textual timer, resize-call assertion,
+changing-frame rejection, minimum hold and stable-frame release assertions.
+Separate capture-worker and real-tmux tests retain their existing coverage.
+
 ## Running the isolated acceptance
 
 Run from `cli/` (verified 2026-09-30, exit 0 in ~8s):

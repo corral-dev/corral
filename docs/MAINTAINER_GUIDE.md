@@ -543,6 +543,16 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - 开源前隐私扫描要覆盖准备提交的文件和完整 Git 历史补丁内容；本机 `.git/config` 里的内部远端不进入仓库内容，但真实文件、历史提交、Release 说明和 README 不能包含密钥、个人路径、内网地址或占位符。
 - GitHub Release 发布后检查 Actions、Release、topics 和仓库可见性；当前仓库 topics 为 `claude-code`、`codex-cli`、`terminal`、`tui`、`session-manager`、`ai-coding-agent`。
 
+Release notes must retain the complete English-first and Simplified Chinese
+body after local publication and after CI adds assets. With
+[`softprops/action-gh-release` v2](https://github.com/softprops/action-gh-release/blob/v2/src/github.ts),
+`generate_release_notes:true` can append generated English notes to an existing
+body during an update. Read back the final body; restore the reviewed bilingual
+notes after the asset workflow when necessary. Follow-up: make the workflow
+consume reviewed bilingual notes without automatic appending, so local closeout
+and CI do not compete over the body. This is a publication-format requirement;
+it does not change product behavior or allow skipping checks.
+
 ### 一键安装渠道
 
 - Homebrew 配方在独立仓库 `x0c/homebrew-tap` 的 `Formula/corral.rb`，由本仓 `scripts/homebrew_formula.py` 整体生成（两个调用方：`scripts/publish-release.sh` 与 `release.yml` 的 bump 任务），不手改 tap 里的文件；`Aliases/session-continue` 软链到 `corral`，兼容改名前的 `brew install/upgrade x0c/tap/session-continue`。**`brew update` / `brew upgrade` 只认 tap 里的配方版本，不认 GitHub 上「更新的 tag」。** tag 与 Release 已有、但配方没推到 tap 时，用户会一直停在旧号（2026-09-10：`v0.24.169` 已发、本机未出 universal2、配方更新步骤没跑完 → brew 仍停在 `0.24.168`）。收工核对必须读 tap 的 `Formula/corral.rb`（见下条防回退核对），不能只看 `gh release list`。
