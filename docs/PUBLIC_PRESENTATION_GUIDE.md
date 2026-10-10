@@ -4,13 +4,15 @@
 
 Owner decision (2026-10-09): group Corral's existing CLI, Apple-client and relay repositories under the `corral-dev` GitHub organization and publish the currently private components. Keep `corral-dev/corral` as the primary product entry, `corral-dev/corral-apple` for the iPhone and Mac clients together, and `corral-dev/corral-relay` for self-hosting. SessKit remains an independent upstream project. The owner created the Free organization; active administrator membership was verified before repository transfer.
 
-Publication must avoid disclosing credentials, personal paths, device identifiers, private infrastructure or private planning documents. Inspect tracked content, images, generated archives and reachable Git history before publication. Apple and relay publication starts from a sanitized current-source history; their original private history stays private. Do not push private tags, branches or maintainer-only artifacts to the public repositories. Preserve the adopted licenses: CLI MIT, Apple GPL-3.0 and relay AGPL-3.0, with contributor agreements for Apple and relay and a separate name/icon policy.
+Publication must avoid disclosing credentials, personal paths, device identifiers, private infrastructure or private planning documents. Inspect tracked content, images, generated archives and reachable Git history before publication. Apple and relay publication starts from a sanitized current-source history; their original private history stays private. Do not push private tags, branches or maintainer-only artifacts to the public repositories. Preserve the adopted licenses: CLI MIT, Apple GPL-3.0-only and relay AGPL-3.0-only, with contributor agreements for Apple and relay and a separate name/icon policy.
 
 Title generation requires an explicitly configured gateway URL and virtual key. Public source has no fleet endpoint fallback. With either value missing, no catalog or completion request is made; local titles and accepted cached titles remain available. Preserve existing maintainer configuration outside the repository before removing any baked-in endpoint.
 
 Use the [public-source export guide](PUBLIC_SOURCE_EXPORT_GUIDE.md) for committed snapshot preparation. The organization profile source lives in [organization/profile/README.md](organization/profile/README.md), with aligned Simplified Chinese copy. Keep private export recipes and audit reports outside Git.
 
 Repository migration must preserve the existing CLI repository through GitHub Transfer, update release/install/update references and verify public clone, install and cross-component documentation routes. Public clients default to LAN access and user-configured self-hosted relays; maintainer service endpoints and signing credentials remain outside public source.
+
+Publication status (2026-10-10): [CLI](https://github.com/corral-dev/corral), [Apple clients](https://github.com/corral-dev/corral-apple) and [relay](https://github.com/corral-dev/corral-relay) have public source on their default branches. The organization profile is maintained in [corral-dev/.github](https://github.com/corral-dev/.github). Apple and relay source releases use fresh public tags; do not infer an empty repository from delayed GitHub size metadata. Verify the default-branch tree and anonymous source download instead.
 
 ## Product identity
 
