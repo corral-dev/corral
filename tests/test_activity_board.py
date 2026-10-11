@@ -7,12 +7,21 @@ import unittest
 
 from corral.activity_board import (
     active_marker_style,
+    is_active_session,
     resolve_active_marker,
 )
 
 
 class ResolveActiveMarkerTests(unittest.TestCase):
     """圆点与活跃筛选同源，共用 resolve_active_marker。"""
+
+    def test_unread_is_not_activity_even_when_hosted(self) -> None:
+        session = {"attention_kind": "unread", "keepalive_name": "fixture", "mtime": time.time(),
+                   "status_tag": "done", "completion_id": "finished"}
+        self.assertEqual(resolve_active_marker(session), "unread")
+        self.assertFalse(is_active_session(session))
+        session["attention_kind"] = "working"
+        self.assertTrue(is_active_session(session))
 
     def test_recent_hosted_just_now_gets_green_dot(self) -> None:
         now = time.time()

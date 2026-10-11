@@ -2146,7 +2146,8 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             # Search, both fixed filter rows and New abut without unclickable gaps.
             filters = app.screen.query_one("#quick-filters")
             self.assertEqual(filters.region.y, search.region.bottom)
-            self.assertEqual(filters.region.height, 5)
+            self.assertEqual(filters.region.height,
+                             sum(row.region.height for row in filters.query("Grid")))
             self.assertEqual(items[0].region.y, filters.region.bottom)
 
     async def test_ended_card_title_is_dimmed_to_80_percent(self) -> None:
@@ -4533,15 +4534,61 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(neutral_colors, selected_colors)
             self.assertEqual(str(codex.label), "Codex")
             self.assertFalse(pi.has_class("-chosen"))
-            # Selections beyond the recent choices remain reachable in the fixed grid.
+            # More selections never replace or move the stable quick choices.
+            before = [(button.name, button.region) for button in filters.query(".project-choice")]
             filters.nav.project_filters = set(paths[3:])
             await filters.sync()
             await pilot.pause()
-            self.assertEqual({button.name for button in filters.query(".project-choice")}, set(paths[3:]))
+            self.assertEqual([(button.name, button.region) for button in filters.query(".project-choice")], before)
             self.assertEqual(str(filters.query_one("#project-more", Button).label), "More (3)")
             for button in filters.query(".project-choice"):
                 self.assertEqual(button.region.height, 1)
                 self.assertTrue(filters.region.contains_region(button.region))
+
+    async def test_short_project_filters_pack_three_and_do_not_move_after_toggling(self) -> None:
+
+        from corral.ui.quick_filters import QuickFilters
+
+        sessions = [_claude_session(f"p{i}", time.time() - i) for i in range(3)]
+        for session, path in zip(sessions, ["/tmp/Codes", "/tmp/Corral", "/tmp/SessKit"], strict=True):
+            session["cwd"] = path
+        store, _ = _make_store(sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            filters = app.screen.query_one(QuickFilters)
+            choices = list(filters.query(".project-choice"))
+            self.assertEqual(len({button.region.y for button in choices}), 1)
+            positions = [button.region for button in choices]
+            choices[-1].focus()
+            await pilot.press("enter")
+            await pilot.pause(delay=0.2)
+            self.assertEqual([button.region for button in choices], positions)
+            await pilot.press("enter")
+            await pilot.pause(delay=0.2)
+            self.assertEqual([button.region for button in choices], positions)
+            self.assertFalse(choices[-1].styles.text_style.underline)
+            self.assertEqual(filters.nav.project_filters, set())
+
+    async def test_active_filter_excludes_ended_unread_and_idle_open_sessions(self) -> None:
+        from corral.activity_board import resolve_active_marker
+
+        sessions = [_claude_session(f"a{i}", time.time() - 300 - i) for i in range(3)]
+        sessions[0].update(attention_kind="unread", status_tag="done", completion_id="finished")
+        sessions[1].update(attention_kind="working")
+        sessions[2].update(attention_kind="none", status_tag="done", completion_id="finished")
+        store, _ = _make_store(sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            for session in store.all_sessions():
+                session.update(sessions[int(session["id"][-1])])
+            view = app.screen.query_one(SessionListView)
+            view.set_open_keys(["claude:a0", "claude:a2"])
+            app.screen.nav.active_only = True
+            self.assertEqual([session["id"] for session in view.visible_sessions()], ["a1"])
+            self.assertEqual(view.active_count(), 1)
+            self.assertEqual(resolve_active_marker(sessions[0]), "unread")
 
     async def test_project_more_search_preserves_hidden_selections_and_full_paths(self) -> None:
         from textual.widgets import SelectionList
@@ -4577,7 +4624,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(owner.nav.project_filters, {paths[0], paths[1]})
 
     async def test_active_filter_toggle_narrows_list_without_touching_panes(self) -> None:
-        """固定头第二项是「活跃」筛选开关：回车切换；开启时只列有圆点的会话和右栏开着的会话。"""
+        """Active toggles only real activity and leaves open workspace panes untouched."""
         store, _ = _make_store()
         marked = {"claude:s1"}
 
@@ -4585,7 +4632,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             return "waiting" if corral.session_key(session) in marked else None
 
         app = CorralApp(store, embed_ok=True)
-        with mock.patch("corral.ui.session_list.resolve_active_marker", side_effect=_marker):
+        with mock.patch("corral.ui.session_list.is_active_session",
+                        side_effect=lambda session: _marker(session) is not None):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
@@ -4607,10 +4655,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 self.assertTrue(app.screen.nav.active_only)
                 self.assertTrue(list_view.is_active_filter_selected())
-                # s1 有圆点；s0 没有圆点但正开在右栏，照列；s2 被筛掉。
+                # Only s1 has real activity; idle open s0 is excluded.
                 self.assertEqual(
                     [corral.session_key(s) for s in list_view.visible_sessions()],
-                    ["claude:s0", "claude:s1"],
+                    ["claude:s1"],
                 )
                 card = app.screen.query_one(ActiveFilterCard)
                 self.assertTrue(card.has_class("-on"))

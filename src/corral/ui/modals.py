@@ -19,6 +19,7 @@ from textual.widgets import Input, Label, ListView, Static
 from corral.i18n import t
 from corral.projects import fuzzy_match
 from corral.textutil import fit_cell, text_width
+from corral.theme import runtime_label_style
 from corral.ui.session_list import NoSelectListItem
 
 
@@ -59,8 +60,8 @@ class _ChoiceItem(Static):
     }
     """
 
-    def __init__(self, main: str, hint: str, available: bool) -> None:
-        style = "" if available else "dim"
+    def __init__(self, main: str, hint: str, available: bool, main_style: str = "") -> None:
+        style = main_style if available else f"{main_style} dim".strip()
         text = Text(main, style=style)
         if hint:
             text.append("  " + hint, style="dim")
@@ -120,7 +121,8 @@ class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
                     action = choice.unavailable_text or t(
                         "modal.not_installed", action=choice.action_text
                     )
-                items.append(NoSelectListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available)))
+                items.append(NoSelectListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available,
+                                                         runtime_label_style(choice.id))))
             yield ListView(*items, initial_index=self._default_index)
             yield Label(t("modal.menu_hint"), classes="hint")
 
@@ -174,19 +176,21 @@ class _ColumnRow(Widget):
     }
     """
 
-    def __init__(self, value: str, main: str, hint: str = "", available: bool = True) -> None:
+    def __init__(self, value: str, main: str, hint: str = "", available: bool = True,
+                 main_style: str = "") -> None:
         super().__init__()
         self.value = value
         self.main = main
         self.hint = hint
         self.available = available
+        self.main_style = main_style
 
     def render(self) -> Text:
         width = max(4, self.size.width or 24)
         main_width = min(text_width(self.main), width)
         text = Text(
             fit_cell(self.main, main_width, ellipsis=True),
-            style="" if self.available else "dim",
+            style=self.main_style if self.available else f"{self.main_style} dim".strip(),
         )
         rest = width - main_width - 2
         if self.hint and rest >= 4:
@@ -337,6 +341,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                                 choice.label,
                                 "" if choice.available else t("modal.not_installed_tag"),
                                 choice.available,
+                                  runtime_label_style(choice.id),
                             )
                         )
                         for choice in self._runtimes

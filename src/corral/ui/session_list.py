@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
 from corral.activity_board import (
     active_marker_style,
+    is_active_session,
     resolve_active_marker,
 )
 from corral.i18n import t
@@ -1546,8 +1547,7 @@ class SessionListView(Vertical):
             and (not self.nav.project_filters or normalize_cwd(session.get("cwd")) in self.nav.project_filters)
             and (
                 not active_only
-                or resolve_active_marker(session)
-                or corral.session_key(session) in self._open_keys
+                or is_active_session(session)
             )
         ]
 
@@ -1828,13 +1828,13 @@ class SessionListView(Vertical):
             self.call_next(self.rebuild)
 
     def active_count(self) -> int:
-        """画圆点的会话数（与活跃筛选同一口径），不受其它筛选影响。"""
+        """Activity count, excluding unread-only state; independent of other filters."""
         from corral.models import SHELL_RUNTIME_ID
 
         return sum(
             1
             for session in self.store.all_sessions()
-            if session.get("source") != SHELL_RUNTIME_ID and resolve_active_marker(session)
+            if session.get("source") != SHELL_RUNTIME_ID and is_active_session(session)
         )
 
     def refresh_active_card(self) -> None:

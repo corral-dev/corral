@@ -10,12 +10,13 @@ from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, SelectionList
+from textual.widgets import Button, Input, Label, SelectionList, Static
 
 from corral.i18n import t
 from corral.projects import disambiguate_labels, fuzzy_match, normalize_cwd
 from corral.runtime.registry import active_runtimes
-from corral.textutil import fit_cell
+from corral.textutil import fit_cell, text_width
+from corral.theme import runtime_label_style
 from corral.ui.nav import NavState
 
 
@@ -103,10 +104,9 @@ class ProjectFilterModal(ModalScreen[None]):
 
 class QuickFilters(Vertical):
     DEFAULT_CSS = """
-    QuickFilters { height: 5; }
-    QuickFilters Grid { grid-rows: 1; grid-columns: 1fr; }
-    QuickFilters #runtime-quick-row { height: 3; grid-size: 3; padding: 0 0 1 0; }
-    QuickFilters #project-quick-row { height: 2; grid-size: 2; }
+    QuickFilters { height: auto; }
+    QuickFilters Grid { grid-rows: 1; grid-columns: 1; height: auto; }
+    QuickFilters .filter-gap { height: 1; }
     QuickFilters Button.-style-default {
         width: 1fr; min-width: 2; height: 1; padding: 0;
         border: none; margin: 0; background: $surface; color: $text-muted;
@@ -118,14 +118,14 @@ class QuickFilters(Vertical):
         background: $surface; color: $text-muted;
         border: none; tint: transparent; background-tint: transparent;
     }
-    QuickFilters Button.-style-default:focus { text-style: underline; }
+    QuickFilters Button.-style-default:focus { text-style: none; }
     QuickFilters Button.-chosen,
     QuickFilters Button.-chosen.-style-default:hover,
     QuickFilters Button.-chosen.-style-default:focus,
     QuickFilters Button.-chosen.-style-default.-active {
         background: $primary-muted; color: $warning; text-style: bold;
     }
-    QuickFilters Button.-chosen.-style-default:focus { text-style: bold underline; }
+    QuickFilters Button.-chosen.-style-default:focus { text-style: bold; }
     """
 
     def __init__(self, store, nav: NavState, **kwargs) -> None:
@@ -140,8 +140,11 @@ class QuickFilters(Vertical):
         with Grid(id="runtime-quick-row"):
             for runtime in active_runtimes(self.store.registry):
                 label = "Claude" if runtime.id == "claude" else runtime.display_name
-                yield Button(label, id=f"runtime-{runtime.id}", compact=True)
+                yield Static("", id=f"runtime-{runtime.id}-gap", classes="filter-gap")
+                yield Button(Text(label, style=runtime_label_style(runtime.id)),
+                             id=f"runtime-{runtime.id}", compact=True)
         with Grid(id="project-quick-row"):
+            yield Static("", id="project-more-gap", classes="filter-gap")
             yield Button(t("filter.more"), id="project-more", compact=True)
 
     def on_mount(self) -> None:
@@ -169,21 +172,56 @@ class QuickFilters(Vertical):
         # Keep surviving choices in place while filling vacancies from recent data.
         self._recent = [path for path in self._recent if path in labels]
         self._recent += [path for path, _ in options if path not in self._recent][:max(0, 3 - len(self._recent))]
-        paths = list(dict.fromkeys(sorted(self.nav.project_filters) + self._recent))[:3]
+        paths = self._recent
         signature = tuple((path, labels[path]) for path in paths)
         row = self.query_one("#project-quick-row", Grid)
         more = self.query_one("#project-more", Button)
         if signature != self._project_signature:
-            await row.query(".project-choice").remove()
-            await row.mount(*[Button(fit_cell(labels[path], 16, ellipsis=True).rstrip(), name=path,
-                                    id=f"project-choice-{i}", classes="project-choice",
-                                    tooltip=path or t("filter.no_project"), compact=True)
-                              for i, path in enumerate(paths)], before=more)
+            await row.query(".project-choice, .project-gap").remove()
+            choices = []
+            for i, path in enumerate(paths):
+                choices.extend([
+                    Static("", id=f"project-choice-{i}-gap", classes="filter-gap project-gap"),
+                    Button(Text(fit_cell(labels[path], 16, ellipsis=True).rstrip()), name=path,
+                           id=f"project-choice-{i}", classes="project-choice",
+                           tooltip=path or t("filter.no_project"), compact=True),
+                ])
+            await row.mount(*choices, before=self.query_one("#project-more-gap"))
             self._project_signature = signature
         count = len(self.nav.project_filters)
         more.label = t("filter.more") + (f" ({count})" if count else "")
         for button in row.query(".project-choice"):
             self._mark(button, button.name in self.nav.project_filters)
+        self._pack(self.query_one("#runtime-quick-row", Grid))
+        self._pack(row)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.call_next(self.sync)
+
+    @staticmethod
+    def _pack(row: Grid) -> None:
+        """Pack native grid cells by label width without remounting controls."""
+        width = max(1, row.content_size.width)
+        row.styles.grid_size_columns = width
+        cursor = 0
+        lines = 1
+        for button in row.query(Button):
+            cells = min(width, 10 if button.id == "project-more" else text_width(str(button.label)) + 2)
+            gap = row.query_one(f"#{button.id}-gap")
+            if cursor == width:
+                cursor = 0
+                lines += 1
+            remainder = width - cursor if cursor and cursor + cells > width else 0
+            gap.styles.display = "block" if remainder else "none"
+            if remainder:
+                gap.styles.column_span = remainder
+                gap.styles.width = remainder
+                cursor = 0
+                lines += 1
+            button.styles.column_span = cells
+            button.styles.width = cells
+            cursor += cells
+        row.styles.height = lines + row.styles.padding.bottom
 
     @staticmethod
     def _mark(button: Button, selected: bool) -> None:
@@ -199,12 +237,20 @@ class QuickFilters(Vertical):
             return
         if focused.parent.id == "runtime-quick-row":
             buttons = list(self.query("#runtime-quick-row Button"))
-            delta = {"left": -1, "right": 1, "up": -3, "down": 3}.get(event.key)
+            delta = {"left": -1, "right": 1}.get(event.key)
         elif focused.parent.id == "project-quick-row":
             buttons = list(self.query("#project-quick-row Button"))
-            delta = {"left": -1, "right": 1, "up": -2, "down": 2}.get(event.key)
+            delta = {"left": -1, "right": 1}.get(event.key)
         else:
             return
+        if event.key in ("up", "down"):
+            direction = -1 if event.key == "up" else 1
+            candidates = [b for b in buttons if (b.region.y - focused.region.y) * direction > 0]
+            if candidates:
+                target = min(candidates, key=lambda b: (abs(b.region.y - focused.region.y),
+                                                       abs(b.region.center.x - focused.region.center.x)))
+                event.stop()
+                target.focus()
         if delta is not None:
             event.stop()
             buttons[(buttons.index(focused) + delta) % len(buttons)].focus()

@@ -1,9 +1,9 @@
-"""活跃标记：侧栏圆点与「活跃」快捷筛选的共用判定（三端同一口径）。
+"""Status dots and the independent Active list-filter predicate.
 
-成员资格（权威口径）：等待回答 / 执行中 / 未读新结果（不要求本窗口托管），或本窗口
-托管且「刚刚」（与侧栏时间行同一条 3 分钟界）内还有真实对话活动。远程把同一结果作为
-``marker`` 发给 Mac / iPhone，客户端的活跃筛选只认它。2026-10-11 起活跃会话看板已移除，
-活跃只是列表筛选。
+Sidebar dots include waiting, working, unread and real recent hosted activity.
+Active excludes unread-only state and idle open panes. Native completion or
+interruption evidence blocks the recent fallback; fresh working/waiting wins.
+Remote clients consume the same normalized marker evidence.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def resolve_active_marker(
         当前轮已原生结束（中断，或带完成标识的已完成）时不给
       - 否则无标记
 
-      活跃筛选就是「有圆点的会话」，两者必须同源。禁止为对齐而去掉 ``recent`` 档，
+      Active filtering excludes unread-only dots via ``is_active_session``. Preserve ``recent``;
       也禁止再给这一档单独画青/蓝点。
     """
     if session is not None:
@@ -77,6 +77,11 @@ def resolve_active_marker(
     if not stamp or now - stamp > RECENT_ACTIVE_SECONDS:
         return None
     return "recent"
+
+
+def is_active_session(session: dict) -> bool:
+    """Unread is a reading state; an open/retained pane alone is not activity."""
+    return resolve_active_marker(session) in {"waiting", "working", "recent"}
 
 
 def active_marker_style(marker: str | None) -> str | None:
