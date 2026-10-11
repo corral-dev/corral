@@ -634,6 +634,8 @@ old/current-version verification are in [project-shell list portability](REMOTE_
 
 ### Maintainer script diagnostic scope
 
+The v0.24.281 push gate reported a nonblocking `high-entropy` candidate on the ordinary Python argument `timeout=_STARTUP_CHECK_SECONDS` in `remote/sessions.py`'s startup-failure probe. Source inspection established that it is a constant identifier, not credential material. No allowlist, scanner suppression or hook change was made. Residual risk: the heuristic can still misclassify code identifiers; follow up in the shared leakgate classifier if it recurs. Compiler, Ruff and complete-test diagnostics for this delivery contained no warnings.
+
 The supported Ruff gate checks `src` and `tests`. A wider manual `ruff check ... scripts` (2026-10-09) reported two E402 diagnostics. `scripts/homebrew_formula.py` now loads the canonical pin helper with `importlib.import_module` after inserting its own script directory; formula/helper tests preserve file-based loading from another working directory. `scripts/verify_clean_install.py` retains the delayed `sesskit_dep` import because it deliberately inserts its own script directory first. That remaining diagnostic describes bootstrap ordering, not an observed runtime defect; no suppression is added. Its import-path risk is bounded to the maintainer tool and covered by the real clean-install release gate. Reassess the import if the script-loading contract changes.
 
 ### UI, terminal, and data acceptance
