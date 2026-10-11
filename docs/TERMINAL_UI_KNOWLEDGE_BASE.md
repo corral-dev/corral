@@ -225,6 +225,9 @@ stateDiagram-v2
 
 Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFilters`, `ProjectFilterModal`, `project_options`), with per-window selection state in `ui/nav.py` and the intersection in `SessionListView.visible_sessions()`. The installed Textual controls are reused directly; API references: [Button](https://textual.textualize.io/widgets/button/), [Grid](https://textual.textualize.io/styles/grid/grid_size/), [SelectionList](https://textual.textualize.io/widgets/selection_list/). Global full-text result navigation clears text/Active and conflicting runtime/project selections to reveal the chosen session.
 
+2026-10-11 acceptance: CLI 0.24.283 uses the same runtime colors in quick filters, New Session and handoff. The installed interpreter passed native terminal self-test (12 checks), full lint/test coverage (2343 tests, two environment-conditional skips), dark/light rendered captures, real mouse/keyboard toggles, More search, resize at 20/26/38/39 cells, adjacent runtime/project rows, unchanged option positions and deselection without underline. An ended unread-only fixture retained its red dot but disappeared under Active; opened idle fixtures were excluded too. The public still is generated from isolated sample sessions.
+
+
 | 目录（相对项目根） | 内容 | 关键文件 |
 |---|---|---|
 | `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`footer.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py`、`dragon_easter_egg.py`、`dragon_splash.py`、`ui/assets/dragon-grid.json` |
