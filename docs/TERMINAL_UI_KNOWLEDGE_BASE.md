@@ -52,30 +52,26 @@ The reviewed Mac/iPhone filter rows render their counts in separate native Text 
 while search is a native searchable field; they do not reuse the TUI placeholder
 count/staleness string. This source check does not claim fresh device visual acceptance.
 
-Acceptance covers 39-cell count/clear geometry, default and filtered counts, owned
-blank-row clicks, stable More width at 120 selections, native switch and whole-row
-clicks, retained switch identity, five-runtime packing, dark/light and English/Chinese
-captures. A native Switch frame sequence recorded intermediate slider positions
-between 0 and 1. The maintainer renderer's first chosen mono face lacks CJK glyphs;
-Chinese diagnostic captures selected the installed `LXGW WenKai Mono` through the
-existing screenshot font hook. This changes capture rendering only, not terminal fonts.
-The final complete gate ran all 2,344 expected tests with full coverage, no failures
-or warnings; the two skips were the unavailable fish shell and the optional
-zeroconf-missing branch when zeroconf is installed. Real tmux selftest passed all
-12 keyboard/hosting/cursor/copy scenarios. First-screen scan measured 8 ms with
-the existing warm provider cache; this is not a cold-scan claim.
-The CI stamp verifies the current source/environment. The workflow wrapper rejected
-its broader workspace receipt because screenshot/doc artifacts changed during the
-run; that rejection does not replace the CI stamp. Artwork/docs were then re-read
-and independently inspected. Installed acceptance passed on v0.24.284, then the expanded state matrix found
-a dynamically mounted project button still using the old renderer. The follow-up
-uses FilterChip for those buttons too, covering selected/hover fill and endcaps.
-On the installed executable, the matrix captures 22 states per theme (dark English and light Chinese): idle,
-focus/blur, matches/zero results/clear hover, seconds/minutes/hours, runtime and
-long-project selections, More 99+, Active with animation disabled, loading,
-load error, empty catalog, 499 sessions and an 80-cell terminal. Catalog cases
-use isolated synthetic fixtures; editing, clearing and toggle cases use Pilot
-interactions. Captures contain no user history.
+Acceptance on installed v0.24.286 covers 39-cell count/clear geometry, owned
+blank-row focus, filtered counts, stable More width at 120 selections, whole-row
+and native-switch clicks, retained switch identity and five-runtime packing.
+The matrix captures 22 states in dark English and light Chinese (44 images):
+idle/focus/blur, matches/zero results/clear hover, seconds/minutes/hours, runtime
+and long-project selection/hover, More 99+, Active without animation, loading,
+load error, empty catalog, 499 sessions and an 80-cell terminal. Four additional
+captures verify full-width lists and zero results in both themes. Catalog cases
+use isolated synthetic fixtures; editing, clearing and toggles use Pilot actions.
+A native Switch frame sequence shows intermediate positions between 0 and 1.
+Captures contain no user history. The renderer's first mono face lacks CJK glyphs;
+Chinese diagnostic captures select installed `LXGW WenKai Mono` via the existing
+font hook, changing capture rendering only, not the user's terminal fonts.
+The complete gate ran all 2,344 expected tests with full coverage, no failures or
+warnings. The two skips are unavailable fish and the optional zeroconf-missing
+branch when zeroconf is installed. Installed tmux selftest passed 12 real keyboard,
+hosting, cursor and copy scenarios. Clean isolated installation and universal2
+build pass. First-screen scan measured 8 ms with an existing warm provider cache;
+this does not establish cold-scan performance. CI stamps verify source/environment;
+broader workflow receipts additionally require unchanged workspace artifacts.
 
 ## §1 业务背景与核心概念
 
