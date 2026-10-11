@@ -119,6 +119,17 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
   </picture>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/iphone-sessions-dark.png">
+    <img src="docs/screenshots/iphone-sessions-light.png" alt="Corral iPhone 版会话列表（演示数据）" width="45%">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/iphone-chat-dark.png">
+    <img src="docs/screenshots/iphone-chat-light.png" alt="Corral iPhone 版代码评审对话（含工具调用）" width="45%">
+  </picture>
+</p>
+
 - **Mac：** 下载[签名版应用](https://github.com/corral-dev/corral-apple/releases/latest)（需要 macOS 26 及以上），之后会自动更新。
 - **iPhone：** 使用 Xcode [从源码构建](https://github.com/corral-dev/corral-apple/blob/main/README.zh-CN.md)。目前尚无公开的 App Store 或 TestFlight 下载。
 

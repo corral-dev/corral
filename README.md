@@ -119,6 +119,17 @@ The native app shows the same sessions as the terminal: read conversations side 
   </picture>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/iphone-sessions-dark.png">
+    <img src="docs/screenshots/iphone-sessions-light.png" alt="Corral for iPhone showing the session list with fictional development sessions" width="45%">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/iphone-chat-dark.png">
+    <img src="docs/screenshots/iphone-chat-light.png" alt="Corral for iPhone showing a code review conversation with tool activity" width="45%">
+  </picture>
+</p>
+
 - **Mac:** download the [signed app](https://github.com/corral-dev/corral-apple/releases/latest) (macOS 26+). It updates itself.
 - **iPhone:** [build from source](https://github.com/corral-dev/corral-apple#iphone) with Xcode. A public App Store or TestFlight download is not available yet.
 
