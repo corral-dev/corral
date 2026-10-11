@@ -26,7 +26,8 @@ The filter owns two rows: one capsule with `/`, the native Input, a separate rig
 match count/staleness label and a one-row clear action; the second row is transparent
 and clicking it focuses the Input. Counts remain visible while typing. Idle age uses
 seconds/minutes/hours. Loading, errors and an empty catalog hide the count.
-Runtime/project quick choices use independent half-block endcaps, stable width-aware
+Runtime/project quick choices, including dynamically mounted project buttons, use
+the same FilterChip renderer and independent half-block endcaps, stable width-aware
 packing and one final owned blank row. More reserves 11 cells, with counts above 99
 shown as `99+`. Hover/focus changes only the capsule fill: dark themes lighten and
 light themes darken, without frames or underlines. Runtime brand colors survive selection.
@@ -64,7 +65,15 @@ the existing warm provider cache; this is not a cold-scan claim.
 The CI stamp verifies the current source/environment. The workflow wrapper rejected
 its broader workspace receipt because screenshot/doc artifacts changed during the
 run; that rejection does not replace the CI stamp. Artwork/docs were then re-read
-and independently inspected. Installed acceptance remains required before delivery.
+and independently inspected. Installed acceptance passed on v0.24.284, then the expanded state matrix found
+a dynamically mounted project button still using the old renderer. The follow-up
+uses FilterChip for those buttons too, covering selected/hover fill and endcaps.
+On the installed executable, the matrix captures 22 states per theme (dark English and light Chinese): idle,
+focus/blur, matches/zero results/clear hover, seconds/minutes/hours, runtime and
+long-project selections, More 99+, Active with animation disabled, loading,
+load error, empty catalog, 499 sessions and an 80-cell terminal. Catalog cases
+use isolated synthetic fixtures; editing, clearing and toggle cases use Pilot
+interactions. Captures contain no user history.
 
 ## §1 业务背景与核心概念
 

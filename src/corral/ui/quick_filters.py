@@ -210,7 +210,7 @@ class QuickFilters(Vertical):
             for i, path in enumerate(paths):
                 choices.extend([
                     Static("", id=f"project-choice-{i}-gap", classes="filter-gap project-gap"),
-                    Button(Text(fit_cell(labels[path], 16, ellipsis=True).rstrip()), name=path,
+                    FilterChip(Text(fit_cell(labels[path], 16, ellipsis=True).rstrip()), name=path,
                            id=f"project-choice-{i}", classes="project-choice",
                            tooltip=path or t("filter.no_project"), compact=True),
                 ])
