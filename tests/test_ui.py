@@ -4577,6 +4577,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.click(clear)
                     await pilot.pause()
                     self.assertTrue(search.has_focus)
+                    with mock.patch.object(store, "get_load_error", return_value="Permission denied"):
+                        app.screen._update_header()
+                        await pilot.pause()
+                        self.assertEqual(str(metadata.render()), "")
+                        self.assertTrue(search.placeholder.startswith("Load failed:"))
+                        self.assertIn("Permission denied", search.placeholder[:search.content_size.width])
+                    app.screen._update_header()
                     filters = app.screen.query_one(QuickFilters)
                     project_chip = filters.query_one("#project-choice-0", FilterChip)
                     await pilot.click(project_chip)

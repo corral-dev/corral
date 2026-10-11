@@ -138,12 +138,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "filter.age_minutes": {"en": "{age}m ago", "zh": "{age} 分钟前"},
     "filter.age_hours": {"en": "{age}h ago", "zh": "{age} 小时前"},
     "filter.load_error": {
-        "en": "Filter projects, titles — {error}; retrying",
-        "zh": "筛选项目、标题 — {error}；正在自动重试",
+        "en": "Load failed: {error}; retrying",
+        "zh": "加载失败：{error}；正在自动重试",
     },
     "filter.no_sessions": {
-        "en": "Filter projects, titles — no {names} sessions found",
-        "zh": "筛选项目、标题 — 未找到任何 {names} 会话记录",
+        "en": "No sessions found ({names})",
+        "zh": "未找到会话（{names}）",
     },
     "filter.clear": {
         "en": "×",

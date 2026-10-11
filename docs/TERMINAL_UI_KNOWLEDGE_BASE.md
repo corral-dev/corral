@@ -25,7 +25,9 @@ The adopted header redesign keeps the 39-cell sidebar and existing filter semant
 The filter owns two rows: one capsule with `/`, the native Input, a separate right-aligned
 match count/staleness label and a one-row clear action; the second row is transparent
 and clicking it focuses the Input. Counts remain visible while typing. Idle age uses
-seconds/minutes/hours. Loading, errors and an empty catalog hide the count.
+seconds/minutes/hours. Loading, errors and an empty catalog hide the count. Error and empty-catalog
+hints put the outcome first, without repeating the normal filter instruction,
+so a 39-cell sidebar reveals the reason before any runtime names or retry suffix.
 Runtime/project quick choices, including dynamically mounted project buttons, use
 the same FilterChip renderer and independent half-block endcaps, stable width-aware
 packing and one final owned blank row. More reserves 11 cells, with counts above 99
