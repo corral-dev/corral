@@ -179,6 +179,8 @@ def _is_human_claude_user(entry: dict) -> bool:
 
 
 def _inspect_claude(session: dict) -> AttentionEvidence:
+    from corral.scan import claude as scan_claude
+
     path = str(session.get("path") or "")
     entries = _read_jsonl_tail(path)
     if not entries:
@@ -195,10 +197,11 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
         native = _event_native(entry, "uuid", "id", "timestamp")
         if _is_human_claude_user(entry):
             observed_at = _advance_observed(observed_at, entry.get("timestamp"))
-            # Claude 的中断标记是固定协议值，不做自然语言近似匹配。
+            # Claude's interrupt markers are fixed protocol values owned by SessKit
+            # (plain and tool-use variants), never natural-language matches.
             message = entry.get("message") or {}
             content = message.get("content") if isinstance(message, dict) else None
-            if content == "[Request interrupted by user]":
+            if scan_claude.is_interrupted_marker(scan_claude.extract_text(content or "")):
                 phase = "idle"
                 activity_token = _token("claude", "interrupted", native)
             # 用户开口不是执行证据。常驻窗口停在输入框时最后一条常常是 user。

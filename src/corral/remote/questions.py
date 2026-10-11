@@ -91,6 +91,10 @@ def pending_prompts(session: dict, messages: list[richmsg.RichMessage]) -> list[
     if runtime not in ANSWERABLE_RUNTIMES:
         for entry in prompts:
             entry["allow_custom"] = False
+    for entry in prompts:
+        # The picker owns the keyboard: chat input would be refused, so
+        # clients keep the draft instead of staging a bubble.
+        entry["blocks_input"] = runtime in KEY_RUNTIMES and entry.get("name") != _ASYNC_TOOL
     return prompts
 
 

@@ -1260,7 +1260,7 @@ def _parse_claude_legacy(reader: RichReader) -> list[RichMessage]:
     extend: all new Claude phone behavior goes through the SessKit projection.
     Remove once the minimum SessKit version provides the reader API.
     """
-    from corral.scan.claude import INTERRUPTED_MARKER, entry_time, extract_text
+    from corral.scan.claude import entry_time, extract_text, is_interrupted_marker
     try:
         from corral.scan.claude import system_error_text
     except ImportError:
@@ -1323,7 +1323,7 @@ def _parse_claude_legacy(reader: RichReader) -> list[RichMessage]:
                 continue
             text = extract_text(content or "")
             clipped = _clip(text or "", _MAX_TEXT)
-            if clipped and clipped != INTERRUPTED_MARKER and not _phone_injected_user(clipped):
+            if clipped and not is_interrupted_marker(clipped) and not _phone_injected_user(clipped):
                 _flush_pending_error()
                 messages.append(RichMessage(reader._next_seq(), "user", clipped, timestamp))
             continue

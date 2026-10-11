@@ -224,9 +224,15 @@ def new_session_ident() -> str:
     return uuid.uuid4().hex[:8]
 
 
-def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
-    """把原始启动计划包进 tmux `new-session -A`：会话不存在则创建，已存在则直接接入。"""
-    identity_env: list[str] = []
+def hosted_identity(
+    plan: LaunchPlan, runtime_id: str, ident: str,
+) -> tuple[LaunchPlan, list[str]]:
+    """Prepare a hosted launch so its pane reports its exact session identity.
+
+    Every hosted launch path (``wrap_plan`` and ``embed.host_session``) must call
+    this; a path that skips it leaves the pane provisional with no claim.
+    Returns the plan to run and extra ``tmux new-session -e`` pairs.
+    """
     if runtime_id == "pi":
         from corral import pi_identity
         from corral.runtime.pi import bind_hosted_ident
@@ -236,14 +242,20 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
         # pane 注入稳定 instance；claim 由扩展写入，Corral 只按 claim 精确绑定。
         # 安装失败直接抛错中止启动，禁止静默退回 cwd/mtime 猜测。
         pi_identity.ensure_extension_installed()
-        identity_env = pi_identity.instance_env_pairs(pi_identity.new_instance_id())
-    elif runtime_id == "codex":
+        return plan, pi_identity.instance_env_pairs(pi_identity.new_instance_id())
+    if runtime_id == "codex":
         # The exact thread id comes from this pane's own app-server responses.
         # Do not rely on an optional PATH wrapper or infer identity from cwd.
         plan = LaunchPlan(
             argv=(sys.executable, "-m", "corral.codex_proxy", "--", *plan.argv),
             cwd=plan.cwd,
         )
+    return plan, []
+
+
+def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
+    """把原始启动计划包进 tmux `new-session -A`：会话不存在则创建，已存在则直接接入。"""
+    plan, identity_env = hosted_identity(plan, runtime_id, ident)
     name = _session_name(runtime_id, ident)
     ensure_server()
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]

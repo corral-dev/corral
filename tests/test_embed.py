@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
 from corral import embed, liveness
 from corral.models import LaunchPlan
@@ -181,6 +182,31 @@ class HostSessionTests(unittest.TestCase):
         )
         self.assertTrue(
             any(pair.startswith(pi_identity.CLAIM_PATH_ENV + "=") for pair in env_pairs)
+        )
+
+    def test_codex_new_session_runs_identity_proxy_with_claim_path(self):
+        """Embedded Codex panes must write claims exactly like wrap_plan panes."""
+        from corral import codex_identity
+
+        plan = LaunchPlan(
+            argv=("codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"),
+            cwd="/tmp/work",
+        )
+        embed._manual_window_size_sockets.clear()
+        with tempfile.TemporaryDirectory() as claims, \
+                mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
+                mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
+                mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(codex_identity, "CLAIM_DIR", Path(claims)):
+            embed.host_session(plan, "codex", "b287ae22", 120, 40)
+        argv = self._new_session_argv(run)
+        tail = argv[argv.index("--") + 1:]
+        self.assertEqual(tail[1:4], ["-m", "corral.codex_proxy", "--"])
+        self.assertEqual(tuple(tail[4:]), plan.argv)
+        env_pairs = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-e"]
+        self.assertTrue(
+            any(pair.startswith(codex_identity.CLAIM_PATH_ENV + "=") for pair in env_pairs)
         )
 
     def test_duplicate_session_falls_back_to_reuse(self):

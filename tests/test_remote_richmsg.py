@@ -474,6 +474,11 @@ class ClaudeRichmsgTests(unittest.TestCase):
                     },
                     {
                         "type": "user",
+                        "message": {"role": "user", "content": [
+                            {"type": "text", "text": "[Request interrupted by user for tool use]"}]},
+                    },
+                    {
+                        "type": "user",
                         "origin": {"kind": "human"},
                         "message": {"role": "user", "content": "<task-notification>伪装成人话"},
                     },

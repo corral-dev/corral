@@ -111,19 +111,14 @@ def host_session(
     查询之间，仍然存在无法从时序上完全消灭的竞态窗口——这是 tmux 控制协议本
     身的限制，不是可以单靠调整 corral 这边调用顺序解决的。
     """
-    identity_env: list[str] = []
-    if runtime_id == "pi":
-        from corral import pi_identity
-        from corral.runtime.pi import bind_hosted_ident
+    from corral.pi_identity import PiExtensionInstallError
 
-        plan = bind_hosted_ident(plan, ident)
-        # 身份桥：安装 corral-session-identity 扩展并注入 pane instance；
-        # 失败则中止这条托管启动，绝不静默退回猜测绑定。
-        try:
-            pi_identity.ensure_extension_installed()
-        except pi_identity.PiExtensionInstallError as exc:
-            raise EmbedError(str(exc)) from exc
-        identity_env = pi_identity.instance_env_pairs(pi_identity.new_instance_id())
+    # 身份桥与 wrap_plan 同源：Pi 扩展 + instance、Codex app-server 代理。
+    # Pi 扩展安装失败则中止这条托管启动，绝不静默退回猜测绑定。
+    try:
+        plan, identity_env = keepalive.hosted_identity(plan, runtime_id, ident)
+    except PiExtensionInstallError as exc:
+        raise EmbedError(str(exc)) from exc
     # 新开托管前先压一轮：超软上限时关掉闲置够久且非执行中的旧会话。
     keepalive.reap_pressure()
     keepalive.ensure_server()

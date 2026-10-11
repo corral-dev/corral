@@ -78,6 +78,8 @@ class NativePromptTests(unittest.TestCase):
         )
         self.assertTrue(prompt["allow_custom"])
         self.assertFalse(prompt["multi_select"])
+        # Claude's picker owns the keyboard, so clients keep chat drafts.
+        self.assertTrue(prompt["blocks_input"])
 
     def test_multi_question_request_shares_identity(self) -> None:
         prompts = self._prompts([COLOR, PETS])
@@ -96,6 +98,24 @@ class NativePromptTests(unittest.TestCase):
         restored = richmsg.ToolCall.from_dict(tool.to_dict())
         self.assertEqual(restored.questions_meta, tool.questions_meta)
 
+    def test_only_picker_questions_block_chat_input(self) -> None:
+        # Codex async questions have no picker: a chat message is a valid reply.
+        def ask(name: str) -> list[richmsg.RichMessage]:
+            tool = richmsg.ToolCall(
+                call_id="q",
+                name=name,
+                kind="question",
+                summary=name,
+                questions_meta=[{"id": "0", "prompt": "Go?", "options": [{"id": "0", "label": "Yes"}]}],
+            )
+            return [richmsg.RichMessage(seq=1, role="assistant", tools=[tool])]
+
+        with mock.patch("corral.attention_signals.codex_async_question_state", return_value=None):
+            [sync] = questions.pending_prompts({"source": "codex"}, ask("request_user_input"))
+            [async_] = questions.pending_prompts({"source": "codex"}, ask("request_user_input_async"))
+        self.assertTrue(sync["blocks_input"])
+        self.assertFalse(async_["blocks_input"])
+
     def test_runtime_without_answer_path_disables_typed_answers(self) -> None:
         tool = richmsg.ToolCall(
             call_id="q",
@@ -107,6 +127,7 @@ class NativePromptTests(unittest.TestCase):
         messages = [richmsg.RichMessage(seq=1, role="assistant", tools=[tool])]
         [prompt] = questions.pending_prompts({"source": "cursor"}, messages)
         self.assertFalse(prompt["allow_custom"])
+        self.assertFalse(prompt["blocks_input"])
 
 
 def _entries(meta: list[dict], request_id: str = "r") -> list[dict]:

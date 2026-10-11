@@ -59,6 +59,27 @@ class ClaudeAttentionSignalTests(unittest.TestCase):
             self.assertEqual(evidence.phase, "working")
             self.assertIsNone(evidence.question_token)
 
+    def test_tool_use_interrupt_ends_live_turn(self) -> None:
+        # Esc during a Bash call: Claude rejects the tool, then writes the
+        # tool-use variant of its interrupt marker.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            _write_jsonl(path, [
+                {"type": "user", "uuid": "u1", "timestamp": "2026-10-11T15:27:00Z",
+                 "message": {"role": "user", "content": "Run sleep 60."}},
+                {"type": "assistant", "uuid": "a1", "timestamp": "2026-10-11T15:27:05Z",
+                 "message": {"role": "assistant", "content": [
+                     {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}]}},
+                {"type": "user", "uuid": "u2", "timestamp": "2026-10-11T15:27:30Z",
+                 "message": {"role": "user", "content": [
+                     {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True,
+                      "content": "The user doesn't want to proceed with this tool use."}]}},
+                {"type": "user", "uuid": "u3", "timestamp": "2026-10-11T15:27:30Z",
+                 "message": {"role": "user", "content": [
+                     {"type": "text", "text": "[Request interrupted by user for tool use]"}]}},
+            ])
+            self.assertEqual(inspect_session(_session("claude", path)).phase, "idle")
+
     def test_turn_duration_is_idle_and_agent_token_does_not_hash_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "claude.jsonl"
