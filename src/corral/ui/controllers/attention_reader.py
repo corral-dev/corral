@@ -36,10 +36,6 @@ class AttentionReaderMixin:
     def _begin_selected_attention_read(self) -> None:
         if not self.embed_ok:
             return
-        if getattr(self, "_activity_board_active", False):
-            # 活动看板入口不是会话键；右栏格子才是正在看的内容。
-            self._begin_attention_read()
-            return
         key = self.query_one(SessionListView)._displayed_selected_key()
         if key is None:
             return

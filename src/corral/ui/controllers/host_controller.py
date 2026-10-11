@@ -74,7 +74,6 @@ class HostControllerMixin:
                 return
             if (
                 add_pane
-                and not getattr(self, "_board_skips_split_cap", lambda: False)()
                 and (area.pane_count() + self._host_pending) >= MAX_PANES
             ):
                 self.notify(t("split.full", n=MAX_PANES))
@@ -98,7 +97,6 @@ class HostControllerMixin:
                 return
             if (
                 add_pane
-                and not getattr(self, "_board_skips_split_cap", lambda: False)()
                 and (area.pane_count() + self._host_pending) >= MAX_PANES
             ):
                 self.notify(t("split.full", n=MAX_PANES))
@@ -164,7 +162,6 @@ class HostControllerMixin:
     def _on_host_failed(self) -> None:
         """host worker 失败收尾：释放托管计数并给用户终端响铃。"""
         self._host_pending = max(0, self._host_pending - 1)
-        self._shell_after_board = False
         self._restore_direct_search_focus()
         self.app.bell()
 
@@ -224,12 +221,6 @@ class HostControllerMixin:
             fallback = self._detail_renderer_for(current)
         # 新建 / 接力托管成功同样是明确意图：用户就是来跟这个新会话说话的。
         autofocus = self._can_autofocus()
-        if getattr(self, "_activity_board_active", False):
-            # 看板自己按关注态铺格，不要把新托管塞进持久组或切走侧栏。
-            self._begin_attention_read(corral.session_key(current))
-            self.call_next(self._rebuild_list, None)
-            self._show_activity_board(focus_pane=autofocus)
-            return
         if add_pane:
             area.add_hosted_pane(
                 current, name, fallback, focus=True, focus_pane=autofocus,
@@ -271,18 +262,14 @@ class HostControllerMixin:
         from corral.split_layout import MAX_PANES
 
         area = self._split_area()
-        replace_board = bool(getattr(self, "_shell_after_board", False))
-        if not replace_board and not area.can_add_pane():
+        if not area.can_add_pane():
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
         if self._host_pending > 0:
             self.app.bell()
             return
-        if (
-            not replace_board
-            and area.pane_count() + self._host_pending >= MAX_PANES
-        ):
+        if area.pane_count() + self._host_pending >= MAX_PANES:
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
@@ -335,21 +322,6 @@ class HostControllerMixin:
             title=t("shell.pane_title"),
             cwd=cwd,
         )
-        if getattr(self, "_shell_after_board", False):
-            # 看板格子是异步挂载的，不能往仍占着的四格上再加终端；整页换成这一格。
-            self._shell_after_board = False
-            import corral
-
-            key = corral.session_key(current)
-            project = corral._normalize_cwd(cwd) or cwd
-            area.show_hosted_group(
-                project,
-                [(current, name, None)],
-                focus_key=key,
-                focus_pane=self._can_autofocus(),
-            )
-            self._persist_split_composition()
-            return
         area.add_hosted_pane(
             current,
             name,

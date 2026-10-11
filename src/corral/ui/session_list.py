@@ -54,15 +54,15 @@ if TYPE_CHECKING:
     from corral.split_layout import SplitGroup, SplitLayoutStore
 
 from corral.activity_board import (
-    BoardSnapshot,
     active_marker_style,
     resolve_active_marker,
 )
 from corral.i18n import t
+from corral.projects import normalize_cwd
 
 NEW_SESSION_ID = "__new_session__"
-ACTIVITY_BOARD_ID = "__activity_board__"
-STICKY_IDS = (NEW_SESSION_ID, ACTIVITY_BOARD_ID)
+ACTIVE_FILTER_ID = "__active_filter__"
+STICKY_IDS = (NEW_SESSION_ID, ACTIVE_FILTER_ID)
 _STICKY_ID_SET = frozenset(STICKY_IDS)
 PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
@@ -159,15 +159,6 @@ def _focused_live_session_key(focused) -> str | None:
         # 只有 EmbedPane 有 dead；其它控件（列表、搜索框）一律不算持有右栏输入
         return None
     return _pane_session_key(getattr(focused, "parent", None), require_live=True)
-
-
-def _focused_board_session_key(focused) -> str | None:
-    """看板用：焦点所在格的会话键，格子刚结束也算。
-
-    `_focused_live_session_key` 要求格子还活着：会话一结束 `dead` 或托管名清空，
-    钉住会被清掉，格子当场从看板消失。看板里用户可能还在看收尾。
-    """
-    return _pane_session_key(focused, require_live=False)
 
 
 def _pane_session_key(focused, *, require_live: bool) -> str | None:
@@ -618,20 +609,16 @@ class SessionCard(Widget):
         return out
 
 
-def _member_titles(member_sessions: tuple[dict, ...], display_titles: dict) -> tuple[str, ...]:
-    """分屏成员当前行标题（与成员卡同源），按分屏格顺序，供拼分屏显示名。"""
-    import corral
-
-    return tuple(
-        str(display_titles.get(corral.session_key(session), session.get("fallback_title") or ""))
-        for session in member_sessions
-    )
+def split_project_name(group: SplitGroup) -> str:
+    """分屏在界面上的称呼：所在项目名（分屏不起名、不拼成员标题）。"""
+    project = os.path.basename(group.project_cwd.rstrip(os.sep))
+    return project or t("project.unknown")
 
 
 class SessionGroupCard(Widget):
-    """分屏三行卡：展开三角+显示名 / 项目·分屏·数量 / 空白行（高度与会话卡统一为 3）。
+    """分屏三行卡：展开三角+「分屏 · 项目」/ 成员数 / 树干或收起汇总（高度与会话卡统一为 3）。
 
-    显示名是用户起的名字，未命名时按分屏格顺序拼成员标题（`split_layout.group_display_name`）；
+    分屏不起名、不拼成员标题：成员标题展开后就在下面，收起时一行也放不下；
     内部水果身份名不展示。
 
     第三行故意留空：成员各自已有时间，组卡再写「最近活动」是重复噪音。
@@ -657,26 +644,16 @@ class SessionGroupCard(Widget):
         member_sessions: tuple[dict, ...],
         *,
         pinned: bool = False,
-        member_titles: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self.group = group
         self.member_sessions = member_sessions
         self.pinned = pinned
-        self.member_titles = member_titles
         self._render_signature = self._compute_signature()
-
-    @property
-    def display_name(self) -> str:
-        from corral.split_layout import group_display_name
-
-        return group_display_name(self.group.name, self.member_titles)
 
     def _compute_signature(self) -> tuple:
         # 收起时汇总含「刚刚」绿点，须随成员关注态 / 托管 / 新鲜度更新。
         return (
-            self.group.name,
-            self.member_titles,
             self.group.project_cwd,
             self.group.collapsed,
             self.pinned,
@@ -737,12 +714,10 @@ class SessionGroupCard(Widget):
         member_sessions: tuple[dict, ...],
         *,
         pinned: bool = False,
-        member_titles: tuple[str, ...] = (),
     ) -> bool:
         self.group = group
         self.member_sessions = member_sessions
         self.pinned = pinned
-        self.member_titles = member_titles
         signature = self._compute_signature()
         changed = signature != self._render_signature
         self._render_signature = signature
@@ -763,12 +738,10 @@ class SessionGroupCard(Widget):
         width = max(10, self.size.width or 40)
         arrow = "▶" if self.group.collapsed else "▼"
         pin = " ↑" if self.pinned else ""
-        # 前缀宽度固定：第二行项目名从同一列起笔，和显示名左对齐。
+        # 前缀宽度固定：第二行成员数从同一列起笔，和「分屏」左对齐。
         name_prefix = f"{arrow}{pin} "
-        title = corral._fit_cell(f"{name_prefix}{self.display_name}", width)
-        project = os.path.basename(self.group.project_cwd.rstrip(os.sep))
-        if not project:
-            project = t("project.unknown")
+        label = f"{t('group.split_label')} · {split_project_name(self.group)}"
+        title = corral._fit_cell(f"{name_prefix}{label}", width)
         count = len(self.member_sessions)
         count_key = "group.session_count_one" if count == 1 else "group.session_count"
         indent = " " * corral._text_width(name_prefix)
@@ -776,25 +749,22 @@ class SessionGroupCard(Widget):
         # 不画这条线，避免把已隐藏的内容误画成还在列表里。
         branch_prefix = "│" if not self.group.collapsed else " "
         lower_indent = branch_prefix + indent[1:]
-        count_cell = f" · {t('group.split_label')} · {t(count_key, count=count)}"
-        project_cell = corral._fit_cell(
-            f"{lower_indent}{project}",
-            max(1, width - corral._text_width(count_cell)),
-        )
+        tree_style = self._tree_style()
+        count_cell = corral._fit_cell(t(count_key, count=count), max(1, width - len(lower_indent)))
         title = title.rstrip()
         out = Text()
         out.append(title, style="bold")
         out.append(" " * max(0, width - corral._text_width(title)))
         out.append("\n")
-        out.append(project_cell.rstrip(), style="bold")
+        out.append(lower_indent, style=tree_style)
         out.append(count_cell.rstrip(), style="dim")
-        out.append(" " * max(0, width - corral._text_width(project_cell.rstrip() + count_cell.rstrip())))
+        out.append(" " * max(0, width - len(lower_indent) - corral._text_width(count_cell.rstrip())))
         out.append("\n")
         # 收起后成员卡不可见，第三行改为状态汇总；展开时仍留白，避免与成员卡重复。
         if self.group.collapsed:
             out.append_text(self._collapsed_attention_summary(width, indent))
         else:
-            out.append(branch_prefix + " " * (width - 1), style=self._tree_style())
+            out.append(branch_prefix + " " * (width - 1), style=tree_style)
         return out
 
 
@@ -818,181 +788,44 @@ class NewSessionCard(Widget):
         return Text(t("list.new_session"), style="bold") + Text("\n")
 
 
-def activity_board_label(snap: BoardSnapshot | None) -> str:
-    """侧栏入口首行文案：没人盯时只写名称；有人时写成「活跃会话 · N 个会话」。
+class ActiveFilterCard(Widget):
+    """列表顶部「活跃」筛选开关：名称 + 有圆点的会话数，末行间隔（总高 2）。
 
-    页码不写进这段：只有一页时保持干净；多于一页时由第二行「上一页 / 下一页」承担。
+    开启时贴 `-on`（与筛选框有关键字时同一套 `$warning` 字 + `$primary-muted` 底），
+    用户一眼看出列表为什么变少。回车 / 单击切换，由主屏处理。
     """
-    if snap is None or not snap.total:
-        return t("list.activity_board")
-    count = (
-        t("group.session_count_one")
-        if snap.total == 1
-        else t("group.session_count", count=snap.total)
-    )
-    return t("list.activity_board_count", count=count)
-
-
-def activity_board_pager_text(snap: BoardSnapshot | None) -> str:
-    """多于一页时返回 ``1/2``；只有一页或没人时为空。"""
-    if snap is None or snap.page_count <= 1:
-        return ""
-    return f"{snap.page + 1}/{snap.page_count}"
-
-
-@dataclass(frozen=True)
-class BoardRowLayout:
-    """活跃会话入口三行：首行名称、第二行上一页/下一页、第三行留白。"""
-
-    label: str
-    waiting: bool
-    show_pager: bool
-    prev_label: str
-    next_label: str
-    page_text: str
-    prev_start: int
-    prev_end: int
-    next_start: int
-    next_end: int
-    page_start: int
-
-    def hit(self, x: int, y: int = 0) -> int | None:
-        """点在第二行上一页 / 下一页上返回 -1 / 1；点在第二行其余位置返回 0；其它行返回 None。"""
-        if y != 1 or not self.show_pager:
-            return None
-        if self.prev_start <= x < self.prev_end:
-            return -1
-        if self.next_start <= x < self.next_end:
-            return 1
-        return 0
-
-
-def layout_activity_board_row(
-    snap: BoardSnapshot | None, width: int
-) -> BoardRowLayout:
-    """按侧栏宽度排入口三行，给绘制和点击命中共用。"""
-    import corral
-
-    width = max(10, width)
-    label = activity_board_label(snap)
-    waiting = bool(snap is not None and snap.waiting_off_page)
-    extra = 2 if waiting else 0
-    fitted = corral._fit_cell(label, max(1, width - extra)).rstrip()
-    show_pager = bool(snap is not None and snap.page_count > 1)
-    prev_label = t("action.board_prev") if show_pager else ""
-    next_label = t("action.board_next") if show_pager else ""
-    page_text = activity_board_pager_text(snap) if show_pager else ""
-    prev_w = corral._text_width(prev_label)
-    next_w = corral._text_width(next_label)
-    page_w = corral._text_width(page_text)
-    min_gap = 1 + page_w + (1 if page_w else 0)
-    if show_pager and prev_w + next_w + min_gap > width:
-        budget = max(2, width - min_gap)
-        prev_budget = max(1, budget // 2)
-        next_budget = max(1, budget - prev_budget)
-        prev_label = corral._fit_cell(prev_label, prev_budget).rstrip()
-        next_label = corral._fit_cell(next_label, next_budget).rstrip()
-        prev_w = corral._text_width(prev_label)
-        next_w = corral._text_width(next_label)
-    prev_start = 0
-    prev_end = prev_w
-    next_start = width - next_w if next_label else width
-    next_end = width if next_label else width
-    gap_start = prev_end
-    gap_end = next_start
-    gap = gap_end - gap_start
-    if page_text and gap >= page_w + 2:
-        page_start = gap_start + (gap - page_w) // 2
-    else:
-        page_text = ""
-        page_start = -1
-    return BoardRowLayout(
-        label=fitted,
-        waiting=waiting,
-        show_pager=show_pager,
-        prev_label=prev_label,
-        next_label=next_label,
-        page_text=page_text,
-        prev_start=prev_start,
-        prev_end=prev_end,
-        next_start=next_start,
-        next_end=next_end,
-        page_start=page_start,
-    )
-
-
-class ActivityBoardCard(Widget):
-    """列表顶部「活跃会话」看板入口：名称 + 翻页 + 末行间隔（总高 3）。"""
 
     ALLOW_SELECT = False
 
     DEFAULT_CSS = """
-    ActivityBoardCard {
-        height: 3;
+    ActiveFilterCard {
+        height: 2;
         width: 1fr;
         pointer: pointer;
+    }
+    ActiveFilterCard.-on {
+        color: $warning;
+        background: $primary-muted;
     }
     """
 
     def __init__(self, owner: SessionListView, **kwargs) -> None:
         super().__init__(**kwargs)
         self._owner = owner
-        self._row_layout: BoardRowLayout | None = None
+
+    def on_mount(self) -> None:
+        self.sync()
+
+    def sync(self) -> None:
+        self.set_class(self._owner.nav.active_only, "-on")
+        self.refresh()
 
     def render(self) -> Text:
-        import corral
-
-        snap = self._owner.board_snapshot
-        width = max(10, self.size.width or 39)
-        layout = layout_activity_board_row(snap, width)
-        self._row_layout = layout
-        out = Text(layout.label, style="bold")
-        used = corral._text_width(layout.label)
-        if layout.waiting:
-            out.append(" ")
-            out.append("●", style="bold yellow")
-            used += 2
-        pad = max(0, width - used)
-        if pad:
-            out.append(" " * pad)
-        out.append("\n")
-        if layout.show_pager:
-            cur = 0
-            if layout.prev_label:
-                out.append(layout.prev_label)
-                cur = layout.prev_end
-            if layout.page_text and layout.page_start >= 0:
-                gap = max(0, layout.page_start - cur)
-                if gap:
-                    out.append(" " * gap)
-                out.append(layout.page_text, style="dim")
-                cur = layout.page_start + corral._text_width(layout.page_text)
-            if layout.next_label:
-                gap = max(0, layout.next_start - cur)
-                if gap:
-                    out.append(" " * gap)
-                out.append(layout.next_label)
-                cur = layout.next_end
-            pad = max(0, width - cur)
-            if pad:
-                out.append(" " * pad)
-        out.append("\n")
-        return out
-
-    def on_click(self, event: events.Click) -> None:
-        layout = self._row_layout
-        if layout is None:
-            layout = layout_activity_board_row(
-                self._owner.board_snapshot, max(10, self.size.width or 39)
-            )
-        delta = layout.hit(event.x, event.y)
-        if delta is None:
-            return
-        event.stop()
-        screen = self.screen
-        page = getattr(screen, "_page_activity_board", None)
-        if callable(page):
-            page(delta, from_click=True)
+        on = self._owner.nav.active_only
+        out = Text("* " if on else "", style="bold")
+        out.append(t("list.active_filter"), style="bold")
+        out.append(f"  ·  {self._owner.active_count()}", style="" if on else "dim")
+        return out + Text("\n")
 
 
 class PinSeparatorCard(Widget):
@@ -1344,7 +1177,8 @@ class SessionListView(Vertical):
         self._tail_items: list[ListItem] = []
         self._tail_rows: list[_SidebarRow] | None = None
         self._tail_token = -1
-        self.board_snapshot: BoardSnapshot | None = None
+        # 右栏当前开着的会话：活跃筛选开启时也照列（打开未读会话会变已读）。
+        self._open_keys: frozenset[str] = frozenset()
         self._older_stack_expanded = False
 
     def compose(self) -> ComposeResult:
@@ -1683,7 +1517,6 @@ class SessionListView(Vertical):
                     row.group,
                     row.member_sessions,
                     pinned=row.pinned,
-                    member_titles=_member_titles(row.member_sessions, display_titles),
                 )
             elif isinstance(widget, SessionCard) and row.session is not None:
                 key = corral.session_key(row.session)
@@ -1699,32 +1532,24 @@ class SessionListView(Vertical):
         import corral
         from corral.models import SHELL_RUNTIME_ID
 
-        display_titles = self.store.snapshot()
-        sessions = self.store.all_sessions()
         visible = corral._filter_sessions_by_query(
             self.store.all_sessions(),
             self.nav.project_query,
-            titles=display_titles,
+            titles=self.store.snapshot(),
         )
-        visible = [
-            session for session in visible if session.get("source") != SHELL_RUNTIME_ID
+        active_only = self.nav.active_only
+        return [
+            session
+            for session in visible
+            if session.get("source") != SHELL_RUNTIME_ID
+            and (not self.nav.runtime_filters or session.get("source") in self.nav.runtime_filters)
+            and (not self.nav.project_filters or normalize_cwd(session.get("cwd")) in self.nav.project_filters)
+            and (
+                not active_only
+                or resolve_active_marker(session)
+                or corral.session_key(session) in self._open_keys
+            )
         ]
-        query = self.nav.project_query.strip().casefold()
-        if not query or self.group_store is None:
-            return visible
-        from corral.split_layout import custom_group_name
-
-        visible_keys = {corral.session_key(session) for session in visible}
-        by_key = {corral.session_key(session): session for session in sessions}
-        for group in self.group_store.groups.values():
-            if query not in custom_group_name(group.name).casefold():
-                continue
-            for key in group.session_keys:
-                session = by_key.get(key)
-                if session is not None and key not in visible_keys:
-                    visible.append(session)
-                    visible_keys.add(key)
-        return visible
 
     def _sidebar_rows(self) -> list[_SidebarRow]:
         """把持久会话组投影成「组卡 + 缩进子会话」，其余会话保持扁平。
@@ -1741,7 +1566,8 @@ class SessionListView(Vertical):
         by_key = {corral.session_key(session): session for session in sessions}
         filtered = self.visible_sessions()
         filtered_keys = {corral.session_key(session) for session in filtered}
-        query = self.nav.project_query.strip().casefold()
+        # 关键字或活跃筛选任一生效都算「在筛」：组只认看得见的成员，收起的组展开。
+        narrowing = self.nav.narrowing
         pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
         unpinned_by_id: dict[str, list[_SidebarRow]] = {}
         grouped_keys: set[str] = set()
@@ -1749,7 +1575,6 @@ class SessionListView(Vertical):
 
         if self.group_store is not None:
             from corral.models import is_shell_session
-            from corral.split_layout import custom_group_name
 
             for group in self.group_store.ordered_groups():
                 # 终端 pane 会随分屏组合一起持久化成组员，但它不挂任何运行时；
@@ -1763,19 +1588,16 @@ class SessionListView(Vertical):
                 # 历史记录缺失或会话已被明确删除后，侧边栏不显示空壳组。
                 if len(all_members) < 2:
                     continue
-                group_matches = bool(
-                    query and query in custom_group_name(group.name).casefold()
-                )
                 members = (
                     all_members
-                    if not query or group_matches
+                    if not narrowing
                     else tuple(
                         session
                         for session in all_members
                         if corral.session_key(session) in filtered_keys
                     )
                 )
-                if query and not members:
+                if narrowing and not members:
                     continue
                 # 当前筛选下看得见的成员不足 2：解散为独立会话，好让单会话置顶
                 # 重新生效（跨项目组分屏 + 按项目名筛选时的真实事故）。
@@ -1793,7 +1615,7 @@ class SessionListView(Vertical):
                     pinned=group.group_id in self.group_store.pinned_group_ids,
                 )
                 child_rows: list[_SidebarRow] = []
-                if not group.collapsed or query:
+                if not group.collapsed or narrowing:
                     for index, session in enumerate(members):
                         child_rows.append(
                             _SidebarRow(
@@ -1918,7 +1740,7 @@ class SessionListView(Vertical):
         # look at. An all-older list should open flat — a lone stack gate with
         # no recent sessions above it is just an extra click for no gain.
         expand_older = (
-            self._older_stack_expanded or bool(query) or not has_recent
+            self._older_stack_expanded or narrowing or not has_recent
         )
         count = _count_top_level_blocks(older_rows)
         if count > 0 and has_recent:
@@ -1961,8 +1783,8 @@ class SessionListView(Vertical):
     def is_new_session_selected(self) -> bool:
         return self._selected_item_id() == NEW_SESSION_ID
 
-    def is_activity_board_selected(self) -> bool:
-        return self._selected_item_id() == ACTIVITY_BOARD_ID
+    def is_active_filter_selected(self) -> bool:
+        return self._selected_item_id() == ACTIVE_FILTER_ID
 
     def is_older_stack_selected(self) -> bool:
         return self._selected_item_id() == OLDER_STACK_ID
@@ -1973,7 +1795,7 @@ class SessionListView(Vertical):
 
     def _expand_older_stack_for(self, session_key: str) -> None:
         """Open the Older stack when a forced selection targets a session behind it."""
-        if self._older_stack_expanded or self.nav.project_query.strip():
+        if self._older_stack_expanded or self.nav.narrowing:
             return
         session = self.store.find_session(session_key)
         if session is not None and _session_days_ago(session, time.time()) >= _RECENT_BUCKET_LIMIT:
@@ -1991,23 +1813,37 @@ class SessionListView(Vertical):
         identity = f"{GROUP_ID_PREFIX}{group.group_id}"
         return identity if identity in identities else None
 
-    def select_activity_board(self) -> None:
-        """把高亮挪到活跃会话入口（固定头第二项）。"""
-        target = STICKY_IDS.index(ACTIVITY_BOARD_ID)
-        if self.index != target:
-            self.index = target
+    def toggle_active_filter(self) -> None:
+        """切换「活跃」筛选；与筛选框关键字一样只改展示，不动会话与分屏。"""
+        self.nav.active_only = not self.nav.active_only
+        self.refresh_active_card()
 
-    def set_board_snapshot(self, snapshot: BoardSnapshot | None) -> None:
-        self.board_snapshot = snapshot
-        self.refresh_board_card()
+    def set_open_keys(self, keys) -> None:
+        """右栏开着的会话；活跃筛选开启时变化了才需要重建。"""
+        keys = frozenset(key for key in keys if not key.startswith("__"))
+        if keys == self._open_keys:
+            return
+        self._open_keys = keys
+        if self.nav.active_only:
+            self.call_next(self.rebuild)
 
-    def refresh_board_card(self) -> None:
+    def active_count(self) -> int:
+        """画圆点的会话数（与活跃筛选同一口径），不受其它筛选影响。"""
+        from corral.models import SHELL_RUNTIME_ID
+
+        return sum(
+            1
+            for session in self.store.all_sessions()
+            if session.get("source") != SHELL_RUNTIME_ID and resolve_active_marker(session)
+        )
+
+    def refresh_active_card(self) -> None:
         for item in self._list_items():
-            if item.id != ACTIVITY_BOARD_ID or not item.children:
+            if item.id != ACTIVE_FILTER_ID or not item.children:
                 continue
             card = item.children[0]
-            if isinstance(card, ActivityBoardCard):
-                card.refresh()
+            if isinstance(card, ActiveFilterCard):
+                card.sync()
             return
 
     def multi_count(self) -> int:
@@ -2332,7 +2168,6 @@ class SessionListView(Vertical):
                 row.group,
                 row.member_sessions,
                 pinned=row.pinned,
-                member_titles=_member_titles(row.member_sessions, display_titles),
             )
         elif row.session is not None:
             key = corral.session_key(row.session)
@@ -2491,7 +2326,7 @@ class SessionListView(Vertical):
         # 否则「＋ 新建」永远不会出现（2026-08-18 空 HOME 启动真机复现）。
         if new_identities == current_identities and self._sticky_intact():
             self._update_rows_in_place(rows)
-            self.refresh_board_card()
+            self.refresh_active_card()
             if select_key is not None:
                 target_index = self._target_index_after_rows(
                     previous_identity, new_identities, had_rows=True
@@ -2535,7 +2370,7 @@ class SessionListView(Vertical):
                 self._apply_split_marks()
                 # 区段增删会翻转后续块的斑马纹相位，同步重贴一遍（只改 class，不动 DOM）。
                 self._apply_stripes(rows)
-                self.refresh_board_card()
+                self.refresh_active_card()
                 from corral import observe
                 observe.event(
                     "list_rebuild",
@@ -2550,7 +2385,7 @@ class SessionListView(Vertical):
         display_titles = self.store.snapshot()
         items = [
             NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID),
-            NoSelectListItem(ActivityBoardCard(self), id=ACTIVITY_BOARD_ID),
+            NoSelectListItem(ActiveFilterCard(self), id=ACTIVE_FILTER_ID),
         ]
         for row in rows:
             item = self._item_for_row(row, display_titles)
@@ -2588,7 +2423,7 @@ class SessionListView(Vertical):
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()
         self._apply_stripes(rows)
-        self.refresh_board_card()
+        self.refresh_active_card()
         # Textual 已知问题（issue #6300）：clear()+extend() 后紧接着设置 index，
         # 高亮理论上可能只在内部状态里正确、要等用户交互才真正刷新到屏幕。在当前
         # 锁定版本（8.2.8）下用 Pilot 直接探查过 compositor 的增量重绘路径，没有

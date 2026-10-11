@@ -76,21 +76,53 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(first["status"], "accepted")
         duplicate = service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
         self.assertIn(duplicate["status"], ("accepted", "dispatching"))
+        # Another device's input for the same pane waits its turn; it is never refused as busy.
         alias_kwargs = {**kwargs, "target_key": "codex:alias",
-                        "digest": digest_for_text(key="codex:alias", text="hello", submit=True)}
-        busy = service._run_receipted_input(connection, {"command_id": "two"}, **alias_kwargs)
-        self.assertEqual(busy["reason"], "busy")
+                        "digest": digest_for_text(key="codex:alias", text="hello", submit=True),
+                        "side_effect": lambda: calls.append("second"),
+                        "confirm": lambda baseline, deadline: None}
+        queued = service._run_receipted_input(connection, {"command_id": "two"}, **alias_kwargs)
+        self.assertEqual(queued["status"], "accepted")
+        threading.Event().wait(.05)
+        self.assertEqual(calls, ["injected"])
         gate.set()
         self.assertTrue(finished.wait(2))
         deadline = time.monotonic() + 2
-        while service.receipts.status("fixture-device", "one")["status"] == "dispatching":
+        while (service.receipts.status("fixture-device", "one")["status"] == "dispatching"
+               or service.receipts.status("fixture-device", "two")["status"] != "delivered"):
             self.assertLess(time.monotonic(), deadline)
             threading.Event().wait(.01)
         final = service.receipts.status("fixture-device", "one")
         self.assertEqual(final["status"], "unknown")
         self.assertIn("native acceptance", final["detail"])
         service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
-        self.assertEqual(calls, ["injected"])
+        self.assertEqual(calls, ["injected", "second"])
+        self.assertFalse(service._input_targets)
+
+    def test_waiting_input_expires_without_injection_when_target_stays_busy(self):
+        hub = mock.Mock(spec=SessionHub)
+        hub.resolve_session_key.side_effect = lambda key: key
+        hub.delivery_binding.return_value = "pane"
+        service = RemoteService(hub)
+        connection = Connection("fixture-device", lambda _: None)
+        service._input_targets.add("pane")
+        from corral.remote.command_receipts import digest_for_text
+        receipt = service._run_receipted_input(
+            connection, {"command_id": "late", "lease_sec": 1}, method="input.text", target_key="codex:a",
+            digest=digest_for_text(key="codex:a", text="hello", submit=True),
+            side_effect=lambda: self.fail("must not inject"), prepare=lambda _: self.fail("must not prepare"),
+            confirm=lambda *_: None,
+        )
+        self.assertEqual(receipt["status"], "accepted")
+        deadline = time.monotonic() + 3
+        while service.receipts.status("fixture-device", "late")["status"] == "accepted":
+            self.assertLess(time.monotonic(), deadline)
+            threading.Event().wait(.02)
+        final = service.receipts.status("fixture-device", "late")
+        self.assertEqual(final["status"], "rejected")
+        self.assertNotIn("previous input", final["detail"].lower())
+        self.assertTrue(service._input_slots.acquire(False))
+        service._input_slots.release()
 
     def test_worker_start_failure_rejects_and_releases_admission(self):
         hub = mock.Mock(spec=SessionHub)

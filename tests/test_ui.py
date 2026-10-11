@@ -73,7 +73,7 @@ from corral.ui.pointer_shape import (
 from corral.ui.runtime_top_bar import _SidebarToggleChip, _TopBarSpacer
 from corral.ui.search_modal import FullTextSearchModal, SearchResultRow
 from corral.ui.session_list import (
-    ACTIVITY_BOARD_ID,
+    ACTIVE_FILTER_ID,
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
     OLDER_STACK_ID,
@@ -81,7 +81,7 @@ from corral.ui.session_list import (
     STICKY_IDS,
     TODAY_SEP_ID,
     YESTERDAY_SEP_ID,
-    ActivityBoardCard,
+    ActiveFilterCard,
     NewSessionCard,
     OlderStackCard,
     PinSeparatorCard,
@@ -2116,7 +2116,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVITY_BOARD_ID])
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVE_FILTER_ID])
             self.assertIsNotNone(app.screen.query_one(NewSessionCard))
 
     async def test_search_and_card_spacing_are_explicit(self) -> None:
@@ -2141,10 +2141,13 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(card.region.height == 3 for card in cards))
             new_card = app.screen.query_one(NewSessionCard)
             self.assertEqual(new_card.region.height, 2)
-            board_card = app.screen.query_one(ActivityBoardCard)
-            self.assertEqual(board_card.region.height, 3)
-            # 搜索框底边紧贴新建项顶边（搜索的末行间隔已含在 height: 2 内）
-            self.assertEqual(items[0].region.y - search.region.bottom, 0)
+            active_card = app.screen.query_one(ActiveFilterCard)
+            self.assertEqual(active_card.region.height, 2)
+            # Search, both fixed filter rows and New abut without unclickable gaps.
+            filters = app.screen.query_one("#quick-filters")
+            self.assertEqual(filters.region.y, search.region.bottom)
+            self.assertEqual(filters.region.height, 5)
+            self.assertEqual(items[0].region.y, filters.region.bottom)
 
     async def test_ended_card_title_is_dimmed_to_80_percent(self) -> None:
         """已结束会话标题吃卡片基础色：主题前景压到 8 成，不用满亮白字铺整栏。
@@ -2675,23 +2678,18 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group_text = group_cards[0].render().plain
             lines = group_text.splitlines()
             self.assertEqual(len(lines), 3)
-            # 未命名分屏不展示内部水果名，按分屏格顺序拼成员标题。
-            card = group_cards[0]
-            self.assertTrue(_split_layout.is_auto_group_name(card.group.name))
+            # 分屏不起名、不拼成员标题：首行只写「分屏 · 项目」，内部水果名不展示。
+            self.assertEqual(lines[0].rstrip(), "▼ Split view · tmp")
             self.assertNotIn("Group", lines[0])
-            self.assertEqual(len(card.member_titles), 2)
-            self.assertTrue(lines[0].startswith(f"▼ {card.member_titles[0][:5]}"))
-            self.assertEqual(card.display_name, " + ".join(card.member_titles))
-            self.assertIn("Split view · 2 sessions", lines[1])
             self.assertNotIn("●", lines[0], "会话组标题不能重复显示会话状态圆点")
-            # 第二行项目名与第一行显示名同列起笔（按终端显示宽度比较）。
+            # 第二行成员数与第一行「分屏」同列起笔（按终端显示宽度比较）。
             from rich.cells import cell_len
 
             group_col = cell_len("▼ ")
             self.assertTrue(lines[1].startswith("│"))
             self.assertTrue(lines[2].startswith("│"))
-            tmp_col = cell_len(lines[1][: lines[1].find("tmp")])
-            self.assertEqual(tmp_col, group_col)
+            self.assertEqual(lines[1].rstrip(), "│ 2 sessions")
+            self.assertEqual(cell_len(lines[1][: lines[1].find("2 sessions")]), group_col)
             # 组标题下的树干要无缝接到首个成员分叉。
             self.assertEqual(lines[2].strip(), "│")
 
@@ -2783,8 +2781,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             # 本窗口自己的置顶没被对方那次写入抹掉
             self.assertIn(keys[2], list_view.group_store.pinned_session_keys)
 
-    async def test_filter_by_group_name_reveals_all_members(self) -> None:
-        """筛选只匹配用户给分屏起的名字；隐藏的水果身份名不参与匹配。"""
+    async def test_filter_never_matches_split_identity(self) -> None:
+        """分屏不起名：隐藏的水果身份名不参与筛选。"""
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -2799,12 +2797,6 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             list_view.nav.project_query = group.name.lower()
             await list_view.rebuild()
             self.assertEqual(len(list(list_view.query(SessionGroupCard))), 0)
-
-            list_view.on_layout_change(lambda s: s.rename_group(group.group_id, "Release check"))
-            list_view.nav.project_query = "release"
-            await list_view.rebuild()
-            self.assertEqual(len(list(list_view.query(SessionGroupCard))), 1)
-            self.assertEqual(len(list(list_view.query(SessionCard))), 2)
 
     async def test_project_filter_restores_independent_pin_when_group_collapses(self) -> None:
         """跨项目分屏组在按项目名筛选后只剩一名成员时，独立置顶要回到 pinned 区。"""
@@ -3072,7 +3064,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVITY_BOARD_ID])
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVE_FILTER_ID])
             self.assertEqual(pinned_card.parent.parent, scroll)
             search_y = search.region.y
             new_y = new_card.region.y
@@ -3129,7 +3121,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             self.assertEqual(
                 [child.id for child in sticky.children],
-                [NEW_SESSION_ID, ACTIVITY_BOARD_ID],
+                [NEW_SESSION_ID, ACTIVE_FILTER_ID],
             )
             pinned_cards = [
                 card
@@ -3679,7 +3671,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.index, len(STICKY_IDS))  # 默认落在第一条会话，跳过固定头
             self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
-            self.assertIn("Filter splits / projects / titles", search.placeholder)
+            self.assertIn("Filter projects / titles", search.placeholder)
             self.assertFalse(search.has_class("-active"))
 
             await pilot.press("down")
@@ -4449,316 +4441,137 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(list_view.selected_group())
             self.assertTrue(list_view.has_focus)
 
-    async def test_activity_board_sticky_shows_empty_and_does_not_save_group(self) -> None:
-        """侧栏固定头第二项是活动看板；没人需要盯时右栏空态，且不写入水果组。"""
-        store, _ = _make_store()
+    async def test_runtime_project_quick_filters_intersect_and_preserve_workspace(self) -> None:
+        from textual.widgets import Button
+
+        from corral.ui.quick_filters import QuickFilters
+
+        sessions = [_claude_session(f"f{i}", time.time() - i) for i in range(3)]
+        for session, path in zip(sessions, ["/tmp/alpha", "/tmp/beta", "/tmp/alpha"], strict=True):
+            session["cwd"] = path
+        codex = mock.Mock()
+        codex.id, codex.display_name = "codex", "Codex"
+        codex.scan_sessions.return_value = [dict(sessions[1], source="codex", id="c1")]
+        codex.load_conversation.return_value = []
+        store, _ = _make_store(sessions, extra_runtimes=(codex,))
         app = CorralApp(store, embed_ok=True)
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause(delay=0.3)
-            list_view = app.screen.query_one(SessionListView)
-            sticky = list_view.query_one("#sidebar-sticky")
-            self.assertEqual(
-                [child.id for child in sticky.children],
-                [NEW_SESSION_ID, ACTIVITY_BOARD_ID],
-            )
-            self.assertIsNotNone(app.screen.query_one(ActivityBoardCard))
-            list_view.index = 1
-            await pilot.pause()
-            self.assertTrue(list_view.is_activity_board_selected())
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.4)
             area = app.screen.query_one(SplitPaneArea)
-            await _wait_until(lambda: area.ordered_session_keys() == ["__board_empty__"])
-            self.assertIn(
-                "No sessions need attention",
-                _primary_embed_pane(app.screen).render().plain,
-            )
-            self.assertEqual(app.screen._split_store.groups, {})
-            list_view.index = len(STICKY_IDS)
+            before = area.ordered_session_keys()
+            filters = app.screen.query_one(QuickFilters)
+            view = app.screen.query_one(SessionListView)
+            await pilot.click("#runtime-codex")
             await pilot.pause()
-            await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
-            self.assertFalse(list_view.is_activity_board_selected())
-            self.assertEqual(app.screen._split_store.groups, {})
+            self.assertEqual([s["source"] for s in view.visible_sessions()], ["codex"])
+            self.assertEqual(area.ordered_session_keys(), before)
+            self.assertTrue(filters.query_one("#runtime-codex", Button).has_class("-chosen"))
+            # Keyboard activation adds Claude to the OR set.
+            filters.query_one("#runtime-claude", Button).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertEqual(app.screen.nav.runtime_filters, {"claude", "codex"})
+            project = next(b for b in filters.query(".project-choice") if b.name == "/tmp/alpha")
+            project.press()
+            await pilot.pause()
+            self.assertEqual({s["id"] for s in view.visible_sessions()}, {"f0", "f2"})
+            self.assertEqual(area.ordered_session_keys(), before)
+            await pilot.click("#runtime-all")
+            await pilot.pause()
+            self.assertEqual(app.screen.nav.project_filters, {"/tmp/alpha"})
+            self.assertEqual(app.screen.nav.runtime_filters, set())
+            # A zero-result text intersection keeps all filter controls usable.
+            app.screen.query_one("#project-search", Input).value = "absent-project"
+            await pilot.pause()
+            self.assertEqual(view.visible_sessions(), [])
+            self.assertTrue(filters.query_one("#project-more", Button).display)
+            app.screen.nav.runtime_filters = {"codex"}
+            await app.screen._reveal_session("claude:f0")
+            await pilot.pause()
+            self.assertEqual(app.screen.nav.runtime_filters, set())
+            self.assertEqual(app.screen.nav.project_filters, {"/tmp/alpha"})
+            self.assertIn("f0", {s["id"] for s in view.visible_sessions()})
 
-    async def test_activity_board_lays_out_members_without_saving_group(self) -> None:
-        """有够格成员时右栏自动铺格，跨项目标题带项目名，不写成持久会话组。"""
-        from corral.activity_board import BoardCandidate
+    async def test_project_more_search_preserves_hidden_selections_and_full_paths(self) -> None:
+        from textual.widgets import SelectionList
 
+        from corral.ui.quick_filters import ProjectFilterModal, QuickFilters, project_options
+
+        sessions = [_claude_session(f"m{i}", time.time() - i) for i in range(6)]
+        paths = ["/tmp/one/same", "/tmp/two/same", "/tmp/c", "/tmp/d", "/tmp/e", ""]
+        for session, path in zip(sessions, paths, strict=True):
+            session["cwd"] = path
+        options = dict(project_options(sessions))
+        self.assertNotEqual(options[paths[0]], options[paths[1]])
+        store, _ = _make_store(sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            owner = app.screen.query_one(QuickFilters)
+            owner.nav.project_filters = {paths[0]}
+            await pilot.click("#project-more")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, ProjectFilterModal)
+            app.screen.query_one(Input).value = "two/same"
+            await pilot.pause()
+            choices = app.screen.query_one(SelectionList)
+            self.assertEqual(choices.option_count, 1)
+            choices.select(paths[1])
+            await pilot.pause()
+            self.assertEqual(owner.nav.project_filters, {paths[0], paths[1]})
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual({s["cwd"] for s in app.screen.query_one(SessionListView).visible_sessions()},
+                             {paths[0], paths[1]})
+            self.assertEqual(owner.nav.project_filters, {paths[0], paths[1]})
+
+    async def test_active_filter_toggle_narrows_list_without_touching_panes(self) -> None:
+        """固定头第二项是「活跃」筛选开关：回车切换；开启时只列有圆点的会话和右栏开着的会话。"""
         store, _ = _make_store()
+        marked = {"claude:s1"}
+
+        def _marker(session, **_kwargs):
+            return "waiting" if corral.session_key(session) in marked else None
+
         app = CorralApp(store, embed_ok=True)
-        candidates = [
-            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
-            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
-        ]
-        with mock.patch(
-            "corral.ui.controllers.board_controller.collect_candidates",
-            return_value=candidates,
-        ):
+        with mock.patch("corral.ui.session_list.resolve_active_marker", side_effect=_marker):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
-                list_view.index = 1
-                await pilot.pause()
-                area = app.screen.query_one(SplitPaneArea)
-                await _wait_until(
-                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
+                sticky = list_view.query_one("#sidebar-sticky")
+                self.assertEqual(
+                    [child.id for child in sticky.children],
+                    [NEW_SESSION_ID, ACTIVE_FILTER_ID],
                 )
-                self.assertTrue(area.title_with_project)
-                self.assertTrue(area.allow_cross_project)
-                self.assertEqual(app.screen._split_store.groups, {})
-
-    async def test_activity_board_does_not_expose_pane_close(self) -> None:
-        """活跃会话看板被动展示：标题栏无 ✕，关格动作不可用。"""
-        from corral.activity_board import BoardCandidate
-        from corral.ui.split_pane_area import _PaneClose
-
-        store, _ = _make_store()
-        app = CorralApp(store, embed_ok=True)
-        candidates = [
-            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
-            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
-        ]
-        with mock.patch(
-            "corral.ui.controllers.board_controller.collect_candidates",
-            return_value=candidates,
-        ):
-            async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.3)
-                list_view = app.screen.query_one(SessionListView)
-                list_view.index = 1
-                await pilot.pause()
                 area = app.screen.query_one(SplitPaneArea)
-                await _wait_until(
-                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
-                )
-                self.assertFalse(area.panes_closable)
-                for cell in area.cells():
-                    self.assertFalse(cell.query_one(_PaneClose).display)
-                self.assertFalse(app.screen.check_action("close_pane", ()))
-                before = list(area.ordered_session_keys())
-                app.screen.action_close_pane()
-                await pilot.pause()
-                self.assertEqual(area.ordered_session_keys(), before)
-                # 离开看板后普通会话格应恢复可关。
-                list_view.index = len(STICKY_IDS)
-                await pilot.pause()
                 await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
-                self.assertTrue(area.panes_closable)
-                self.assertTrue(area.cells()[0].query_one(_PaneClose).display)
-
-    async def test_activity_board_shows_pager_and_bracket_turns_page(self) -> None:
-        """多于一页时第二行画出上一页/下一页、底栏两侧都露，按 ] 切页并循环。"""
-        from corral.activity_board import BoardCandidate
-
-        sessions = [
-            {
-                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
-                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
-                "native_title": None, "fallback_title": f"会话{i}",
-                "cwd": "/tmp", "live": True, "keepalive_name": f"corral-s{i}",
-            }
-            for i in range(5)
-        ]
-        store, _ = _make_store(sessions=sessions)
-        app = CorralApp(store, embed_ok=True)
-        candidates = [
-            BoardCandidate(key=f"claude:s{i}", kind="waiting", updated_at=5 - i)
-            for i in range(5)
-        ]
-        with mock.patch(
-            "corral.ui.controllers.board_controller.collect_candidates",
-            return_value=candidates,
-        ):
-            async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.3)
-                list_view = app.screen.query_one(SessionListView)
-                list_view.focus()
-                list_view.index = 1
-                await pilot.pause()
-                area = app.screen.query_one(SplitPaneArea)
-                await _wait_until(
-                    lambda: area.ordered_session_keys()
-                    == ["claude:s0", "claude:s1", "claude:s2", "claude:s3"]
-                )
-                card = app.screen.query_one(ActivityBoardCard)
-                self.assertEqual(card.region.height, 3)
-                plain = card.render().plain
-                self.assertIn("Prev page", plain)
-                self.assertIn("Next page", plain)
-                self.assertIn("1/2", plain)
-                self.assertNotIn("[1/2]", plain)
-                lines = plain.split("\n")
-                self.assertGreaterEqual(len(lines), 3)
-                self.assertIn("Active sessions", lines[0])
-                self.assertIn("Prev page", lines[1])
-                self.assertEqual(lines[2], "")
-                screen = app.screen
-                self.assertTrue(screen.check_action("board_next", ()))
-                self.assertTrue(screen.check_action("board_prev", ()))
-                shown = [
-                    (binding.key, binding.description)
-                    for binding in screen.BINDINGS
-                    if binding.show and screen.check_action(binding.action, ())
-                ]
-                self.assertIn(("right_square_bracket", "Next page"), shown)
-                self.assertIn(("left_square_bracket", "Prev page"), shown)
-                await pilot.press("]")
-                await pilot.pause()
-                await _wait_until(
-                    lambda: area.ordered_session_keys() == ["claude:s4"]
-                )
-                self.assertIn("2/2", card.render().plain)
-                self.assertTrue(screen.check_action("board_next", ()))
-                self.assertTrue(screen.check_action("board_prev", ()))
-                await pilot.press("]")
-                await pilot.pause()
-                await _wait_until(
-                    lambda: area.ordered_session_keys()
-                    == ["claude:s0", "claude:s1", "claude:s2", "claude:s3"]
-                )
-                self.assertIn("1/2", card.render().plain)
-
-    async def test_activity_board_holds_panes_while_hosted_during_viewing(self) -> None:
-        """观看期间不撤格：会话跑完但仍托管时钉在原格，真正结束（不再托管）才撤。"""
-        from corral.activity_board import BoardCandidate
-
-        sessions = [
-            {
-                "source": "claude", "id": "s0", "short_id": "s0",
-                "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
-                "native_title": None, "fallback_title": "会话0",
-                "cwd": "/tmp", "live": True, "keepalive_name": "corral-s0",
-            },
-            {
-                "source": "claude", "id": "s1", "short_id": "s1",
-                "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
-                "native_title": None, "fallback_title": "会话1",
-                "cwd": "/tmp", "live": True, "keepalive_name": "corral-s1",
-            },
-        ]
-        store, _ = _make_store(sessions=sessions)
-        app = CorralApp(store, embed_ok=True)
-        both = [
-            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
-            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
-        ]
-        only_s0 = [BoardCandidate(key="claude:s0", kind="waiting", updated_at=2)]
-        with (
-            mock.patch(
-                "corral.ui.controllers.board_controller.collect_candidates",
-                return_value=both,
-            ) as candidates_mock,
-            mock.patch("corral.embed.capture", return_value="Activity board fixture"),
-            mock.patch("corral.embed.is_alive", return_value=True),
-        ):
-            async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.3)
-                list_view = app.screen.query_one(SessionListView)
-                list_view.index = 1
-                await pilot.pause()
-                area = app.screen.query_one(SplitPaneArea)
-                await _wait_until(
-                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
-                )
-                # s1 跑完（不再够格）但 tmux 仍托管：重扫后格子钉在原地。
-                candidates_mock.return_value = only_s0
-                app.screen._sync_activity_board_entry()
+                unfiltered = len(list_view.visible_sessions())
+                list_view.index = STICKY_IDS.index(ACTIVE_FILTER_ID)
                 await pilot.pause(delay=0.2)
-                self.assertEqual(area.ordered_session_keys(), ["claude:s0", "claude:s1"])
-                # 会话真正结束（不再托管）：格子才撤。
-                for session in store.all_sessions():
-                    if session.get("id") == "s1":
-                        session["keepalive_name"] = ""
-                app.screen._sync_activity_board_entry()
-                await pilot.pause(delay=0.2)
+                self.assertTrue(list_view.is_active_filter_selected())
+                # 方向键经过开关不动右栏。
                 self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
 
-    async def test_activity_board_full_does_not_block_top_bar_new_session(self) -> None:
-        """看板铺满时顶栏加助手进队列，不报分屏已满。"""
-        from corral.activity_board import BoardCandidate
-        from corral.split_layout import MAX_PANES
-
-        sessions = [
-            {
-                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
-                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
-                "native_title": None, "fallback_title": f"会话{i}",
-                "cwd": "/tmp", "live": True, "keepalive_name": f"corral-s{i}",
-            }
-            for i in range(MAX_PANES)
-        ]
-        store, _ = _make_store(sessions=sessions)
-        candidates = [
-            BoardCandidate(key=f"claude:s{i}", kind="working", updated_at=MAX_PANES - i)
-            for i in range(MAX_PANES)
-        ]
-        with mock.patch(
-            "corral.ui.controllers.board_controller.collect_candidates",
-            return_value=candidates,
-        ):
-            app = CorralApp(store, embed_ok=True)
-            async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.3)
-                list_view = app.screen.query_one(SessionListView)
-                list_view.index = 1
-                await pilot.pause()
-                area = app.screen.query_one(SplitPaneArea)
-                await _wait_until(
-                    lambda: len(area.ordered_session_keys()) == MAX_PANES
-                )
-                self.assertFalse(area.can_add_pane())
-                with (
-                    mock.patch.object(app.screen, "_embed_open") as embed_open,
-                    mock.patch.object(app.screen, "notify") as notify,
-                ):
-                    app.screen._on_runtime_pick("claude")
-                    embed_open.assert_called_once()
-                    self.assertFalse(
-                        any(
-                            t("split.full", n=MAX_PANES) in str(call)
-                            for call in notify.call_args_list
-                        )
-                    )
-
-    async def test_shell_from_activity_board_leaves_board(self) -> None:
-        """看板里点终端会离开看板，右栏换成这一格终端，不写水果组。"""
-        from corral.activity_board import BoardCandidate
-
-        store, _ = _make_store()
-        candidates = [
-            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
-            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
-        ]
-        with (
-            mock.patch(
-                "corral.ui.controllers.board_controller.collect_candidates",
-                return_value=candidates,
-            ),
-            mock.patch("corral.embed.host_session", return_value="corral-shell-from-board"),
-            mock.patch("corral.liveness.is_alive", return_value=True),
-            mock.patch("corral.embed.capture", return_value="Shell from board fixture"),
-        ):
-            app = CorralApp(store, embed_ok=True)
-            async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(delay=0.3)
-                list_view = app.screen.query_one(SessionListView)
-                list_view.index = 1
-                await pilot.pause()
-                area = app.screen.query_one(SplitPaneArea)
-                await _wait_until(
-                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
-                )
-                area.current_project = "/tmp"
-                app.screen._on_shell_pick()
-                await _wait_until(lambda: app.screen._host_pending == 0)
-                await _wait_until(
-                    lambda: any(spec.is_shell for spec in area.pane_specs()),
-                )
-                self.assertFalse(list_view.is_activity_board_selected())
-                self.assertFalse(app.screen._activity_board_active)
+                await pilot.press("enter")
+                await pilot.pause(delay=0.2)
+                self.assertTrue(app.screen.nav.active_only)
+                self.assertTrue(list_view.is_active_filter_selected())
+                # s1 有圆点；s0 没有圆点但正开在右栏，照列；s2 被筛掉。
                 self.assertEqual(
-                    [spec.keepalive_name for spec in area.pane_specs() if spec.is_shell],
-                    ["corral-shell-from-board"],
+                    [corral.session_key(s) for s in list_view.visible_sessions()],
+                    ["claude:s0", "claude:s1"],
                 )
+                card = app.screen.query_one(ActiveFilterCard)
+                self.assertTrue(card.has_class("-on"))
+                self.assertIn("1", card.render().plain)
+                self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
                 self.assertEqual(app.screen._split_store.groups, {})
+
+                await pilot.press("enter")
+                await pilot.pause(delay=0.2)
+                self.assertFalse(app.screen.nav.active_only)
+                self.assertFalse(card.has_class("-on"))
+                self.assertEqual(len(list_view.visible_sessions()), unfiltered)
 
     async def test_escape_exits_with_no_result(self) -> None:
         store, _ = _make_store()
@@ -6291,9 +6104,6 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertTrue(screen.check_action("toggle_pin", ()))
         self.assertTrue(screen.check_action("new_session", ()))
         self.assertTrue(screen.check_action("delete_session", ()))
-        # 没进看板、或只有一页时翻页键必须藏起来。
-        self.assertFalse(screen.check_action("board_prev", ()))
-        self.assertFalse(screen.check_action("board_next", ()))
 
     def test_toggle_sidebar_disabled_without_embed(self) -> None:
         from corral.ui.main_screen import MainScreen

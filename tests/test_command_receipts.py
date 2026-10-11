@@ -423,6 +423,7 @@ class CommandReceiptWireTests(unittest.TestCase):
         with (
             mock.patch.object(real_hub, "_keepalive_name", return_value="fake-pane"),
             mock.patch.object(real_hub, "prepare_text_delivery", return_value=("", 0, 0)),
+            mock.patch("corral.embed.capture", return_value=""),
             mock.patch("corral.embed.subprocess.run", side_effect=_run),
             mock.patch("corral.remote.sessions.time.sleep", return_value=None),
             mock.patch("corral.embed._active_channel", return_value=None),

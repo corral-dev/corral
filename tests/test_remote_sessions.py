@@ -13,7 +13,7 @@ from corral import split_layout
 from corral.embed import Cell, InjectionResult
 from corral.remote import sessions as remote_sessions
 from corral.remote.screen import ScreenEncoder
-from corral.remote.sessions import SessionHub
+from corral.remote.sessions import ActionError, SessionHub
 
 
 def _session(
@@ -1046,6 +1046,33 @@ class SessionHubPayloadTests(unittest.TestCase):
         ):
             self.hub.send_text("claude:live", "继续")
         settle.assert_not_called()
+
+    def test_send_text_never_answers_a_runtime_confirmation_dialog(self) -> None:
+        session = _session(sid="untrusted")
+        session["keepalive_name"] = "pane-dialog"
+        self.hub.store.sessions = {"claude": [session]}
+        trust_dialog = (
+            " Quick safety check: Is this a project you created or one you trust?\n"
+            " ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n"
+        )
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", return_value=trust_dialog),
+            mock.patch.object(remote_sessions.embed, "paste_detailed") as paste,
+            mock.patch.object(remote_sessions.embed, "send_key_detailed") as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(ActionError) as caught:
+                self.hub.send_text("claude:untrusted", "侧边栏能优化一下吗")
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertNotIn("Enter to confirm", caught.exception.message)
+        paste.assert_not_called()
+        send_key.assert_not_called()
+
+    def test_ordinary_composer_footer_is_not_a_blocking_dialog(self) -> None:
+        composer = "❯ \n  ? for shortcuts · esc to interrupt\n"
+        self.assertFalse(remote_sessions._pane_shows_blocking_dialog(composer))
+        old_dialog = "Enter to confirm · Esc to cancel\n" + "\n".join(f"line {n}" for n in range(12))
+        self.assertFalse(remote_sessions._pane_shows_blocking_dialog(old_dialog))
 
     def test_wait_pane_settled_returns_after_quiet_window(self) -> None:
         frames = ["", "Starting ⠋", "Starting ⠙"] + ["› ready"] * 10

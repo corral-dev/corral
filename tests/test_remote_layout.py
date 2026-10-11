@@ -73,16 +73,11 @@ class LayoutHubTests(unittest.TestCase):
         self.assertTrue(self.hub.layout_set_collapsed(gid, True)["groups"][0]["collapsed"])
         self.assertFalse(self.hub.layout_set_collapsed(gid, False)["groups"][0]["collapsed"])
 
-    def test_rename_round_trip_and_empty_restores_automatic_name(self) -> None:
+    def test_snapshot_carries_no_split_name_flag(self) -> None:
+        # Splits are never named; `name` is only the hidden internal identity.
         group = self.hub.layout_set_group("/p", ["claude:a", "codex:b"], None)["groups"][0]
-        self.assertFalse(group["named"], "a new split has no user-given name")
-        renamed = self.hub.layout_rename_group(group["id"], "  Release   check ")["groups"][0]
-        self.assertEqual(renamed["name"], "Release check")
-        self.assertTrue(renamed["named"])
-        self.assertEqual(self.events[-1][0], "layout")
-        restored = self.hub.layout_rename_group(group["id"], "")["groups"][0]
-        self.assertFalse(restored["named"])
-        self.assertTrue(split_layout.is_auto_group_name(restored["name"]))
+        self.assertNotIn("named", group)
+        self.assertFalse(hasattr(protocol, "M_LAYOUT_RENAME_GROUP"))
 
     def test_tui_written_change_is_emitted_once_per_revision(self) -> None:
         self.hub._emit_layout_if_changed(force=True)
@@ -247,7 +242,6 @@ class LayoutProtocolTests(unittest.TestCase):
             protocol.M_LAYOUT_PIN,
             protocol.M_LAYOUT_PIN_GROUP,
             protocol.M_LAYOUT_COLLAPSE,
-            protocol.M_LAYOUT_RENAME_GROUP,
         ):
             self.assertTrue(name.startswith("layout."))
 
@@ -257,7 +251,6 @@ class LayoutProtocolTests(unittest.TestCase):
         self.assertIn(protocol.M_LAYOUT_WATCH, _READONLY_METHODS)
         self.assertNotIn(protocol.M_LAYOUT_SET_GROUP, _READONLY_METHODS)
         self.assertNotIn(protocol.M_LAYOUT_PIN, _READONLY_METHODS)
-        self.assertNotIn(protocol.M_LAYOUT_RENAME_GROUP, _READONLY_METHODS)
 
 
 if __name__ == "__main__":

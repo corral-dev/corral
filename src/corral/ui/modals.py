@@ -580,12 +580,11 @@ class TextInputModal(OutsideClickDismiss, ModalScreen[str | None]):
 # ---------------------------------------------------------------------------
 
 # 高级操作里非运行时选项的哨兵 id。
-RENAME_SPLIT_CHOICE = "__rename_split__"
 EXPORT_SESSION_CHOICE = "__export_session__"
 COPY_SESSION_CHOICE = "__copy_session__"
 RESTART_SESSION_CHOICE = "__restart_session__"
 _ADVANCED_SENTINELS = frozenset(
-    {RENAME_SPLIT_CHOICE, EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE, RESTART_SESSION_CHOICE}
+    {EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE, RESTART_SESSION_CHOICE}
 )
 
 
@@ -609,12 +608,9 @@ async def choose_target_runtime(
     store,
     source: str,
     restart_available: bool = False,
-    *,
-    rename_split: bool = False,
 ) -> str | None:
     """高级操作：导出会话、复制会话、重启会话，或选择接力目标运行时。
 
-    光标停在分屏卡上时（``rename_split``）首项是「重命名分屏」。
     列表第一项是「导出会话」（写 share transcript 并把路径复制到剪贴板，不启动）；
     第二项是「复制会话」（同助手完整克隆）；第三项是「重启会话」（结束托管进程后
     按原会话原地恢复，仅对 corral 正托管、非占位的会话可用）；其后每一个助手
@@ -649,21 +645,10 @@ async def choose_target_runtime(
             unavailable_text=t("modal.not_hosted", action=restart_action),
         ),
     ]
-    if rename_split:
-        choices.insert(
-            0,
-            RuntimeChoice(
-                RENAME_SPLIT_CHOICE,
-                t("modal.rename_split"),
-                t("modal.rename_split_action"),
-                True,
-            ),
-        )
     for runtime in runtimes:
         action = t("modal.read_history_new", source=source_name)
         choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
-    # 光标在分屏卡上按 Ctrl+T，最可能是想给分屏改名：默认高亮首项。
-    default_index = 0 if rename_split else _handoff_default_index(choices, source)
+    default_index = _handoff_default_index(choices, source)
     return await app.push_screen_wait(
         RuntimePickerModal(t("modal.handoff_title"), choices, default_index)
     )

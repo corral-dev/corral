@@ -1672,3 +1672,17 @@ class StartupFailureCaptureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExitWordingTests(unittest.TestCase):
+    def test_long_running_exit_is_not_called_a_startup_failure(self):
+        report = embed.ExitReport(1, "", 600.0, ())
+        self.assertNotIn(embed.exit_headline(report), embed.exit_headline(embed.ExitReport(1, "", 0.5, ())))
+        self.assertIn("1", embed.exit_headline(report))
+
+    def test_keyboard_hint_footer_is_never_the_detail(self):
+        report = embed.ExitReport(1, "", 0.5, ("Resume session?", "Enter to confirm · Esc to cancel"))
+        self.assertEqual(embed.exit_detail_line(report), "Resume session?")
+        self.assertNotIn("Esc", embed.exit_summary(report))
+        only_hints = embed.ExitReport(1, "", 0.5, ("Enter to confirm · Esc to cancel",))
+        self.assertEqual(embed.exit_detail_line(only_hints), "")

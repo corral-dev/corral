@@ -17,6 +17,14 @@ DEFAULT_LANG = "en"
 
 # 文案表：key → 各语言译文。英文是默认兜底。
 _MESSAGES: dict[str, dict[str, str]] = {
+    "filter.all_agents": {"en": "All agents", "zh": "全部助手"},
+    "filter.all": {"en": "All", "zh": "全部"},
+    "filter.projects": {"en": "Projects", "zh": "项目"},
+    "filter.all_projects": {"en": "All projects", "zh": "全部项目"},
+    "filter.more": {"en": "More", "zh": "更多"},
+    "filter.no_project": {"en": "No project", "zh": "无项目"},
+    "filter.projects_search": {"en": "Search projects", "zh": "搜索项目"},
+    "filter.done": {"en": "Done", "zh": "完成"},
     "action.advanced": {
         "en": "Advanced",
         "zh": "高级操作",
@@ -120,36 +128,36 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Preview page down",
         "zh": "预览下翻",
     },
-    # 筛选框同时匹配组名、项目名、路径和会话标题；搜对话正文是
+    # 筛选框匹配项目名、路径和会话标题（分屏不起名）；搜对话正文是
     # 另一条路（Ctrl+F 全文搜索弹窗），不在这个框里。
     "filter.placeholder": {
-        "en": "Filter splits / projects / titles…",
-        "zh": "筛选分屏 / 项目 / 标题…",
+        "en": "Filter projects / titles…",
+        "zh": "筛选项目 / 标题…",
     },
     "filter.placeholder_count": {
-        "en": "Filter splits / projects / titles ({count})",
-        "zh": "筛选分屏 / 项目 / 标题 ({count})",
+        "en": "Filter projects / titles ({count})",
+        "zh": "筛选项目 / 标题 ({count})",
     },
     "filter.placeholder_count_active": {
-        "en": "Filter splits / projects / titles… ({count})",
-        "zh": "筛选分屏 / 项目 / 标题… ({count})",
+        "en": "Filter projects / titles… ({count})",
+        "zh": "筛选项目 / 标题… ({count})",
     },
     # Honest staleness when the list has not been rescanned recently (event-driven idle).
     "filter.placeholder_count_stale": {
-        "en": "Filter splits / projects / titles ({count}) · updated {age}s ago",
-        "zh": "筛选分屏 / 项目 / 标题 ({count}) · {age} 秒前更新",
+        "en": "Filter projects / titles ({count}) · updated {age}s ago",
+        "zh": "筛选项目 / 标题 ({count}) · {age} 秒前更新",
     },
     "filter.placeholder_count_active_stale": {
-        "en": "Filter splits / projects / titles… ({count}) · updated {age}s ago",
-        "zh": "筛选分屏 / 项目 / 标题… ({count}) · {age} 秒前更新",
+        "en": "Filter projects / titles… ({count}) · updated {age}s ago",
+        "zh": "筛选项目 / 标题… ({count}) · {age} 秒前更新",
     },
     "filter.load_error": {
-        "en": "Filter splits / projects / titles… — {error}; retrying",
-        "zh": "筛选分屏 / 项目 / 标题… — {error}；正在自动重试",
+        "en": "Filter projects / titles… — {error}; retrying",
+        "zh": "筛选项目 / 标题… — {error}；正在自动重试",
     },
     "filter.no_sessions": {
-        "en": "Filter splits / projects / titles… — no {names} sessions found",
-        "zh": "筛选分屏 / 项目 / 标题… — 未找到任何 {names} 会话记录",
+        "en": "Filter projects / titles… — no {names} sessions found",
+        "zh": "筛选项目 / 标题… — 未找到任何 {names} 会话记录",
     },
     "filter.clear": {
         "en": "×",
@@ -213,13 +221,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "+ New session",
         "zh": "＋ 新建会话",
     },
-    "list.activity_board": {
-        "en": "Active sessions",
-        "zh": "活跃会话",
-    },
-    "list.activity_board_count": {
-        "en": "Active sessions  ·  {count}",
-        "zh": "活跃会话  ·  {count}",
+    "list.active_filter": {
+        "en": "Active",
+        "zh": "活跃",
     },
     "list.sep_pinned": {
         "en": "Pinned",
@@ -317,10 +321,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "New session: pick a project and assistant",
         "zh": "新建会话：选择项目与助手",
     },
-    "detail.activity_board_empty": {
-        "en": "No sessions need attention",
-        "zh": "现在没有需要盯的会话",
-    },
     "split.empty_hint": {
         "en": "Pick a session or tap a runtime above",
         "zh": "选择会话，或点击上方助手",
@@ -352,14 +352,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "action.toggle_pin": {
         "en": "Pin",
         "zh": "置顶",
-    },
-    "action.board_prev": {
-        "en": "Prev page",
-        "zh": "上一页",
-    },
-    "action.board_next": {
-        "en": "Next page",
-        "zh": "下一页",
     },
     "group.split_label": {
         "en": "Split view",
@@ -412,6 +404,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "launch.exited_at_start": {
         "en": "The assistant exited right after starting ({reason}).",
         "zh": "助手刚启动就退出了（{reason}）。",
+    },
+    "launch.exited": {
+        "en": "The assistant exited ({reason}).",
+        "zh": "助手退出了（{reason}）。",
     },
     "launch.exit_code": {
         "en": "exit code {code}",
@@ -483,18 +479,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "modal.read_history_new": {
         "en": "Read {source} history, then start a new session",
         "zh": "读取 {source} 历史后新建会话",
-    },
-    "modal.rename_split": {
-        "en": "Rename split view",
-        "zh": "重命名分屏",
-    },
-    "modal.rename_split_action": {
-        "en": "Name this split; leave empty to use its session titles",
-        "zh": "给这个分屏起名；留空则用会话标题",
-    },
-    "modal.rename_split_hint": {
-        "en": "Enter to save · empty restores the automatic name · Esc to cancel",
-        "zh": "回车保存 · 留空恢复自动名称 · Esc 取消",
     },
     "modal.export_session": {
         "en": "Export session",
@@ -1879,9 +1863,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Input may have been partially delivered; outcome is unknown",
         "zh": "输入可能只送进了一部分，结果不确定",
     },
-    "remote.err.delivery_busy": {
-        "en": "The previous input is still being confirmed. Wait for its outcome before sending again.",
-        "zh": "上一条输入仍在确认中，请等结果明确后再发送。",
+    "remote.err.delivery_capacity": {
+        "en": "Too many messages are being delivered right now. Please try again shortly.",
+        "zh": "开发机正在同时送达太多消息，请稍后重试。",
     },
     "remote.err.delivery_not_started": {
         "en": "Input was not sent before the request expired. Please try again.",
@@ -1892,9 +1876,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "助手尚未启动完成，输入没有发出；请等启动完成后重试。",
     },
     "remote.err.native_unconfirmed": {
-        "en": "Input reached the terminal, but the assistant has not confirmed it. "
-        "Check the conversation before resending. {detail}",
-        "zh": "输入已送进终端，但助手尚未确认收到。请先查看会话再决定是否重发。{detail}",
+        "en": "The assistant has not confirmed it received this message. Check the conversation before resending.",
+        "zh": "助手还没确认收到这条消息，请先查看会话再决定是否重发。",
+    },
+    "remote.err.runtime_dialog": {
+        "en": "The assistant is waiting for an answer to a prompt in its terminal, so this message was not sent. "
+        "Answer it in the session's terminal, then send again.",
+        "zh": "助手正停在终端里的一个确认提示上，这条消息没有发出。请在该会话的终端里处理后再发送。",
+    },
+    "remote.err.native_exited": {
+        "en": "The assistant exited ({reason}) before confirming this message. "
+        "Check the conversation before resending.",
+        "zh": "助手在确认收到这条消息前退出了（{reason}）。请先查看会话再决定是否重发。",
     },
     "remote.err.device_revoked": {
         "en": "This device no longer has permission to send input.",

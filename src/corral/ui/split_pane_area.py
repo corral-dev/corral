@@ -955,22 +955,6 @@ class SplitPaneArea(Vertical):
             ],
         )
 
-    def show_activity_board_empty(self) -> None:
-        self.title_with_project = True
-        self.allow_cross_project = True
-        self.panes_closable = False
-        spec = PaneSpec(session_key="__board_empty__", cell_id=self._new_cell_id())
-        self._panes = []
-        self._schedule_mount(
-            [
-                (
-                    spec,
-                    {"source": "", "id": "__board_empty__", "fallback_title": ""},
-                    lambda: Text(t("detail.activity_board_empty")),
-                ),
-            ],
-        )
-
     def show_single_preview(
         self,
         session: dict,

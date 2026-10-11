@@ -120,6 +120,7 @@ class LayoutControllerMixin:
         except Exception:  # noqa: BLE001 分栏/列表重建中间态查不到，下一轮兜底同步会补上
             return
         session_list.set_split_marks(area.ordered_session_keys(), area.focus_key)
+        session_list.set_open_keys(area.ordered_session_keys())
 
     def _apply_layout_change(self, mutate):
         """把一次侧边栏记忆改动交给记忆库，并把返回的最新快照就地采纳。
@@ -164,9 +165,6 @@ class LayoutControllerMixin:
         已结束成员仍属于会话组，因此持久化不按活跃状态裁剪。顺手把侧边栏的当前组与
         激活会话底色对齐。
         """
-        if getattr(self, "_activity_board_active", False):
-            self._sync_split_marks()
-            return
         if not self.embed_ok:
             return
         self._sync_split_marks()
@@ -191,8 +189,6 @@ class LayoutControllerMixin:
         刚把某个成员移出去时，这边一切焦点就又把组重建回来（组名还会重新随机），两个
         窗口来回打架。
         """
-        if getattr(self, "_activity_board_active", False):
-            return
         if not self.embed_ok:
             return
         self._sync_split_marks()
@@ -206,9 +202,6 @@ class LayoutControllerMixin:
         self._apply_layout_change(lambda store: store.set_focus(project, focus))
 
     def _on_pane_close(self, session_key: str) -> None:
-        if getattr(self, "_activity_board_active", False):
-            self._dismiss_board_pane(session_key)
-            return
         remaining_focus = None
         if self.embed_ok:
             remaining_focus = self._split_area().focus_key

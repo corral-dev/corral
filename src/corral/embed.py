@@ -403,27 +403,49 @@ class ExitReport:
         return self.lifetime is not None and self.lifetime <= STARTUP_FAILURE_WINDOW
 
 
-def exit_headline(report: ExitReport) -> str:
-    """"The assistant exited right after starting (exit code N)." in UI language."""
+# Runtime TUI footers ("Enter to confirm · Esc to cancel") are keyboard hints
+# for the terminal, never an explanation a remote reader can act on.
+_KEY_HINT_RE = re.compile(r"\b(?:enter|esc|escape|return|tab|space)\s+to\s+\w", re.IGNORECASE)
+
+
+def exit_reason(report: ExitReport) -> str:
+    """"exit code N" / "signal X" in UI language."""
     from corral.i18n import t
 
     if report.status is not None:
-        reason = t("launch.exit_code", code=report.status)
-    else:
-        reason = t("launch.exit_signal", signal=report.signal or "?")
-    return t("launch.exited_at_start", reason=reason)
+        return t("launch.exit_code", code=report.status)
+    return t("launch.exit_signal", signal=report.signal or "?")
+
+
+def exit_headline(report: ExitReport) -> str:
+    """"The assistant exited right after starting (exit code N)." in UI language.
+
+    A pane that ran past the startup window just "exited": calling a long-lived
+    session's exit a startup failure misleads the reader.
+    """
+    from corral.i18n import t
+
+    key = "launch.exited_at_start" if report.startup_failure else "launch.exited"
+    return t(key, reason=exit_reason(report))
+
+
+def exit_detail_line(report: ExitReport) -> str:
+    """The printed line that best names the error, or "".
+
+    CLIs usually end with a generic "try --help" footer, so prefer the last
+    line that mentions an error and fall back to the last printed line that
+    is not a keyboard hint.
+    """
+    printed = [line.strip() for line in report.lines if line.strip()]
+    errors = [line for line in printed if "error" in line.lower()]
+    readable = [line for line in printed if not _KEY_HINT_RE.search(line)]
+    return (errors or readable or [""])[-1]
 
 
 def exit_summary(report: ExitReport) -> str:
-    """One line for launch errors: why it exited plus the line naming the error.
-
-    CLIs usually end with a generic "try --help" footer, so prefer the last
-    line that mentions an error and fall back to the last printed line.
-    """
+    """One line for launch errors: why it exited plus the line naming the error."""
     summary = exit_headline(report)
-    printed = [line.strip() for line in report.lines if line.strip()]
-    errors = [line for line in printed if "error" in line.lower()]
-    detail = (errors or printed or [""])[-1]
+    detail = exit_detail_line(report)
     return f"{summary} {detail}" if detail else summary
 
 

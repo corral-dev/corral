@@ -262,6 +262,7 @@ class RemoteService:
         self._input_slots = threading.BoundedSemaphore(32)
         self._input_targets: set[str] = set()
         self._input_lock = threading.Lock()
+        self._input_target_free = threading.Condition(self._input_lock)
 
     # -- 状态同步 ---------------------------------------------------------
 
@@ -857,11 +858,6 @@ class RemoteService:
             str(params.get("group_id") or ""), bool(params.get("collapsed"))
         )
 
-    def _layout_rename_group(self, connection: Connection, params: dict):
-        return self.hub.layout_rename_group(
-            str(params.get("group_id") or ""), str(params.get("name") or "")
-        )
-
     def _session_get(self, connection: Connection, params: dict):
         return self.hub.session_detail(_key(params))
 
@@ -1200,18 +1196,38 @@ class RemoteService:
                 return self.receipts.mark_rejected(
                     receipt, reason=exc.code, retryable=False, detail=_receipt_detail(exc.message),
                 ).to_wire()
-            with self._input_lock:
-                admitted = active_target not in self._input_targets and self._input_slots.acquire(False)
-                if admitted:
-                    self._input_targets.add(active_target)
-            if not admitted:
+            # Bound worker threads globally; one target's inputs wait in turn below.
+            if not self._input_slots.acquire(False):
                 return self.receipts.mark_rejected(
-                    receipt, reason="busy", retryable=True,
-                    detail=t("remote.err.delivery_busy"),
+                    receipt, reason="capacity", retryable=True,
+                    detail=t("remote.err.delivery_capacity"),
                 ).to_wire()
 
+            def release_slot(holds_target: bool) -> None:
+                with self._input_target_free:
+                    if holds_target:
+                        self._input_targets.discard(active_target)
+                        self._input_target_free.notify_all()
+                    self._input_slots.release()
+
+            def claim_target() -> bool:
+                # Another device's input may still be confirming on this target:
+                # wait within this command's own lease instead of refusing it.
+                with self._input_target_free:
+                    while active_target in self._input_targets:
+                        remaining = receipt.lease_expires_mono - time.monotonic()
+                        if remaining <= 0:
+                            return False
+                        self._input_target_free.wait(min(remaining, 1.0))
+                    self._input_targets.add(active_target)
+                    return True
+
             def execute() -> None:
+                holds_target = False
                 try:
+                    holds_target = claim_target()
+                    if not holds_target:
+                        raise ActionError("unavailable", t("remote.err.delivery_not_started"))
                     baseline = prepare(receipt.lease_expires_mono)
                     state = self.refresh_state()
                     if not any(
@@ -1230,7 +1246,7 @@ class RemoteService:
                 except Exception:
                     if receipt.status == STATUS_DISPATCHING:
                         self.receipts.mark_unknown(
-                            receipt, reason="ambiguous", detail=t("remote.err.native_unconfirmed", detail=""),
+                            receipt, reason="ambiguous", detail=t("remote.err.native_unconfirmed"),
                         )
                     else:
                         self.receipts.mark_rejected(
@@ -1238,17 +1254,13 @@ class RemoteService:
                             detail=t("remote.err.delivery_not_started"),
                         )
                 finally:
-                    with self._input_lock:
-                        self._input_targets.discard(active_target)
-                        self._input_slots.release()
+                    release_slot(holds_target)
 
             pending_wire = receipt.to_wire()
             try:
                 threading.Thread(target=execute, name="corral-input-confirmation", daemon=True).start()
             except RuntimeError:
-                with self._input_lock:
-                    self._input_targets.discard(active_target)
-                    self._input_slots.release()
+                release_slot(False)
                 return self.receipts.mark_rejected(
                     receipt, reason="worker_unavailable", retryable=True,
                     detail=t("remote.err.delivery_not_started"),
@@ -1564,7 +1576,6 @@ _HANDLERS = {
     protocol.M_LAYOUT_PIN: RemoteService._layout_pin,
     protocol.M_LAYOUT_PIN_GROUP: RemoteService._layout_pin_group,
     protocol.M_LAYOUT_COLLAPSE: RemoteService._layout_collapse,
-    protocol.M_LAYOUT_RENAME_GROUP: RemoteService._layout_rename_group,
     protocol.M_SHELL_LIST: RemoteService._shell_list,
     protocol.M_SHELL_OPEN: RemoteService._shell_open,
     protocol.M_SHELL_CLOSE: RemoteService._shell_close,

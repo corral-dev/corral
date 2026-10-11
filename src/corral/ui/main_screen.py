@@ -30,10 +30,8 @@ from textual.widgets import Input, Static
 from textual.worker import get_current_worker
 
 from corral import i18n, ui_prefs
-from corral.activity_board import ActivityBoard
 from corral.i18n import t
 from corral.ui.controllers.attention_reader import AttentionReaderMixin
-from corral.ui.controllers.board_controller import BoardControllerMixin
 from corral.ui.controllers.host_controller import HostControllerMixin
 from corral.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
 from corral.ui.controllers.layout_controller import LayoutControllerMixin
@@ -44,16 +42,20 @@ from corral.ui.footer import CorralFooter
 from corral.ui.modals import (
     COPY_SESSION_CHOICE,
     EXPORT_SESSION_CHOICE,
-    RENAME_SPLIT_CHOICE,
     RESTART_SESSION_CHOICE,
     ConfirmModal,
-    TextInputModal,
     choose_target_runtime,
     new_session_flow,
 )
 from corral.ui.nav import NavState
+from corral.ui.quick_filters import FilterChanged, QuickFilters
 from corral.ui.runtime_top_bar import RuntimeTopBar
-from corral.ui.session_list import STICKY_IDS, SessionListView
+from corral.ui.session_list import (
+    ACTIVE_FILTER_ID,
+    STICKY_IDS,
+    SessionListView,
+    split_project_name,
+)
 from corral.ui.split_pane_area import SplitPaneArea, _session_list_has_focus
 from corral.ui.update_toast import UpdateToast
 
@@ -208,8 +210,6 @@ _ACTION_I18N = {
     "preview_end": "action.preview_end",
     "preview_page_up": "action.preview_page_up",
     "preview_page_down": "action.preview_page_down",
-    "board_prev": "action.board_prev",
-    "board_next": "action.board_next",
     "quit_app": "action.quit",
 }
 
@@ -227,8 +227,6 @@ _LIST_ONLY_ACTIONS = frozenset(
         "preview_end",
         "preview_page_up",
         "preview_page_down",
-        "board_prev",
-        "board_next",
     }
 )
 
@@ -256,8 +254,6 @@ def _main_bindings() -> list[Binding]:
         Binding("end", "preview_end", t("action.preview_end"), show=False, priority=True),
         Binding("pageup", "preview_page_up", t("action.preview_page_up"), show=False, priority=True),
         Binding("pagedown", "preview_page_down", t("action.preview_page_down"), show=False, priority=True),
-        Binding("left_square_bracket", "board_prev", t("action.board_prev")),
-        Binding("right_square_bracket", "board_next", t("action.board_next")),
         # Esc：筛选框清空查询 / 列表清空多选；不退出应用（弹窗自带取消）。
         Binding("escape", "quit_app", t("action.quit"), show=False),
         # 不再单独绑 ctrl+c 退出：Textual 的 Screen 基类自带 ctrl+c -> copy_text。
@@ -281,7 +277,6 @@ class MainScreen(
     Screen,
     LayoutControllerMixin,
     AttentionReaderMixin,
-    BoardControllerMixin,
     HostControllerMixin,
     HudControllerMixin,
     UpdateControllerMixin,
@@ -350,9 +345,6 @@ class MainScreen(
         self._hud_warm_at: dict[str, float] = {}
         # 静态详情预览的续温节流表（会话写入期按 _PREVIEW_WARM_INTERVAL 重解析）。
         self._preview_warm_at: dict[str, float] = {}
-        self._activity_board = ActivityBoard()
-        self._activity_board_active = False
-        self._shell_after_board = False
         self._history_watcher = None
 
     def compose(self) -> ComposeResult:
@@ -363,6 +355,7 @@ class MainScreen(
                         placeholder=t("filter.placeholder"), id="project-search"
                     )
                     yield _FilterClear(self._clear_project_search, id="project-search-clear")
+                yield QuickFilters(self.store, self.nav, id="quick-filters")
                 yield SessionListView(
                     self.store,
                     self.nav,
@@ -552,7 +545,7 @@ class MainScreen(
         from corral.split_layout import MAX_PANES
 
         area = self._split_area()
-        if not self._board_skips_split_cap() and not area.can_add_pane():
+        if not area.can_add_pane():
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
@@ -572,15 +565,8 @@ class MainScreen(
         import corral
         from corral.split_layout import MAX_PANES
 
-        leaving_board = self._board_skips_split_cap()
-        if leaving_board:
-            if self._host_pending > 0:
-                self.app.bell()
-                return
-            self._shell_after_board = True
-            self._leave_activity_board_to_first_session()
         area = self._split_area()
-        if not leaving_board and not area.can_add_pane():
+        if not area.can_add_pane():
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
@@ -590,7 +576,6 @@ class MainScreen(
             corral._new_session_cwd(self.store, self.nav, session)
         )
         if cwd is None:
-            self._shell_after_board = False
             self.notify(t("split.no_project"))
             self.app.bell()
             return
@@ -890,7 +875,7 @@ class MainScreen(
                 select_key = migrated.get(select_key, select_key)
             await session_list.rebuild(select_key=select_key)
             self._update_header()
-            self._sync_activity_board_entry()
+            session_list.refresh_active_card()
             if self.embed_ok:
                 # 仅刷新当前可见预览格，避免每次重扫都把 Cursor store.db 预览整页重载。
                 self._split_area().invalidate_visible_previews()
@@ -911,6 +896,7 @@ class MainScreen(
         search = self.query_one("#project-search", Input)
         search_row = self.query_one("#project-search-row")
         clear_btn = self.query_one("#project-search-clear", _FilterClear)
+        self.query_one(QuickFilters).call_next(self.query_one(QuickFilters).sync)
         count = len(session_list.visible_sessions())
         load_error = self.store.get_load_error()
         active = bool(self.nav.project_query.strip())
@@ -1012,18 +998,21 @@ class MainScreen(
     def _follow_current_selection(self) -> None:
         if getattr(self, "_suppress_selection_follow", 0):
             return
+        focused = self.focused
+        while focused is not None:
+            if isinstance(focused, QuickFilters):
+                return
+            focused = focused.parent
         if not self.embed_ok:
             return
         session_list = self.query_one(SessionListView)
         if session_list.multi_count() > 0:
             return
         area = self._split_area()
-        if session_list.is_activity_board_selected():
-            self._show_activity_board(focus_pane=False)
+        if session_list.is_active_filter_selected():
+            # 筛选开关不是会话：方向键经过时右栏保持原样。
             return
-        was_board = getattr(self, "_activity_board_active", False)
-        self._leave_activity_board()
-        if area.any_embed_focused() and not was_board:
+        if area.any_embed_focused():
             return
         if session_list.is_new_session_selected():
             # 已在新建提示格时勿重复挂载，否则 remount 会抢走列表焦点
@@ -1282,17 +1271,15 @@ class MainScreen(
             return
         session_list.clear_multi()
         if session_list.is_new_session_selected():
-            self._leave_activity_board()
             await self._start_new_session_flow()
             return
-        if session_list.is_activity_board_selected():
-            self._show_activity_board(focus_pane=True)
+        if session_list.is_active_filter_selected():
+            await self._toggle_active_filter()
             return
         if session_list.is_older_stack_selected():
             session_list.toggle_older_stack()
             self._focus_list()
             return
-        self._leave_activity_board()
         group = session_list.selected_group()
         if group is not None:
             focus_key = (
@@ -1595,17 +1582,6 @@ class MainScreen(
         if action == "toggle_hud" and not self.embed_ok:
             # 纯列表模式没有右栏，也就没有小窗可展开。
             return False
-        if action in ("board_prev", "board_next"):
-            if not self._activity_board_active:
-                return False
-            snap = self.query_one(SessionListView).board_snapshot
-            if snap is None or snap.page_count <= 1:
-                return False
-            # 循环翻页：多页时两侧都可用，不要到头把键藏起来。
-        if action == "close_pane":
-            # 活跃会话看板只被动展示，不提供关格（✕ / 快捷键都藏掉）。
-            if getattr(self, "_activity_board_active", False):
-                return False
         if action in ("advanced", "delete_session"):
             # Ctrl+T / Ctrl+X：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
             if isinstance(self.focused, Input):
@@ -1628,10 +1604,6 @@ class MainScreen(
             return
         list_view = self.query_one(SessionListView)
         list_view.clear_multi()
-        if getattr(self, "_activity_board_active", False):
-            self._activity_board.set_typing_key(session_key)
-            self.call_next(self._begin_attention_read, session_key)
-            return
         if not list_view.select_session_key(session_key):
             return
         self._persist_split_focus()
@@ -1755,7 +1727,6 @@ class MainScreen(
     @work
     async def action_new_session(self) -> None:
         """Ctrl+N 全局新建：与侧栏「＋ 新建」同一条双栏选择流程。"""
-        self._leave_activity_board()
         await self._start_new_session_flow()
 
     def action_toggle_pin(self) -> None:
@@ -1784,12 +1755,44 @@ class MainScreen(
         visible = {corral.session_key(s) for s in session_list.visible_sessions()}
         if key not in visible:
             self.nav.project_query = ""
+            target = self.store.find_session(key)
+            if target is not None:
+                from corral.projects import normalize_cwd
+
+                if target.get("source") not in self.nav.runtime_filters:
+                    self.nav.runtime_filters.clear()
+                if normalize_cwd(target.get("cwd")) not in self.nav.project_filters:
+                    self.nav.project_filters.clear()
+            self.nav.active_only = False
             self.query_one("#project-search", Input).value = ""
             session_list.clear_multi()
         await self._rebuild_list(key)
         self._update_header()
         if self.sidebar_visible:
             session_list.focus()
+
+    async def _toggle_active_filter(self) -> None:
+        """侧栏「活跃」开关：只收窄列表，右栏与焦点不动，光标留在开关上便于再按一次。"""
+        list_view = self.query_one(SessionListView)
+        list_view.clear_multi()
+        list_view.toggle_active_filter()
+        await list_view.rebuild(keep_selection=False)
+        list_view.index = STICKY_IDS.index(ACTIVE_FILTER_ID)
+        self._update_header()
+
+    async def on_filter_changed(self, event: FilterChanged) -> None:
+        event.stop()
+        # Filtering changes rows, never the right-hand workspace or focus.
+        list_view = self.query_one(SessionListView)
+        list_view.clear_multi()
+        self._cancel_follow_selection()
+        self._suppress_selection_follow += 1
+        try:
+            async with self._rebuild_lock:
+                await list_view.rebuild(keep_selection=True)
+        finally:
+            self.call_after_refresh(self._release_selection_follow_suppress)
+        self._update_header()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "project-search":
@@ -1931,21 +1934,16 @@ class MainScreen(
             and not is_shell_session(session)
             and not session.get("provisional")
         )
-        rename_group = self._rename_target_group()
         target = await choose_target_runtime(
             self.app,
             self.store,
             source,
             restart_available=restart_available,
-            rename_split=rename_group is not None,
         )
         if target is None:
             return
         import corral
 
-        if target == RENAME_SPLIT_CHOICE and rename_group is not None:
-            await self._rename_split(rename_group)
-            return
         if target == RESTART_SESSION_CHOICE:
             await self._restart_hosted_session(session)
             return
@@ -2312,44 +2310,6 @@ class MainScreen(
         self._apply_layout_change(lambda store: store.remove_session(key))
         await self._rebuild_list()
 
-    def _rename_target_group(self):
-        """Ctrl+T 时光标停在分屏卡上（列表持焦）才提供「重命名分屏」。"""
-        if self._any_embed_focused():
-            return None
-        try:
-            return self.query_one(SessionListView).selected_group()
-        except Exception:
-            return None
-
-    def _split_display_name(self, group) -> str:
-        """分屏显示名：用户起的名字，否则按分屏格顺序拼成员标题（与侧栏同一规则）。"""
-        from corral.split_layout import group_display_name
-
-        titles = [
-            self.store.get_title(session)
-            for key in group.session_keys
-            if (session := self.store.find_session(key)) is not None
-        ]
-        return group_display_name(group.name, titles)
-
-    async def _rename_split(self, group) -> None:
-        from corral.split_layout import custom_group_name
-
-        name = await self.app.push_screen_wait(
-            TextInputModal(
-                t("modal.rename_split"),
-                custom_group_name(group.name),
-                self._split_display_name(group),
-                t("modal.rename_split_hint"),
-            )
-        )
-        if name is None:
-            return
-        self._apply_layout_change(
-            lambda store, gid=group.group_id, value=name: store.rename_group(gid, value)
-        )
-        await self._rebuild_list()
-
     async def _delete_session_group(self, group) -> None:
         """x 落在会话组标题上：把整组会话的本地历史一次删干净。
 
@@ -2380,7 +2340,7 @@ class MainScreen(
             await self._rebuild_list()
             return
         running = sum(1 for *_, keepalive_name in members if keepalive_name)
-        display_name = self._split_display_name(group)
+        display_name = split_project_name(group)
         message = (
             t(
                 "confirm.delete_running_group",
@@ -2444,8 +2404,6 @@ class MainScreen(
 
     def action_close_pane(self) -> None:
         if not self.embed_ok:
-            return
-        if getattr(self, "_activity_board_active", False):
             return
         self._split_area().close_focused_pane()
         self._persist_split_composition()

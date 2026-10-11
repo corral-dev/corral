@@ -32,7 +32,7 @@ from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
 from corral.runtime.registry import ACTIVE_RUNTIME_IDS
-from corral.split_layout import default_layout_db, is_auto_group_name
+from corral.split_layout import default_layout_db
 from corral.store import SessionStore
 
 _SCAN_LIMIT = 200
@@ -158,6 +158,18 @@ def _plain_pane_text(raw: str | None) -> str:
     if not raw:
         return ""
     return _ANSI_RE.sub("", raw)
+
+
+# A runtime confirmation dialog (Claude workspace trust, resume choices, Codex
+# confirmations) owns the keyboard: pasted text plus Enter would answer it.
+_BLOCKING_DIALOG_RE = re.compile(r"\benter to confirm\b", re.IGNORECASE)
+_DIALOG_FOOTER_LINES = 6
+
+
+def _pane_shows_blocking_dialog(plain: str) -> bool:
+    """True when the pane's bottom lines carry a confirmation-dialog footer."""
+    lines = [line for line in plain.splitlines() if line.strip()]
+    return any(_BLOCKING_DIALOG_RE.search(line) for line in lines[-_DIALOG_FOOTER_LINES:])
 
 
 def _pane_accepts_input(plain: str) -> bool:
@@ -1658,10 +1670,8 @@ class SessionHub:
             groups.append(
                 {
                     "id": group.group_id,
+                    # Hidden internal identity; splits are never named on screen.
                     "name": group.name,
-                    # False: `name` is the hidden internal identity; clients join
-                    # member titles instead (TERMINAL_UI_KNOWLEDGE_BASE split names).
-                    "named": not is_auto_group_name(group.name),
                     "project": group.project_cwd,
                     "members": list(group.session_keys),
                     "focus": group.focus_key or "",
@@ -1753,10 +1763,6 @@ class SessionHub:
 
     def layout_set_collapsed(self, group_id: str, collapsed: bool) -> dict:
         self.layout_db.set_collapsed(group_id, collapsed)
-        return self._layout_mutated()
-
-    def layout_rename_group(self, group_id: str, name: str) -> dict:
-        self.layout_db.rename_group(group_id, name)
         return self._layout_mutated()
 
     def conversation_snapshot(self, key: str) -> list[dict]:
@@ -2263,10 +2269,13 @@ class SessionHub:
             name = str((session or {}).get("keepalive_name") or original_name)
             if name and embed.pane_liveness(name) == "dead":
                 report = embed.take_exit_report(name)
-                detail = embed.exit_summary(report) if report else ""
-                raise PartialInjectionError(t("remote.err.native_unconfirmed", detail=detail))
+                if report is None:
+                    raise PartialInjectionError(t("remote.err.native_unconfirmed"))
+                message = t("remote.err.native_exited", reason=embed.exit_reason(report))
+                line = embed.exit_detail_line(report)
+                raise PartialInjectionError(f"{message} {line}" if line else message)
             if self._stop.is_set() or time.monotonic() >= deadline:
-                raise PartialInjectionError(t("remote.err.native_unconfirmed", detail=""))
+                raise PartialInjectionError(t("remote.err.native_unconfirmed"))
             time.sleep(_TURN_READY_POLL)
 
     def send_text(self, key: str, text: str, submit: bool = True) -> None:
@@ -2297,6 +2306,9 @@ class SessionHub:
             # Just native-resumed: Enter sent while the assistant is still
             # starting is dropped and the text stays in the composer.
             self._wait_pane_settled(name)
+        if text and submit and _pane_shows_blocking_dialog(_plain_pane_text(embed.capture(name, 0, 0))):
+            # Nothing injected yet: a certain, retryable rejection.
+            raise ActionError("unavailable", t("remote.err.runtime_dialog"))
         pasted = False
         if text:
             name, session = self._attempt_with_recovery(
