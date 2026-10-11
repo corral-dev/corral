@@ -135,6 +135,8 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 7. **空白就是空白。** 空白新建会话不得出现历史路径、对话摘录或接力提示词，也不得借用已选会话的 ID。
 8. **直启是透传。** 用户显式给出的参数应保持顺序和内容；直启不使用历史会话的工作目录，也不额外加入模型配置等隐式行为。
 
+For session namespaces and cross-runtime resume evidence, see the shared [association guidance](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#association-needs-owned-fresh-evidence).
+
 ## §5. 接力提示词与共享消费边界
 
 `Handoff.render_prompt()` 是接力提示词的唯一渲染源。它依次表达任务标题、这是跨助手接力而非原生恢复、原历史位置与格式提示、可选摘录、阅读与继续执行要求。
@@ -148,6 +150,8 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 5. 原任务确实完成时，明确说明没有待办并等待新指令，但仍不得修改原历史。
 
 `corral context` 输出的 `suggested_prompt` 与终端界面高级操作的接力提示词共用同一个 `render_prompt`。因此任何摘录格式、权威声明或安全指令的改动，会同时影响机器接口与人类高级操作；同步核对 `docs/SKILL.md` 的对外描述，不能只验证其中一边。
+
+For the shared history-import authority boundary, see [Terminal evidence and errors](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#terminal-evidence-and-errors).
 
 ## §6. 易错点与防回归清单
 

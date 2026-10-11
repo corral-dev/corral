@@ -33,6 +33,8 @@
 2. **会话事实与进程事实分离。** JSONL 决定会话内容；claim 决定当前 TUI instance 正在展示哪条会话；ownership lock 决定谁能写该 JSONL。
 3. **失败关闭在关联侧。** 插件安装、协议、claim、owner 任一不确定时，关闭的是“自动关联/继续写入”，不是改绑到另一条看似合理的会话。
 
+For the shared evidence boundary behind these product contracts, see [Association needs owned, fresh evidence](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#association-needs-owned-fresh-evidence).
+
 ## 2. 评审用例矩阵（实现前先逐项评审）
 
 下表是下一阶段评审的最低全集。评审可以增加用例，不得删除或用较弱用例替代。
