@@ -512,7 +512,7 @@ python3 docs/screenshots/capture.py
 
 检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；会话卡是否固定三行、首行圆点在最左、无圆点的卡片标题顶到最左不留空格、运行时与时间靠右、标题未整行变绿；三条演示会话的时间是否呈现由亮到暗的梯度（夹具刻意铺成「刚刚 / 快一小时前 / 大半天前」，见 `capture.py` 的 `_DEMO_AGES`）；斑马纹按块可见（独立会话与会话组各一块，组卡与成员同色），选中底明显强于条纹；右栏是否为完整对话且详情头有文字状态；右上角应出现会话小窗（夹具是静态预览，浮层同样要画）；Footer 是否存在且**不得出现** `Back to list` / `Toggle sidebar` / `返回列表` / `显隐侧栏`；右端应先出现 `x0c/corral` 再跟版本号；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
 
-改动会话小窗时，`list.png` 已能覆盖**静态预览格**上的浮层；实时托管格仍须另跑一次带真实 tmux 的出图：把 `keepalive._BASE_ARGV` 指到一个临时 socket、在上面建一个会话、用 `SplitPaneArea.show_hosted_group()` 挂进右栏，再 `app.save_screenshot()` + 复用 `capture.py` 的 `_svg_to_png()`，深浅两种底色（`osc_report`）各出一张肉眼看。重点看：收起态是否恰好三行（条数 / 最初 / 最近）且贴在标题栏下一行、右侧留一列；上下顺序是否由旧到新；展开态过长提问是否两行截断带 `...`、奇数提问块是否有同色系蓝斑马纹（不是灰）、提问很多时是否封顶并可滚轮看到中间与最早几条（**不得**再出现「中间省略 N 条」）、末行“点击收起”是否在；`▶` / `▼` 是否被渲成豆腐块（换字形前先确认是出图字体问题还是产品问题——同块的 `◀` / `▶` 覆盖面最广，`▸` / `▾` 实测会缺字形）。
+改动会话小窗时，`list.png` 已能覆盖**静态预览格**上的浮层；实时托管格仍须另跑一次带真实 tmux 的出图：把 `keepalive._BASE_ARGV` 指到一个临时 socket、在上面建一个会话、用 `SplitPaneArea.show_hosted_group()` 挂进右栏，再 `app.save_screenshot()` + 复用 `capture.py` 的 `_svg_to_png()`，深浅两种底色（`osc_report`）各出一张肉眼看。重点看：收起态是否恰好三行（条数 / 最初 / 最近）且贴在标题栏下一行、右侧留一列；上下顺序是否由旧到新；展开态过长提问是否四行截断带 `...`、奇数提问块是否有同色系蓝斑马纹（不是灰）、提问很多时是否封顶并可滚轮看到中间与最早几条（**不得**再出现「中间省略 N 条」）、末行“点击收起”是否在；`▶` / `▼` 是否被渲成豆腐块（换字形前先确认是出图字体问题还是产品问题——同块的 `◀` / `▶` 覆盖面最广，`▸` / `▾` 实测会缺字形）。
 
 检查 `docs/screenshots/search.png`（全文搜索弹窗）：输入框是**两行软换行、无边框**的 `TextArea`（Textual 的 `TextArea:focus` 会自带一圈边，压不住就会出现「外框套内框」两层边；Enter / ↑↓ 必须用 priority Binding，否则会被 TextArea 吃掉）；状态行的英文单复数正确（`1 session matched` 而不是 `1 sessions matched`）；每条结果是「项目: 标题 / 运行时 · 时间 · N 处命中 / 命中行」，关键词按 `$warning` 高亮；Footer 出现 `^f Search`。**PNG 里中文命中行的关键词两侧会出现明显空隙，这是 Rich SVG → cairosvg 对「同一行里换了样式的 CJK 文本」算错字符前进宽度的导出伪影，不是产品回归**——判定方法是直接断言 `SearchResultRow.render().plain`，真实终端和 `.plain` 里都没有多余空格。
 
@@ -597,3 +597,9 @@ CORRAL_LANG=zh python3 -m corral --limit 5
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改终端界面业务域前的快速参考文档 -->
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
+
+### Your prompts preview line budget
+
+Owner correction (2026-10-11): each expanded prompt uses up to four wrapped body lines, truncating only when a fifth line exists. Two-, three- and exactly four-line prompts remain complete; short prompts do not reserve unused lines. The collapsed summary remains compact. Reuse `SessionHud._entry_lines` and its cell-width-aware wrapping, time-column alignment and scrolling. This is Corral presentation, not a SessKit parser change.
+
+Verification: the focused HUD render/summary suite passes 25 tests, including exact two/three/four-line ASCII and CJK bodies. The complete CLI gate covers 2345 tests. The synthetic production TUI screenshot shows a complete three-line prompt, a complete four-line prompt and truncation only in the fourth line of longer content.

@@ -10120,7 +10120,7 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("问题2", lines[3])
 
     def test_expanded_folds_long_prompt_with_ellipsis(self) -> None:
-        """展开态每条最多两行，超出末行加省略号，不再整条换行铺满浮层。"""
+        """Expanded prompts truncate only beyond four visual lines."""
         from corral.ui.session_hud import _MAX_PROMPT_LINES, SessionHud, summarize_user_messages
 
         body = "长提问" * 40
@@ -10131,13 +10131,31 @@ class SessionHudRenderTests(unittest.TestCase):
         )
         lines = hud.lines(30)
         body_lines = lines[1:-1]
-        self.assertEqual(len(body_lines), _MAX_PROMPT_LINES)
+        self.assertEqual(_MAX_PROMPT_LINES, 4)
+        self.assertEqual(len(body_lines), 4)
         self.assertTrue(body_lines[-1].plain.rstrip().endswith("..."))
         self.assertIn("长提问", body_lines[0].plain)
         joined = "".join(line.plain[7:].rstrip() for line in body_lines)
         self.assertLess(len(joined), len(body))
         for line in lines:
             self.assertLessEqual(corral._text_width(line.plain), 30)
+
+    def test_prompts_fitting_two_to_four_lines_remain_complete(self) -> None:
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
+
+        for line_count in (2, 3, 4):
+            for character, cells in (("x", 1), ("问", 2)):
+                with self.subTest(lines=line_count, character=character):
+                    body = character * (20 // cells * line_count)
+                    hud = SessionHud()
+                    hud.update_data(
+                        summarize_user_messages([corral.ConversationMessage("user", body)]),
+                        expanded=True,
+                    )
+                    lines = hud.lines(27)[1:-1]
+                    self.assertEqual(len(lines), line_count)
+                    self.assertEqual("".join(line.plain[7:].rstrip() for line in lines), body)
+                    self.assertNotIn("...", "".join(line.plain for line in lines))
 
     def test_short_prompt_does_not_grow_or_ellipsis(self) -> None:
         from corral.ui.session_hud import SessionHud, summarize_user_messages

@@ -56,7 +56,7 @@ _MIN_EXPANDED_HEIGHT = 6
 _MAX_EXPANDED_HEIGHT = 20
 _SCROLL_STEP = 3
 # 展开态每条提问最多占几行；再长末行加省略号。收起态本来就是一行截断。
-_MAX_PROMPT_LINES = 2
+_MAX_PROMPT_LINES = 4
 # 条纹叠在**当前**浮层底上：选中格是 `$pane-active-background`，没选中是
 # `$panel`（抬离助手画布）。叠 `$primary`，不要叠 `$foreground`
 # （那是灰，会把激活条的蓝洗成泥灰）。40% 才能在蓝底上看得出一块更亮的
