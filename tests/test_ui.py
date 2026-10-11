@@ -9179,7 +9179,10 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
         app = CorralApp(store, embed_ok=False)
-        with mock.patch("corral.keepalive.kill") as kill_mock:
+        with (
+            mock.patch("corral.keepalive.kill") as kill_mock,
+            mock.patch("corral.embed.pane_liveness", return_value="dead"),
+        ):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 await pilot.press("down")
@@ -9310,7 +9313,10 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
         app = CorralApp(store, embed_ok=False)
-        with mock.patch("corral.keepalive.kill") as kill_mock:
+        with (
+            mock.patch("corral.keepalive.kill") as kill_mock,
+            mock.patch("corral.embed.pane_liveness", return_value="dead"),
+        ):
             async with app.run_test(size=(100, 30)) as pilot:
                 _, keys = await self._grouped(app, pilot)
                 await pilot.press("ctrl+x")

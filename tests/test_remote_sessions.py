@@ -11,6 +11,7 @@ from unittest import mock
 
 from corral import split_layout
 from corral.embed import Cell, InjectionResult
+from corral.i18n import t
 from corral.remote import sessions as remote_sessions
 from corral.remote.screen import ScreenEncoder
 from corral.remote.sessions import ActionError, SessionHub
@@ -398,6 +399,59 @@ class SessionHubPayloadTests(unittest.TestCase):
         # 只剩一个成员时应解散组
         self.assertIsNone(layout.get_group("codex:b"))
         self.assertEqual(layout.groups, {})
+
+    def test_delete_running_session_stops_before_erasing_history(self) -> None:
+        session = _session(sid="running")
+        session["keepalive_name"] = "corral-claude-fixture"
+        runtime = mock.Mock()
+        calls = mock.Mock()
+        calls.attach_mock(runtime.delete_session, "delete")
+        with (
+            mock.patch.object(self.hub, "require_session", return_value=session),
+            mock.patch.object(self.hub, "_runtime_of", return_value=runtime),
+            mock.patch("corral.keepalive.kill") as kill,
+            mock.patch("corral.embed.pane_liveness", return_value="dead") as probe,
+        ):
+            calls.attach_mock(kill, "stop")
+            calls.attach_mock(probe, "probe")
+            self.hub.delete_session("claude:running")
+        self.assertEqual(calls.mock_calls, [
+            mock.call.stop("corral-claude-fixture"),
+            mock.call.probe("corral-claude-fixture"),
+            mock.call.delete(session),
+        ])
+
+    def test_delete_does_not_erase_history_when_stop_is_unconfirmed(self) -> None:
+        for state in ("alive", "unknown"):
+            with self.subTest(state=state):
+                session = _session(sid="running")
+                session["keepalive_name"] = "corral-claude-fixture"
+                runtime = mock.Mock()
+                self.hub.layout_db.set_group("/tmp/proj", ["claude:running", "codex:other"])
+                with (
+                    mock.patch.object(self.hub, "require_session", return_value=session),
+                    mock.patch.object(self.hub, "_runtime_of", return_value=runtime),
+                    mock.patch("corral.keepalive.kill", return_value=False),
+                    mock.patch("corral.embed.pane_liveness", return_value=state),
+                ):
+                    with self.assertRaises(ActionError):
+                        self.hub.delete_session("claude:running")
+                runtime.delete_session.assert_not_called()
+                self.assertNotIn("claude:running", self.hub.store._deleted)
+                self.assertIsNotNone(self.hub.layout_db.read().get_group("claude:running"))
+
+    def test_delete_failure_releases_provisional_and_canonical_tombstones(self) -> None:
+        session = _session(sid="canonical")
+        runtime = mock.Mock()
+        runtime.delete_session.side_effect = OSError("fixture disk failure")
+        with (
+            mock.patch.object(self.hub, "require_session", return_value=session),
+            mock.patch.object(self.hub, "_runtime_of", return_value=runtime),
+        ):
+            with self.assertRaises(ActionError):
+                self.hub.delete_session("claude:provisional")
+        self.assertNotIn("claude:canonical", self.hub.store._deleted)
+        self.assertNotIn("claude:provisional", self.hub.store._deleted)
 
     def test_second_conversation_watcher_still_gets_history(self) -> None:
         """第二路 session.watch 也必须拿到首屏窗口，不能因为共享订阅计数变成空列表。"""
@@ -1068,11 +1122,37 @@ class SessionHubPayloadTests(unittest.TestCase):
         paste.assert_not_called()
         send_key.assert_not_called()
 
+    def test_send_text_never_types_into_an_open_question_picker(self) -> None:
+        # Owner report: the picker dropped the pasted message and Enter ticked option 1.
+        session = _session(sid="asking")
+        session["keepalive_name"] = "pane-question"
+        self.hub.store.sessions = {"claude": [session]}
+        picker = (
+            "│ Which polish do you want (pick any)?\n"
+            "❯ 1. [ ] Divider below Quick Start (Recommended)\n"
+            "  2. [ ] Keep as it is\n  3. [ ] Type something\n     Submit\n"
+            "────────\n  4. Chat about this\n\n"
+            "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+        )
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", return_value=picker),
+            mock.patch.object(remote_sessions.embed, "paste_detailed") as paste,
+            mock.patch.object(remote_sessions.embed, "send_key_detailed") as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(ActionError) as caught:
+                self.hub.send_text("claude:asking", "中间加个横线区分一下")
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertEqual(caught.exception.message, t("remote.err.question_open"))
+        paste.assert_not_called()
+        send_key.assert_not_called()
+
     def test_ordinary_composer_footer_is_not_a_blocking_dialog(self) -> None:
         composer = "❯ \n  ? for shortcuts · esc to interrupt\n"
         self.assertFalse(remote_sessions._pane_shows_blocking_dialog(composer))
         old_dialog = "Enter to confirm · Esc to cancel\n" + "\n".join(f"line {n}" for n in range(12))
         self.assertFalse(remote_sessions._pane_shows_blocking_dialog(old_dialog))
+        self.assertFalse(remote_sessions._pane_shows_question_picker(composer))
 
     def test_wait_pane_settled_returns_after_quiet_window(self) -> None:
         frames = ["", "Starting ⠋", "Starting ⠙"] + ["› ready"] * 10

@@ -1781,6 +1781,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Could not start a terminal: {detail}",
         "zh": "无法启动终端：{detail}",
     },
+    "remote.err.interrupt_failed": {
+        "en": "Could not stop the assistant ({detail})",
+        "zh": "没能停下助手（{detail}）",
+    },
+    "remote.err.interrupt_uncertain": {
+        "en": "The stop key may not have reached the assistant; check whether it is still working",
+        "zh": "停止按键可能没有送到助手，请看它是否还在运行",
+    },
     "remote.err.session_not_running": {
         "en": "This session is not running in the background",
         "zh": "这条会话没有在后台运行",
@@ -1869,6 +1877,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "The assistant is waiting for an answer to a prompt in its terminal, so this message was not sent. "
         "Answer it in the session's terminal, then send again.",
         "zh": "助手正停在终端里的一个确认提示上，这条消息没有发出。请在该会话的终端里处理后再发送。",
+    },
+    "remote.err.question_open": {
+        "en": "The assistant is waiting for an answer to its question, so this message was not sent. "
+        "Answer it in the question panel first, then send again.",
+        "zh": "助手正在等你回答它的提问，这条消息没有发出。请先在提问面板里作答，再发送。",
     },
     "remote.err.native_exited": {
         "en": "The assistant exited ({reason}) before confirming this message. "

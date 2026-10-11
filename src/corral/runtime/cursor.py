@@ -32,6 +32,9 @@ class CursorRuntime(BaseRuntime):
         "<user_query> 标签中）。请只读打开，不要改写原会话。"
     )
     auto_approve_args = ("--force",)
+    # Running composer hint is "ctrl+c to stop"; an idle first Ctrl+C only asks
+    # for a second press before exiting (2026.10.01 bundle).
+    interrupt_keys = ("C-c",)
 
     def scan_signature(self) -> object | None:
         return scan_cursor.scan_signature()

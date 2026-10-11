@@ -76,6 +76,9 @@ class BaseRuntime(ABC):
     # `corral cursor-agent …` 解析到本运行时——用户记得住的是自己天天敲的命令名，
     # 不是 corral 内部的运行时 id。
     executable_aliases: tuple[str, ...] = ()
+    # The TUI's own key for stopping a running turn, one tmux key name per press.
+    # Presses are sent as separate writes (remote session.interrupt).
+    interrupt_keys: tuple[str, ...] = ("Escape",)
 
     def is_available(self) -> bool:
         return any(

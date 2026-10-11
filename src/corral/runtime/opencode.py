@@ -33,6 +33,10 @@ class OpenCodeRuntime(BaseRuntime):
     # 了 --auto，旧名作为隐藏别名折叠进同一个开关），装不上 --auto 的旧版本按
     # 「该升级 opencode」处理，不为它保留降级分支。
     auto_approve_args = ("--auto",)
+    # session_interrupt counts presses: the first only shows "esc again to
+    # interrupt" (2.0.26 verified in tmux). Two Escapes in one write parse as a
+    # single alt+escape and are dropped, hence separate presses.
+    interrupt_keys = ("Escape", "Escape")
     # OpenCode 的全部子命令（v2 2.0.16 `--help` 实测：upgrade/update/uninstall/
     # acp/api/debug/auth/mcp/plugin/models/stats/mini/run/session/service/
     # reload/pair/serve；顶层 `opencode export` 已死，接力改走 `session export`）。

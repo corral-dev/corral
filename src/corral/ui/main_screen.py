@@ -2312,7 +2312,7 @@ class MainScreen(
         def purge() -> None:
             # 顺序不能反：进程还活着时先抹历史，运行时可能立刻又写回一份。
             if keepalive_name:
-                keepalive.kill(keepalive_name)
+                keepalive.stop_before_delete(keepalive_name)
             runtime.delete_session(session)
 
         try:
@@ -2397,7 +2397,7 @@ class MainScreen(
                 try:
                     # 顺序不能反：进程还活着时先抹历史，运行时可能立刻又写回一份。
                     if keepalive_name:
-                        keepalive.kill(keepalive_name)
+                        keepalive.stop_before_delete(keepalive_name)
                     runtime.delete_session(session)
                 except (LaunchError, OSError, sqlite3.Error) as exc:
                     failures.append((key, exc))

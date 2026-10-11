@@ -147,6 +147,64 @@ class KeyPlanTests(unittest.TestCase):
             ],
         )
 
+    # Claude Code 2.1.296 multi-select picker in a 72-column pane (previews ignored).
+    PICKER = (
+        "❯ Earlier prompt line\n"
+        "←  ☒ 美化  ✔ Submit  →\n"
+        "│ Which polish do you want (pick any)?\n"
+        "  1. [✔] Divider below Quick Start (Recommended)\n"
+        "         A thin line separates 'start now' from 'choose, then Start'\n"
+        "{c2}2. [ ] Bolt icon on the heading\n"
+        "  3. [{t3}] Keep as it is\n"
+        "  4. [ ] Type something\n"
+        "     Submit\n"
+        "────────────────\n"
+        "{c5}5. Chat about this\n"
+        "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+    def test_claude_checklist_reads_ticks_and_cursor(self) -> None:
+        screen = self.PICKER.format(c2="❯ ", t3=" ", c5="  ")
+        self.assertEqual(questions.claude_checklist(screen, 3), (frozenset({0}), 1))
+        screen = self.PICKER.format(c2="  ", t3="✔", c5="❯ ")
+        self.assertEqual(questions.claude_checklist(screen, 3), (frozenset({0, 2}), 5))
+        self.assertIsNone(questions.claude_checklist(screen, 4))
+        self.assertIsNone(questions.claude_checklist("❯ composer\n", 3))
+
+    def test_claude_multi_select_keeps_existing_ticks(self) -> None:
+        # Owner report: a stray Enter ticked option 1, the digit then unticked it
+        # and Submit sent an empty answer.
+        prompts = _entries(_meta(PETS))
+        answers = questions._validated_answers(prompts, [{"question_id": "0", "selected": ["0"], "text": ""}])
+        screen = self.PICKER.format(c2="❯ ", t3=" ", c5="  ")
+        self.assertEqual(
+            questions._claude_question_steps(prompts[0], answers["0"], screen),
+            [("key", "Down"), ("key", "Down"), ("key", "Down"), ("key", "Enter")],
+        )
+
+    def test_claude_multi_select_leaves_chat_row_before_toggling(self) -> None:
+        # Digits do nothing while the cursor is on Chat about this.
+        prompts = _entries(_meta(PETS))
+        answers = questions._validated_answers(
+            prompts, [{"question_id": "0", "selected": ["0", "1"], "text": "左右留白"}]
+        )
+        screen = self.PICKER.format(c2="  ", t3="✔", c5="❯ ")
+        self.assertEqual(
+            questions._claude_question_steps(prompts[0], answers["0"], screen),
+            [("key", "Up")] * 5
+            + [("key", "2"), ("key", "3")]
+            + [("key", "Down")] * 3
+            + [("paste", "左右留白"), ("key", "Down"), ("key", "Enter")],
+        )
+
+    def test_claude_multi_select_unreadable_screen_uses_static_plan(self) -> None:
+        prompts = _entries(_meta(PETS))
+        answers = questions._validated_answers(prompts, [{"question_id": "0", "selected": ["1"], "text": ""}])
+        self.assertEqual(
+            questions._claude_question_steps(prompts[0], answers["0"], "no picker here"),
+            [("key", "2")] + [("key", "Down")] * 4 + [("key", "Enter")],
+        )
+
     def test_claude_preview_question_uses_notes_and_enter(self) -> None:
         # Live 2.1.286: preview picker has no custom row; digit highlights, n opens notes.
         prompts = _entries(_meta(LAYOUT, COLOR))

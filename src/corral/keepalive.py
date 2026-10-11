@@ -343,6 +343,15 @@ def _load_working_pairs() -> list[tuple[str, str]]:
     return AttentionStore().working_pairs()
 
 
+def stop_before_delete(name: str) -> None:
+    """Stop a managed pane and prove absence before erasing its history."""
+    from corral import embed
+
+    kill(name)
+    if embed.pane_liveness(name) != "dead":
+        raise OSError("Could not confirm the session stopped; its history was kept.")
+
+
 def kill(name: str) -> bool:
     """手动/自动回收指定保活会话；不存在或 tmux 不可用时静默失败。"""
     if shutil.which("tmux") is None:

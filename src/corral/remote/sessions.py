@@ -52,6 +52,9 @@ _ARRIVAL_FOLLOW_SECONDS = 20.0
 _ARRIVAL_MIN_GAP = 1.0
 _LAYOUT_POLL_SECONDS = 1.0
 _PHONE_LIST_LIMIT = 80
+# OpenCode drops two interrupt presses that arrive in one read; 0.3 s apart
+# both count, about 1.3 s apart the first has already expired.
+_INTERRUPT_PRESS_GAP = 0.3
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
 _CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期（空闲）
 _CONVERSATION_ACTIVE_INTERVAL = 0.25  # 正在处理或等回复时收紧，不改画面周期
@@ -170,6 +173,26 @@ def _pane_shows_blocking_dialog(plain: str) -> bool:
     """True when the pane's bottom lines carry a confirmation-dialog footer."""
     lines = [line for line in plain.splitlines() if line.strip()]
     return any(_BLOCKING_DIALOG_RE.search(line) for line in lines[-_DIALOG_FOOTER_LINES:])
+
+
+def _pane_shows_question_picker(plain: str) -> bool:
+    """True when the footer is an open question picker (Claude, Codex).
+
+    The picker drops pasted text and Enter ticks or picks the row under the
+    cursor, so a chat message would vanish and corrupt the pending answer.
+    """
+    lines = [line for line in plain.splitlines() if line.strip()]
+    return any(questions.footer_shows_picker(line) for line in lines[-_DIALOG_FOOTER_LINES:])
+
+
+def _blocked_input_cause(raw: str | None) -> str | None:
+    """Retryable rejection for a pane whose keyboard belongs to a prompt."""
+    plain = _plain_pane_text(raw)
+    if _pane_shows_blocking_dialog(plain):
+        return t("remote.err.runtime_dialog")
+    if _pane_shows_question_picker(plain):
+        return t("remote.err.question_open")
+    return None
 
 
 def _pane_accepts_input(plain: str) -> bool:
@@ -2306,9 +2329,9 @@ class SessionHub:
             # Just native-resumed: Enter sent while the assistant is still
             # starting is dropped and the text stays in the composer.
             self._wait_pane_settled(name)
-        if text and submit and _pane_shows_blocking_dialog(_plain_pane_text(embed.capture(name, 0, 0))):
+        if text and submit and (cause := _blocked_input_cause(embed.capture(name, 0, 0))):
             # Nothing injected yet: a certain, retryable rejection.
-            raise ActionError("unavailable", t("remote.err.runtime_dialog"))
+            raise ActionError("unavailable", cause)
         pasted = False
         if text:
             name, session = self._attempt_with_recovery(
@@ -2376,11 +2399,37 @@ class SessionHub:
             key, name, lambda pane: embed.send_key_detailed(pane, *cleaned)
         )
 
+    def interrupt_session(self, key: str) -> None:
+        """Stop the running turn with the runtime's own interrupt key.
+
+        Never resumes or recovers: interrupting must not start an ended
+        conversation. Presses go out as separate writes with a short gap.
+        """
+        session = self.require_session(key)
+        runtime = self._runtime_of(session)
+        name = str(session.get("keepalive_name") or "")
+        if not name:
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
+        for index, press in enumerate(runtime.interrupt_keys):
+            if index:
+                time.sleep(_INTERRUPT_PRESS_GAP)
+            res = embed.send_key_detailed(name, press)
+            if res.ok:
+                continue
+            if res.uncertain or index:
+                raise ActionError("unavailable", t("remote.err.interrupt_uncertain"))
+            raise ActionError(
+                "unavailable",
+                t("remote.err.interrupt_failed", detail=self._inject_cause_text(res.cause)),
+            )
+
     def send_image(self, key: str, image_bytes: bytes) -> str:
         """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的落盘+粘贴路径协议。"""
         if not image_bytes:
             raise ActionError("usage_error", t("remote.err.no_image"))
         name = self._keepalive_name(key, resume_if_needed=True)
+        if cause := _blocked_input_cause(embed.capture(name, 0, 0)):
+            raise ActionError("unavailable", cause)
         path = embed.save_image_and_paste_path(name, image_bytes)
         if not path:
             raise ActionError("unavailable", t("remote.err.image_save_failed"))
@@ -2414,6 +2463,8 @@ class SessionHub:
             name = self._recover_dead_pane_binding(key, name, cause="pane_gone")
             session = self.store.find_session(self.resolve_session_key(key)) or {}
         self._wait_pane_ready(name, timeout=ready_timeout)
+        if cause := _blocked_input_cause(embed.capture(name, 0, 0)):
+            raise ActionError("unavailable", cause)
 
         paths: list[str] = []
         for index, image_bytes in enumerate(images or []):
@@ -2566,10 +2617,13 @@ class SessionHub:
         session = self.require_session(key)
         canonical = session_key(session)
         runtime = self._runtime_of(session)
+        name = str(session.get("keepalive_name") or "")
         self.store.mark_deleted(canonical)
         if key != canonical:
             self.store.mark_deleted(key)
         try:
+            if name:
+                keepalive.stop_before_delete(name)
             runtime.delete_session(session)
         except Exception as exc:
             self.store.abort_delete(canonical)

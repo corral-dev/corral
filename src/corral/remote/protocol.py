@@ -207,6 +207,8 @@ CAPABILITY_MEDIA_IMAGE = "media_image"
 # Host supports session.restart (remote access to the desktop advanced-restart).
 # Advertised only with the implementation; old hosts lack the method entirely.
 CAPABILITY_SESSION_RESTART = "session_restart"
+# Host supports session.interrupt (the runtime's own stop key for a running turn).
+CAPABILITY_SESSION_INTERRUPT = "session_interrupt"
 # Desktop clients (the Mac app) share the TUI's split groups and pins through
 # the host layout store: layout.watch / layout.* below. Phone clients never
 # call these and keep their group-free list payload.
@@ -257,6 +259,7 @@ M_SESSION_RESUME = "session.resume"
 # 菜单选择即确认），返回 {"session": SessionSummary}，与 resume 同形。
 # 已结束会话退回原生恢复；故意不进 _READONLY_METHODS（只读配对服务端拒掉）。
 M_SESSION_RESTART = "session.restart"
+M_SESSION_INTERRUPT = "session.interrupt"
 M_SESSION_HANDOFF = "session.handoff"
 # 同助手复制会话：params 只有 {key}，返回 {"session": SessionSummary}，与 handoff/resume 同形。
 # 官方分叉优先，否则磁盘克隆；故意不进 service._READONLY_METHODS（只读配对服务端拒掉）。

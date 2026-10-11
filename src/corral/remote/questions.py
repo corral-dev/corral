@@ -50,6 +50,12 @@ _PICKER_MARKERS = {
     "codex": ("to submit answer", "to submit all"),
 }
 
+# Claude multi-select picker rows (2.1.296): ``❯ 1. [✔] Label`` per option and
+# ``N. [ ] Type something``, then ``Submit`` and ``Chat about this``.
+_CHECK_ROW_RE = re.compile(r"^\s*(❯)?\s*(\d+)\.\s+\[(.)\]")
+_SUBMIT_ROW_RE = re.compile(r"^\s*(❯)?\s*Submit\s*$")
+_CHAT_ROW_RE = re.compile(r"^\s*(❯)?\s*\d+\.\s+Chat about this\b")
+
 
 class QuestionOutcome(Exception):
     """Terminal ``input.question`` result other than delivered."""
@@ -159,6 +165,95 @@ def _validated_answers(questions: list[dict], raw: object) -> dict[str, tuple[li
 # -- TUI pickers (Claude / Codex) ----------------------------------------------
 
 
+def footer_shows_picker(line: str) -> bool:
+    """True when one footer line belongs to an open Claude or Codex picker."""
+    return any(marker in line for markers in _PICKER_MARKERS.values() for marker in markers)
+
+
+def claude_checklist(screen: str, count: int) -> tuple[frozenset[int], int] | None:
+    """(ticked option positions, cursor row) of the open multi-select picker.
+
+    Rows count from 0: the options, ``count`` for Type something, ``count + 1``
+    for Submit, ``count + 2`` for Chat about this. ``None`` when the screen
+    does not show exactly this question's checklist with a cursor.
+    """
+    lines = screen.splitlines()
+    starts = [i for i, line in enumerate(lines) if (m := _CHECK_ROW_RE.match(line)) and m.group(2) == "1"]
+    if not starts:
+        return None
+    ticked: set[int] = set()
+    cursor: int | None = None
+    rows = 0
+    for line in lines[starts[-1]:]:
+        if match := _CHECK_ROW_RE.match(line):
+            row = int(match.group(2)) - 1
+            rows = max(rows, row + 1)
+            if match.group(3).strip() and row < count:
+                ticked.add(row)
+        elif match := _SUBMIT_ROW_RE.match(line):
+            row = count + 1
+        elif match := _CHAT_ROW_RE.match(line):
+            row = count + 2
+        else:
+            continue
+        if match.group(1):
+            cursor = row
+    if rows != count + 1 or cursor is None:
+        return None
+    return frozenset(ticked), cursor
+
+
+def _claude_multi_steps(
+    count: int, picked: list[int], text: str, checklist: tuple[frozenset[int], int]
+) -> list[tuple[str, str]]:
+    """Digits toggle, so press only the options whose state must change; they
+    act only while the cursor is on an option row (not on Chat about this),
+    the cursor does not follow them, and Down runs past Submit: move exactly."""
+    ticked, cursor = checklist
+    toggles = sorted(set(picked) ^ ticked)
+    steps: list[tuple[str, str]] = []
+    if toggles and cursor >= count:
+        steps += _cursor_moves(cursor, 0)
+        cursor = 0
+    steps += [("key", str(row + 1)) for row in toggles]
+    steps += _cursor_moves(cursor, count if text else count + 1)
+    if text:
+        steps += [("paste", text), ("key", "Down")]
+    steps.append(("key", "Enter"))
+    return steps
+
+
+def _cursor_moves(start: int, target: int) -> list[tuple[str, str]]:
+    return [("key", "Down" if target > start else "Up")] * abs(target - start)
+
+
+def _claude_question_steps(question: dict, answer: tuple[list[int], str], screen: str = "") -> list[tuple[str, str]]:
+    """Keys for one Claude question; a readable multi-select screen sets the start state."""
+    options = question.get("option_details") or []
+    count = len(options)
+    picked, text = answer
+    labels = {int(o["id"]): str(o.get("label") or "") for o in options}
+    if question.get("multi_select"):
+        # Untouched picker: nothing ticked, cursor on the first option.
+        checklist = claude_checklist(screen, count) if screen else None
+        return _claude_multi_steps(count, picked, text, checklist or (frozenset(), 0))
+    if question.get("custom_needs_choice"):
+        # Preview picker: a digit only highlights; ``n`` opens that option's notes.
+        steps = [("key", str(picked[0] + 1))]
+        if text:
+            steps += [("key", "n"), ("paste", text)]
+        return steps + [("key", "Enter")]
+    if text:
+        # Claude has one answer per single-choice question; keep the chosen label.
+        typed = f"{labels[picked[0]]} — {text}" if picked else text
+        return [("key", str(count + 1)), ("paste", typed), ("key", "Enter")]
+    return [("key", str(picked[0] + 1))]
+
+
+def _claude_needs_review(questions: list[dict]) -> bool:
+    return len(questions) > 1 or any(q.get("multi_select") for q in questions)
+
+
 def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[str, str]]:
     """Ordered ``("key", tmux_key)`` / ``("paste", text)`` steps for one picker.
 
@@ -175,7 +270,9 @@ def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[s
         options = question.get("option_details") or []
         count = len(options)
         picked, text = answers[str(question.get("question_id"))]
-        labels = {int(o["id"]): str(o.get("label") or "") for o in options}
+        if runtime == "claude":
+            steps += _claude_question_steps(question, (picked, text))
+            continue
         if runtime == "codex":
             if picked and text:
                 steps += [("key", "Down")] * picked[0] + [("key", "Tab"), ("paste", text), ("key", "Enter")]
@@ -183,27 +280,7 @@ def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[s
                 steps += [("key", "Down")] * count + [("key", "Enter"), ("paste", text), ("key", "Enter")]
             else:
                 steps.append(("key", str(picked[0] + 1)))
-            continue
-        if question.get("multi_select"):
-            steps += [("key", str(index + 1)) for index in picked]
-            if text:
-                steps += [("key", "Down")] * count + [("paste", text), ("key", "Down")]
-            else:
-                steps += [("key", "Down")] * (count + 1)
-            steps.append(("key", "Enter"))
-        elif question.get("custom_needs_choice"):
-            # Preview picker: a digit only highlights; ``n`` opens that option's notes.
-            steps.append(("key", str(picked[0] + 1)))
-            if text:
-                steps += [("key", "n"), ("paste", text)]
-            steps.append(("key", "Enter"))
-        elif text:
-            # Claude has one answer per single-choice question; keep the chosen label.
-            typed = f"{labels[picked[0]]} — {text}" if picked else text
-            steps += [("key", str(count + 1)), ("paste", typed), ("key", "Enter")]
-        else:
-            steps.append(("key", str(picked[0] + 1)))
-    if runtime == "claude" and (len(questions) > 1 or any(q.get("multi_select") for q in questions)):
+    if runtime == "claude" and _claude_needs_review(questions):
         steps.append(("key", "1"))  # "Submit answers" on the review tab
     return steps
 
@@ -262,13 +339,28 @@ def _answer_with_keys(runtime: str, name: str, questions: list[dict], answers: d
     if not _picker_visible(runtime, screen) or not _question_on_screen(questions, screen):
         raise QuestionOutcome("unavailable", t("remote.question.not_on_screen"))
     sent_any = False
-    for kind, value in key_plan(runtime, questions, answers):
-        ok = embed.paste(name, value) if kind == "paste" else embed.send_key(name, value)
-        if not ok:
-            detail = "remote.question.partial" if sent_any else "remote.question.not_on_screen"
-            raise QuestionOutcome("unavailable", t(detail))
-        sent_any = True
-        time.sleep(_PASTE_GAP if kind == "paste" else _KEY_GAP)
+
+    def send(steps: list[tuple[str, str]]) -> None:
+        nonlocal sent_any
+        for kind, value in steps:
+            ok = embed.paste(name, value) if kind == "paste" else embed.send_key(name, value)
+            if not ok:
+                detail = "remote.question.partial" if sent_any else "remote.question.not_on_screen"
+                raise QuestionOutcome("unavailable", t(detail))
+            sent_any = True
+            time.sleep(_PASTE_GAP if kind == "paste" else _KEY_GAP)
+
+    if runtime == "claude":
+        # Each question is planned from its own screen: a checklist may
+        # already hold ticks or a moved cursor (stray Enter, desktop keys).
+        for index, question in enumerate(questions):
+            if index:
+                screen = _pane_text(name)
+            send(_claude_question_steps(question, answers[str(question.get("question_id"))], screen))
+        if _claude_needs_review(questions):
+            send([("key", "1")])  # "Submit answers" on the review tab
+    else:
+        send(key_plan(runtime, questions, answers))
     deadline = time.monotonic() + _SETTLE_TIMEOUT
     while time.monotonic() < deadline:
         if not _picker_visible(runtime, _pane_text(name)):

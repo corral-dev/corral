@@ -778,6 +778,7 @@ class RemoteService:
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
+                protocol.CAPABILITY_SESSION_INTERRUPT: True,
                 protocol.CAPABILITY_SESSION_CREATE_RECEIPTS: True,
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
@@ -1393,6 +1394,12 @@ class RemoteService:
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
         return {"session": self.hub.restart_session(_key(params))}
 
+    def _session_interrupt(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
+        self.hub.interrupt_session(_key(params))
+        return {"ok": True}
+
     def _session_handoff(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
@@ -1563,6 +1570,7 @@ _HANDLERS = {
     protocol.M_SESSION_NEW: RemoteService._session_new,
     protocol.M_SESSION_RESUME: RemoteService._session_resume,
     protocol.M_SESSION_RESTART: RemoteService._session_restart,
+    protocol.M_SESSION_INTERRUPT: RemoteService._session_interrupt,
     protocol.M_SESSION_HANDOFF: RemoteService._session_handoff,
     protocol.M_SESSION_COPY: RemoteService._session_copy,
     protocol.M_SESSION_STOP: RemoteService._session_stop,
