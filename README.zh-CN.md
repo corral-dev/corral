@@ -27,7 +27,7 @@
 | 部分 | 用途 | 状态 |
 | --- | --- | --- |
 | **[终端应用](https://github.com/corral-dev/corral)** | 在一个终端里运行、查看、切换所有编程助手。 | 已可用，安装方法见下文 |
-| **[iPhone 与 Mac 应用](https://github.com/corral-dev/corral-apple)** | 离开终端也能跟进助手、回答它的提问。 | 开源测试版 · 使用 Xcode 自行构建 |
+| **[Mac 与 iPhone 应用](https://github.com/corral-dev/corral-apple)** | 离开终端也能跟进助手、回答它的提问。 | Mac：[签名版下载](https://github.com/corral-dev/corral-apple/releases/latest) · iPhone：使用 Xcode 自行构建 |
 | **[中继](https://github.com/corral-dev/corral-relay)** | 跨网络连接开发机与客户端。 | 自行部署 · AGPL-3.0-only |
 | **Corral Ideas** | 在一个本地页面里随手记想法，由一个统筹助手整理成任务，交给编程助手去做。 | 规划中 |
 
@@ -64,7 +64,7 @@ corral
 - **同时推进多个任务。** 最多四个会话分屏，相关任务可以分组、置顶。
 - **走开了助手照样跑。** 关掉 Corral 或断开 SSH 后，托管会话继续运行，开发机需要保持唤醒。
 - **换个助手接着做。** 把任务连同对话历史交给另一个助手新开会话，比如 Claude 写完交给 Codex 检查。
-- **用手机接着做。** 离开电脑也能查看回复、追问，或回答助手的提问。可自行构建 Apple 客户端，见下文。
+- **用手机或 Mac 接着做。** 不开终端，也能用原生应用查看回复、追问，或回答助手的提问，见下文。
 - **找回以前的对话。** 活跃、助手和项目快筛可与标题筛选组合，也可以跨所有助手搜索聊过的内容。快筛只收窄侧栏列表，保留右侧已打开的会话。
 
 ## 开始使用
@@ -108,26 +108,34 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 </details>
 
-## 用手机接着做
+## 用 Mac 或 iPhone 接着做
 
-离开电脑，助手也不用停下：在 iPhone 上查看对话、回复助手，或回答它提出的问题。
+原生应用里的会话和终端里的完全一致：并排查看对话、追问，或回答助手的提问，不用打开终端。
 
-**[Apple 客户端源码](https://github.com/corral-dev/corral-apple)已公开，可使用 Xcode 自行构建。** 安装命令行工具不会同时安装客户端；目前尚无公开的 App Store 或 TestFlight 下载。
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mac-split-dark.png">
+    <img src="docs/screenshots/mac-split-light.png" alt="Corral Mac 版：左侧为会话列表，右侧并排显示一个 Claude Code 会话和一个 Codex 评审会话" width="100%">
+  </picture>
+</p>
 
-安装好 Apple 客户端后，在运行助手的开发机上执行：
+- **Mac：** 下载[签名版应用](https://github.com/corral-dev/corral-apple/releases/latest)（需要 macOS 26 及以上），之后会自动更新。
+- **iPhone：** 使用 Xcode [从源码构建](https://github.com/corral-dev/corral-apple/blob/main/README.zh-CN.md)。目前尚无公开的 App Store 或 TestFlight 下载。
+
+安装命令行工具不会同时安装应用。装好应用后，在运行助手的开发机上执行：
 
 ```bash
 corral remote pair
 ```
 
-配对会开启远程连接，并补齐缺少的远程组件。在同一局域网中，用 Apple 客户端扫描配对码。外出使用需要自行部署中继；Corral 不内置共享公共中继。手机通信采用端到端加密。跨网络访问请按[中继快速开始](https://github.com/corral-dev/corral-relay#quick-start)配置。若设备只需查看会话，可使用 `corral remote pair --readonly` 配对。
+配对会开启远程连接，并补齐缺少的远程组件。在同一局域网中，用应用扫描或粘贴配对码。外出使用需要自行部署中继；Corral 不内置共享公共中继。远程通信采用端到端加密。跨网络访问请按[中继快速开始](https://github.com/corral-dev/corral-relay#quick-start)配置。若设备只需查看会话，可使用 `corral remote pair --readonly` 配对。
 
 ## 隐私
 
 - 会话浏览和搜索读取本地助手历史。
 - 可选的标题生成会把简短摘录发给已配置的语言模型网关，可能消耗该网关额度。
 - 更新检查会访问 GitHub。
-- 配对手机意味着授权它访问并操作已授权会话；远程通信采用端到端加密。
+- 配对设备意味着授权它访问并操作已授权会话；远程通信采用端到端加密。
 
 数据流向与控制方式见[隐私说明](PRIVACY.md)。
 

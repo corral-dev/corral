@@ -27,7 +27,7 @@
 | Part | What it does | Status |
 | --- | --- | --- |
 | **[Terminal app](https://github.com/corral-dev/corral)** | Run, watch, and switch between all your coding agents in one terminal. | Available — install below |
-| **[iPhone and Mac app](https://github.com/corral-dev/corral-apple)** | Follow your agents and answer them away from the terminal. | Source beta · self-build with Xcode |
+| **[Mac and iPhone app](https://github.com/corral-dev/corral-apple)** | Follow your agents and answer them away from the terminal. | Mac: [signed download](https://github.com/corral-dev/corral-apple/releases/latest) · iPhone: self-build with Xcode |
 | **[Relay](https://github.com/corral-dev/corral-relay)** | Connect your host and clients across networks. | Self-hosted · AGPL-3.0-only |
 | **Corral Ideas** | Jot loose ideas on one local page; a coordinating agent turns them into tasks and hands them to coding agents. | Planned |
 
@@ -64,7 +64,7 @@ Install and sign in to at least one supported coding assistant separately. Corra
 - **Work side by side.** Open up to four sessions together, group related work, and pin what matters.
 - **Keep agents running.** Hosted sessions keep going after you close Corral or disconnect SSH, as long as the host stays awake.
 - **Hand work to another assistant.** Pass a task with its conversation history to a new session in a different assistant — for example, Claude implements and Codex reviews.
-- **Continue from your phone.** Read replies, send a follow-up, or answer a question away from your desk. Self-build the Apple client; see below.
+- **Continue from your phone or Mac.** Read replies, send a follow-up, or answer a question away from the terminal with the native app; see below.
 - **Find past conversations.** Combine Active, runtime and project quick filters with title filtering, or search what you said across every assistant's history. Quick filters narrow the sidebar while keeping your open panes in place.
 
 ## Start using it
@@ -108,26 +108,34 @@ Sidebar shortcuts apply while the sidebar has focus. The footer shows actions av
 
 </details>
 
-## Pick up from your phone
+## Pick up from your Mac or iPhone
 
-Leave the desk and keep your agents moving: read conversations, send a follow-up, or answer a question from your iPhone.
+The native app shows the same sessions as the terminal: read conversations side by side, send a follow-up, or answer a question without opening a terminal.
 
-**[Apple client source](https://github.com/corral-dev/corral-apple) is available for self-building with Xcode.** Installing the CLI does not install the companion app; a public App Store or TestFlight download is not available yet.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mac-split-dark.png">
+    <img src="docs/screenshots/mac-split-light.png" alt="Corral for Mac showing a Claude Code session and a Codex review side by side, with the session sidebar" width="100%">
+  </picture>
+</p>
 
-With the Apple client installed, run this on the machine hosting your agents:
+- **Mac:** download the [signed app](https://github.com/corral-dev/corral-apple/releases/latest) (macOS 26+). It updates itself.
+- **iPhone:** [build from source](https://github.com/corral-dev/corral-apple#iphone) with Xcode. A public App Store or TestFlight download is not available yet.
+
+Installing the CLI does not install the app. With the app installed, run this on the machine hosting your agents:
 
 ```bash
 corral remote pair
 ```
 
-Pairing starts remote access and installs any missing remote components. Scan the code in the Apple client on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Phone traffic is end-to-end encrypted. For access across networks, follow the [relay setup](https://github.com/corral-dev/corral-relay#quick-start). Use `corral remote pair --readonly` when a device should only view sessions.
+Pairing starts remote access and installs any missing remote components. Scan or paste the code in the app on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Remote traffic is end-to-end encrypted. For access across networks, follow the [relay setup](https://github.com/corral-dev/corral-relay#quick-start). Use `corral remote pair --readonly` when a device should only view sessions.
 
 ## Privacy
 
 - Session browsing and search read local assistant history.
 - Optional title generation may send short excerpts to a configured language-model gateway and can consume quota there.
 - Update checks contact GitHub.
-- Pairing a phone authorizes it to access and act on your sessions; remote traffic is end-to-end encrypted.
+- Pairing a device authorizes it to access and act on your sessions; remote traffic is end-to-end encrypted.
 
 See the [privacy policy](PRIVACY.md) for data flows and controls.
 
