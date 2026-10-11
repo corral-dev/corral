@@ -7,7 +7,7 @@ import asyncio
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
-from textual.containers import Grid, Horizontal, HorizontalScroll, Vertical
+from textual.containers import Grid, Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, SelectionList
@@ -46,6 +46,7 @@ class ProjectFilterModal(ModalScreen[None]):
     ProjectFilterModal Input { height: 2; border: none; padding: 0 0 1 0; }
     ProjectFilterModal Input:focus { border: none; }
     ProjectFilterModal SelectionList { height: auto; min-height: 3; max-height: 12; border: none; }
+    ProjectFilterModal SelectionList:focus { border: none; }
     ProjectFilterModal Horizontal { height: 1; }
     ProjectFilterModal Button { height: 1; min-width: 8; border: none; }
     """
@@ -62,7 +63,6 @@ class ProjectFilterModal(ModalScreen[None]):
             yield Input(placeholder=t("filter.projects_search"), id="projects-query")
             yield SelectionList(*self._selections(""), id="projects-choices")
             with Horizontal():
-                yield Button(t("filter.all"), compact=True, id="projects-clear")
                 yield Button(t("filter.done"), compact=True, id="projects-done")
 
     def on_mount(self) -> None:
@@ -79,6 +79,7 @@ class ProjectFilterModal(ModalScreen[None]):
         with choices.prevent(SelectionList.SelectedChanged):
             choices.clear_options()
             choices.add_options(self._selections(event.value))
+            choices.highlighted = 0 if choices.option_count else None
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.query_one(SelectionList).focus()
@@ -98,38 +99,33 @@ class ProjectFilterModal(ModalScreen[None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "projects-done":
             self.dismiss(None)
-        elif event.button.id == "projects-clear":
-            self.owner.nav.project_filters.clear()
-            self.owner.changed()
-            with self.query_one(SelectionList).prevent(SelectionList.SelectedChanged):
-                self.query_one(SelectionList).deselect_all()
 
 
 class QuickFilters(Vertical):
     DEFAULT_CSS = """
     QuickFilters { height: 5; }
-    QuickFilters Horizontal, QuickFilters HorizontalScroll {
-        height: 2; scrollbar-size: 0 0;
-    }
-    QuickFilters HorizontalScroll { width: 1fr; }
-    QuickFilters Button {
-        width: auto; min-width: 3; height: 2; padding: 0 1 1 1;
-        border: none; margin: 0; background: $surface; color: $text-muted;
-        text-style: none;
-    }
-    QuickFilters #runtime-quick-row {
-        height: 3; grid-size: 3; grid-rows: 1; grid-columns: 1fr;
-        padding: 0 0 1 0;
-    }
-    QuickFilters #runtime-quick-row Button {
+    QuickFilters Grid { grid-rows: 1; grid-columns: 1fr; }
+    QuickFilters #runtime-quick-row { height: 3; grid-size: 3; padding: 0 0 1 0; }
+    QuickFilters #project-quick-row { height: 2; grid-size: 2; }
+    QuickFilters Button.-style-default {
         width: 1fr; min-width: 2; height: 1; padding: 0;
+        border: none; margin: 0; background: $surface; color: $text-muted;
+        text-style: none; tint: transparent; background-tint: transparent;
     }
-    QuickFilters Button:focus { text-style: bold underline; background-tint: transparent; }
-    QuickFilters Button.-chosen {
+    QuickFilters Button.-style-default:hover,
+    QuickFilters Button.-style-default:focus,
+    QuickFilters Button.-style-default.-active {
+        background: $surface; color: $text-muted;
+        border: none; tint: transparent; background-tint: transparent;
+    }
+    QuickFilters Button.-style-default:focus { text-style: underline; }
+    QuickFilters Button.-chosen,
+    QuickFilters Button.-chosen.-style-default:hover,
+    QuickFilters Button.-chosen.-style-default:focus,
+    QuickFilters Button.-chosen.-style-default.-active {
         background: $primary-muted; color: $warning; text-style: bold;
     }
-    QuickFilters Button:hover { background: $boost; }
-    QuickFilters Button.-chosen:hover { background: $primary-muted; }
+    QuickFilters Button.-chosen.-style-default:focus { text-style: bold underline; }
     """
 
     def __init__(self, store, nav: NavState, **kwargs) -> None:
@@ -142,13 +138,10 @@ class QuickFilters(Vertical):
 
     def compose(self) -> ComposeResult:
         with Grid(id="runtime-quick-row"):
-            yield Button(t("filter.all"), id="runtime-all", tooltip=t("filter.all_agents"), compact=True)
             for runtime in active_runtimes(self.store.registry):
                 label = "Claude" if runtime.id == "claude" else runtime.display_name
                 yield Button(label, id=f"runtime-{runtime.id}", compact=True)
-        with Horizontal():
-            with HorizontalScroll(id="project-quick-row"):
-                yield Button(t("filter.all"), id="project-all", tooltip=t("filter.all_projects"), compact=True)
+        with Grid(id="project-quick-row"):
             yield Button(t("filter.more"), id="project-more", compact=True)
 
     def on_mount(self) -> None:
@@ -170,39 +163,31 @@ class QuickFilters(Vertical):
     async def _sync(self) -> None:
         for button in self.query("#runtime-quick-row Button"):
             runtime = button.id.removeprefix("runtime-")
-            chosen = not self.nav.runtime_filters if runtime == "all" else runtime in self.nav.runtime_filters
-            self._mark(button, chosen)
+            self._mark(button, runtime in self.nav.runtime_filters)
         options = self.all_projects()
         labels = dict(options)
         # Keep surviving choices in place while filling vacancies from recent data.
         self._recent = [path for path in self._recent if path in labels]
         self._recent += [path for path, _ in options if path not in self._recent][:max(0, 3 - len(self._recent))]
-        paths = list(dict.fromkeys(self._recent + sorted(self.nav.project_filters)))
+        paths = list(dict.fromkeys(sorted(self.nav.project_filters) + self._recent))[:3]
         signature = tuple((path, labels[path]) for path in paths)
-        row = self.query_one("#project-quick-row", HorizontalScroll)
+        row = self.query_one("#project-quick-row", Grid)
+        more = self.query_one("#project-more", Button)
         if signature != self._project_signature:
             await row.query(".project-choice").remove()
-            await row.mount(*[Button(fit_cell(labels[path], 16).rstrip(), name=path,
+            await row.mount(*[Button(fit_cell(labels[path], 16, ellipsis=True).rstrip(), name=path,
                                     id=f"project-choice-{i}", classes="project-choice",
                                     tooltip=path or t("filter.no_project"), compact=True)
-                              for i, path in enumerate(paths)])
+                              for i, path in enumerate(paths)], before=more)
             self._project_signature = signature
-        self._mark(self.query_one("#project-all", Button), not self.nav.project_filters)
+        count = len(self.nav.project_filters)
+        more.label = t("filter.more") + (f" ({count})" if count else "")
         for button in row.query(".project-choice"):
             self._mark(button, button.name in self.nav.project_filters)
 
     @staticmethod
     def _mark(button: Button, selected: bool) -> None:
         button.set_class(selected, "-chosen")
-        # ASCII survives terminal fonts; preserve project names beginning with '*'.
-        if not hasattr(button, "_quick_filter_label"):
-            button._quick_filter_label = str(button.label)
-        label = button._quick_filter_label
-        prefix = "*" if button.id.startswith("runtime-") else "* "
-        next_label = (prefix if selected else "") + label
-        if str(button.label) != next_label:
-            button.label = Text(next_label)
-            button.refresh(layout=True)
 
     def changed(self) -> None:
         self.call_next(self.sync)
@@ -217,7 +202,7 @@ class QuickFilters(Vertical):
             delta = {"left": -1, "right": 1, "up": -3, "down": 3}.get(event.key)
         elif focused.parent.id == "project-quick-row":
             buttons = list(self.query("#project-quick-row Button"))
-            delta = {"left": -1, "right": 1}.get(event.key)
+            delta = {"left": -1, "right": 1, "up": -2, "down": 2}.get(event.key)
         else:
             return
         if delta is not None:
@@ -236,9 +221,7 @@ class QuickFilters(Vertical):
         else:
             selected = self.nav.project_filters
             value = button.name
-        if button.id in ("runtime-all", "project-all"):
-            selected.clear()
-        elif value in selected:
+        if value in selected:
             selected.remove(value)
         else:
             selected.add(value)

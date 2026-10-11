@@ -822,7 +822,7 @@ class ActiveFilterCard(Widget):
 
     def render(self) -> Text:
         on = self._owner.nav.active_only
-        out = Text("* " if on else "", style="bold")
+        out = Text("", style="bold")
         out.append(t("list.active_filter"), style="bold")
         out.append(f"  ·  {self._owner.active_count()}", style="" if on else "dim")
         return out + Text("\n")

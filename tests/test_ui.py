@@ -4476,7 +4476,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual({s["id"] for s in view.visible_sessions()}, {"f0", "f2"})
             self.assertEqual(area.ordered_session_keys(), before)
-            await pilot.click("#runtime-all")
+            await pilot.click("#runtime-codex")
+            await pilot.click("#runtime-claude")
             await pilot.pause()
             self.assertEqual(app.screen.nav.project_filters, {"/tmp/alpha"})
             self.assertEqual(app.screen.nav.runtime_filters, set())
@@ -4491,6 +4492,56 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.screen.nav.runtime_filters, set())
             self.assertEqual(app.screen.nav.project_filters, {"/tmp/alpha"})
             self.assertIn("f0", {s["id"] for s in view.visible_sessions()})
+
+    async def test_quick_filters_single_line_visible_and_color_only_under_focus_hover(self) -> None:
+        from textual.widgets import Button
+
+        from corral.ui.quick_filters import QuickFilters
+
+        sessions = [_claude_session(f"q{i}", time.time() - i) for i in range(6)]
+        paths = ["/tmp/Codes", "/tmp/Corral", "/tmp/agent-runtime-long-name", "/tmp/other", "/tmp/fifth", "/tmp/sixth"]
+        for session, path in zip(sessions, paths, strict=True):
+            session["cwd"] = path
+        runtimes = []
+        for rid, label in [("codex", "Codex"), ("opencode", "OpenCode"), ("cursor", "Cursor"), ("pi", "Pi")]:
+            runtime = mock.Mock()
+            runtime.id, runtime.display_name = rid, label
+            runtime.scan_sessions.return_value = []
+            runtimes.append(runtime)
+        store, _ = _make_store(sessions, extra_runtimes=tuple(runtimes))
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            filters = app.screen.query_one(QuickFilters)
+            for row_id in ("runtime-quick-row", "project-quick-row"):
+                row = filters.query_one(f"#{row_id}")
+                for button in row.query(Button):
+                    self.assertEqual(button.region.height, 1)
+                    self.assertTrue(row.region.contains_region(button.region))
+                    self.assertNotIn("*", str(button.label))
+                    self.assertNotEqual(str(button.label), "All")
+            codex = filters.query_one("#runtime-codex", Button)
+            pi = filters.query_one("#runtime-pi", Button)
+            await pilot.click("#runtime-codex")
+            await pilot.pause(delay=0.2)
+            selected_colors = (codex.styles.color, codex.styles.background)
+            neutral_colors = (pi.styles.color, pi.styles.background)
+            pi.focus()
+            await pilot.hover("#runtime-pi")
+            await pilot.pause(delay=0.2)
+            self.assertEqual((pi.styles.color, pi.styles.background), neutral_colors)
+            self.assertNotEqual(neutral_colors, selected_colors)
+            self.assertEqual(str(codex.label), "Codex")
+            self.assertFalse(pi.has_class("-chosen"))
+            # Selections beyond the recent choices remain reachable in the fixed grid.
+            filters.nav.project_filters = set(paths[3:])
+            await filters.sync()
+            await pilot.pause()
+            self.assertEqual({button.name for button in filters.query(".project-choice")}, set(paths[3:]))
+            self.assertEqual(str(filters.query_one("#project-more", Button).label), "More (3)")
+            for button in filters.query(".project-choice"):
+                self.assertEqual(button.region.height, 1)
+                self.assertTrue(filters.region.contains_region(button.region))
 
     async def test_project_more_search_preserves_hidden_selections_and_full_paths(self) -> None:
         from textual.widgets import SelectionList
@@ -4516,7 +4567,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             choices = app.screen.query_one(SelectionList)
             self.assertEqual(choices.option_count, 1)
-            choices.select(paths[1])
+            await pilot.press("down", "space")
             await pilot.pause()
             self.assertEqual(owner.nav.project_filters, {paths[0], paths[1]})
             await pilot.press("escape")
