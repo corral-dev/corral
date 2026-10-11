@@ -2132,7 +2132,8 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             # 筛选条用表面层弱化文字，不再白字铺高饱和主色底
             self.assertEqual(search.styles.background, Color.parse("#1C2430"))
             self.assertLess(search.styles.color.a, 1.0)
-            self.assertEqual(search.region.height, 2)  # 正文 1 + 末行间隔 1
+            self.assertEqual(search.region.height, 1)
+            self.assertEqual(search.parent.region.height, 2)
             self.assertGreaterEqual(len(items), 3)
             # 分隔空行画在卡片自身内，两项 region 紧挨、无外边距空隙
             self.assertEqual(items[1].region.y - items[0].region.bottom, 0)
@@ -2145,9 +2146,9 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(active_card.region.height, 2)
             # Search, both fixed filter rows and New abut without unclickable gaps.
             filters = app.screen.query_one("#quick-filters")
-            self.assertEqual(filters.region.y, search.region.bottom)
+            self.assertEqual(filters.region.y, search.parent.region.bottom)
             self.assertEqual(filters.region.height,
-                             sum(row.region.height for row in filters.query("Grid")))
+                             1 + sum(row.region.height for row in filters.query("Grid")))
             self.assertEqual(items[0].region.y, filters.region.bottom)
 
     async def test_ended_card_title_is_dimmed_to_80_percent(self) -> None:
@@ -3672,7 +3673,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.index, len(STICKY_IDS))  # 默认落在第一条会话，跳过固定头
             self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
-            self.assertIn("Filter projects / titles", search.placeholder)
+            self.assertIn("Filter projects, titles", search.placeholder)
             self.assertFalse(search.has_class("-active"))
 
             await pilot.press("down")
@@ -3709,7 +3710,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(visible[0]["id"], "b")
 
     async def test_project_search_clear_button_clears_filter(self) -> None:
-        """有关键字时筛选框右侧露出两行高 ×；点按清空且不抢输入焦点。"""
+        """有关键字时筛选框右侧露出一行高 ×；点按清空且不抢输入焦点。"""
         from corral.ui.main_screen import _FilterClear
 
         sessions = [
@@ -3745,7 +3746,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.nav.project_query, "proxy")
             self.assertTrue(clear_btn.display)
             self.assertTrue(search_row.has_class("-active"))
-            self.assertEqual(clear_btn.styles.height.value, 2)
+            self.assertEqual(clear_btn.styles.height.value, 1)
             self.assertTrue(search.has_focus)
             visible = list_view.visible_sessions()
             self.assertTrue(visible)
@@ -4525,13 +4526,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             pi = filters.query_one("#runtime-pi", Button)
             await pilot.click("#runtime-codex")
             await pilot.pause(delay=0.2)
-            selected_colors = (codex.styles.color, codex.styles.background)
             neutral_colors = (pi.styles.color, pi.styles.background)
             pi.focus()
             await pilot.hover("#runtime-pi")
             await pilot.pause(delay=0.2)
             self.assertEqual((pi.styles.color, pi.styles.background), neutral_colors)
-            self.assertNotEqual(neutral_colors, selected_colors)
+            self.assertNotEqual(pi.get_component_rich_style("filter-chip--fill").bgcolor,
+                                codex.get_component_rich_style("filter-chip--fill").bgcolor)
             self.assertEqual(str(codex.label), "Codex")
             self.assertFalse(pi.has_class("-chosen"))
             # More selections never replace or move the stable quick choices.
@@ -4544,6 +4545,72 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             for button in filters.query(".project-choice"):
                 self.assertEqual(button.region.height, 1)
                 self.assertTrue(filters.region.contains_region(button.region))
+
+    async def test_header_metadata_capsules_and_native_switch(self) -> None:
+        from textual.widgets import Button, Static, Switch
+
+        from corral.ui.quick_filters import FilterChip, QuickFilters
+
+        for theme in ("corral-dark", "corral-light"):
+            store, _ = _make_store()
+            app = CorralApp(store, embed_ok=True)
+            with mock.patch.object(store, "refresh_age_seconds", return_value=45):
+                async with app.run_test(size=(100, 32)) as pilot:
+                    app.theme = theme
+                    await pilot.pause()
+                    app.screen._update_header()
+                    await pilot.pause()
+                    row = app.screen.query_one("#project-search-row")
+                    metadata = app.screen.query_one("#filter-count", Static)
+                    search = app.screen.query_one("#project-search", Input)
+                    self.assertEqual(row.region.width, 39)
+                    self.assertEqual(str(metadata.render()), "3 · 45s ago")
+                    self.assertGreaterEqual(metadata.content_size.width, len("3 · 45s ago"))
+                    self.assertTrue(row.region.contains_region(metadata.region))
+                    await pilot.click(row, offset=(5, 1))
+                    self.assertTrue(search.has_focus)
+                    search.value = "会话0"
+                    await pilot.pause()
+                    self.assertEqual(str(metadata.render()), "1 · 45s ago")
+                    clear = app.screen.query_one("#project-search-clear")
+                    self.assertTrue(row.region.contains_region(clear.region))
+                    await pilot.click(clear)
+                    await pilot.pause()
+                    self.assertTrue(search.has_focus)
+                    filters = app.screen.query_one(QuickFilters)
+                    chip = filters.query_one("#runtime-claude", FilterChip)
+                    await pilot.hover("#project-search")
+                    search.focus()
+                    await pilot.pause()
+                    neutral = chip.get_component_rich_style("filter-chip--fill")
+                    chip.focus()
+                    await pilot.pause()
+                    focused = chip.get_component_rich_style("filter-chip--fill")
+                    self.assertNotEqual(neutral.bgcolor, focused.bgcolor)
+                    strip = list(chip.render_line(0))
+                    self.assertEqual(strip[0].text, "▐")
+                    self.assertEqual(strip[-1].text, "▌")
+                    self.assertEqual(strip[0].style.color, strip[1].style.bgcolor)
+                    self.assertEqual(strip[-1].style.color, strip[1].style.bgcolor)
+                    self.assertFalse(chip.styles.text_style.underline)
+                    filters.nav.project_filters = {f"/tmp/p{n}" for n in range(120)}
+                    await filters.sync()
+                    more = filters.query_one("#project-more", Button)
+                    self.assertEqual(more.region.width, 11)
+                    self.assertIn("99+", more.render().plain)
+                    filters.nav.project_filters.clear()
+                    await filters.sync()
+                    switch = app.screen.query_one("#active-filter-switch", Switch)
+                    self.assertFalse(switch.value)
+                    await pilot.click(switch)
+                    await pilot.pause()
+                    self.assertTrue(app.screen.nav.active_only)
+                    self.assertTrue(switch.value)
+                    self.assertIs(app.screen.query_one(Switch), switch)
+                    await pilot.click(app.screen.query_one(ActiveFilterCard), offset=(1, 1))
+                    await pilot.pause()
+                    self.assertFalse(app.screen.nav.active_only)
+                    self.assertFalse(switch.value)
 
     async def test_short_project_filters_pack_three_and_do_not_move_after_toggling(self) -> None:
 

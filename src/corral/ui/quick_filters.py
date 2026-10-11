@@ -8,8 +8,10 @@ from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.style import Style
 from textual.widgets import Button, Input, Label, SelectionList, Static
 
 from corral.i18n import t
@@ -102,30 +104,56 @@ class ProjectFilterModal(ModalScreen[None]):
             self.dismiss(None)
 
 
-class QuickFilters(Vertical):
+class FilterChip(Button):
+    """Native button behavior with the ToggleButton endcap treatment."""
+
+    COMPONENT_CLASSES = {"filter-chip--fill"}
     DEFAULT_CSS = """
-    QuickFilters { height: auto; }
-    QuickFilters Grid { grid-rows: 1; grid-columns: 1; height: auto; }
-    QuickFilters .filter-gap { height: 1; }
-    QuickFilters Button.-style-default {
+    FilterChip.-style-default {
         width: 1fr; min-width: 2; height: 1; padding: 0;
-        border: none; margin: 0; background: $surface; color: $text-muted;
+        border: none; margin: 0; background: transparent; color: $text-muted;
         text-style: none; tint: transparent; background-tint: transparent;
     }
-    QuickFilters Button.-style-default:hover,
-    QuickFilters Button.-style-default:focus,
-    QuickFilters Button.-style-default.-active {
-        background: $surface; color: $text-muted;
-        border: none; tint: transparent; background-tint: transparent;
+    FilterChip.-style-default:hover,
+    FilterChip.-style-default:focus,
+    FilterChip.-style-default.-active {
+        background: transparent; color: $text-muted; border: none;
+        text-style: none; tint: transparent; background-tint: transparent;
     }
-    QuickFilters Button.-style-default:focus { text-style: none; }
-    QuickFilters Button.-chosen,
-    QuickFilters Button.-chosen.-style-default:hover,
-    QuickFilters Button.-chosen.-style-default:focus,
-    QuickFilters Button.-chosen.-style-default.-active {
+    FilterChip .filter-chip--fill { background: $panel; color: $text-muted; }
+    FilterChip:hover .filter-chip--fill,
+    FilterChip:focus .filter-chip--fill { background: $panel-lighten-1; color: $foreground; }
+    FilterChip:light:hover .filter-chip--fill,
+    FilterChip:light:focus .filter-chip--fill { background: $panel-darken-1; }
+    FilterChip.-chosen .filter-chip--fill {
         background: $primary-muted; color: $warning; text-style: bold;
     }
-    QuickFilters Button.-chosen.-style-default:focus { text-style: bold; }
+    FilterChip.-chosen:hover .filter-chip--fill,
+    FilterChip.-chosen:focus .filter-chip--fill { background: $primary-muted; background-tint: $foreground 8%; }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Textual 8.2's CSS integer parser rejects zero; the public style accepts it.
+        self.styles.line_pad = 0
+
+    def render(self) -> Content:
+        fill = self.get_visual_style("filter-chip--fill")
+        width = max(0, self.size.width - 2)
+        label = self.label.truncate(width, ellipsis=True)
+        label = label.pad_right(max(0, width - label.cell_length))
+        body = label.stylize_before(fill)
+        if self.app.native_ansi_color or self.app.console.color_system == "standard":
+            return body.pad(1, 1).stylize_before(fill)
+        side = Style(foreground=fill.background, background=self.background_colors[1])
+        return Content.assemble(("▐", side), body, ("▌", side))
+
+
+class QuickFilters(Vertical):
+    DEFAULT_CSS = """
+    QuickFilters { height: auto; padding: 0 0 1 0; }
+    QuickFilters Grid { grid-rows: 1; grid-columns: 1; height: auto; }
+    QuickFilters .filter-gap { height: 1; }
     """
 
     def __init__(self, store, nav: NavState, **kwargs) -> None:
@@ -141,11 +169,11 @@ class QuickFilters(Vertical):
             for runtime in active_runtimes(self.store.registry):
                 label = "Claude" if runtime.id == "claude" else runtime.display_name
                 yield Static("", id=f"runtime-{runtime.id}-gap", classes="filter-gap")
-                yield Button(Text(label, style=runtime_label_style(runtime.id)),
+                yield FilterChip(Text(label, style=runtime_label_style(runtime.id)),
                              id=f"runtime-{runtime.id}", compact=True)
         with Grid(id="project-quick-row"):
             yield Static("", id="project-more-gap", classes="filter-gap")
-            yield Button(t("filter.more"), id="project-more", compact=True)
+            yield FilterChip(t("filter.more"), id="project-more", compact=True)
 
     def on_mount(self) -> None:
         self.call_next(self.sync)
@@ -189,7 +217,7 @@ class QuickFilters(Vertical):
             await row.mount(*choices, before=self.query_one("#project-more-gap"))
             self._project_signature = signature
         count = len(self.nav.project_filters)
-        more.label = t("filter.more") + (f" ({count})" if count else "")
+        more.label = t("filter.more") + ("(99+)" if count > 99 else f" ({count})" if count else "")
         for button in row.query(".project-choice"):
             self._mark(button, button.name in self.nav.project_filters)
         self._pack(self.query_one("#runtime-quick-row", Grid))
@@ -206,7 +234,7 @@ class QuickFilters(Vertical):
         cursor = 0
         lines = 1
         for button in row.query(Button):
-            cells = min(width, 10 if button.id == "project-more" else text_width(str(button.label)) + 2)
+            cells = min(width, 11 if button.id == "project-more" else text_width(str(button.label)) + 2)
             gap = row.query_one(f"#{button.id}-gap")
             if cursor == width:
                 cursor = 0

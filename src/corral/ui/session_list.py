@@ -2,10 +2,9 @@
 
 侧边栏布局硬约定（凡往左栏加控件都必须遵守，见 AGENTS.md / MAINTAINER_GUIDE）：
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
-或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、活跃会话看板高 3（首行名称 /
-第二行上一页·下一页 / 第三行留白）、会话卡高 3（标题 / 运行时 /
+或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、活跃筛选开关高 2（名称与开关 / 末行留白）、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。筛选框在列表外固定；`＋ 新建` 和活跃会话看板在 `#sidebar-sticky` 里也不随
+无末行空行）。筛选框在列表外固定；`＋ 新建` 和活跃筛选开关在 `#sidebar-sticky` 里也不随
 列表滚。置顶块、Pinned 分隔线与未置顶日期段都在 `#sidebar-scroll`
 里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
 仍带动会话列表，顶部位置不变。
@@ -18,7 +17,7 @@
 点击或回车展开。项目筛选命中时
 自动展开，避免搜到的旧会话被藏住。斑马纹按**块**交替，
 不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块，三层叠卡也是一块；
-`＋ 新建`、活跃会话看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
+`＋ 新建`、活跃筛选开关与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` / `OlderStackCard` 上，用
 `$foreground` 的半透明底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类
 DEFAULT_CSS 会压过 ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，
@@ -47,7 +46,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import ListItem, ListView
+from textual.widgets import ListItem, ListView, Switch
 
 if TYPE_CHECKING:
     import corral
@@ -786,7 +785,11 @@ class NewSessionCard(Widget):
         from corral.i18n import t
 
         # 第二行空行：与会话卡同样把分隔算进本项命中区
-        return Text(t("list.new_session"), style="bold") + Text("\n")
+        out = Text(" ")
+        label = t("list.new_session")
+        out.append(label[0], style=self.app.get_css_variables()["accent"])
+        out.append(label[1:], style="bold")
+        return out + Text("\n")
 
 
 class ActiveFilterCard(Widget):
@@ -804,6 +807,13 @@ class ActiveFilterCard(Widget):
         width: 1fr;
         pointer: pointer;
     }
+    ActiveFilterCard Switch {
+        dock: right; width: 4; height: 1; margin: 0 1 0 0; padding: 0;
+        border: none; background: transparent; background-tint: transparent;
+    }
+    ActiveFilterCard Switch:hover, ActiveFilterCard Switch:focus {
+        border: none; background: transparent; background-tint: transparent;
+    }
     ActiveFilterCard.-on {
         color: $warning;
         background: $primary-muted;
@@ -814,18 +824,32 @@ class ActiveFilterCard(Widget):
         super().__init__(**kwargs)
         self._owner = owner
 
+    def compose(self) -> ComposeResult:
+        switch = Switch(value=self._owner.nav.active_only, id="active-filter-switch")
+        switch.can_focus = False
+        yield switch
+
     def on_mount(self) -> None:
         self.sync()
 
     def sync(self) -> None:
-        self.set_class(self._owner.nav.active_only, "-on")
+        on = self._owner.nav.active_only
+        self.set_class(on, "-on")
+        switch = self.query_one(Switch)
+        with switch.prevent(Switch.Changed):
+            switch.value = on
         self.refresh()
+
+    async def on_switch_changed(self, event: Switch.Changed) -> None:
+        event.stop()
+        if event.value != self._owner.nav.active_only:
+            await self.screen._toggle_active_filter()
 
     def render(self) -> Text:
         on = self._owner.nav.active_only
-        out = Text("", style="bold")
+        out = Text(" ")
         out.append(t("list.active_filter"), style="bold")
-        out.append(f"  ·  {self._owner.active_count()}", style="" if on else "dim")
+        out.append(f"  {self._owner.active_count()}", style="bold" if on else "dim")
         return out + Text("\n")
 
 
@@ -1383,7 +1407,7 @@ class SessionListView(Vertical):
     def _partition_items(
         self, items: list[ListItem]
     ) -> tuple[list[ListItem], list[ListItem]]:
-        """固定头只留「＋ 新建」和活动看板；置顶与未置顶都进滚动区。"""
+        """固定头只留「＋ 新建」和活跃筛选开关；置顶与未置顶都进滚动区。"""
         sticky_n = len(STICKY_IDS)
         return items[:sticky_n], items[sticky_n:]
 
@@ -1394,10 +1418,14 @@ class SessionListView(Vertical):
             return
         self._syncing_index = True
         try:
-            await self._sticky_list.clear()
+            preserve_sticky = bool(sticky_items) and self._sticky_intact()
+            if not preserve_sticky:
+                await self._sticky_list.clear()
             await self._scroll_list.clear()
-            if sticky_items:
+            if sticky_items and not preserve_sticky:
                 await self._sticky_list.extend(sticky_items)
+            elif preserve_sticky:
+                self.refresh_active_card()
             if scroll_items:
                 await self._scroll_list.extend(scroll_items)
         finally:

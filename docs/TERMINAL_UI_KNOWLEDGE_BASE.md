@@ -19,6 +19,53 @@
 | §8 | 关联文档 | 进入相邻领域时联读 |
 | §9 | 覆盖度与待补充项 | 了解证据边界与未确认事项 |
 
+### Sidebar header capsules (2026-10-11)
+
+The adopted header redesign keeps the 39-cell sidebar and existing filter semantics.
+The filter owns two rows: one capsule with `/`, the native Input, a separate right-aligned
+match count/staleness label and a one-row clear action; the second row is transparent
+and clicking it focuses the Input. Counts remain visible while typing. Idle age uses
+seconds/minutes/hours. Loading, errors and an empty catalog hide the count.
+Runtime/project quick choices use independent half-block endcaps, stable width-aware
+packing and one final owned blank row. More reserves 11 cells, with counts above 99
+shown as `99+`. Hover/focus changes only the capsule fill: dark themes lighten and
+light themes darken, without frames or underlines. Runtime brand colors survive selection.
+New Session and Active labels start one cell in; Active has a right-aligned native
+Textual Switch with its standard 0.3-second basic animation and disabled-animation support.
+The row still owns its trailing blank row and toggles through existing NavState policy.
+Full list replacement preserves the two fixed header controls so slider animation
+and control identity survive filtering; explicit clear still empties both lists.
+ANSI terminals use flat chips rather than color-matched half-block endcaps.
+
+Inspected references: installed Textual 8.2.8 `ToggleButton._button` (half-block endcap
+foreground equals fill, exterior equals parent), `Button.render` (Content label and
+existing keyboard/Pressed behavior), and `Switch.render/watch_value` (native slider,
+Changed message and basic animation). Reuse those mechanisms with Corral colors and
+compact geometry; do not copy toggle checkmarks or default focus borders. Official
+contracts: <https://textual.textualize.io/widgets/switch/> and
+<https://textual.textualize.io/guide/widgets/>. This is a TUI presentation change;
+Apple clients keep their platform controls and no history-provider changes are needed.
+The reviewed Mac/iPhone filter rows render their counts in separate native Text views,
+while search is a native searchable field; they do not reuse the TUI placeholder
+count/staleness string. This source check does not claim fresh device visual acceptance.
+
+Acceptance covers 39-cell count/clear geometry, default and filtered counts, owned
+blank-row clicks, stable More width at 120 selections, native switch and whole-row
+clicks, retained switch identity, five-runtime packing, dark/light and English/Chinese
+captures. A native Switch frame sequence recorded intermediate slider positions
+between 0 and 1. The maintainer renderer's first chosen mono face lacks CJK glyphs;
+Chinese diagnostic captures selected the installed `LXGW WenKai Mono` through the
+existing screenshot font hook. This changes capture rendering only, not terminal fonts.
+The final complete gate ran all 2,344 expected tests with full coverage, no failures
+or warnings; the two skips were the unavailable fish shell and the optional
+zeroconf-missing branch when zeroconf is installed. Real tmux selftest passed all
+12 keyboard/hosting/cursor/copy scenarios. First-screen scan measured 8 ms with
+the existing warm provider cache; this is not a cold-scan claim.
+The CI stamp verifies the current source/environment. The workflow wrapper rejected
+its broader workspace receipt because screenshot/doc artifacts changed during the
+run; that rejection does not replace the CI stamp. Artwork/docs were then re-read
+and independently inspected. Installed acceptance remains required before delivery.
+
 ## §1 业务背景与核心概念
 
 corral 的价值是让用户从一个终端界面中继续或接力不同 Coding Agent 的历史会话，而无需手工记忆历史文件位置、运行时和工作目录。终端界面只负责“看见、选择与发起用户动作”；运行时私有扫描、历史解析、启动参数和实时终端协议均不属于本域。
@@ -250,7 +297,7 @@ Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFi
 | 首屏异步加载与后台刷新 | `ui/main_screen.py` | `_await_initial_load()`、`_background_refresh_worker()`、`_poll_cache()` | 等首次扫描、按退避间隔重扫、轮询标题缓存 |
 | 启动加载占位屏与右栏空态龙屏 | `ui/dragon_splash.py`、`ui/main_screen.py`、`ui/split_pane_area.py` | `DragonSplash`、`splash_layout()`、`compose_splash_line()`、`MainScreen.compose()`（`#boot-splash`）、`_rebuild_after_boot_splash()` | 与彩蛋共用 `ui/assets/dragon-grid.json` 点阵：整条龙 cover 铺满后压进浅灰灰度带（#A8~#E4，背景索引透出底色），corral 厚块 Logo（toilet pagga 体）居中叠色、用龙身原色红 `#BA1F14`，栅格化后线性放大 4 倍（`LOGO_SCALE`，2026-08-18 起），░ 浅阴影以 25% 斜向点阵抖动还原；面板放不下时自动降到可容纳的最大整数倍（不裁字）。两个形态：① 启动加载占位屏 `fullscreen=True`——首扫未完成且无秒开快照（`not loaded and not hydrated`）时整屏铺龙，扫描完成后在 `_rebuild_after_boot_splash()` 里先摘屏再重建列表；直启子命令（`direct`）不铺。② 右栏空态——无格时替换旧「Pick a session…」纯文案 `Static`，提示文案挪到底部居中 dim。面板 <24 列或 <10 行时退化为纯提示文案；单测 `test_dragon_splash.py`（用 `unittest discover -s tests` 方式跑，无 `tests.` 前缀） |
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面；「运行中(其他窗口)」也只有完整对话，详情头额外写明拿不到实时画面的原因（`_status_key()` / `is_external_running()`）；后台补全内容只能刷新仍在右栏的同一会话，旧结果不得覆盖后来选中的会话 |
-| 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`ui/app.py`、`display.py`、`ui/session_list.py` | `on_input_changed()`、`NavState.project_query`、`_update_header()`、`_FilterClear`、`#project-search-row.-active`、`#project-search.-active`、`_filter_sessions_by_query()`、`_sidebar_rows()` | 查询只有一份状态；按组名、项目名、路径、标题进行大小写无关模糊匹配；命中组名时展示整组；关键字非空时筛选行贴 `-active`（`$warning` 字 + `$primary-muted` 底）并在右侧露出两行高矩形 ×（`#project-search-clear`）一键清空，失焦也保持高亮；点 × 不得抢输入焦点 |
+| 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`ui/app.py`、`display.py`、`ui/session_list.py` | `on_input_changed()`、`NavState.project_query`、`_update_header()`、`_FilterClear`、`#project-search-row.-active`、`#project-search.-active`、`_filter_sessions_by_query()`、`_sidebar_rows()` | 查询只有一份状态；按组名、项目名、路径、标题进行大小写无关模糊匹配；命中组名时展示整组；关键字非空时筛选行贴 `-active`（`$warning` 字 + `$primary-muted` 底）并在右侧露出一行高 ×（`#project-search-clear`）一键清空，失焦也保持高亮；点 × 不得抢输入焦点 |
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：独立卡首行「圆点 项目 标题」、组内子项首行「圆点 标题」（无项目前缀）/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号；首行整体 bold，独立卡项目名再叠一层 `dim` 比标题淡一档（标题不 dim），回归 `test_project_name_is_one_shade_lighter_than_title`、`test_group_member_title_omits_project_name` |
 | 时间行的新鲜度亮度梯度 | `ui/session_list.py`、`display.py` | `SessionCard._time_tier()` / `_time_style()`、`_time_brightness_tier()`、`TIME_BRIGHTNESS_TIERS`、`JUST_NOW_SECONDS`、`TODAY_SECONDS`、`_format_relative_time()` | 半小时 / 三小时 / 一天为界分四档，最新一档与标题同色（着重）、越旧越暗；「一天」是滚动 24 小时（`TODAY_SECONDS`），**不是**侧边栏日期分隔线的日历午夜；档位色走 `SessionCard` 的组件样式（`$foreground` + 透明度，深浅色主题各自与背景混合），渲染时只取混色后的前景、丢掉背景；文案侧 3 分钟内显示「刚刚」并加粗，之后为 `Xm ago` / `Xh ago` / 绝对时间，回归 `test_time_line_brightness_steps_down_with_age`、`test_just_now_time_is_bold_older_relative_time_is_not`、`test_format_relative_time_thresholds` |
@@ -352,7 +399,7 @@ Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFi
 - **AI 易错点**【宽度不是字符数】侧边栏列宽、标题截断、运行时名右对齐和预览折行一律使用 `textutil` 里那套 Rich 终端显示宽度工具（`text_width()` / `fit_cell()` / `fit_cell_right()` / `wrap_preview_text()`，底层 `rich.cells.cell_len` / `chop_cells`）；禁止用 `len()`、`ljust()` 或自写 East Asian Width 表。中文、emoji、组合字符会使字符数与终端格宽不一致。包顶层仍导出旧私有名（`corral._text_width` 等），新代码从 `corral.textutil` 取公共名。
 - **AI 易错点**【从 display 往外搬公共工具必须一次搬完】项目/路径工具在 `projects.py`（`normalize_cwd` / `disambiguate_labels` / `fuzzy_match` / `session_project_label` / `UNKNOWN_PROJECT_LABEL`），宽度工具在 `textutil.py`。`projects.py` 不得再 import `display`。搬完必须同步 `__init__.py` 的 `_SYMBOL_EXPORTS`，并用 `from corral.ui.main_screen import MainScreen; from corral.projects import normalize_cwd` 验无环。半截搬家（新模块删了、调用方已改、或反向依赖还在）会让启动直接 ImportError。
 - **AI 易错点**【新建会话弹窗打开即聚焦筛选框】`NewSessionModal.on_mount` 必须用 `Screen.set_focus` 同步钉住 `#ns-project-filter`，打开即可打字收窄项目，不必先按 `/`。禁止再默认钉到项目列表——那是旧的「方向键快路径」，会让用户敲字敲进列表、看起来像没反应。对照：全文搜索弹窗同样打开即聚焦查询框；Telescope / fzf 一类选择器默认也是插入态。↓/Enter 从筛选框落到项目列表；列表持焦时 `/` 仍可回到筛选框（与侧边栏同手感）；筛选框持焦时 ←→ 不得跳过项目栏。筛选框必须 `select_on_focus=False`，否则 Textual 默认全选，带入侧边栏初值时第一下敲字会整段清掉；有初值时把光标放到末尾，方便接着打。回归：`test_new_session_modal_opens_with_filter_focused`、`test_new_session_modal_filters_projects`、`test_new_session_modal_initial_query_seeds_filter`。
-- **AI 易错点**【筛选状态单一来源】筛选项目只认 `NavState.project_query`。搜索框输入、列表渲染、页头数量和新建会话目录推导必须共用它；不要在列表或弹窗另存一份筛选值。有关键字时 `_update_header()` 必须同时给 `#project-search-row` / `#project-search` 贴 `-active`，并露出两行高的 `#project-search-clear`；点 × 只写 `Input.value=""`（复用 `on_input_changed`），且 `on_mouse_down`/`on_click` 要 stop+prevent_default，禁止抢输入焦点。清空钮高亮写在 `CorralApp.CSS`（组件 `DEFAULT_CSS` 选不到父级行容器）。例外且只读：全文搜索弹窗与新建会话弹窗左栏筛选都可把 `project_query` 当初始查询带进去，但自己的查询串不写回这份状态。**新建会话弹窗的 `on_input_changed` 必须以 `event.input.value` 为准、且列表已与应收结果一致时跳过重建**：挂载时 Textual 可能先派发空串 `Changed`，按滞后的 `event.value` 重建会把 `__init__` 已收窄的列表冲宽，无意义的 `clear/extend` 还会抢走筛选框焦点（打开即聚焦筛选框，重建后必须交还）。回归：`test_new_session_modal_initial_query_seeds_filter`、`test_new_session_modal_picks_project_then_runtime`、`test_new_session_modal_opens_with_filter_focused`、`test_project_search_clear_button_clears_filter`。
+- **AI 易错点**【筛选状态单一来源】筛选项目只认 `NavState.project_query`。搜索框输入、列表渲染、页头数量和新建会话目录推导必须共用它；不要在列表或弹窗另存一份筛选值。有关键字时 `_update_header()` 必须同时给 `#project-search-row` / `#project-search` 贴 `-active`，并露出一行高的 `#project-search-clear`；点 × 只写 `Input.value=""`（复用 `on_input_changed`），且 `on_mouse_down`/`on_click` 要 stop+prevent_default，禁止抢输入焦点。清空钮高亮写在 `CorralApp.CSS`（组件 `DEFAULT_CSS` 选不到父级行容器）。例外且只读：全文搜索弹窗与新建会话弹窗左栏筛选都可把 `project_query` 当初始查询带进去，但自己的查询串不写回这份状态。**新建会话弹窗的 `on_input_changed` 必须以 `event.input.value` 为准、且列表已与应收结果一致时跳过重建**：挂载时 Textual 可能先派发空串 `Changed`，按滞后的 `event.value` 重建会把 `__init__` 已收窄的列表冲宽，无意义的 `clear/extend` 还会抢走筛选框焦点（打开即聚焦筛选框，重建后必须交还）。回归：`test_new_session_modal_initial_query_seeds_filter`、`test_new_session_modal_picks_project_then_runtime`、`test_new_session_modal_opens_with_filter_focused`、`test_project_search_clear_button_clears_filter`。
 - **AI 易错点**【全文搜索是另一条路，不要往筛选框里塞】侧边栏筛选框只匹配组名 / 项目名 / 路径 / 标题，**永远不搜对话正文**：它是常驻的列表收窄工具，一旦混进正文匹配，随手输个常用词就会把列表撑成一堆看不出为什么命中的会话。搜正文走 `Ctrl+F` 弹窗（`ui/search_modal.py`），结果按会话分组、显式展示命中行并高亮关键词，让用户一眼看出「为什么它出现在这」。两者共用 `store` 的会话与标题快照，但匹配逻辑分别在 `display._filter_sessions_by_query()` / `SessionListView._sidebar_rows()` 和 `search.ConversationIndex.search()`，不要合并。
 - **AI 易错点**【`push_screen_wait` 必须在 worker 里】新增任何「推弹窗并等结果」的动作时，动作方法必须挂 `@work`（见 `action_handoff` / `action_search_content`），否则 Textual 直接抛 `NoActiveWorker`。这条在单测里才会暴露，静态看代码看不出来。挂了 `@work` 之后，**可预期的业务拒绝（如 `LaunchError`：会话没有历史路径）必须在生成启动计划时 catch**：未捕获会变成 `WorkerFailed`，`_handle_exception` 整屏退出。分叉会话已经 catch；接力新建的计划在 `_embed_open` 里生成，失败要 notify 后返回。不要为了消这个闪退去 `_handle_exception` 里吞 `LaunchError`，也不要在 `action_handoff` 里先建一遍计划——成功路径会把摘录做两遍。真机：2026-08-24 刚托管的 Codex 占位卡按 Ctrl+T 接力闪退。回归：`test_handoff_without_history_path_keeps_tui_alive`、`test_embed_open_launch_error_keeps_tui_alive`。
 - **AI 易错点**【全文搜索索引在后台线程建，且要等首屏画完】`ConversationIndex.refresh()` 要解析对话历史，只能跑在 `@work(thread=True)` 里（`_warm_search_index`），并且要经 `_schedule_search_index_warm` 延后到首屏渲染之后——后台线程也吃 GIL，直接在首屏那一秒开跑会让首次出卡片慢 110～165 ms。弹窗打开时若未就绪，由弹窗自己再建一次并显示进度。`refresh()` 内部有锁做串行，两条路同时触发也不会把同一批会话解析两遍。搜索结果里的会话字段一律从调用方传入的当前列表取，索引只存正文——否则标题补全、运行中状态会停在建索引那一刻。

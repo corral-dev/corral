@@ -138,53 +138,33 @@ class CorralApp(App):
     # 和弹窗列表项都要关 ALLOW_SELECT；只留 EmbedPane 开着用于划词复制。
     CSS = """
     #project-search-row {
-        height: 2;
-        width: 1fr;
-        margin: 0;
-        padding: 0;
-        background: $panel;
+        height: 2; width: 1fr; margin: 0; padding: 0 0 1 0;
+        background: transparent;
     }
-
-    #project-search {
-        /* 侧边栏项约定：总高度含末行间隔（正文 1 + 间隔 1），间隔算进本项命中区。
-           禁止用 ListItem/兄弟节点的 margin 做分隔——点在空隙上不会落到本项。 */
-        height: 2;
-        width: 1fr;
-        margin: 0;
-        border: none;
-        padding: 0 1 1 1;
-        /* 筛选是辅助入口：表面层，不要主色大色块抢层级 */
-        color: $text-muted;
-        background: $panel;
+    #project-search-row > Static, #project-search {
+        height: 1; margin: 0; border: none; padding: 0;
+        color: $text-muted; background: $panel;
     }
-
-    #project-search:focus {
-        color: $foreground;
-        background: $primary-muted;
+    #project-search { width: 1fr; }
+    #filter-prefix { width: 2; }
+    #project-search-row #filter-count { width: auto; padding: 0 1; }
+    #project-search-row > .filter-cap { width: 1; color: $panel; background: transparent; }
+    #project-search-row:focus-within > Static,
+    #project-search-row:focus-within #project-search {
+        background: $primary-muted; color: $foreground;
     }
-
-    /* 有关键字时失焦也高亮：否则列表变少时用户常怪会话丢了，其实只是没注意到筛着。
-       警告色留给「别漏看」态；底仍用 muted，不铺高饱和大色块。
-       行容器同步 -active，右侧清空矩形才跟输入框同一套高亮。 */
-    #project-search-row.-active,
+    #project-search-row.-active > Static,
     #project-search-row.-active #project-search,
-    #project-search-row.-active #project-search:focus,
-    #project-search.-active,
-    #project-search.-active:focus {
-        color: $warning;
-        background: $primary-muted;
+    #project-search-row.-active #project-search:focus {
+        background: $primary-muted; color: $warning;
     }
-
-    /* 清空钮高亮必须写在 App CSS：组件 DEFAULT_CSS 选不到父级 #project-search-row。 */
-    #project-search-row.-active #project-search-clear {
-        color: $warning;
-        background: $primary-darken-2;
+    #project-search-row:focus-within > .filter-cap,
+    #project-search-row.-active > .filter-cap {
+        color: $primary-muted; background: transparent;
     }
-
-    #project-search-row.-active #project-search-clear:hover {
-        color: $error;
-        background: $error-darken-3;
-    }
+    #project-search-row #filter-count { color: $text-muted; }
+    #project-search-row.-active #project-search-clear { background: $primary-muted; color: $warning; }
+    #project-search-row.-active #project-search-clear:hover { color: $error; }
     """
 
     def get_theme_variable_defaults(self) -> dict[str, str]:

@@ -131,33 +131,19 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # 筛选框匹配项目名、路径和会话标题（分屏不起名）；搜对话正文是
     # 另一条路（Ctrl+F 全文搜索弹窗），不在这个框里。
     "filter.placeholder": {
-        "en": "Filter projects / titles…",
-        "zh": "筛选项目 / 标题…",
+        "en": "Filter projects, titles",
+        "zh": "筛选项目、标题",
     },
-    "filter.placeholder_count": {
-        "en": "Filter projects / titles ({count})",
-        "zh": "筛选项目 / 标题 ({count})",
-    },
-    "filter.placeholder_count_active": {
-        "en": "Filter projects / titles… ({count})",
-        "zh": "筛选项目 / 标题… ({count})",
-    },
-    # Honest staleness when the list has not been rescanned recently (event-driven idle).
-    "filter.placeholder_count_stale": {
-        "en": "Filter projects / titles ({count}) · updated {age}s ago",
-        "zh": "筛选项目 / 标题 ({count}) · {age} 秒前更新",
-    },
-    "filter.placeholder_count_active_stale": {
-        "en": "Filter projects / titles… ({count}) · updated {age}s ago",
-        "zh": "筛选项目 / 标题… ({count}) · {age} 秒前更新",
-    },
+    "filter.age_seconds": {"en": "{age}s ago", "zh": "{age} 秒前"},
+    "filter.age_minutes": {"en": "{age}m ago", "zh": "{age} 分钟前"},
+    "filter.age_hours": {"en": "{age}h ago", "zh": "{age} 小时前"},
     "filter.load_error": {
-        "en": "Filter projects / titles… — {error}; retrying",
-        "zh": "筛选项目 / 标题… — {error}；正在自动重试",
+        "en": "Filter projects, titles — {error}; retrying",
+        "zh": "筛选项目、标题 — {error}；正在自动重试",
     },
     "filter.no_sessions": {
-        "en": "Filter projects / titles… — no {names} sessions found",
-        "zh": "筛选项目 / 标题… — 未找到任何 {names} 会话记录",
+        "en": "Filter projects, titles — no {names} sessions found",
+        "zh": "筛选项目、标题 — 未找到任何 {names} 会话记录",
     },
     "filter.clear": {
         "en": "×",

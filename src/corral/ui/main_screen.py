@@ -31,6 +31,7 @@ from textual.worker import get_current_worker
 
 from corral import i18n, ui_prefs
 from corral.i18n import t
+from corral.textutil import fit_cell
 from corral.ui.controllers.attention_reader import AttentionReaderMixin
 from corral.ui.controllers.host_controller import HostControllerMixin
 from corral.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
@@ -93,7 +94,7 @@ LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BA
 
 
 class _FilterClear(Static):
-    """筛选框右侧清空钮：有关键字时露出，占满两行高度的矩形命中区。
+    """筛选框右侧清空钮：有关键字时露出，占胶囊内一行高度的命中区。
 
     点按不得抢焦点（否则会把正在打字的输入框焦掉）；清空走 Input.value=""，
     复用既有 `on_input_changed` 重建列表。
@@ -104,12 +105,12 @@ class _FilterClear(Static):
     DEFAULT_CSS = """
     _FilterClear {
         width: 3;
-        height: 2;
+        height: 1;
         margin: 0;
         padding: 0;
         content-align: center middle;
         color: $text-muted;
-        background: $surface;
+        background: transparent;
         pointer: pointer;
     }
     _FilterClear:hover {
@@ -131,6 +132,22 @@ class _FilterClear(Static):
         event.stop()
         event.prevent_default()
         self._on_clear()
+
+
+class _FilterInput(Input):
+    """Retain native editing; shorten only the normal hint by terminal cells."""
+
+    def on_resize(self, event: events.Resize) -> None:
+        if getattr(self, "normal_hint", True):
+            self.placeholder = fit_cell(
+                t("filter.placeholder"), event.size.width, ellipsis=True
+            ).rstrip()
+
+class _FilterRow(Horizontal):
+    """The owned second row and metadata keep the same input focus target."""
+
+    def on_click(self, event: events.Click) -> None:
+        self.query_one(Input).focus()
 
 
 # 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
@@ -350,11 +367,15 @@ class MainScreen(
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="list-pane"):
-                with Horizontal(id="project-search-row"):
-                    yield Input(
+                with _FilterRow(id="project-search-row"):
+                    yield Static("▐", id="filter-left", classes="filter-cap")
+                    yield Static("/ ", id="filter-prefix")
+                    yield _FilterInput(
                         placeholder=t("filter.placeholder"), id="project-search"
                     )
+                    yield Static("", id="filter-count")
                     yield _FilterClear(self._clear_project_search, id="project-search-clear")
+                    yield Static("▌", id="filter-right", classes="filter-cap")
                 yield QuickFilters(self.store, self.nav, id="quick-filters")
                 yield SessionListView(
                     self.store,
@@ -909,6 +930,7 @@ class MainScreen(
         # 友好提示，而不是让用户面对一个永远空白、原因不明的列表——旧版是在 main()
         # 里同步扫完就直接打印错误退出，扫描挪到后台 worker 后这个判断只能挪到这里，
         # 扫描没跑完之前（store.loaded 为 False）不能误判为"确实没有会话"。
+        search.normal_hint = False
         if load_error:
             search.placeholder = t("filter.load_error", error=load_error)
         elif self.store.loaded and count == 0 and not any(self.store.sessions.values()):
@@ -923,21 +945,19 @@ class MainScreen(
                 and age >= REFRESH_STALE_HINT_AFTER
                 and self.store.loaded
             )
-            age_i = int(age) if age is not None else 0
-            if active and stale:
-                search.placeholder = t(
-                    "filter.placeholder_count_active_stale", count=count, age=age_i,
-                )
-            elif active:
-                search.placeholder = t("filter.placeholder_count_active", count=count)
-            elif stale:
-                search.placeholder = t(
-                    "filter.placeholder_count_stale", count=count, age=age_i,
-                )
-            else:
-                search.placeholder = t("filter.placeholder_count", count=count)
-
-    # ---- 选择跟随：右栏默认展示左栏当前选中项 ----
+            search.normal_hint = True
+            width = search.content_size.width
+            search.placeholder = (fit_cell(t("filter.placeholder"), width, ellipsis=True).rstrip()
+                                  if width > 0 else t("filter.placeholder"))
+            metadata = str(count) if self.store.loaded else ""
+            if stale:
+                age_i = int(age)
+                unit = "seconds" if age_i < 60 else "minutes" if age_i < 3600 else "hours"
+                value = age_i if unit == "seconds" else age_i // (60 if unit == "minutes" else 3600)
+                metadata += " · " + t(f"filter.age_{unit}", age=value)
+            self.query_one("#filter-count", Static).update(metadata)
+        if load_error or (self.store.loaded and count == 0 and not any(self.store.sessions.values())):
+            self.query_one("#filter-count", Static).update("")
 
     def on_list_view_highlighted(self, event) -> None:
         # 高亮一变就立刻停止观察上一条会话，不能等 120ms 的右栏跟随节流结束，
