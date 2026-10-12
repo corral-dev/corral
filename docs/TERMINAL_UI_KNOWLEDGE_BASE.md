@@ -252,6 +252,15 @@ continuation. Refresh when member timestamps or the displayed relative time chan
 Empty/missing timestamps do not fabricate a latest time. This uses the existing
 Textual Widget/Rich Text render contract: <https://textual.textualize.io/guide/widgets/#rich-renderables>.
 
+Acceptance on the installed Homebrew v0.24.294 exercises triangle collapse/expand,
+latest-member replacement and all-read summaries in a 39-cell sidebar, with inspected
+dark/light English and light Chinese screenshots. Expanded tree continuations stay
+intact. The complete v0.24.294 gate ran all 2,383 expected tests with no failures or
+warnings (two environment-dependent skips: absent fish and installed zeroconf);
+the isolated real-terminal selftest passed all 13 scenarios. Warm first-screen scan
+was 9 ms. Mac source already selects the maximum member `mtime` in its collapsed
+label; no fresh Mac visual acceptance is claimed. iPhone has no split-group entry.
+
 - **分屏不起名、不拼标题（2026-10-11 机主裁定，取代 2026-10-05 的显示名规则；TUI 与 Mac 共用）**：界面对外称「分屏 / Split view」，不叫「分组 / Group」。分屏**不提供起名功能**（TUI `Ctrl+T` 的「重命名分屏」、Mac 右键「重命名分屏…」、远程 `layout.renameGroup` 与快照 `named` 字段一并移除），也**不再把成员标题用 ` + ` 拼成显示名**：展开时成员标题就在下面，拼出来等于把首个成员标题再写一遍、被截断后还像一条普通会话；收起时一小行也放不下四个标题。分屏卡只写固定标签「分屏」+ 项目名 + 成员数，收起时用状态汇总（TUI）或成员助手图标 + 状态点（Mac）提示里面有什么；内部水果身份名仍不展示，旧数据里用户起过的名字一律忽略。删除整组的确认文案用项目名指代该分屏。筛选框只按成员标题与项目匹配，筛后不足两人即解散为独立会话。
 - 两到四个会话以分屏打开后立即形成会话组；**内部身份名**仍在创建时从水果表随机生成（如 `Group Apple`、`Group Pineapple`），只作落盘身份与兼容旧数据、不展示；形如 `Group <水果>` / `Group <水果> N` 的名字一律视为「未命名」，其余视为用户起的名字。水果名被历史组全占用时，新组改用「水果 + 序号」（如 `Group Cherry 2`，随机挑水果，带序号时不用 Apple 以免撞旧版遗留名形状），旧版遗留的「Group Apple N」组名读入时确定性迁移（读路径不落盘，迁移名必须确定性，否则多窗口对不上）。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 corral 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有置顶的组/会话才排在列表最上（侧栏选中时按 `p`，任意焦点按 `Ctrl+P`，与全文搜索同级的全局键）。
 - 组卡固定三行（与会话卡同高）：第一行只有 `▼/▶ + 可选置顶标记 + 分屏 · 项目名`（粗体），**没有关注圆点**、没有水果 emoji、不拼成员标题；第二行是弱化的「N 个会话」（与第一行「分屏」**同列左对齐**，不靠右）；**展开时，第二、三行最左画连续树干，使其从三角正下方接到成员的 `├─`/`└─` 分叉**，不能在组卡与首个成员之间断开。收起时没有成员，组卡不得画树干，第三行改为组内关注状态汇总：按「等待回答黄 → 执行中绿 → 新结果红」固定顺序显示彩色圆点、短标签与数量；若全组都已读则显示已读会话数。汇总只做信息展示，点击语义和成员自身状态不变。

@@ -75,6 +75,22 @@ The October 11 TUI delivery exposed two preparation failures, distinct from prod
 
 These workarounds preserve the existing release gates and fixed dependency pin; neither preparation failure establishes a product regression.
 
+Corral's Homebrew-managed installation must be upgraded through its tap, rather
+than overwriting the Cellar environment with pip. The observed v0.24.292_1 package
+had no pip RECORD; `pip install --force-reinstall` failed with
+`uninstall-no-record-file` before replacing it. Updating the existing tap and running
+`brew upgrade x0c/tap/corral` installed v0.24.294, whose actual interpreter passed
+the collapsed-split UI acceptance. Do not bypass the missing RECORD or treat an
+editable developer copy as the installed Homebrew artifact.
+
+The targeted upgrade emitted two unrelated Homebrew diagnostics, retained with
+separate assessments: `Casks/agentsync.rb` uses deprecated `postflight` (follow-up
+belongs to that cask; Corral's formula installation still succeeded), and unrelated
+taps lacked Homebrew trust (their entries were ignored; the requested Corral tap
+remained usable). Their residual risk concerns future maintenance/use of those
+casks or taps, not the observed Corral upgrade. Do not grant whole-tap trust or
+change unrelated casks as part of Corral delivery.
+
 ## References
 
 - uv project synchronization and lock behavior: <https://docs.astral.sh/uv/concepts/projects/sync/>
