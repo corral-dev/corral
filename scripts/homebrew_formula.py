@@ -57,6 +57,16 @@ DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Curs
 # sesskit：真源在 scripts/sesskit_dep.py（与 CI / install.sh 同一份 pin）。
 RESOURCES = f"""{sesskit_dep.homebrew_resource_block()}
 
+  resource "websockets" do
+    url "https://files.pythonhosted.org/packages/09/ce/3929538b2b9918f5eee623fbf3346893973191f6df93f19bbda097bd7bb7/websockets-17.0.1-py3-none-any.whl"
+    sha256 "c6be9cba65c65cc76dfa3d4619e359ff02a4476c74e179b215236c11a0b32345"
+  end
+
+  resource "packaging" do
+    url "https://files.pythonhosted.org/packages/7a/c2/920ef838e2f0028c8262f16101ec09ebd5969864e5a64c4c05fad0617c56/packaging-26.1-py3-none-any.whl"
+    sha256 "5d9c0669c6285e491e0ced2eee587eaf67b670d94a19e94e3984a481aba6802f"
+  end
+
   resource "linkify-it-py" do
     url "https://files.pythonhosted.org/packages/b4/de/88b3be5c31b22333b3ca2f6ff1de4e863d8fe45aaea7485f591970ec1d3e/linkify_it_py-2.1.0-py3-none-any.whl"
     sha256 "0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e"
@@ -260,6 +270,9 @@ def build_formula(version: str, slots: dict) -> str:
         '  depends_on "python@3.12"',
         '  depends_on "tmux"',
     ]
+    # Formula-only dependency repair: existing 292 installs must also upgrade.
+    if version == "0.24.292":
+        parts.insert(parts.index('  license "MIT"') + 1, "  revision 1")
     if dep_lines:
         parts += ["", dep_lines]
     parts += [
@@ -285,6 +298,7 @@ def build_formula(version: str, slots: dict) -> str:
         "  end",
         "",
         "  test do",
+        '    system libexec/"bin/python", "-m", "pip", "check"',
         '    system libexec/"bin/python", "-c", "import corral._native"',
         '    assert_match "corral", shell_output("#{bin}/corral --help")',
         "  end",

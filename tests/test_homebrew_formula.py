@@ -56,13 +56,20 @@ class HomebrewFormulaTest(unittest.TestCase):
     def test_dependencies_are_universal_wheels_installed_in_one_batch(self):
         formula = self.formula()
         resources = formula.split("  def install")[0].split("  resource ")[1:]
-        self.assertEqual(len(resources), 11)
+        self.assertEqual(len(resources), 13)
         for resource in resources:
             self.assertIn("-py3-none-any.whl", resource)
             self.assertIn('sha256 "', resource)
         self.assertIn('venv.pip_install Dir[wheelhouse/"*.whl"].sort.join("\\n")', formula)
         self.assertNotIn("venv.pip_install resources", formula)
         self.assertIn('"import corral._native"', formula)
+        self.assertIn('resource "websockets"', formula)
+        self.assertIn('"pip", "check"', formula)
+
+    def test_dependency_repair_revises_existing_292_installs(self):
+        slots = {key: self.macos for key in ("macos", "linux_x86_64", "linux_aarch64")}
+        self.assertIn("  revision 1", homebrew_formula.build_formula("0.24.292", slots))
+        self.assertNotIn("  revision", homebrew_formula.build_formula("0.24.293", slots))
 
     def test_linux_source_fallback_scopes_build_dependencies_to_linux(self):
         formula = self.formula(linux_x86=self.source, linux_arm=self.source)
