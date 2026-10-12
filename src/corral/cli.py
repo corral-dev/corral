@@ -218,6 +218,20 @@ def _title_daemon_running() -> bool:
         os.close(fd)
 
 
+def _refresh_remote_host() -> None:
+    """Replace an outdated phone/Mac host in the background; never blocks or raises."""
+
+    def run() -> None:
+        try:
+            from corral.remote.cli import restart_if_outdated
+
+            restart_if_outdated()
+        except Exception as exc:  # noqa: BLE001 - host refresh must not disturb the TUI
+            observe.debug("remote_outdated_restart_failed", error=str(exc))
+
+    threading.Thread(target=run, name="remote-host-refresh", daemon=True).start()
+
+
 def _spawn_title_daemon(limit: int) -> None:
     """以脱离当前终端的方式拉起后台标题生成进程。
 
@@ -331,6 +345,7 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
         store._title_spawn_fn = pkg._spawn_title_daemon
         store.load()
         pkg._spawn_title_daemon(_DIRECT_LAUNCH_LIMIT)
+        pkg._refresh_remote_host()
 
     if project_query is not None:
         try:
@@ -506,6 +521,7 @@ def main() -> None:
     # 拉起脱离终端的后台进程生成标题：用户秒退或原生恢复（execvp 替换进程）后仍继续，
     # TUI 通过轮询缓存文件拾取它逐批写入的标题。
     _spawn_title_daemon(args.limit)
+    _refresh_remote_host()
 
     # 趁 Textual 接管终端前探测外层终端的前景/背景色（OSC 10/11）：内嵌面板聚焦时经
     # refresh-client -r 注入托管 pane，让 pane 内 agent 的深/浅主题检测拿到真实值。

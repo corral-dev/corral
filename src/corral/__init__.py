@@ -29,7 +29,7 @@ def _wire_sesskit_cache() -> None:
         pass
 
 
-__version__ = "0.24.296"
+__version__ = "0.24.297"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "liveness", "titles", "updater", "split_layout", "observe", "theme", "search",
@@ -44,6 +44,7 @@ _SYMBOL_EXPORTS = {
     "_require_tmux": ("corral.cli", "_require_tmux"),
     "_restart_process": ("corral.cli", "_restart_process"),
     "_spawn_title_daemon": ("corral.cli", "_spawn_title_daemon"),
+    "_refresh_remote_host": ("corral.cli", "_refresh_remote_host"),
     "main": ("corral.bootstrap", "main"),
     "SPINNER_FRAMES": ("corral.display", "SPINNER_FRAMES"),
     "UNKNOWN_PROJECT_LABEL": ("corral.projects", "UNKNOWN_PROJECT_LABEL"),

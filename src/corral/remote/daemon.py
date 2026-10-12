@@ -12,7 +12,7 @@ import signal
 import subprocess
 import time
 
-from corral import observe, updater
+from corral import __version__, observe, updater
 from corral.i18n import t
 from corral.remote import config as remote_config
 from corral.remote.lan import DEFAULT_LOCAL_PORT, local_hints
@@ -62,6 +62,9 @@ class RemoteDaemon:
             with contextlib.suppress(NotImplementedError, ValueError):
                 loop.add_signal_handler(sig, stop.set)
 
+        # Version goes out before the PID so a newer interactive start never
+        # mistakes a just-started current host for an outdated one.
+        remote_config.write_status_snapshot({"updated_at": time.time(), "version": __version__})
         # 开关语义：`on` 要立刻看到 pid。先落盘再扫盘，首轮扫描再久也不挡住开。
         remote_config.write_pid()
         observe.event("remote_started", host=self.state.host_name)
@@ -167,6 +170,7 @@ class RemoteDaemon:
         remote_config.write_status_snapshot(
             {
                 "updated_at": time.time(),
+                "version": __version__,
                 "online": self.service.online_devices(),
                 "recent": self.service.recent_audit(12),
                 "relay_online": relay_online,

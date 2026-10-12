@@ -346,6 +346,33 @@ def _start_background(autostart_error: str | None) -> tuple[int | None, str]:
     return pid, ""
 
 
+def restart_if_outdated() -> bool:
+    """Restart a running host that is older than this install; True when restarted.
+
+    Hosts before v0.24.296 cannot notice their own upgrade and keep serving from
+    a deleted install. Interactive starts call this in the background; only a
+    strictly older host (or one reporting no version) is replaced, so two
+    coexisting installs never flip-flop.
+    """
+    from corral import __version__, observe
+
+    if not remote_autostart.autostart_allowed():
+        return False  # tests / explicit state overrides never touch the real host
+    running = remote_config.read_pid()
+    if not running or not remote_config.load_state().wanted:
+        return False
+    snapshot = remote_config.read_status_snapshot() or {}
+    host_version = str(snapshot.get("version") or "0")
+    if not updater.is_newer(__version__, updater._version_tuple(host_version)):
+        return False
+    observe.event("remote_outdated_restart", host_version=host_version, version=__version__)
+    remote_autostart.disable()
+    _stop_pid(running)
+    remote_config.clear_pid()
+    _start_background(remote_autostart.enable())
+    return True
+
+
 def _ensure_service_on(state: remote_config.RemoteState) -> tuple[int | None, bool, str, str]:
     """Turn remote on for pairing, as `on` would; returns (pid, started, error, code)."""
     running = remote_config.read_pid()
