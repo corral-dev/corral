@@ -153,6 +153,8 @@ sequenceDiagram
 
 ## §1.6 鼠标指针形状
 
+跨产品的 OSC 22 终端支持矩阵、iTerm2 版本限制与不动用户鼠标的验收方法见 [共享终端 UI 指南](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#mouse-pointer-shape-osc-22)；本节只记 corral 的实现与控件规则。
+
 终端窗口里的鼠标指针形状由**终端模拟器**决定，TUI 只能通过 `OSC 22`（`ESC ] 22 ; 形状 BEL`，形状名用 CSS `cursor` 关键字：`default` / `pointer` / `text` / `wait`）请求更换。Textual 8 已内置这条能力（`Screen.update_pointer_shape()` 沿祖先找第一个非 `default` 的 CSS `pointer:`，`App._set_pointer_shape()` 写 `\x1b]22;{shape}\x07`），但有三个缺口 corral 必须自己补：
 
 1. **只在形状变化时发**：值一直是 `default` 就不再补发；终端被重置后回落到自己的默认（多数是 I 型光标）。Unix 驱动 `start_application_mode` 里主动再发一次 `default`。
@@ -547,7 +549,7 @@ python3 -m corral --limit 5
 
 涉及主题跟随时，保持 corral 运行，直接切换系统或终端的深浅外观，确认 2 秒内壳层和右栏底色一起切换、搜索框没有出现 `rgb:` 乱码；再新建一格，确认新格沿用切换后的背景。支持 DEC 2031 的终端还应验证不等轮询即可切换。
 
-涉及指针形状时：在支持 OSC 22 的终端（iTerm2 / Ghostty / kitty）确认会话卡是手型、内嵌画面与输入框是箭头、空白处是箭头，退出后 shell 恢复终端默认指针；再套一层 tmux 重复一遍（穿透必须生效）。在 iTerm2 3.5 / Terminal.app 上确认没有把 `\x1b]22;` 打成可见乱码。自测序列：`printf '\033]22;pointer\007'` / `printf '\033]22;\007'`。
+涉及指针形状时：在支持 OSC 22 的终端（iTerm2 / Ghostty / kitty）确认会话卡是手型、内嵌画面与输入框是箭头、空白处是箭头，退出后 shell 恢复终端默认指针；再套一层 tmux 重复一遍（穿透必须生效）。在 iTerm2 3.5 / Terminal.app 上确认没有把 `\x1b]22;` 打成可见乱码。自测序列：`printf '\033]22;pointer\007'` / `printf '\033]22;\007'`。不能替机主移动鼠标时，按共享指南的 `pipe-pane` + SGR 移动事件抓出实际发出的形状名（2026-10-12 在 `TERM_PROGRAM=iTerm.app` 下应只见 `left_ptr` / `hand2` / 空名复位），再由机主在真实终端悬停确认一次。
 
 4. 删除会话是不可恢复的破坏性操作，改动 `action_delete_session`/`_delete_session_group`/`ConfirmModal`/`SessionStore.remove_session` 或任一运行时的 `delete_session()` 后，必须在临时构造的假会话（而不是真实用户历史）上跑一遍 `x → x 确认` 全流程，确认：卡片立即消失（不必等下次重扫）；**让 `delete_session()` 阻塞几秒再返回，确认卡片仍在确认那一刻就消失、且此后连续几轮重扫都不会把它重新灌回来**（这是最容易回归的一条，见上面 tombstone 那条易错点）；对应磁盘文件/目录/数据库行确实被删除；运行中/托管会话先结束再删；删除失败（如模拟磁盘异常）时卡片保留且有失败提示，不能静默摘除列表项。**改动整组删除路径时，额外在临时构造的会话组上跑一遍「光标停在组卡 → `x` → 确认」**：整组成员一起消失、组解散、组外会话不受牵连；混入一条删除失败的成员时其余照删、失败的那条被捞回；含托管成员的组确认后所有保活进程都被结束。
 

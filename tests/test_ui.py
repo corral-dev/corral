@@ -6829,11 +6829,12 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.cursor_position.x, expected_x)
 
     async def test_focus_shows_real_cursor_blur_hides_it(self) -> None:
-        """IME 回归：聚焦内嵌 pane 且有可见光标时必须显式打开外层真实硬件光标
-        （`\\e[?25h`），失焦时收起。Textual 全屏运行期默认藏掉真实光标，只移动一个
-        看不见的光标——位置再准，IME 也没有可见锚点，用户打不出中文（真机反馈）。
-        这里断言 EmbedPane._real_cursor_shown 随焦点/光标状态正确翻转（selftest.sh
-        另有真实外层终端 `#{cursor_flag}` 断言，覆盖真正写没写出转义）。"""
+        """聚焦内嵌 pane 且助手光标可见时必须显式打开外层真实硬件光标
+        （`\\e[?25h`），失焦时收起。Textual 全屏运行期默认藏掉真实光标，不打开的话
+        内嵌画面里看不到光标；候选框位置只跟坐标走、与可见性无关（隐藏场景见
+        test_hidden_agent_cursor_anchors_ime_but_stays_hidden）。这里断言
+        EmbedPane._real_cursor_shown 随焦点/光标状态正确翻转（selftest.sh 另有真实
+        外层终端 `#{cursor_flag}` 断言，覆盖真正写没写出转义）。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(
             ("bash", "-c", "printf 'CURSOR-TEST\\n'; cat"), None

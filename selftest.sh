@@ -258,16 +258,15 @@ else
   exit 1
 fi
 
-# ---- IME 关键回归：外层真实光标必须「可见」（DECTCEM 打开），不能只是位置对 ----
-# Textual 全屏运行期默认 `\e[?25l` 藏掉真实光标，只移动一个看不见的光标——位置
-# 再准，IME 也没有可见锚点，用户在内嵌 Agent 里根本打不出中文（真机反馈）。
-# `#{cursor_flag}` 反映托管 corral 当前有没有把真实光标显示出来：聚焦内嵌 pane
-# 且有可见光标时必须为 1。EmbedPane._set_real_cursor 就是补这一步的。
+# ---- 外层真实光标显隐镜像助手：助手光标可见时外层也必须可见（DECTCEM 打开） ----
+# Textual 全屏运行期默认 `\e[?25l` 藏掉真实光标；助手（如 shell、Codex）显示光标时
+# 外层必须显式打开，否则内嵌画面里看不到光标。候选框位置只跟光标坐标走、与可见性
+# 无关（见共享终端 UI 指南），隐藏场景由下一段断言。
 outer_cursor_flag="$(tmux -L "$OUTER" display-message -p -t cursor '#{cursor_flag}')"
 if [[ "$outer_cursor_flag" == "1" ]]; then
-  ok "外层终端真实光标处于「可见」状态（cursor_flag=1）——IME 有可见锚点，中文合成才能激活"
+  ok "助手光标可见时外层终端真实光标同样可见（cursor_flag=1）"
 else
-  echo "外层真实光标被隐藏（cursor_flag=${outer_cursor_flag}）：位置对但不可见，IME 仍无法工作" >&2
+  echo "助手光标可见但外层真实光标被隐藏（cursor_flag=${outer_cursor_flag}）" >&2
   exit 1
 fi
 
