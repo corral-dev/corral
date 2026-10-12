@@ -306,7 +306,7 @@ search crawl 2026-09-30):
 - `kind` 保持 `completed` / `aborted` / `waiting` 三值；NSE 按 `kind`
   选分类：`waiting` 沿用 `CORRAL_WAITING`（快捷回复）；完成/中断用新分类
   `CORRAL_COMPLETED`（动作：打开会话；暂不加快捷回复，避免误发指令）。
-- 正文：完成 = `last_agent` 首行（160 字内），为空回退“Session finished”；
+- 正文：完成 = `last_agent` 的纯文本预览（先转换 Markdown 再截至 160 字；Apple 两端规则见 [Apple notification preview contract](../../../apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md#notification-plain-text-previews-owner-approved-2026-10-12)），为空回退“Session finished”；
   中断 = `last_agent` 报错摘要（SessKit ≥0.1.5 已保留 429/限流原文），
   为空回退“Session stopped with an error”。成功与异常文案永不混用。
 - `userInfo` 沿用 `session_key` + `host_id`；点击通知按现有
