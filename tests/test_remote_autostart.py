@@ -77,6 +77,31 @@ class RemoteAutostartTests(unittest.TestCase):
             self.assertEqual(payload["ProgramArguments"][:3], [sys.executable, "-m", "corral"])
             self.assertEqual(payload["ProgramArguments"][-2:], ["remote", "_serve"])
 
+    def test_serve_argv_uses_stable_interpreter(self) -> None:
+        stable = "/opt/homebrew/opt/corral/libexec/bin/python"
+        with mock.patch("corral.updater.stable_interpreter", return_value=stable):
+            self.assertEqual(autostart.serve_argv()[0], stable)
+
+    def test_refresh_rewrites_plist_pinned_to_old_interpreter(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS only")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with (
+                mock.patch.object(autostart, "autostart_allowed", return_value=True),
+                mock.patch.object(autostart, "_home", return_value=home),
+                mock.patch.object(autostart, "_darwin_run", side_effect=AssertionError("no reload")),
+            ):
+                autostart.refresh_unit_file()  # nothing armed: nothing written
+                self.assertFalse(autostart._darwin_plist_path().exists())
+                old = ["/opt/homebrew/Cellar/corral/0.1/libexec/bin/python", "-m", "corral", "remote", "_serve"]
+                with mock.patch.object(autostart, "serve_argv", return_value=old):
+                    autostart._darwin_write_plist()
+                autostart.refresh_unit_file()
+                with autostart._darwin_plist_path().open("rb") as fh:
+                    payload = plistlib.load(fh)
+            self.assertEqual(payload["ProgramArguments"], autostart.serve_argv())
+
     def test_stale_plist_without_process_type_reports_not_installed(self) -> None:
         if sys.platform != "darwin":
             self.skipTest("macOS only")

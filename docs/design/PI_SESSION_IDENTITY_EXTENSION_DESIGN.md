@@ -241,6 +241,10 @@ sequenceDiagram
 - 升级先写 `index.ts.tmp-<nonce>` 与 manifest 临时文件，逐个 fsync；原子替换入口后以 manifest 最后提交。中断造成版本/hash 不一致时，下次 ensure 重新安装；在重新通过前不启动托管 Pi。
 - 安装不修改 Pi `settings.json`，不调用 `pi install`，不依赖 npm/git/network。
 - 每次 Corral 升级可重复 ensure；只有 extension 或协议版本变化才改文件。
+- **Self-heal before failing (owner requirement, 2026-10-12).** Installation problems that Corral can prove are its own never reach the user as launch errors:
+  - When the packaged asset is unreadable (typically a long-running host whose Homebrew Cellar version was cleaned up after an upgrade) but the installed extension is Corral-owned, speaks the current claim protocol and its entry matches the manifest hash, the launch uses the installed extension. The asset is needed only to install or upgrade.
+  - A directory without a manifest that holds only Corral's own entry and installer temp files is an interrupted Corral install when the entry's bytes equal the packaged asset (or there is no entry at all): stale temp files are removed and the manifest is committed. Any other file, or an entry with different bytes, is still foreign and is never overwritten.
+  - Only genuine conflicts remain errors: foreign content, unwritable directories, or no installed extension and no asset.
 
 ### 4.3 协议兼容与启动门禁
 

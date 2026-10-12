@@ -91,15 +91,57 @@ def instance_env_pairs(instance_id: str, root: str | os.PathLike[str] | None = N
     ]
 
 
-def _asset_bytes() -> bytes:
+_MISSING_ASSET_MESSAGE = (
+    "Corral 缺少 Pi 会话身份扩展资产，无法启用精确关联；"
+    "请重新安装 Corral。/ Corral is missing its bundled Pi session "
+    "identity extension; please reinstall Corral."
+)
+
+
+def _asset_bytes() -> bytes | None:
+    """Packaged asset bytes; None when a replaced install deleted the package files.
+
+    ImportError covers a host that never imported ``pi_extension`` before its
+    install directory was removed.
+    """
     try:
         return asset_path().read_bytes()
-    except OSError as exc:
-        raise PiExtensionInstallError(
-            "Corral 缺少 Pi 会话身份扩展资产，无法启用精确关联；"
-            "请重新安装 Corral。/ Corral is missing its bundled Pi session "
-            "identity extension; please reinstall Corral."
-        ) from exc
+    except (OSError, ImportError):
+        return None
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _is_installer_temp(name: str) -> bool:
+    return name.startswith((f"{EXTENSION_ENTRY}.tmp-", f"{MANIFEST_NAME}.tmp-"))
+
+
+def _adopt_interrupted_install(target_dir: Path, content_sha: str | None) -> bool:
+    """A manifest-less directory is Corral's interrupted install when it holds only
+    installer temp files plus, optionally, an entry byte-identical to the packaged
+    asset. Stale temp files are removed so the caller can commit the manifest."""
+    try:
+        names = [child.name for child in target_dir.iterdir()]
+    except OSError:
+        return False
+    if any(name != EXTENSION_ENTRY and not _is_installer_temp(name) for name in names):
+        return False
+    if EXTENSION_ENTRY in names and (
+        content_sha is None or _file_sha256(target_dir / EXTENSION_ENTRY) != content_sha
+    ):
+        return False
+    for name in names:
+        if _is_installer_temp(name):
+            try:
+                (target_dir / name).unlink(missing_ok=True)
+            except OSError:
+                return False
+    return True
 
 
 def _read_json(path: Path) -> dict | None:
@@ -146,23 +188,19 @@ def ensure_extension_installed(root: str | os.PathLike[str] | None = None) -> di
 
     只有带 Corral owner manifest 的目录才允许覆盖升级；同名目录不属于
     Corral 时报冲突，绝不改写用户文件。manifest 最后提交：中断留下的
-    半安装会在下次调用时被重新收敛。
+    半安装（只有与资产同字节的入口和安装临时文件）会在下次调用时被收敛。
+    包内资产读不到时，已安装且协议一致的 Corral 扩展直接沿用。
     """
     target_dir = extension_dir(root)
     entry = target_dir / EXTENSION_ENTRY
     manifest_path = target_dir / MANIFEST_NAME
     asset = _asset_bytes()
-    content_sha = hashlib.sha256(asset).hexdigest()
+    content_sha = hashlib.sha256(asset).hexdigest() if asset is not None else None
 
     manifest = _read_json(manifest_path)
-    foreign_contents = []
-    if target_dir.exists() and manifest is None:
-        try:
-            foreign_contents = list(target_dir.iterdir())
-        except OSError:
-            foreign_contents = [target_dir]
-    if foreign_contents:
-        # 非空目录存在但 manifest 缺失/损坏：无法证明属于 Corral，禁止覆盖。
+    if manifest is None and target_dir.exists() and not _adopt_interrupted_install(target_dir, content_sha):
+        # 非空目录存在但 manifest 缺失/损坏，且不是 Corral 中断留下的半安装：
+        # 无法证明属于 Corral，禁止覆盖。
         raise PiExtensionInstallError(
             f"目录 {target_dir} 已存在但不属于 Corral（缺少或损坏的清单文件），"
             f"不会覆盖。请手动处理该目录后重试。/ Directory {target_dir} exists "
@@ -177,17 +215,16 @@ def ensure_extension_installed(root: str | os.PathLike[str] | None = None) -> di
             f"refusing to overwrite."
         )
 
-    entry_ok = False
-    if entry.exists() and manifest is not None:
-        try:
-            entry_ok = (
-                hashlib.sha256(entry.read_bytes()).hexdigest() == manifest.get("sha256")
-                and manifest.get("sha256") == content_sha
-            )
-        except OSError:
-            entry_ok = False
-    if entry_ok:
+    installed_sha = manifest.get("sha256") if manifest is not None else None
+    installed_ok = bool(installed_sha) and _file_sha256(entry) == installed_sha
+    if installed_ok and installed_sha == content_sha:
         return {"status": "ok", "path": str(entry), "version": EXTENSION_VERSION}
+    if asset is None:
+        # 资产只在安装/升级时需要：升级后仍在跑的旧进程读不到已被删除的包文件，
+        # 但已装好的同协议扩展照样可用，不能因此拦下启动。
+        if installed_ok and manifest.get("claimProtocol") == CLAIM_PROTOCOL:
+            return {"status": "ok", "path": str(entry), "version": str(manifest.get("extensionVersion") or "")}
+        raise PiExtensionInstallError(_MISSING_ASSET_MESSAGE)
 
     _atomic_write(entry, asset)
     _atomic_write(manifest_path, json.dumps(_manifest_payload(content_sha), indent=2).encode("utf-8"))

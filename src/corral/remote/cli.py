@@ -262,12 +262,29 @@ def _run_daemon_foreground(state: remote_config.RemoteState) -> int:
         asyncio.run(daemon.run())
     except KeyboardInterrupt:
         pass
+    if daemon.restart_requested:
+        _reexec_service()
     return EXIT_OK
 
 
+def _reexec_service() -> None:
+    """Replace this process with the upgraded install, keeping its PID.
+
+    launchd/systemd keep tracking the same PID, so no unit reload is needed. If
+    exec fails the process exits and KeepAlive/Restart brings the service back.
+    """
+    argv = _serve_argv()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(argv[0], argv)
+    except OSError as exc:
+        print(f"corral remote: re-exec after upgrade failed: {exc}", file=sys.stderr)
+
+
 def _serve_argv() -> list[str]:
-    """子进程 argv：同一解释器里的 `python -m corral remote _serve`。"""
-    return [sys.executable, "-m", "corral", "remote", "_serve"]
+    """子进程 argv：`python -m corral remote _serve`，解释器取升级后仍有效的路径。"""
+    return remote_autostart.serve_argv()
 
 
 def _spawn_background_daemon() -> subprocess.Popen:
@@ -567,6 +584,7 @@ def _cmd_serve(_args) -> int:
     if existing and existing != os.getpid():
         # Another live instance owns the switch; exit cleanly for launchd/systemd.
         return EXIT_OK
+    remote_autostart.refresh_unit_file()
     return _run_daemon_foreground(state)
 
 

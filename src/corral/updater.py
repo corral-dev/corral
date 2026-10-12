@@ -132,6 +132,53 @@ def detect_channel() -> Channel:
     return "dev"
 
 
+_CELLAR_PATH = re.compile(r"^(?P<prefix>.*)/Cellar/(?P<formula>[^/]+)/[^/]+(?P<rest>/.*)?$")
+_VERSION_LINE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
+
+
+def stable_install_path(path: str) -> str:
+    """Map a Homebrew versioned Cellar path to its ``opt`` link; other paths unchanged.
+
+    Homebrew deletes the previous Cellar version after an upgrade, so anything that
+    outlives one process (autostart units, re-exec targets) must use the opt link.
+    """
+    match = _CELLAR_PATH.match(path)
+    if not match:
+        return path
+    opt = f"{match['prefix']}/opt/{match['formula']}"
+    if not os.path.isdir(opt):
+        return path
+    return opt + (match["rest"] or "")
+
+
+def stable_interpreter() -> str:
+    """Interpreter path that keeps pointing at the current install across upgrades."""
+    exe = stable_install_path(sys.executable)
+    return exe if os.path.exists(exe) else sys.executable
+
+
+def install_replaced() -> bool:
+    """Whether the package this process loaded was replaced or removed on disk.
+
+    True when the loaded ``corral/__init__.py`` is gone (Homebrew cleaned up the old
+    Cellar), reports another version (pipx/pip reinstalled in place), or the Homebrew
+    opt link now resolves to a different Cellar version than ``sys.prefix``.
+    """
+    import corral
+
+    try:
+        with open(package_file(), encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return True
+    match = _VERSION_LINE.search(text)
+    if match and match.group(1) != corral.__version__:
+        return True
+    prefix = os.path.abspath(sys.prefix)
+    stable = stable_install_path(prefix)
+    return stable != prefix and os.path.realpath(stable) != os.path.realpath(prefix)
+
+
 def package_file() -> str:
     import corral
 

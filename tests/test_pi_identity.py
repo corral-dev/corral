@@ -96,6 +96,58 @@ class InstallerTests(unittest.TestCase):
                 pi_identity.ensure_extension_installed(td)
 
 
+    def test_missing_asset_reuses_installed_extension(self) -> None:
+        # A host still running a deleted (upgraded) install cannot read its asset;
+        # the already installed Corral extension must keep launches working.
+        with tempfile.TemporaryDirectory() as td:
+            pi_identity.ensure_extension_installed(td)
+            for failure in (
+                {"return_value": Path(td) / "gone.ts"},
+                {"side_effect": ModuleNotFoundError("corral.pi_extension")},
+            ):
+                with mock.patch.object(pi_identity, "asset_path", **failure):
+                    status = pi_identity.ensure_extension_installed(td)
+                self.assertEqual(status["status"], "ok")
+                self.assertEqual(status["version"], pi_identity.EXTENSION_VERSION)
+
+    def test_missing_asset_without_usable_install_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / "gone.ts"
+            with mock.patch.object(pi_identity, "asset_path", return_value=missing):
+                with self.assertRaises(pi_identity.PiExtensionInstallError):
+                    pi_identity.ensure_extension_installed(td)
+            pi_identity.ensure_extension_installed(td)
+            entry = Path(td) / "extensions" / "corral-session-identity" / "index.ts"
+            entry.write_text("// tampered", encoding="utf-8")
+            with mock.patch.object(pi_identity, "asset_path", return_value=missing):
+                with self.assertRaises(pi_identity.PiExtensionInstallError):
+                    pi_identity.ensure_extension_installed(td)
+
+    def test_interrupted_install_is_adopted(self) -> None:
+        # Entry replaced but manifest never committed, plus a stale temp file.
+        with tempfile.TemporaryDirectory() as td:
+            entry = Path(td) / "extensions" / "corral-session-identity" / "index.ts"
+            entry.parent.mkdir(parents=True)
+            entry.write_bytes(pi_identity.asset_path().read_bytes())
+            stale = entry.parent / "corral-manifest.json.tmp-1-abcd"
+            stale.write_text("{", encoding="utf-8")
+            status = pi_identity.ensure_extension_installed(td)
+            self.assertEqual(status["status"], "installed")
+            self.assertFalse(stale.exists())
+            manifest = json.loads((entry.parent / "corral-manifest.json").read_text())
+            self.assertEqual(manifest["owner"], "corral")
+
+    def test_manifestless_directory_with_other_files_stays_foreign(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            entry = Path(td) / "extensions" / "corral-session-identity" / "index.ts"
+            entry.parent.mkdir(parents=True)
+            entry.write_bytes(pi_identity.asset_path().read_bytes())
+            (entry.parent / "notes.md").write_text("user file", encoding="utf-8")
+            with self.assertRaises(pi_identity.PiExtensionInstallError):
+                pi_identity.ensure_extension_installed(td)
+            self.assertFalse((entry.parent / "corral-manifest.json").exists())
+
+
 class ClaimReaderTests(unittest.TestCase):
     def test_read_claims_skips_broken_and_reads_valid(self) -> None:
         with tempfile.TemporaryDirectory() as td:

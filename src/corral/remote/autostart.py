@@ -41,7 +41,10 @@ def autostart_allowed() -> bool:
 
 
 def serve_argv() -> list[str]:
-    return [sys.executable, "-m", "corral", "remote", "_serve"]
+    """Service argv on an interpreter path that survives package upgrades."""
+    from corral.updater import stable_interpreter
+
+    return [stable_interpreter(), "-m", "corral", "remote", "_serve"]
 
 
 def is_installed() -> bool:
@@ -63,6 +66,33 @@ def enable(*, restart_existing: bool = True) -> str:
     if sys.platform.startswith("linux"):
         return _linux_enable()
     return ""
+
+
+def refresh_unit_file() -> None:
+    """Rewrite an armed unit whose command no longer matches ``serve_argv()``.
+
+    Older units pinned a versioned Homebrew Cellar interpreter that a later cleanup
+    deletes. Called by the running service: the file is rewritten without reloading
+    the job (that would kill the caller), so the change applies at the next load.
+    """
+    if not autostart_allowed():
+        return
+    try:
+        if sys.platform == "darwin":
+            path = _darwin_plist_path()
+            if path.is_file():
+                with path.open("rb") as fh:
+                    payload = plistlib.load(fh)
+                if isinstance(payload, dict) and payload.get("ProgramArguments") != serve_argv():
+                    _darwin_write_plist()
+        elif sys.platform.startswith("linux"):
+            path = _linux_unit_path()
+            if path.is_file() and f"ExecStart={_exec_start()}\n" not in path.read_text(encoding="utf-8"):
+                _linux_write_unit()
+                if shutil.which("systemctl") is not None:
+                    _linux_systemctl(["daemon-reload"])
+    except Exception:  # noqa: BLE001 - a unit refresh must never stop the service
+        pass
 
 
 def disable() -> str:
@@ -242,7 +272,6 @@ def _linux_write_unit() -> Path:
     path = _linux_unit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     logs = _log_dir()
-    argv = " ".join(_shell_quote(part) for part in serve_argv())
     body = "\n".join(
         [
             "[Unit]",
@@ -252,7 +281,7 @@ def _linux_write_unit() -> Path:
             "",
             "[Service]",
             "Type=simple",
-            f"ExecStart={argv}",
+            f"ExecStart={_exec_start()}",
             "Restart=on-failure",
             "RestartSec=5",
             f"Environment=HOME={_shell_quote(str(_home()))}",
@@ -271,6 +300,10 @@ def _linux_write_unit() -> Path:
     except OSError:
         pass
     return path
+
+
+def _exec_start() -> str:
+    return " ".join(_shell_quote(part) for part in serve_argv())
 
 
 def _shell_quote(value: str) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -515,6 +516,61 @@ class CliUpdateTests(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("boom", out)
+
+
+
+class InstallReplacementTests(unittest.TestCase):
+    def test_stable_install_path_maps_cellar_to_opt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "opt", "corral"))
+            cellar = os.path.join(tmp, "Cellar", "corral", "0.24.1", "libexec", "bin", "python")
+            self.assertEqual(
+                updater.stable_install_path(cellar),
+                os.path.join(tmp, "opt", "corral", "libexec", "bin", "python"),
+            )
+            other = os.path.join(tmp, "Cellar", "missing", "1.0", "bin", "python")
+            self.assertEqual(updater.stable_install_path(other), other)
+        self.assertEqual(updater.stable_install_path("/venvs/corral/bin/python"), "/venvs/corral/bin/python")
+
+    def _fake_install(self, tmp: str, disk_version: str | None) -> str:
+        init = os.path.join(tmp, "__init__.py")
+        if disk_version is not None:
+            with open(init, "w", encoding="utf-8") as fh:
+                fh.write(f'"""doc"""\n__version__ = "{disk_version}"\n')
+        return init
+
+    def test_install_replaced_detects_removed_and_reinstalled_package(self) -> None:
+        import corral
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for disk_version, expected in ((None, True), ("0.0.1", True), (corral.__version__, False)):
+                init = self._fake_install(tmp, disk_version)
+                with (
+                    mock.patch.object(updater, "package_file", return_value=init),
+                    mock.patch.object(sys, "prefix", tmp),
+                ):
+                    self.assertEqual(updater.install_replaced(), expected, disk_version)
+
+    def test_install_replaced_detects_moved_homebrew_opt_link(self) -> None:
+        import corral
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.path.join(tmp, "Cellar", "corral", "1.0", "libexec")
+            new = os.path.join(tmp, "Cellar", "corral", "1.1", "libexec")
+            os.makedirs(old)
+            os.makedirs(new)
+            os.makedirs(os.path.join(tmp, "opt"))
+            opt = os.path.join(tmp, "opt", "corral")
+            os.symlink(os.path.dirname(old), opt)
+            init = self._fake_install(tmp, corral.__version__)
+            with (
+                mock.patch.object(updater, "package_file", return_value=init),
+                mock.patch.object(sys, "prefix", old),
+            ):
+                self.assertFalse(updater.install_replaced())
+                os.unlink(opt)
+                os.symlink(os.path.dirname(new), opt)
+                self.assertTrue(updater.install_replaced())
 
 
 if __name__ == "__main__":

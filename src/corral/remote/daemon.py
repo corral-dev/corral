@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import subprocess
 import time
 
-from corral import observe
+from corral import observe, updater
 from corral.i18n import t
 from corral.remote import config as remote_config
 from corral.remote.lan import DEFAULT_LOCAL_PORT, local_hints
@@ -23,11 +24,17 @@ from corral.remote.transport.local import LocalServer
 from corral.remote.transport.relay import RelayClient
 
 _RECONCILE_INTERVAL = 2.0
+# Package managers replace the install over several seconds; restart only after
+# two consecutive replaced readings and a successful import probe of the new one.
+_INSTALL_CHECK_INTERVAL = 10.0
+_INSTALL_PROBE_TIMEOUT = 30.0
 
 
 class RemoteDaemon:
     def __init__(self, state: remote_config.RemoteState) -> None:
         self.state = state
+        #: Set when the install was upgraded underneath; the caller re-execs.
+        self.restart_requested = False
         self.static_private = remote_config.load_or_create_identity()
         self.hub = SessionHub(title_spawn_fn=default_title_spawn_fn)
         self.service = RemoteService(self.hub)
@@ -76,6 +83,7 @@ class RemoteDaemon:
             raise RuntimeError(t("remote.err.no_entry"))
         await asyncio.to_thread(self.hub.start)
         tasks.append(asyncio.create_task(self._reconcile_loop(stop)))
+        tasks.append(asyncio.create_task(self._install_watch_loop(stop)))
         try:
             await stop.wait()
             # 局域网若宣称开启却监听失败，给用户一个看得见的事件（进程不退出，中继仍可用）
@@ -101,6 +109,47 @@ class RemoteDaemon:
                 pass
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_RECONCILE_INTERVAL)
+
+    async def _install_watch_loop(self, stop: asyncio.Event) -> None:
+        """Restart onto the new install once a package upgrade replaced this one.
+
+        A host left on a deleted install fails lazily: modules and packaged assets
+        it has not loaded yet are gone, so client launches break while a freshly
+        started TUI works.
+        """
+        replaced_before = False
+        while not stop.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=_INSTALL_CHECK_INTERVAL)
+            if stop.is_set():
+                return
+            try:
+                replaced = await asyncio.to_thread(updater.install_replaced)
+                if replaced and replaced_before and await asyncio.to_thread(self._new_install_ready):
+                    observe.event("remote_install_replaced")
+                    self.restart_requested = True
+                    stop.set()
+                    return
+            except Exception:
+                replaced = False
+            replaced_before = replaced
+
+    @staticmethod
+    def _new_install_ready() -> bool:
+        """The upgraded install imports cleanly; never exec into a half-written one."""
+        from corral.remote.autostart import serve_argv
+
+        try:
+            probe = subprocess.run(
+                [serve_argv()[0], "-c", "import corral.remote.daemon, corral.pi_identity"],
+                check=False,
+                capture_output=True,
+                timeout=_INSTALL_PROBE_TIMEOUT,
+                cwd="/",  # keep the working directory off sys.path for the probe
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return probe.returncode == 0
 
     def _reconcile_once(self) -> None:
         self.service.reconcile_devices()
