@@ -70,13 +70,35 @@ class ProvisionalOrderTests(unittest.TestCase):
         self.store.sessions = {"claude": []}
         self.store._order = []
         self.assertTrue(self.store.hydrate_from_snapshot())
-        self.assertEqual(self.store._order, ["claude:recent", "claude:empty"])
+        self.assertEqual(self.store._order, ["claude:recent"])
         self.store._order.reverse()  # old order can also arrive before load
         self.store._merge_scanned({"claude": [recent]})
         self.assertEqual(self.store._order, ["claude:recent", "claude:empty"])
         # Later activity updates existing cards in place.
         self.store._merge_scanned({"claude": [dict(recent, mtime=self.now - 13 * 3600)]})
         self.assertEqual(self.store._order, ["claude:recent", "claude:empty"])
+
+    def test_snapshot_does_not_suppress_first_live_adoption(self):
+        self.adopt("empty", 12 * 3600)
+        self.store._save_sidebar_snapshot()
+        payload = json.loads(Path(self.store._snapshot_path()).read_text())
+        self.assertEqual(payload["order"], [])
+        self.assertEqual(payload["sessions"]["claude"], [])
+        # Compatibility with an old snapshot containing an unowned live card.
+        payload["sessions"]["claude"] = [self.store.find_session("claude:empty")]
+        payload["order"] = ["claude:empty"]
+        Path(self.store._snapshot_path()).write_text(json.dumps(payload))
+        fresh = SessionStore(50, registry=self.store.registry)
+        self.assertTrue(fresh.hydrate_from_snapshot())
+        self.assertEqual(fresh.all_sessions(), [])
+        host = {"name": "corral-claude-empty", "runtime_id": "claude",
+                "ident": "empty", "cwd": "/tmp",
+                "created_at": self.now - 12 * 3600}
+        with mock.patch("corral.liveness.list_managed_hosts", return_value=[host]), \
+                mock.patch("corral.store.is_ephemeral_agent_cwd", return_value=False):
+            fresh._merge_scanned({"claude": [self.session("recent", 60)]})
+        self.assertEqual(fresh._order, ["claude:recent", "claude:empty"])
+        self.assertIn("claude:empty", fresh._provisional)
 
     def test_provisional_cache_collision_cannot_invent_a_task(self):
         for runtime in ("claude", "codex", "opencode", "cursor", "pi"):

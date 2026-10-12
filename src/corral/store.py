@@ -275,7 +275,7 @@ class SessionStore:
                 keys = frozenset(
                     session_key(session)
                     for bucket in self.sessions.values()
-                    for session in bucket
+                    for session in bucket if not session.get("provisional")
                 )
                 now = time.time()
                 last_at = getattr(self, "_last_snapshot_at", 0.0)
@@ -286,9 +286,9 @@ class SessionStore:
                     return
                 payload = {
                     "version": self._SNAPSHOT_VERSION,
-                    "order": list(self._order),
+                    "order": [key for key in self._order if key in keys],
                     "sessions": {
-                        rid: [dict(session) for session in bucket]
+                        rid: [dict(session) for session in bucket if not session.get("provisional")]
                         for rid, bucket in self.sessions.items()
                     },
                 }
@@ -334,7 +334,7 @@ class SessionStore:
                     bucket = sessions.get(rid)
                     if not isinstance(bucket, list):
                         continue
-                    clean = [dict(s) for s in bucket if isinstance(s, dict)]
+                    clean = [dict(s) for s in bucket if isinstance(s, dict) and not s.get("provisional")]
                     self.sessions[rid] = clean
                     known.update(session_key(s) for s in clean)
                 # 只保留快照顺序里仍存在的键；未知运行时的桶忽略
