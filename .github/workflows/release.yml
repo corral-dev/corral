@@ -117,12 +117,16 @@ jobs:
           pattern: "*"
           path: dist
           merge-multiple: true
-      - run: sha256sum dist/* > dist/SHA256SUMS
+      - uses: actions/checkout@v4
+        with:
+          path: source-checkout
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.value }}
-          generate_release_notes: true
-          files: dist/*
+      - name: Publish missing packages and checksum published bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 source-checkout/scripts/publish_assets.py --repo "${{ github.repository }}" --tag "${{ steps.tag.outputs.value }}" --dist dist
 
   bump-homebrew-formula:
     needs: github-release
@@ -132,6 +136,7 @@ jobs:
       - name: Regenerate Homebrew formula (wheel-first)
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GITHUB_API_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.github-release.outputs.tag }}
         run: |
           set -euo pipefail
@@ -141,8 +146,7 @@ jobs:
           # 自带防回退（tap 里配方已是更新版本就跳过，退出码 3）--排队积压时旧
           # tag 的 bump 任务晚执行也不能把版本写回去。
           rc=0
-          GITHUB_API_TOKEN="${COMMITTER_TOKEN}" \
-            python3 scripts/homebrew_formula.py --tag "${VERSION}" --tap-dir tap || rc=$?
+          python3 scripts/homebrew_formula.py --tag "${VERSION}" --tap-dir tap || rc=$?
           if [ "$rc" -eq 3 ]; then
             echo "配方已是更新的版本，跳过回写 ${version}"
             exit 0

@@ -129,7 +129,7 @@ def sha256_bytes(data: bytes) -> str:
 
 
 class ReleaseAssets:
-    """Release 附件查询与 sha256 计算（优先复用 SHA256SUMS，避免重复下载大文件）。"""
+    """Release assets with checksums verified against actual downloaded bytes."""
 
     def __init__(
         self,
@@ -144,6 +144,8 @@ class ReleaseAssets:
         self.tag = tag
         self.token = token
         self.source_sha_override = source_sha
+        self.digests: dict[str, str] = {}
+        self.offline = bool(assets_json)
         if assets_json:
             names = json.loads(pathlib.Path(assets_json).read_text(encoding="utf-8"))
             self.names = [n if isinstance(n, str) else n["name"] for n in names]
@@ -152,12 +154,11 @@ class ReleaseAssets:
         self.sums: dict[str, str] = {}
         if sums_file:
             self.sums = parse_sums(pathlib.Path(sums_file).read_text(encoding="utf-8"))
-        elif "SHA256SUMS" in self.names:
-            self.sums = parse_sums(http_get(self.asset_url("SHA256SUMS"), token).decode("utf-8"))
 
     def _fetch_names(self) -> list[str]:
         url = f"https://api.github.com/repos/{self.repo}/releases/tags/{self.tag}"
         data = json.loads(http_get(url, self.token).decode("utf-8"))
+        self.digests = {a["name"]: a["digest"] for a in data.get("assets", []) if a.get("digest")}
         return [a["name"] for a in data.get("assets", [])]
 
     def asset_url(self, name: str) -> str:
@@ -170,10 +171,13 @@ class ReleaseAssets:
         return None
 
     def asset_sha(self, name: str) -> str:
-        if name in self.sums:
+        if self.offline and name in self.sums:
             return self.sums[name]
-        # SHA256SUMS 没覆盖（本机发版只传了部分附件）：下载该附件现算
-        return sha256_bytes(http_get(self.asset_url(name), self.token))
+        actual = sha256_bytes(http_get(self.asset_url(name), self.token))
+        expected = self.digests.get(name)
+        if expected and expected != f"sha256:{actual}":
+            raise RuntimeError(f"Release asset digest mismatch: {name}")
+        return actual
 
     def source_archive(self) -> tuple[str, str]:
         """源码归档（GitHub 自动生成的 tag 归档，不是 Release 附件里的 sdist）。"""

@@ -146,32 +146,12 @@ else
   esac
   maturin sdist --out "$DIST"
 
-  # 附件里的 SHA256SUMS 只覆盖本机这批；CI 补齐后会整体覆盖成全量清单。
-  python3 - "$DIST" <<'PY'
-import hashlib, pathlib, sys
-dist = pathlib.Path(sys.argv[1])
-lines = []
-for item in sorted(dist.iterdir()):
-    if item.name == "SHA256SUMS":
-        continue
-    digest = hashlib.sha256(item.read_bytes()).hexdigest()
-    lines.append(f"{digest}  {item.name}")
-(dist / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
-
-  echo "==> 上传安装包"
-  # 打完 tag 之后 CI 的 release 工作流也在传同名附件，而 --clobber 是「先删再传」：
-  # 两边交错时本机这次会拿到 404（附件 ID 在上传途中被对方删掉了）。这里绝不能让
-  # 上传失败中断整个脚本——后面的 Homebrew 配方才是决定"用户能不能升级"的那一步，
-  # 附件没传成最多是少个预编译包，配方停在旧版本才是真事故。
-  # 2026-07-31 v0.24.29 实测踩到：脚本在这里退出，配方全靠 CI 恰好跑赢才没停在旧版。
-  if ! gh release upload "$TAG" "$DIST"/* --repo "$SOURCE_REPO" --clobber; then
-    echo "!!  上传失败，等 8 秒重试一次（多半是和 CI 的 release 工作流抢同名附件）"
-    sleep 8
-    if ! gh release upload "$TAG" "$DIST"/* --repo "$SOURCE_REPO" --clobber; then
-      UPLOAD_FAILED=1
-      echo "!!  安装包上传仍未成功；继续往下走，收尾核对会列出 Release 实际有几个附件"
-    fi
+  # Checksums cover actual published assets, including packages from earlier publishers.
+  echo "==> 上传缺失安装包并校验已发布附件"
+  # Local and CI builds may differ in SBOM metadata. Preserve versioned bytes.
+  if ! python3 scripts/publish_assets.py --repo "$SOURCE_REPO" --tag "$TAG" --dist "$DIST"; then
+    UPLOAD_FAILED=1
+    echo "!!  附件发布未完成；继续同步现有附件的配方，最终以非零状态退出"
   fi
   echo "==> 本轮未覆盖：${SKIPPED}"
 fi
@@ -189,7 +169,8 @@ else
   # Linux wheel）对应平台自动落到源码兜底，等 CI 补齐附件后重跑本脚本即可切回
   # wheel。退出码 3 = 配方已是更新的版本，属正常跳过，不能让 set -e 把脚本带走。
   rc=0
-  GITHUB_API_TOKEN="$TOKEN" python3 scripts/homebrew_formula.py \
+  SOURCE_TOKEN="${GITHUB_API_TOKEN:-$(gh auth token)}"
+  GITHUB_API_TOKEN="$SOURCE_TOKEN" python3 scripts/homebrew_formula.py \
     --tag "$TAG" --tap-dir "$WORK/tap" --repo "${SOURCE_REPO}" || rc=$?
   if [ "$rc" -eq 0 ]; then
     if git -C "$WORK/tap" diff --quiet -- Formula/corral.rb; then

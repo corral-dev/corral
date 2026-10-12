@@ -99,5 +99,22 @@ class HomebrewFormulaTest(unittest.TestCase):
         )
 
 
+class ReleaseChecksumTest(unittest.TestCase):
+    def test_live_download_ignores_stale_manifest_and_checks_asset_digest(self):
+        from unittest.mock import patch
+
+        payload = b"published wheel"
+        digest = homebrew_formula.sha256_bytes(payload)
+        with patch.object(homebrew_formula.ReleaseAssets, "_fetch_names", return_value=["corral.whl"]):
+            assets = homebrew_formula.ReleaseAssets("owner/repo", "v1", None, None, None, None)
+        assets.sums = {"corral.whl": "old-build-sha"}
+        assets.digests = {"corral.whl": f"sha256:{digest}"}
+        with patch.object(homebrew_formula, "http_get", return_value=payload):
+            self.assertEqual(assets.asset_sha("corral.whl"), digest)
+            assets.digests["corral.whl"] = "sha256:wrong"
+            with self.assertRaisesRegex(RuntimeError, "digest mismatch"):
+                assets.asset_sha("corral.whl")
+
+
 if __name__ == "__main__":
     unittest.main()
