@@ -168,7 +168,8 @@ sequenceDiagram
 | kitty 0.31+ | 支持 | CSS 名 + 栈 |
 | Ghostty | 支持 | |
 | WezTerm / foot / xterm | 支持 | xterm 认 X11 名，corral 仅在 `XTERM_VERSION` 下改名 |
-| iTerm2 3.6+ | 支持 | 只认 X11 名（`left_ptr` / `hand2` / `xterm`）；corral 按 `TERM_PROGRAM` / `LC_TERMINAL` 改名 |
+| iTerm2 3.7.0+ | 支持 | 只认 X11 名（`left_ptr` / `hand2` / `xterm`）；corral 按 `TERM_PROGRAM` / `LC_TERMINAL` 改名。机主 2026-10-12 在 3.7 上验收箭头生效 |
+| iTerm2 3.6.x | **鼠标上报时不生效** | `updateCursor:` 在程序开启鼠标上报时无条件显示带圈 I 型、不看 OSC 22（3.7.0 起改为优先采用程序请求）。corral 必须开鼠标上报，应用侧无解，只能升级 iTerm2 |
 | iTerm2 3.5 稳定版、Terminal.app | **不支持** | 已知限制；应用侧无解。不支持的终端应静默忽略该序列，不得出现乱码 |
 | 套 tmux | 需穿透 | 见上；自测前确认 pane 的 `allow-passthrough` |
 
@@ -241,6 +242,15 @@ stateDiagram-v2
 红点的已读条件是「对应右侧内容成功加载并真实可见」——就绪即清，不再要求停留时长。分屏时所有正在画面上的格子一视同仁，看见了就一起清，不只清当前聚焦那一格。快速掠过列表（右栏还没换成该会话）、预览失败、切换选择或应用失焦都不得清红；黄点、绿点绝不能因查看而清除。首次升级时把已有历史结果作为已读基线，只显示当下仍在执行或等待回答的状态，避免全部旧会话突然亮红。
 
 ### 侧边栏会话组与置顶
+
+Collapsed TUI split cards show the latest member session time at the bottom right
+(owner requirement, 2026-10-12). Use the maximum normalized member `mtime`, never
+the layout's last-use time or focus member. Reuse the inspected `SessionCard.render`
+relative-time formatter and right alignment; reserve time width before cropping the
+left attention summary, with one separating cell. Expanded cards keep their tree
+continuation. Refresh when member timestamps or the displayed relative time change.
+Empty/missing timestamps do not fabricate a latest time. This uses the existing
+Textual Widget/Rich Text render contract: <https://textual.textualize.io/guide/widgets/#rich-renderables>.
 
 - **分屏不起名、不拼标题（2026-10-11 机主裁定，取代 2026-10-05 的显示名规则；TUI 与 Mac 共用）**：界面对外称「分屏 / Split view」，不叫「分组 / Group」。分屏**不提供起名功能**（TUI `Ctrl+T` 的「重命名分屏」、Mac 右键「重命名分屏…」、远程 `layout.renameGroup` 与快照 `named` 字段一并移除），也**不再把成员标题用 ` + ` 拼成显示名**：展开时成员标题就在下面，拼出来等于把首个成员标题再写一遍、被截断后还像一条普通会话；收起时一小行也放不下四个标题。分屏卡只写固定标签「分屏」+ 项目名 + 成员数，收起时用状态汇总（TUI）或成员助手图标 + 状态点（Mac）提示里面有什么；内部水果身份名仍不展示，旧数据里用户起过的名字一律忽略。删除整组的确认文案用项目名指代该分屏。筛选框只按成员标题与项目匹配，筛后不足两人即解散为独立会话。
 - 两到四个会话以分屏打开后立即形成会话组；**内部身份名**仍在创建时从水果表随机生成（如 `Group Apple`、`Group Pineapple`），只作落盘身份与兼容旧数据、不展示；形如 `Group <水果>` / `Group <水果> N` 的名字一律视为「未命名」，其余视为用户起的名字。水果名被历史组全占用时，新组改用「水果 + 序号」（如 `Group Cherry 2`，随机挑水果，带序号时不用 Apple 以免撞旧版遗留名形状），旧版遗留的「Group Apple N」组名读入时确定性迁移（读路径不落盘，迁移名必须确定性，否则多窗口对不上）。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 corral 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有置顶的组/会话才排在列表最上（侧栏选中时按 `p`，任意焦点按 `Ctrl+P`，与全文搜索同级的全局键）。

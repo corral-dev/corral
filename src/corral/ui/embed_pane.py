@@ -191,9 +191,10 @@ UNFOCUSED_WINDOW_CAPTURE_INTERVAL = 1.0
 _INTERACTIVE_CAPTURE_GRACE = 0.25
 # pane_state 降频查询间隔：光标位置/鼠标标志/回滚量都是慢变状态，但它每次也是
 # 一次 tmux fork（约 10ms）。输出风暴期若每帧都查，抓帧循环的 fork 频率直接
-# 翻倍（25fps×2，2026-07-19 实测是 corral 常驻 40%+ CPU 的主要来源）。降到
-# 5Hz 缓存复用后光标对 IME 锚定的最多滞后 200ms，无感知；画面文本本身仍按
-# %output 事件全速抓帧，输入回显帧率不受影响。
+# 翻倍（25fps×2，2026-07-19 实测是 corral 常驻 40%+ CPU 的主要来源）。5Hz 只
+# 用于助手自动输出；用户输入后的即时窗口内每帧都重查，光标与新画面同帧到达——
+# 输入法组字时不给助手发键、不会触发重抓，滞后的光标会让候选框停在刚上屏那个
+# 词的左边（2026-10-12 机主反馈）。
 STATE_POLL_INTERVAL = 0.2
 # 窗口拖动时 Resize 会连续到达；tmux resize-window + 唤醒抓帧必须防抖，
 # 等尺寸停稳再做一次（与 CorralApp 整屏重绘防抖同量级，避免拖动期狂刷）。
@@ -918,6 +919,9 @@ class EmbedPane(Widget):
         last_capture = 0.0
         last_state = None      # pane_state 降频缓存：前 6 项交互 + 可选 (宽, 高)
         last_state_at = 0.0
+        # 新画面带着旧光标交出去后，必须补查一次光标的截止时刻。跨轮保留：主线程
+        # 回写后会立刻唤醒本线程，那一轮没有新画面，不能把补查丢成 2s 空闲轮询。
+        state_due_at: float | None = None
         while not self._stop.is_set():
             try:
                 state_refresh_delay: float | None = None
@@ -930,6 +934,7 @@ class EmbedPane(Widget):
                     misses = 0
                     last_state = None
                     last_state_at = 0.0
+                    state_due_at = None
                 if name is None:
                     self._poke.wait(0.2)
                     self._poke.clear()
@@ -968,12 +973,16 @@ class EmbedPane(Widget):
                         continue
                     now = time.monotonic()
                     polled_state = False
-                    if now - last_state_at >= STATE_POLL_INTERVAL:
+                    fresh_frame = (generation, history_offset, pane_w, pane_h, text) != last_frame_key
+                    if now - last_state_at >= STATE_POLL_INTERVAL or (
+                        fresh_frame and now < self._interactive_capture_until
+                    ):
                         state = embed.pane_state(name)
                         if not self._capture_is_current(generation, name):
                             continue
                         last_state_at = now  # 无论成败都按 5Hz 限速，失败时沿用旧缓存
                         polled_state = True
+                        state_due_at = None
                         if state is not None:
                             last_state = state
                     state = last_state
@@ -1028,10 +1037,7 @@ class EmbedPane(Widget):
                                 # 更多输出，常规 2s 空闲轮询会让 IME 光标长时间停错位置。
                                 # 只补一次恰好落在限速窗口末端的短轮询，既保持 5Hz 上限，
                                 # 又保证静止新帧的光标状态及时收敛。
-                                state_refresh_delay = max(
-                                    MIN_CAPTURE_INTERVAL,
-                                    STATE_POLL_INTERVAL - (now - last_state_at),
-                                )
+                                state_due_at = last_state_at + STATE_POLL_INTERVAL
                     elif state is not None:
                         cursor = state[:3]
                         if cursor != self._cursor:
@@ -1042,6 +1048,8 @@ class EmbedPane(Widget):
                             self._apply_flags_only(generation, name, state)
 
                 interval = IDLE_POLL_INTERVAL if channel is not None else NO_CHANNEL_POLL_INTERVAL
+                if state_due_at is not None:
+                    state_refresh_delay = max(MIN_CAPTURE_INTERVAL, state_due_at - time.monotonic())
                 if state_refresh_delay is not None:
                     interval = min(interval, state_refresh_delay)
                 self._poke.wait(interval)
@@ -1486,7 +1494,13 @@ class EmbedPane(Widget):
         # 托管程序自己藏了光标时也照样锚定位置：Claude Code 全程 `\e[?25l`、自己
         # 画假光标，但把隐藏光标停在输入插入点，终端的输入法候选框跟的就是它。
         # 外层显隐镜像 pane，效果等同 tmux attach 时外层光标完全跟随活动 pane。
-        self.app.cursor_position = self.region.offset + offset
+        position = self.region.offset + offset
+        if position != self.app.cursor_position:
+            self.app.cursor_position = position
+            # Textual 只在合成更新的末尾把外层光标移到 cursor_position；本帧若没有
+            # 任何行要重画（光标单独变化、焦点切回），必须补一次最小重画，否则新坐标
+            # 一直写不到终端，候选框停在旧位置。
+            self.refresh(Region(0, offset.y, max(1, self.size.width), 1))
         # Textual 全屏运行期默认 `\e[?25l` 藏掉真实光标；助手光标可见时显式
         # `\e[?25h` 打开，否则 Input 式的可见光标在内嵌画面里会消失。
         self._set_real_cursor(bool(self._cursor and self._cursor[2]))

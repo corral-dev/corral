@@ -19,9 +19,6 @@ from corral.projects import normalize_cwd, project_entries
 from corral.runtime import RuntimeRegistry, default_registry
 from corral.scan.common import is_ephemeral_agent_cwd
 
-# 新扫到的会话：mtime 在此窗口内才插到列表最前；更旧的（常为临时 cwd 复活）
-# 追加到末尾，避免几天前的会话整批顶到侧边栏。
-_FRESH_PREPEND_MAX_AGE = 2 * 86400
 # 有待生成标题时防抖拉后台，避免重扫抖动狂起进程。
 _TITLE_SPAWN_DEBOUNCE_SECONDS = 3.0
 # generating 仍非空且缓存长时间无变化时再拉一次（上一轮 daemon 可能已死）。
@@ -208,6 +205,7 @@ class SessionStore:
         # 会话且 tmux 还活着，就重新灌回列表；真实会话一经 annotate 挂上同一
         # keepalive 名，占位卡即退役（见 _merge_scanned）。
         self._provisional: dict[str, dict] = {}
+        self._initial_scan_merged = False
         # 占位卡转正：旧会话键 → 新会话键。分屏组记忆可能还挂着旧键，
         # 而右栏已经切走，不能只靠当前格子上的托管名去迁。
         self._session_key_migrations: dict[str, str] = {}
@@ -342,6 +340,7 @@ class SessionStore:
                 # 只保留快照顺序里仍存在的键；未知运行时的桶忽略
                 self._order = [key for key in order if key in known]
                 self._rebuild_order_and_titles()
+                self._sort_initial_order()
                 self.hydrated = True
             return True
         except Exception:  # noqa: BLE001 快照只是加速，坏了就当没有
@@ -941,6 +940,9 @@ class SessionStore:
         with self.lock:
             attention_migrations = self._reconcile_provisional_sessions(scanned)
             attention_sessions = self._rebuild_order_and_titles()
+            if not self._initial_scan_merged:
+                self._sort_initial_order()
+                self._initial_scan_merged = True
             has_pending_titles = bool(self.generating)
             if has_pending_titles:
                 if self._generating_since is None:
@@ -1204,6 +1206,27 @@ class SessionStore:
             return candidates[0]
         return None
 
+    def _sort_initial_order(self) -> None:
+        """Rebase startup order; cached order is not a user preference."""
+        by_key = {
+            session_key(session): session
+            for bucket in self.sessions.values() for session in bucket
+        }
+        self._order.sort(
+            key=lambda key: float(by_key[key].get("mtime") or 0), reverse=True,
+        )
+
+    def _insert_session_order(self, session: dict, by_key: dict[str, dict]) -> None:
+        """Insert one discovered card without reordering existing cards."""
+        key = session_key(session)
+        self._order = [item for item in self._order if item != key]
+        stamp = float(session.get("mtime") or 0)
+        index = next((
+            i for i, item in enumerate(self._order)
+            if float(by_key.get(item, {}).get("mtime") or 0) < stamp
+        ), len(self._order))
+        self._order.insert(index, key)
+
     def _rebuild_order_and_titles(self) -> list[dict]:
         """稳定排序与标题状态：调用方必须已持有 `self.lock`。
 
@@ -1215,27 +1238,16 @@ class SessionStore:
         for bucket in self.sessions.values():
             for session in bucket:
                 by_key[session_key(session)] = session
-        # 稳定顺序：已展示的会话保持原位（只更新内容，不移动）。
-        # 新出现的会话：最近活跃的插到最前；「目录复活」等重新扫到的旧会话
-        # 追加到末尾——避免 /tmp 临时 cwd 重建时几天前的会话整批顶到侧边栏。
+        # Existing cards stay stable during refresh. Discovery is not creation:
+        # insert newcomers by their timestamp, never by a broad age threshold.
         known = set(self._order)
-        fresh = [session for key, session in by_key.items() if key not in known]
-        now = time.time()
-        fresh_hot = [
-            session for session in fresh
-            if now - float(session.get("mtime") or 0) <= _FRESH_PREPEND_MAX_AGE
-        ]
-        fresh_cold = [
-            session for session in fresh
-            if now - float(session.get("mtime") or 0) > _FRESH_PREPEND_MAX_AGE
-        ]
-        fresh_hot.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
-        fresh_cold.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
-        self._order = (
-            [session_key(session) for session in fresh_hot]
-            + [key for key in self._order if key in by_key]
-            + [session_key(session) for session in fresh_cold]
+        self._order = [key for key in self._order if key in by_key]
+        fresh = sorted(
+            (session for key, session in by_key.items() if key not in known),
+            key=lambda session: float(session.get("mtime") or 0), reverse=True,
         )
+        for session in fresh:
+            self._insert_session_order(session, by_key)
         # 已从扫描结果消失的会话不能继续占着生成状态，否则标题生成队列会
         # 永久挂着不存在的会话键。
         self.generating.intersection_update(by_key)
@@ -1674,7 +1686,10 @@ class SessionStore:
             ]
             existing.insert(0, session)
             self.sessions[runtime_id] = existing
-            self._order = [key] + [item for item in self._order if item != key]
+            self._insert_session_order(session, {
+                session_key(item): item
+                for bucket in self.sessions.values() for item in bucket
+            })
             self.display_titles[key] = session["fallback_title"]
             self.generating.discard(key)
             self.attention_states[key] = attention_state

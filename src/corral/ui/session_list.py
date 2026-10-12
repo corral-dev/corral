@@ -657,15 +657,23 @@ class SessionGroupCard(Widget):
             self.group.project_cwd,
             self.group.collapsed,
             self.pinned,
+            self._latest_time(),
             tuple(
                 (
                     session.get("source"),
                     session.get("id"),
                     resolve_active_marker(session),
+                    session.get("mtime"),
                 )
                 for session in self.member_sessions
             ),
         )
+
+    def _latest_time(self) -> str:
+        import corral
+
+        latest = max((session.get("mtime") or 0 for session in self.member_sessions), default=0)
+        return corral._format_relative_time(latest) if latest else ""
 
     def _tree_style(self) -> Style:
         """让组卡延伸的树干与成员卡使用同一条树线颜色。"""
@@ -762,7 +770,13 @@ class SessionGroupCard(Widget):
         out.append("\n")
         # 收起后成员卡不可见，第三行改为状态汇总；展开时仍留白，避免与成员卡重复。
         if self.group.collapsed:
-            out.append_text(self._collapsed_attention_summary(width, indent))
+            latest_time = corral._fit_cell_right(self._latest_time(), width - 1).lstrip()
+            time_width = corral._text_width(latest_time)
+            summary_width = max(0, width - time_width - (1 if latest_time else 0))
+            out.append_text(self._collapsed_attention_summary(summary_width, indent))
+            if latest_time:
+                out.append(" ")
+                out.append(latest_time, style="dim")
         else:
             out.append(branch_prefix + " " * (width - 1), style=tree_style)
         return out

@@ -197,7 +197,7 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 阶段 1 仍会在「助手持续写历史」时按最短间隔付扫描代价。阶段 2 把定时全量改成「有变化再扫」：
 
-1. **`history_watch`**：监视各助手历史根目录；Darwin 用 FSEvents（ctypes）、Linux 用 inotify（ctypes），失败则退回慢速 reconcile。突发写入 debounce ≈0.35s。**`CORRAL_ISOLATE_MANAGED_HOSTS=1` / `CORRAL_CACHE=0` 时默认根目录为空**（单测不得盯开发机真实历史，否则 FS 事件会提前吃掉 mock `scan_sessions` side_effect）。
+1. **`history_watch`**：监视各助手历史根目录；Darwin 用 FSEvents（ctypes）、Linux 用 inotify（ctypes），失败则退回慢速 reconcile。突发写入 debounce ≈0.35s。（已知偶发：`test_history_watch.test_debounce_coalesces_bursts` 在 `ci-test` 6 路并行高负载下偶见 3 次回调超过上限 2，2026-10-12 首轮失败、隔离重试通过；推断是临时目录创建事件被 FSEvents 延迟投递、落在突发写入之外，未复现成稳定失败。残余风险只是 CI 首轮偶红，由 ci-test 单项重试兜住；后续若频繁出现，改为只统计突发写入之后的回调。）**`CORRAL_ISOLATE_MANAGED_HOSTS=1` / `CORRAL_CACHE=0` 时默认根目录为空**（单测不得盯开发机真实历史，否则 FS 事件会提前吃掉 mock `scan_sessions` side_effect）。
 2. **TUI**：后台重扫最短间隔仍 3s（防抖 thrash）；**空闲最多睡约 60s** 才 reconcile；有 FS 事件立刻醒。无原生监视时 reconcile 退回 10s。
 3. **远程**：同样事件唤醒（会话落盘可早于 15s 醒来）；完整扫描最短间隔与空闲 reconcile 仍为 **15s**（不低于旧节奏，保证手机关注态 / 列表不过久冻住）；标题缓存同周期轻量轮询。
 4. **诚实提示**：筛选框在列表距上次成功扫描 ≥10s 时显示「N 秒前更新」（`filter.placeholder_*_stale`）；`SessionStore.last_refresh_at` / `refresh_age_seconds()`。

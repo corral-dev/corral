@@ -2678,6 +2678,31 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         return store, app
 
+    def test_collapsed_group_latest_time_updates_and_ages(self) -> None:
+        now = time.time()
+        sessions = (
+            {"source": "claude", "id": "first", "mtime": now - 600},
+            {"source": "codex", "id": "latest", "mtime": now - 300},
+        )
+        group = _split_layout.SplitGroup(
+            "fixture", "/tmp", ["claude:first", "codex:latest"],
+            focus_key="claude:first", collapsed=True,
+        )
+        with mock.patch("corral.display.datetime") as clock:
+            clock.now.return_value.timestamp.return_value = now
+            card = SessionGroupCard(group, sessions)
+            self.assertTrue(card.render().plain.splitlines()[2].endswith("5m ago"))
+            sessions[0]["mtime"] = now - 180
+            self.assertTrue(card.apply_update(group, sessions))
+            self.assertTrue(card.render().plain.splitlines()[2].endswith("3m ago"))
+            clock.now.return_value.timestamp.return_value = now + 60
+            self.assertTrue(card.apply_update(group, sessions))
+            self.assertTrue(card.render().plain.splitlines()[2].endswith("4m ago"))
+            self.assertFalse(card.apply_update(group, sessions))
+            sessions[0]["mtime"] = sessions[1]["mtime"] = None
+            self.assertTrue(card.apply_update(group, sessions))
+            self.assertEqual(card.render().plain.splitlines()[2].strip(), "2 read")
+
     async def test_collapsed_group_card_summarizes_member_attention(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
@@ -2714,6 +2739,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             collapsed_lines = group_cards[0].render().plain.splitlines()
             self.assertIn("● Waiting 1", collapsed_lines[2])
             self.assertIn("● Working 1", collapsed_lines[2])
+            latest = max(session["mtime"] for session in sessions[:2])
+            self.assertTrue(collapsed_lines[2].endswith(corral._format_relative_time(latest)))
 
             child_cards = [
                 card
@@ -6775,6 +6802,31 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: app.cursor_position == expected)
             self.assertEqual(app.cursor_position, expected)
             self.assertFalse(pane._real_cursor_shown)
+
+    async def test_typed_echo_moves_ime_anchor_without_idle_poll_delay(self) -> None:
+        """输入法组字时不给助手发键、不会触发重抓；上屏后外层光标必须随回显的
+        新画面立刻跟上，不能等 2s 空闲轮询（机主反馈候选框偏左两到四格）。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(
+            ("bash", "-c", "printf 'ECHO-READY> \\033[?25l'; stty raw -echo; exec cat"), None
+        )
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause(delay=0.5)
+            pane = _primary_embed_pane(app.screen)
+            self._hosted_names.append(pane.session_name)
+            await _wait_for_pane_text(pane, "ECHO-READY>")
+            await _wait_until(lambda: pane.has_focus)
+            await _wait_until(lambda: pane._cursor is not None and pane._cursor[0] == 12)
+            await asyncio.sleep(0.5)  # 让 5Hz 状态缓存与首帧补查都已过去
+            for key in ("a", "b", "c", "d"):
+                await pilot.press(key)
+            expected_x = pane.region.x + 16
+            # 0.8s 远小于 2s 空闲轮询：旧逻辑在这里拿到的仍是回显前的光标。
+            await _wait_until(lambda: app.cursor_position.x == expected_x, tries=80)
+            self.assertEqual(app.cursor_position.x, expected_x)
 
     async def test_focus_shows_real_cursor_blur_hides_it(self) -> None:
         """IME 回归：聚焦内嵌 pane 且有可见光标时必须显式打开外层真实硬件光标

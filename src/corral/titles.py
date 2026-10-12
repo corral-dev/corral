@@ -525,6 +525,11 @@ def resolve_initial_title(session: dict, cache: dict) -> tuple[str, bool]:
     - 会话没有可提炼的任务信息 → 保留本地标题，不提交无意义的生成请求。
     - 原生标题只在兜底标题不可用时作为临时占位，不作为最终展示来源。
     """
+    if session.get("provisional"):
+        # No native history/task yet: do not borrow a cache entry or schedule AI.
+        label = _normalize_title(session.get("fallback_title"))
+        return label or t("session.title.new", name=str(session.get("source") or "")), False
+
     cached = _cached_entry(session, cache)
     if _failed_in_current_version(cached):
         # 失败条目里的 title 只用于保留当时的本地兜底；展示时仍重新按当前会话
