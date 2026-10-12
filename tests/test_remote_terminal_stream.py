@@ -125,11 +125,11 @@ class _TerminalHub:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def terminal_attach(self, key, viewer, cols, rows, *, vote):
+    def terminal_attach(self, key, viewer, cols, rows, *, vote, active=True):
         self.calls.append(("attach", key, cols, rows, vote))
         return {"cols": cols, "rows": rows}
 
-    def terminal_resize(self, key, viewer, cols, rows, *, vote):
+    def terminal_resize(self, key, viewer, cols, rows, *, vote, active=True):
         self.calls.append(("resize", key, cols, rows, vote))
         return {"cols": cols, "rows": rows}
 
@@ -322,12 +322,16 @@ class RealTmuxStreamTests(unittest.TestCase):
         snapshot = self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 132)
         self.assertEqual(snapshot["rows"], 40)
         self.assertEqual(embed.pane_size(self.SESSION), (132, 40))
-        # A wider TUI viewer sets the width (the Mac shrinks its font instead of
-        # narrowing the pane); the taller Mac sets the height.
-        embed.desired_host_size(self.SESSION, "tui:1", 160, 30)
-        self.assertEqual(self.stream.vote("remote:mac:1", 132, 40), (160, 40))
-        self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 160 and e["rows"] == 40)
-        self.assertEqual(embed.pane_size(self.SESSION), (160, 40))
+        # The user moves to a TUI window: a background Mac renewal keeps its grid.
+        self.addCleanup(embed.release_host_view, self.SESSION, "tui:1")
+        embed.desired_host_size(self.SESSION, "tui:1", 160, 30, time.time())
+        self.assertEqual(self.stream.vote("remote:mac:1", 132, 40, active=False), (160, 30))
+        self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 160 and e["rows"] == 30)
+        self.assertEqual(embed.pane_size(self.SESSION), (160, 30))
+        # Back on the Mac (window became key, or typing): the pane follows it.
+        self.stream.activate("remote:mac:1")
+        self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 132 and e["rows"] == 40)
+        self.assertEqual(embed.pane_size(self.SESSION), (132, 40))
         self.stream.withdraw("remote:mac:1")
 
     @unittest.skipUnless(embed.supports_theme_report(), "needs tmux >= 3.5")

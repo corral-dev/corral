@@ -191,25 +191,28 @@ def alive(name: str) -> bool:
 
 
 class ShellTerminalStream(TerminalStream):
-    """A shell's stream: the grid is the latest active viewer's, not the widest.
+    """A shell's stream: the grid is the latest active viewer's.
 
     Attaching, resizing and typing make a viewer active (tmux ``window-size
-    latest``); when the active viewer leaves, the most recent remaining one
-    takes over. Shells are absent from the TUI's viewer registry.
+    latest``) unless the client reports its window in the background
+    (``active: false``); when the active viewer leaves, the most recent
+    remaining one takes over. Shells are absent from the TUI's viewer registry.
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._active: str | None = None
 
-    def vote(self, viewer: str, cols: int, rows: int) -> tuple[int, int]:
+    def vote(self, viewer: str, cols: int, rows: int, *, active: bool = True) -> tuple[int, int]:
         size = (max(1, int(cols)), max(1, int(rows)))
         with self._votes_lock:
-            self._votes.pop(viewer, None)
+            if active or self._active is None:
+                self._votes.pop(viewer, None)
+                self._active = viewer
             self._votes[viewer] = size
-            self._active = viewer
-        self._apply_size(size)
-        return size
+            effective = self._votes[self._active]
+        self._apply_size(effective)
+        return effective
 
     def activate(self, viewer: str) -> None:
         with self._votes_lock:
@@ -228,8 +231,9 @@ class ShellTerminalStream(TerminalStream):
         if size is not None:
             self._apply_size(size)
 
-    def _effective_size(self, votes: dict[str, tuple[int, int]]) -> tuple[int, int] | None:
-        return votes.get(self._active) if self._active else None
+    def _effective_size(self, votes: dict[str, tuple[int, int, float]]) -> tuple[int, int] | None:
+        vote = votes.get(self._active) if self._active else None
+        return (vote[0], vote[1]) if vote else None
 
     def _release_views(self, viewers: list[str]) -> None:
         pass

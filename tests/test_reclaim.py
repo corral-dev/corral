@@ -455,9 +455,14 @@ class HelperApiTests(unittest.TestCase):
         self.assertIn("corral-claude-viewed001", embed.live_host_viewer_names())
         conn = embed._connect_host_viewers()
         conn.execute(
-            "INSERT INTO host_viewers VALUES ('stale-one','v',80,24,?,?)", (os.getpid(), time.monotonic() - 60),
+            "INSERT INTO host_viewers (session_name, viewer_id, width, height, pid, updated_at)"
+            " VALUES ('stale-one','v',80,24,?,?)", (os.getpid(), time.monotonic() - 60),
         )
-        conn.execute("INSERT INTO host_viewers VALUES ('dead-pid','v',80,24,?,?)", (2**31 - 2, time.monotonic()))
+        conn.execute(
+            "INSERT INTO host_viewers (session_name, viewer_id, width, height, pid, updated_at)"
+            " VALUES ('dead-pid','v',80,24,?,?)",
+            (2**31 - 2, time.monotonic()),
+        )
         conn.commit()
         conn.close()
         live = embed.live_host_viewer_names()

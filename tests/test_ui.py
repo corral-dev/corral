@@ -4199,26 +4199,34 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             resize.assert_called_with("corral-claude-third", 240, 50)
             self.assertEqual(event.call_args.args[0], "host_size_drift")
 
-    def test_host_size_heal_does_not_shrink_for_narrower_view(self) -> None:
-        """另一扇更宽的窗口还在看时，本格不得把共享窗收到自己的窄宽。"""
+    def test_host_size_heal_follows_latest_used_viewer(self) -> None:
+        """The shared grid follows the viewer used last, narrower or not (2026-10-12)."""
         from corral import embed
 
         pid = os.getpid()
-        name = "corral-claude-crop"
-        embed.desired_host_size(name, f"{pid}:wide", 240, 50)
+        name = "corral-claude-latest-used"
+        self.addCleanup(embed.release_host_view, name, f"{pid}:wide")
+        embed.desired_host_size(name, f"{pid}:wide", 240, 50, time.time())
         pane = EmbedPane()
         pane._capture_size_override = None  # noqa: SLF001
+        self.addCleanup(embed.release_host_view, name, pane._viewer_id)  # noqa: SLF001
         with (
             mock.patch.object(pane, "_pane_size", return_value=(80, 24)),
             mock.patch("corral.embed.should_resize_host", return_value=True),
             mock.patch("corral.embed.resize") as resize,
             mock.patch("corral.observe.event"),
         ):
+            # Not used here yet: the wide window the user used stays in charge; this pane crops.
             pane._heal_host_size_if_needed(name, (240, 50))  # noqa: SLF001
-            self.assertEqual(resize.call_count, 0, "较窄方应 crop，不得 resize 压窄")
+            self.assertEqual(resize.call_count, 0)
+            # The user acts in this pane: the grid follows it even though it is narrower.
+            pane._used_at = time.time()  # noqa: SLF001
+            pane._heal_host_size_if_needed(name, (240, 50))  # noqa: SLF001
+            resize.assert_called_with(name, 80, 24)
+            # The user goes back to the wide window: the grid follows it again.
+            embed.desired_host_size(name, f"{pid}:wide", 240, 50, time.time())
             pane._heal_last_at = 0.0  # noqa: SLF001
             pane._heal_host_size_if_needed(name, (80, 24))  # noqa: SLF001
-            self.assertEqual(resize.call_count, 1, "真实窗口已被压窄时仍要拉回最宽方")
             resize.assert_called_with(name, 240, 50)
 
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:

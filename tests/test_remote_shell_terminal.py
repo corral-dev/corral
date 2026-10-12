@@ -36,7 +36,7 @@ class _ShellHub:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def terminal_attach(self, key, viewer, cols, rows, *, vote):
+    def terminal_attach(self, key, viewer, cols, rows, *, vote, active=True):
         self.calls.append(("attach", key, vote))
         return {"cols": cols, "rows": rows}
 
@@ -186,6 +186,9 @@ class RealTmuxShellTests(unittest.TestCase):
         self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 60 and e["rows"] == 20)
         stream.activate("remote:mac:1")
         self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 120 and e["rows"] == 40)
+        # A background window renewing its size does not take the shell.
+        stream.vote("remote:phone:1", 60, 20)
+        self.assertEqual(stream.vote("remote:mac:1", 130, 42, active=False), (60, 20))
         stream.withdraw("remote:mac:1")
         self._wait(lambda e: e["kind"] == "snapshot" and e["cols"] == 60)
 

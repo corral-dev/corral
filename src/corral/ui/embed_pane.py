@@ -417,6 +417,10 @@ class EmbedPane(Widget):
         # 本窗口是否被终端聚焦（MainScreen 经 app_focus 下发）。失焦时整格按
         # UNFOCUSED_WINDOW_CAPTURE_INTERVAL 慢抓；只由后台抓帧线程读取。
         self._window_focused = True
+        # Last user action at this pane (time.time(): compared across processes). The shared hosted grid
+        # follows the viewer used most recently (owner decision 2026-10-12);
+        # renewals resend this value and never claim the grid on their own.
+        self._used_at = 0.0
         # 每次切换展示对象都提升版本。抓帧线程不能只比较 session_name：主线程可能
         # 在它醒来前经历“实时会话 → 详情 → 同一个实时会话”，最终名字虽然没变，
         # 旧帧缓存却已经失效；版本号能让这种快速往返也强制重抓，并拦住旧回调回写。
@@ -441,7 +445,7 @@ class EmbedPane(Widget):
         self._heal_count = 0
         self._heal_last_at = 0.0
         # 这一格最近一次用来对齐的期望尺寸。布局变了才重置 heal 退避。
-        # 有效尺寸由 embed.desired_host_size 取最宽观看方，不再用「对齐后让出」。
+        # 有效尺寸由 embed.desired_host_size 取最近被使用的观看方。
         self._heal_layout: tuple[int, int] | None = None
         # resize 后抓帧冻结：主线程开启；抓帧线程判定稳定后解除并放行一帧。
         self._resize_hold_active = False
@@ -576,6 +580,10 @@ class EmbedPane(Widget):
         self._capture_size_override = target_size
         self.session_name = name
         self.dead = False
+        if reset_capture and self._window_has_focus():
+            # Switching this pane to a session in the focused window is use;
+            # a reflow driven by another client's layout change is not.
+            self._mark_used(wake=False)
         self.detail_offset = 0
         self.history_offset = 0
         if reset_capture and not discard_stale_screen:
@@ -771,9 +779,29 @@ class EmbedPane(Widget):
         embed.release_host_view(name, self._viewer_id)
         self._claimed_session = None
 
+    def _window_has_focus(self) -> bool:
+        """Main thread: whether the outer terminal window has focus (True when unknown)."""
+        try:
+            return bool(self.app.app_focus)
+        except Exception:  # noqa: BLE001 - not mounted yet
+            return True
+
+    def _mark_used(self, *, wake: bool = True) -> None:
+        """The user acted at this pane: the shared grid follows it.
+
+        Only the timestamp changes here; the next registry call (an immediate
+        resize, or the capture thread's heal) carries it. ``wake=False`` when
+        the caller resizes and wakes the capture thread itself.
+        """
+        if not self.session_name or self.dead:
+            return
+        self._used_at = time.time()
+        if wake:
+            self._request_immediate_capture()
+
     def _resize_host(self, name: str, width: int, height: int) -> tuple[int, int]:
-        """按最宽观看方的有效尺寸调窗；`_host_size` 仍记本格请求，供 Resize 防抖去重。"""
-        effective = embed.desired_host_size(name, self._viewer_id, width, height)
+        """按最近使用方的有效尺寸调窗；`_host_size` 仍记本格请求，供 Resize 防抖去重。"""
+        effective = embed.desired_host_size(name, self._viewer_id, width, height, self._used_at)
         self._claimed_session = name
         if embed.should_resize_host(effective[0], effective[1]):
             embed.resize(name, effective[0], effective[1])
@@ -792,9 +820,10 @@ class EmbedPane(Widget):
 
         必须在抓帧线程调用：fork/控制通道不能进 Textual 主线程。
 
-        多扇窗口共用同一份真实画面。有效尺寸取仍在看的窗口里最宽的那一格；
-        本格更窄就 crop，不得把共享窗压到自己的 1/3。被较窄方或控制通道 80 列
-        打窄之后，只要本格仍是最宽观看方，就必须拉回来。
+        Every window shares one real grid. The effective size is the viewer
+        the user used most recently; this pane crops or leaves a margin when it
+        is not that viewer. When a control client (80 columns) or a stale
+        resize moved the grid away from the winner, pull it back.
         """
         if generation is not None and not self._capture_is_current(generation, name):
             return
@@ -804,7 +833,9 @@ class EmbedPane(Widget):
             self._heal_target = None
             self._heal_count = 0
             self._heal_last_at = 0.0
-        effective = embed.desired_host_size(name, self._viewer_id, expected[0], expected[1])
+        effective = embed.desired_host_size(
+            name, self._viewer_id, expected[0], expected[1], self._used_at,
+        )
         if generation is not None and not self._capture_is_current(generation, name):
             # The registry call may have finished after a rebind/unmount released it.
             # Do not remove a replacement vote when the same name was rebound.
@@ -866,6 +897,8 @@ class EmbedPane(Widget):
         """
         self._window_focused = bool(focused)
         if focused:
+            # Coming back to this window is use: it takes the shared grid back.
+            self._mark_used()
             self._request_immediate_capture()
 
     def _minimum_capture_interval(self, channel, now: float) -> float:
@@ -1586,6 +1619,7 @@ class EmbedPane(Widget):
         name = self.session_name
         if not name or self.dead:
             return
+        self._mark_used()
         if event.key == "ctrl+backslash":
             # 焦点回列表：托管会话在后台 tmux 继续跑，滚动位置保留，回车/下次
             # 聚焦时接着看。旧版靠"双击反斜杠 300ms 窗口"消歧义是 curses raw
@@ -1642,6 +1676,7 @@ class EmbedPane(Widget):
         # 哨兵标记，经普通粘贴通道送到这里；识别到就落盘再把路径喂给 agent，
         # 不当文本转发。普通文本粘贴走原有路径不受影响。
         image_bytes = embed.extract_pasted_image(event.text)
+        self._mark_used()
         if image_bytes is not None:
             self._paste_image_worker(self.session_name, image_bytes)
         else:
@@ -1687,6 +1722,7 @@ class EmbedPane(Widget):
         name = self.session_name
         if not name or self.dead:
             return
+        self._mark_used()
         if self._mouse_any:
             # tmux SGR 坐标 1-based；较矮格子顶部裁掉的行要加回去
             col, row = int(x) + 1, int(y) + self._live_row_offset() + 1
@@ -1707,6 +1743,7 @@ class EmbedPane(Widget):
     def on_mouse_down(self, event: events.MouseDown) -> None:
         # 不 stop：同一次按下还要交给 Textual 做聚焦与拖拽选词。
         self._click_down = None
+        self._mark_used()
         if event.button in (1, 2, 3) and self._click_forwardable():
             code = embed.mouse_button_code(
                 event.button, shift=event.shift, meta=event.meta, ctrl=event.ctrl)
@@ -1804,6 +1841,9 @@ class EmbedPane(Widget):
             return
         if not embed.should_resize_host(size[0], size[1]):
             return
+        if self._window_has_focus():
+            # Resizing the focused window is use; a reflow in a background window is not.
+            self._mark_used(wake=False)
         self._resize_host(name, size[0], size[1])
         # 已有直播画面时冻结抓帧显示：Cursor 等重排中间态不刷到右栏。
         if self._grid is not None:

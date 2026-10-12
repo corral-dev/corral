@@ -320,11 +320,12 @@ def should_resize_host(width: int, height: int) -> bool:
 # 已运行的保活 server 可能仍加载旧 `window-size latest`；每个 socket 只补一次。
 _manual_window_size_sockets: set[str] = set()
 
-# 跨窗口观看尺寸：较窄方不得把共享窗压窄。失败降级为本格自己的宽高。
+# Cross-window viewer sizes: the shared grid follows the viewer the user used
+# most recently. Registry failures degrade to this pane's own size.
 _HOST_VIEW_STALE_SECONDS = 8.0
 _HOST_VIEW_WRITE_INTERVAL = 1.0
 _VIEWER_LOCK = threading.Lock()
-_viewer_last_write: dict[tuple[str, str], tuple[int, int, float]] = {}
+_viewer_last_write: dict[tuple[str, str], tuple[int, int, float, float]] = {}
 _VIEWER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS host_viewers (
     session_name TEXT NOT NULL,
@@ -333,9 +334,11 @@ CREATE TABLE IF NOT EXISTS host_viewers (
     height INTEGER NOT NULL,
     pid INTEGER NOT NULL,
     updated_at REAL NOT NULL,
+    used_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (session_name, viewer_id)
 )
 """
+_viewer_schema_ready: set[str] = set()
 
 
 def _ensure_manual_window_size(name: str) -> None:
@@ -546,6 +549,13 @@ def _connect_host_viewers() -> sqlite3.Connection | None:
         conn = sqlite3.connect(str(path), timeout=1.0, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_VIEWER_SCHEMA)
+        if str(path) not in _viewer_schema_ready:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(host_viewers)")}
+            if "used_at" not in columns:
+                # Registries written before 2026-10-12 have no last-used column.
+                conn.execute("ALTER TABLE host_viewers ADD COLUMN used_at REAL NOT NULL DEFAULT 0")
+                conn.commit()
+            _viewer_schema_ready.add(str(path))
         return conn
     except sqlite3.Error:
         return None
@@ -568,24 +578,30 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 def desired_host_size(
-    name: str, viewer_id: str, width: int, height: int,
+    name: str, viewer_id: str, width: int, height: int, used_at: float = 0.0,
 ) -> tuple[int, int]:
-    """Register this viewer's size; return the widest width and, independently,
-    the tallest height among live viewers.
+    """Register this viewer's size; return the size of the live viewer the user
+    used most recently (owner decision 2026-10-12).
 
-    Width never follows a narrower viewer (narrow wraps burn into scrollback and
-    two windows fought over it, 2026-08-29). Height takes the tallest viewer so
-    no window is left with empty rows under the agent (2026-10-06); a shorter
-    viewer keeps the bottom rows and crops the top.
+    ``used_at`` is this viewer's last user action (``time.time()``, comparable
+    across processes and interpreters): input,
+    switching to the session, a resize in a focused window, the window gaining
+    focus. Renewals pass the same value again and never claim the grid; the
+    registry keeps the larger stored value, so every viewer computes the same
+    winner and windows never fight (the 2026-08-29 thrash was write order
+    deciding). Ties go to the wider, then taller viewer. Viewers that lose crop
+    or leave a margin locally.
 
-    库不可用时退回本格自己的宽高，不得阻断抓帧。低于下限的尺寸不登记，
-    以免把有效尺寸拉到会污染 scrollback 的窄宽；若本格先前登记过更宽的尺寸，
-    必须撤回那一票，否则缩到下限以下后仍会按旧宽把共享窗钉死。
+    The registry failing falls back to this viewer's own size so capture never
+    blocks. A size below the minimum is not registered (narrow wraps burn into
+    scrollback) and withdraws this viewer's earlier row, so an old size cannot
+    keep pinning the shared grid.
     """
     local = (max(1, int(width)), max(1, int(height)))
     if not name or not viewer_id:
         return local
     now = time.monotonic()
+    used_at = max(0.0, float(used_at))
     key = (name, viewer_id)
     below_min = local[0] < MIN_HOST_WIDTH or local[1] < MIN_HOST_HEIGHT
     with _VIEWER_LOCK:
@@ -594,6 +610,7 @@ def desired_host_size(
             last is None
             or last[0] != local[0]
             or last[1] != local[1]
+            or used_at > last[3]
             or now - last[2] >= _HOST_VIEW_WRITE_INTERVAL
         )
         conn = _connect_host_viewers()
@@ -613,17 +630,18 @@ def desired_host_size(
                 else:
                     conn.execute(
                         "INSERT INTO host_viewers"
-                        " (session_name, viewer_id, width, height, pid, updated_at)"
-                        " VALUES (?, ?, ?, ?, ?, ?)"
+                        " (session_name, viewer_id, width, height, pid, updated_at, used_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?)"
                         " ON CONFLICT(session_name, viewer_id) DO UPDATE SET"
                         " width=excluded.width, height=excluded.height,"
-                        " pid=excluded.pid, updated_at=excluded.updated_at",
-                        (name, viewer_id, local[0], local[1], os.getpid(), now),
+                        " pid=excluded.pid, updated_at=excluded.updated_at,"
+                        " used_at=MAX(host_viewers.used_at, excluded.used_at)",
+                        (name, viewer_id, local[0], local[1], os.getpid(), now, used_at),
                     )
-                    _viewer_last_write[key] = (local[0], local[1], now)
+                    _viewer_last_write[key] = (local[0], local[1], now, used_at)
                 conn.commit()
             rows = conn.execute(
-                "SELECT viewer_id, width, height, pid, updated_at"
+                "SELECT viewer_id, width, height, pid, updated_at, used_at"
                 " FROM host_viewers WHERE session_name = ?",
                 (name,),
             ).fetchall()
@@ -635,23 +653,27 @@ def desired_host_size(
             return local
         finally:
             conn.close()
-    best = local
+    # Own row may be missing (another process dropped it); count this call anyway.
+    best: tuple[float, int, int] | None = None if below_min else (used_at, *local)
     stale: list[str] = []
-    for other_id, w, h, pid, updated_at in rows:
+    for other_id, w, h, pid, updated_at, other_used in rows:
         try:
             w, h = int(w), int(h)
             pid = int(pid)
             updated_at = float(updated_at)
+            other_used = float(other_used or 0.0)
         except (TypeError, ValueError):
             stale.append(str(other_id))
             continue
         if now - updated_at > _HOST_VIEW_STALE_SECONDS or not _pid_is_alive(pid):
             stale.append(str(other_id))
             continue
-        best = (max(best[0], w), max(best[1], h))
+        candidate = (other_used, w, h)
+        if best is None or candidate > best:
+            best = candidate
     if stale:
         _drop_host_viewers(name, stale)
-    return best
+    return local if best is None else (best[1], best[2])
 
 
 def live_host_viewer_names() -> set[str] | None:

@@ -280,8 +280,10 @@ M_LAYOUT_PIN = "layout.pin"                   # {key}: TUI semantics (group memb
 M_LAYOUT_PIN_GROUP = "layout.pinGroup"        # {group_id}
 M_LAYOUT_COLLAPSE = "layout.collapse"         # {group_id, collapsed}
 
-M_TERMINAL_ATTACH = "terminal.attach"   # {key, cols, rows} → {cols, rows}; snapshot follows as event
-M_TERMINAL_RESIZE = "terminal.resize"   # {key, cols, rows} → {cols, rows}
+# attach/resize: optional `active` (default true) = the viewer's window is in front, so the
+# pane takes this viewer's grid (latest-used viewer wins); false only renews its size.
+M_TERMINAL_ATTACH = "terminal.attach"   # {key, cols, rows, active?} → {cols, rows}; snapshot follows as event
+M_TERMINAL_RESIZE = "terminal.resize"   # {key, cols, rows, active?} → {cols, rows}
 M_TERMINAL_RESYNC = "terminal.resync"   # {key}: a fresh snapshot event (after a seq gap)
 M_TERMINAL_INPUT = "terminal.input"     # {key, data: base64}: raw bytes to the pane
 M_TERMINAL_DETACH = "terminal.detach"   # {key}

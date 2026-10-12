@@ -105,6 +105,14 @@ def _terminal_grid(params: dict) -> tuple[int, int]:
     return cols, rows
 
 
+def _terminal_active(params: dict) -> bool:
+    """Whether the viewer's window is in front (it takes the pane size).
+
+    Clients before 2026-10-12 omit the field; their attach/resize count as use.
+    """
+    return params.get("active", True) is not False
+
+
 # Project shells are reachable only through the terminal stream, paste and
 # their own close: never through session, layout, pin, read-state or image
 # methods (a shell is not a session and must not enter TUI stores).
@@ -956,13 +964,15 @@ class RemoteService:
         viewer = _terminal_viewer(connection)
         cols, rows = _terminal_grid(params)
         theme = _terminal_theme(params) if connection.access != "readonly" else None
+        vote = connection.access != "readonly"
+        active = _terminal_active(params)
         if not self._subscribe(connection, protocol.terminal_channel(key)):
             # Already attached on this connection: a size update plus a fresh snapshot.
-            size = self.hub.terminal_resize(key, viewer, cols, rows, vote=connection.access != "readonly")
+            size = self.hub.terminal_resize(key, viewer, cols, rows, vote=vote, active=active)
             self.hub.terminal_resync(key)
         else:
             try:
-                size = self.hub.terminal_attach(key, viewer, cols, rows, vote=connection.access != "readonly")
+                size = self.hub.terminal_attach(key, viewer, cols, rows, vote=vote, active=active)
             except Exception:
                 self._unsubscribe(connection, protocol.terminal_channel(key))
                 raise
@@ -973,7 +983,8 @@ class RemoteService:
     def _terminal_resize(self, connection: Connection, params: dict):
         cols, rows = _terminal_grid(params)
         return self.hub.terminal_resize(
-            _key(params), _terminal_viewer(connection), cols, rows, vote=connection.access != "readonly",
+            _key(params), _terminal_viewer(connection), cols, rows,
+            vote=connection.access != "readonly", active=_terminal_active(params),
         )
 
     def _terminal_resync(self, connection: Connection, params: dict):
@@ -1045,6 +1056,10 @@ class RemoteService:
         if not text and not submit:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
         key = _key(params)
+        terminal_used = getattr(self.hub, "terminal_used", None)
+        if callable(terminal_used):
+            # A paste from this connection's terminal view is use of that view.
+            terminal_used(key, _terminal_viewer(connection))
         if not connection.command_receipts:
             self.hub.send_text(key, text, submit)
             return {"ok": True}

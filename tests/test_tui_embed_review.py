@@ -30,7 +30,7 @@ class DeferredResizeOwnershipTests(unittest.TestCase):
             mock.patch.object(pane, "set_timer", return_value=timer),
             mock.patch.object(pane, "_update_app_cursor"),
             mock.patch("corral.embed.open_channel", return_value=None),
-            mock.patch("corral.embed.desired_host_size", side_effect=lambda _n, _v, w, h: (w, h)),
+            mock.patch("corral.embed.desired_host_size", side_effect=lambda _n, _v, w, h, _used=0.0: (w, h)),
             mock.patch("corral.embed.resize") as resize,
         ):
             pane._on_resize(events.Resize(Size(80, 24), Size(80, 24)))
@@ -205,3 +205,41 @@ class RealTerminalBindingTests(unittest.IsolatedAsyncioTestCase):
                     (*base, "kill-server"), capture_output=True, timeout=4,
                 )
 from corral import embed
+
+
+class LatestUsedViewerTests(unittest.TestCase):
+    """The shared grid follows the pane the user used last (owner decision 2026-10-12)."""
+
+    def _focus(self, *, window_focused: bool) -> list:
+        pane = EmbedPane()
+        with (
+            mock.patch.object(pane, "_window_has_focus", return_value=window_focused),
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.desired_host_size", side_effect=lambda _n, _v, w, h, _used=0.0: (w, h)) as vote,
+            mock.patch("corral.embed.resize"),
+        ):
+            pane.focus_session("corral-review-used", target_size=(140, 30))
+        return vote.call_args_list
+
+    def test_switching_in_the_focused_window_claims_the_grid(self) -> None:
+        calls = self._focus(window_focused=True)
+        self.assertGreater(calls[-1].args[4], 0.0)
+
+    def test_reflow_in_a_background_window_does_not_claim(self) -> None:
+        calls = self._focus(window_focused=False)
+        self.assertEqual(calls[-1].args[4], 0.0)
+
+    def test_window_focus_gain_claims_only_a_live_session(self) -> None:
+        pane = EmbedPane()
+        pane.set_window_focused(True)
+        self.assertEqual(pane._used_at, 0.0)
+        pane.session_name = "corral-review-used"
+        pane.set_window_focused(False)
+        self.assertEqual(pane._used_at, 0.0)
+        pane.set_window_focused(True)
+        self.assertGreater(pane._used_at, 0.0)
+        pane._used_at = 0.0
+        pane.dead = True
+        pane.set_window_focused(True)
+        self.assertEqual(pane._used_at, 0.0, "an ended session claims nothing")

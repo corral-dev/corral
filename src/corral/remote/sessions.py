@@ -1923,7 +1923,8 @@ class SessionHub:
 
     # -- 桌面终端原始流（Mac 终端视图） ----------------------------------
 
-    def terminal_attach(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool) -> dict:
+    def terminal_attach(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool,
+                        active: bool = True) -> dict:
         """Start (or join) the session's raw stream; a snapshot event follows."""
         name = self._keepalive_name(key)
         stream_class = shell_terminal.ShellTerminalStream if shell_terminal.is_shell_key(key) else TerminalStream
@@ -1941,10 +1942,13 @@ class SessionHub:
                 stream.start()
             stream, viewers = entry
             viewers.add(viewer)
-        return self._terminal_size(stream, viewer, cols, rows, vote=vote, snapshot=True)
+        return self._terminal_size(stream, viewer, cols, rows, vote=vote, active=active, snapshot=True)
 
-    def terminal_resize(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool) -> dict:
-        return self._terminal_size(self._terminal(key), viewer, cols, rows, vote=vote, snapshot=False)
+    def terminal_resize(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool,
+                        active: bool = True) -> dict:
+        return self._terminal_size(
+            self._terminal(key), viewer, cols, rows, vote=vote, active=active, snapshot=False,
+        )
 
     def terminal_resync(self, key: str) -> None:
         self._terminal(key).request_snapshot()
@@ -1957,8 +1961,8 @@ class SessionHub:
             raise ActionError("usage_error", t("remote.err.no_content"))
         with self._lock:
             entry = self._terminals.get(key)
-        if entry is not None and viewer and isinstance(entry[0], shell_terminal.ShellTerminalStream):
-            entry[0].activate(viewer)  # typing makes this viewer the shell's size source
+        if entry is not None and viewer:
+            entry[0].activate(viewer)  # typing makes this viewer the pane's size source
         name = entry[0].name if entry is not None else self._keepalive_name(key)
         if not embed.send_bytes(name, data):
             raise ActionError("unavailable", t("remote.err.session_not_running"))
@@ -1984,11 +1988,18 @@ class SessionHub:
             raise ActionError("usage_error", t("remote.err.not_watching_screen"))
         return entry[0]
 
+    def terminal_used(self, key: str, viewer: str) -> None:
+        """Input from a viewer of this pane (a terminal paste): it takes the size."""
+        with self._lock:
+            entry = self._terminals.get(key)
+        if entry is not None and viewer in entry[1]:
+            entry[0].activate(viewer)
+
     @staticmethod
     def _terminal_size(stream: TerminalStream, viewer: str, cols: int, rows: int,
-                       *, vote: bool, snapshot: bool) -> dict:
+                       *, vote: bool, active: bool, snapshot: bool) -> dict:
         if vote:
-            effective = stream.vote(viewer, cols, rows)
+            effective = stream.vote(viewer, cols, rows, active=active)
         else:
             effective = embed.pane_size(stream.name) or (cols, rows)
         if snapshot:

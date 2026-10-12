@@ -17,8 +17,11 @@ stream): ``snapshot`` (reset the emulator to ``cols`` x ``rows`` and feed
 that sees a gap asks for ``terminal.resync``.
 
 Sizing: desktop viewers vote in the same registry the TUI windows use
-(`embed.desired_host_size`: widest width, tallest height); the pane is resized
-to that. Read-only viewers watch without voting. The phone never uses this module.
+(`embed.desired_host_size`): the pane takes the grid of the viewer the user
+used most recently (owner decision 2026-10-12). Attach and resize claim it
+unless the client says its window is in the background (``active: false``);
+raw input and terminal pastes claim it too; renewals never do. Read-only
+viewers watch without voting. The phone's snapshot mirror never uses this module.
 
 Colours: a desktop viewer reports its terminal background and foreground
 (``#rrggbb``); they are injected into the pane as OSC 11/10 answers, the same
@@ -161,6 +164,8 @@ class TerminalStream:
         self._snap_lock = threading.Lock()
         self._seq = 0
         self._votes: dict[str, tuple[int, int]] = {}
+        # Per viewer: last user action (time.time()), resent with every renewal.
+        self._used: dict[str, float] = {}
         self._votes_lock = threading.Lock()
         self._size: tuple[int, int] = (0, 0)
         self._channel: embed.ControlChannel | None = None
@@ -184,6 +189,7 @@ class TerminalStream:
         with self._votes_lock:
             viewers = list(self._votes)
             self._votes.clear()
+            self._used.clear()
         self._release_views(viewers)
         channel = self._channel
         if channel is not None and channel.on_data == self._on_data:
@@ -194,26 +200,49 @@ class TerminalStream:
 
     # -- viewers -------------------------------------------------------
 
-    def vote(self, viewer: str, cols: int, rows: int) -> tuple[int, int]:
-        """Record a desktop viewer's fitting size; resize the pane to the winner."""
+    def vote(self, viewer: str, cols: int, rows: int, *, active: bool = True) -> tuple[int, int]:
+        """Record a desktop viewer's fitting size; resize the pane to the winner.
+
+        ``active`` marks the viewer as just used (its window is in front).
+        """
         cols, rows = max(1, int(cols)), max(1, int(rows))
         with self._votes_lock:
             self._votes[viewer] = (cols, rows)
-        effective = embed.desired_host_size(self.name, viewer, cols, rows)
+            if active:
+                self._used[viewer] = time.time()
+            used_at = self._used.get(viewer, 0.0)
+        effective = embed.desired_host_size(self.name, viewer, cols, rows, used_at)
         self._apply_size(effective)
         return effective
+
+    def activate(self, viewer: str) -> None:
+        """The viewer typed or pasted: the pane follows it. No-op without a vote."""
+        with self._votes_lock:
+            size = self._votes.get(viewer)
+            if size is None:
+                return
+            used_at = self._used[viewer] = time.time()
+        self._apply_size(embed.desired_host_size(self.name, viewer, *size, used_at))
 
     def withdraw(self, viewer: str) -> None:
         with self._votes_lock:
             had = self._votes.pop(viewer, None) is not None
+            self._used.pop(viewer, None)
         if had:
             embed.release_host_view(self.name, viewer)
 
-    def _effective_size(self, votes: dict[str, tuple[int, int]]) -> tuple[int, int] | None:
-        """Renew every vote in the shared registry; the last answer is the winner."""
+    def _vote_snapshot(self) -> dict[str, tuple[int, int, float]]:
+        with self._votes_lock:
+            return {
+                viewer: (cols, rows, self._used.get(viewer, 0.0))
+                for viewer, (cols, rows) in self._votes.items()
+            }
+
+    def _effective_size(self, votes: dict[str, tuple[int, int, float]]) -> tuple[int, int] | None:
+        """Renew every vote in the shared registry; every answer names the same winner."""
         effective = None
-        for viewer, (cols, rows) in votes.items():
-            effective = embed.desired_host_size(self.name, viewer, cols, rows)
+        for viewer, (cols, rows, used_at) in votes.items():
+            effective = embed.desired_host_size(self.name, viewer, cols, rows, used_at)
         return effective
 
     def _release_views(self, viewers: list[str]) -> None:
@@ -266,9 +295,7 @@ class TerminalStream:
         channel = self._live_channel()
         if channel is None:
             return
-        with self._votes_lock:
-            votes = dict(self._votes)
-        effective = self._effective_size(votes)
+        effective = self._effective_size(self._vote_snapshot())
         if effective is not None:
             self._apply_size(effective)
         result = channel.request("display-message", "-p", "-t", self.name, "#{pane_width}|#{pane_height}")
@@ -304,13 +331,12 @@ class TerminalStream:
             self._end()
             return None
         if name != self.name:
-            with self._votes_lock:
-                votes = dict(self._votes)
+            votes = self._vote_snapshot()
             for viewer in votes:
                 embed.release_host_view(self.name, viewer)
             self.name = name
-            for viewer, (cols, rows) in votes.items():
-                embed.desired_host_size(name, viewer, cols, rows)
+            for viewer, (cols, rows, used_at) in votes.items():
+                embed.desired_host_size(name, viewer, cols, rows, used_at)
         channel = embed.open_channel(name, on_data=self._on_data)
         if channel is None:
             self._end()

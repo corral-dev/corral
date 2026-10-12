@@ -607,21 +607,62 @@ class HostViewRegistryTests(unittest.TestCase):
             os.environ["CORRAL_CACHE_DIR"] = self._old
         self._tmp.cleanup()
 
-    def test_desired_host_size_prefers_widest_live_viewer(self) -> None:
+    def test_desired_host_size_follows_latest_used_viewer(self) -> None:
         pid = os.getpid()
-        name = "corral-claude-wide"
-        wide = embed.desired_host_size(name, f"{pid}:wide", 240, 50)
-        self.assertEqual(wide, (240, 50))
-        narrow = embed.desired_host_size(name, f"{pid}:narrow", 80, 24)
-        self.assertEqual(narrow, (240, 50), "较窄方必须跟最宽观看方，不能把窗压成 80 列")
+        name = "corral-claude-latest"
+        tui = embed.desired_host_size(name, f"{pid}:tui", 240, 50, used_at=10.0)
+        self.assertEqual(tui, (240, 50))
+        mac = embed.desired_host_size(name, f"{pid}:mac", 120, 64, used_at=20.0)
+        self.assertEqual(mac, (120, 64), "the client used last sets width and height together")
+        self.assertEqual(embed.desired_host_size(name, f"{pid}:tui", 240, 50, used_at=10.0), (120, 64))
+        back = embed.desired_host_size(name, f"{pid}:tui", 240, 50, used_at=30.0)
+        self.assertEqual(back, (240, 50), "returning to the TUI takes the grid back")
 
-    def test_desired_host_size_takes_tallest_height_independently(self) -> None:
+    def test_desired_host_size_renewal_does_not_claim(self) -> None:
+        """Renewals resend the old timestamp; a lower value never rolls a claim back."""
         pid = os.getpid()
-        name = "corral-claude-tall"
-        embed.desired_host_size(name, f"{pid}:wide", 240, 50)
-        tall = embed.desired_host_size(name, f"{pid}:tall", 80, 64)
-        self.assertEqual(tall, (240, 64), "width from the widest viewer, height from the tallest")
-        self.assertEqual(embed.desired_host_size(name, f"{pid}:wide", 240, 50), (240, 64))
+        name = "corral-claude-renew"
+        embed.desired_host_size(name, f"{pid}:mac", 120, 40, used_at=50.0)
+        embed.desired_host_size(name, f"{pid}:tui", 200, 50, used_at=40.0)
+        for _ in range(3):
+            self.assertEqual(embed.desired_host_size(name, f"{pid}:tui", 200, 50, used_at=40.0), (120, 40))
+        self.assertEqual(embed.desired_host_size(name, f"{pid}:mac", 120, 40, used_at=0.0), (120, 40))
+        conn = embed._connect_host_viewers()
+        assert conn is not None
+        stored = conn.execute(
+            "SELECT used_at FROM host_viewers WHERE session_name = ? AND viewer_id = ?",
+            (name, f"{pid}:mac"),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(stored[0], 50.0)
+
+    def test_never_used_viewers_fall_back_to_the_widest(self) -> None:
+        pid = os.getpid()
+        name = "corral-claude-unused"
+        embed.desired_host_size(name, f"{pid}:a", 100, 30)
+        self.assertEqual(embed.desired_host_size(name, f"{pid}:b", 160, 40), (160, 40))
+        self.assertEqual(embed.desired_host_size(name, f"{pid}:a", 100, 30), (160, 40))
+
+    def test_registry_without_used_column_is_migrated(self) -> None:
+        import sqlite3
+
+        path = embed._host_viewers_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE host_viewers (session_name TEXT NOT NULL, viewer_id TEXT NOT NULL,"
+            " width INTEGER NOT NULL, height INTEGER NOT NULL, pid INTEGER NOT NULL,"
+            " updated_at REAL NOT NULL, PRIMARY KEY (session_name, viewer_id))"
+        )
+        conn.execute(
+            "INSERT INTO host_viewers VALUES ('corral-claude-old', 'old', 200, 50, ?, ?)",
+            (os.getpid(), time.monotonic()),
+        )
+        conn.commit()
+        conn.close()
+        embed._viewer_schema_ready.discard(str(path))
+        mine = embed.desired_host_size("corral-claude-old", f"{os.getpid()}:new", 90, 30, used_at=5.0)
+        self.assertEqual(mine, (90, 30), "a used viewer beats a legacy row without a timestamp")
 
     def test_release_host_view_lets_remaining_viewer_shrink(self) -> None:
         pid = os.getpid()
