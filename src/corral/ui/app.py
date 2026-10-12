@@ -137,6 +137,8 @@ class CorralApp(App):
     # 后访问 .region 崩溃）——子卡片、外层 NoSelectListItem、SessionListView
     # 和弹窗列表项都要关 ALLOW_SELECT；只留 EmbedPane 开着用于划词复制。
     CSS = """
+    /* 机主裁定：TUI 里不出现 I 型指针；Textual 自带输入控件默认 pointer: text。 */
+    Input, TextArea { pointer: default; }
     #project-search-row {
         height: 2; width: 1fr; margin: 0; padding: 0 0 1 0;
         background: transparent;

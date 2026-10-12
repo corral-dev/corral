@@ -331,7 +331,7 @@ class EmbedPane(Widget):
         width: 1fr;
         height: 1fr;
         content-align: left top;
-        pointer: text;
+        pointer: default;
     }
     EmbedPane:focus {
         border: none;
@@ -1479,19 +1479,17 @@ class EmbedPane(Widget):
     def _update_app_cursor(self) -> None:
         offset = self._cursor_local_offset() if self.has_focus else None
         if offset is None:
-            # 失焦、会话已结束或托管程序自己藏了光标：把外层真实光标也藏回去，
-            # 恢复 Textual 全屏应用的默认（无可见硬件光标）状态。
+            # 失焦、会话已结束：把外层真实光标也藏回去，恢复 Textual 全屏应用的
+            # 默认（无可见硬件光标）状态。
             self._set_real_cursor(False)
             return
+        # 托管程序自己藏了光标时也照样锚定位置：Claude Code 全程 `\e[?25l`、自己
+        # 画假光标，但把隐藏光标停在输入插入点，终端的输入法候选框跟的就是它。
+        # 外层显隐镜像 pane，效果等同 tmux attach 时外层光标完全跟随活动 pane。
         self.app.cursor_position = self.region.offset + offset
-        # 显示外层真实硬件光标并停在 pane 内光标处：Textual 全屏运行期默认把真实
-        # 光标 `\e[?25l` 藏掉（只在退出时才恢复），只靠 App.cursor_position 移动一个
-        # 看不见的光标。但 macOS 等系统的输入法（IME）靠"可见的真实光标"来决定候选
-        # 词窗口位置、甚至据此决定是否激活中文合成——真实光标被藏起来时，用户在
-        # 内嵌 Agent 里根本打不出中文（真机反馈）。这里显式 `\e[?25h` 打开真实光标，
-        # 效果等同 tmux/screen attach 时把外层光标停在活动 pane 的光标处——那正是
-        # 嵌套终端里 IME 能正常工作的原因。
-        self._set_real_cursor(True)
+        # Textual 全屏运行期默认 `\e[?25l` 藏掉真实光标；助手光标可见时显式
+        # `\e[?25h` 打开，否则 Input 式的可见光标在内嵌画面里会消失。
+        self._set_real_cursor(bool(self._cursor and self._cursor[2]))
 
     def _set_real_cursor(self, visible: bool) -> None:
         """显式开关外层终端的真实硬件光标（DECTCEM，`\\e[?25h`/`\\e[?25l`）。
@@ -1521,12 +1519,10 @@ class EmbedPane(Widget):
         self._update_app_cursor()
 
     def _cursor_local_offset(self):
-        """内嵌 pane 光标相对本 widget 内容区的偏移；None 表示当前不该显示光标。"""
+        """内嵌 pane 光标相对本 widget 内容区的偏移（可见与否都给）；None 表示无处可锚。"""
         if self.session_name is None or self.dead or self._cursor is None:
             return None
-        cx, cy, visible = self._cursor
-        if not visible:
-            return None
+        cx, cy, _visible = self._cursor
         cy -= self._live_row_offset()
         if cy < 0:
             return None  # cropped above a shorter pane

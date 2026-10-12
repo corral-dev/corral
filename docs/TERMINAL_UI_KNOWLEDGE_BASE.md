@@ -159,16 +159,16 @@ sequenceDiagram
 2. **不做 tmux 穿透**：套 tmux 时 OSC 22 被 tmux 吞掉，外层终端收不到。`ui/pointer_shape.py` 在 `$TMUX` 下追加 `\x1bPtmux;…` DCS 副本（ESC 双写，与主题查询同一套）；进应用模式时对本 pane `tmux set -p allow-passthrough on`，退出 `tmux set -pu allow-passthrough`。顺带让现有 OSC 11 主题跟随在 tmux 下也不再依赖用户自己配过。
 3. **退出不复位**：`stop_application_mode` 发空形状名 `\x1b]22;\x07`（kitty 规范的复位），避免手型/箭头粘在退出后的 shell 上。
 
-`CorralApp._set_pointer_shape` 覆写 Textual 原实现，一律走 `pointer_shape.sequence()`。真 xterm（仅当环境变量 `XTERM_VERSION` 存在）把 CSS 名换成 X11 cursorfont 名（`default→left_ptr`、`pointer→hand2`、`text→xterm`、`wait→watch`），避免给只认 CSS 名的终端发无效名。
+`CorralApp._set_pointer_shape` 覆写 Textual 原实现，一律走 `pointer_shape.sequence()`。**只认 X11 cursorfont 名的终端**改发 X11 名（`default→left_ptr`、`pointer→hand2`、`text→xterm`、`wait→watch`）：真 xterm（`XTERM_VERSION` 存在）与 **iTerm2**（`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`；后者在 tmux / SSH 里仍保留）。其它终端发 CSS 名，避免给只认 CSS 名的终端发无效名。iTerm2 3.6.11 的 `screenSetPointerShape:` 只有 X11 名表，认不出的名字一律退回它在鼠标上报模式下的默认指针（带圈的 I 型）——这正是 2026-10-12 机主反馈「iTerm2 里 corral 全屏都是大写 I」的根因。
 
-控件规则：会话卡 / 组卡 / 新建项 / 顶栏 chip / 关格按钮 / 弹窗选项 / 搜索结果 / 升级浮层是 `pointer: pointer`（手型）；`EmbedPane` 与 Textual 自带的 `Input` / `TextArea` 是 `pointer: text`（I 型，对得上划词复制）；其余保持箭头。
+控件规则（2026-10-12 机主裁定：TUI 里不出现 I 型指针）：会话卡 / 组卡 / 新建项 / 顶栏 chip / 关格按钮 / 弹窗选项 / 搜索结果 / 升级浮层是 `pointer: pointer`（手型）；其余一律箭头，包括 `EmbedPane` 内嵌画面和 Textual 自带的 `Input` / `TextArea`（Textual 默认 `pointer: text`，由 `CorralApp.CSS` 覆盖成 `default`）。禁止再给任何控件写 `pointer: text`。
 
 | 终端 | OSC 22 | 备注 |
 |---|---|---|
 | kitty 0.31+ | 支持 | CSS 名 + 栈 |
 | Ghostty | 支持 | |
 | WezTerm / foot / xterm | 支持 | xterm 认 X11 名，corral 仅在 `XTERM_VERSION` 下改名 |
-| iTerm2 3.6+ | 支持 | |
+| iTerm2 3.6+ | 支持 | 只认 X11 名（`left_ptr` / `hand2` / `xterm`）；corral 按 `TERM_PROGRAM` / `LC_TERMINAL` 改名 |
 | iTerm2 3.5 稳定版、Terminal.app | **不支持** | 已知限制；应用侧无解。不支持的终端应静默忽略该序列，不得出现乱码 |
 | 套 tmux | 需穿透 | 见上；自测前确认 pane 的 `allow-passthrough` |
 
@@ -460,7 +460,7 @@ Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFi
 - **AI 易错点**【运行中主题不是启动主题的重复判断】启动前探测只决定首帧；日落、系统设置或终端 profile 在进程运行中换色时，必须由 `terminal_theme.py` 继续接收 DEC 2031 通知或每 2 秒查询 OSC 11。应答要在 Textual 输入解析入口提取成专用消息，禁止另起线程直接读 tty（会与框架抢键盘输入），也禁止把 OSC 尾巴当普通按键放进搜索框。背景变化后要同时更新 `CorralApp.theme`、`MainScreen` 保存的报告、现有 `EmbedPane` 底色和后续 `host_session` 使用的报告；只换壳层会让右栏继续留在旧底色。
 - **AI 易错点**【主题报告可能跑在分屏区域挂载完成之前】启动后首轮 OSC 11 应答与 `push_screen(MainScreen)` 竞速：主界面已成为当前屏、但 `compose` 还没把 `SplitPaneArea` 挂进 DOM 的窗口期里，`CorralApp.on_terminal_background_report` → `MainScreen.update_terminal_background` 里 `query_one(SplitPaneArea)` 会抛 `NoMatches` 并中止整个应用（v0.24.143 真机崩溃：macOS Homebrew 安装后一启动就炸）。正确处理：查不到就静默返回——`self.osc_report` 已先更新，分屏区域 compose 时会拿最新值初始化，不丢信息；禁止为消掉这个窗口期改成等待或轮询重试。同理任何「应用层消息处理器直接伸进当前屏查子控件」的新代码，都必须容忍屏刚推送还没挂载完成的中间态。回归：`test_background_report_before_split_area_mounted_does_not_crash`。
 - **AI 易错点**【主题控制消息会被任意拆包】终端的 `DEC 2031` 回复可能在 `ESC`、`ESC[` 或任意后续字符处切成多次读取；解析器必须保留所有可能的消息前缀，等下一段拼完整后再交给主题处理。禁止把不完整前缀先交给通用按键解析器——后半段会被当作普通输入转发进当前托管助手，Cursor 会直接显示控制字符并可能触发整屏重绘。回归测试必须覆盖整条深浅主题回复的每一个拆分点。
-- **AI 易错点**【鼠标指针形状走 OSC 22，不是 CSS 自己画出来的】终端窗口的指针由模拟器渲染；TUI 只能发 `\x1b]22;{shape}\x07`。Textual 的 CSS `pointer:` 只决定「发哪个名字」，**裸序列在 tmux 里到不了外层终端**，必须走 `ui/pointer_shape.sequence()`（追加 `\x1bPtmux;` DCS，ESC 双写）并在进应用模式时对本 pane `tmux set -p allow-passthrough on`。禁止再直接 `driver.write("\x1b]22;…")` 绕过这层。退出必须发空形状名复位，否则手型会粘在 shell 上。真 xterm 只在 `XTERM_VERSION` 存在时改用 X11 名，不要无条件把 `pointer` 写成 `hand2`——kitty / Ghostty 不认。iTerm2 3.5 / Terminal.app 不支持 OSC 22 是已知限制，不是漏发。回归：`PointerShapeSequenceTests`、`PointerShapeUiTests`。
+- **AI 易错点**【鼠标指针形状走 OSC 22，不是 CSS 自己画出来的】终端窗口的指针由模拟器渲染；TUI 只能发 `\x1b]22;{shape}\x07`。Textual 的 CSS `pointer:` 只决定「发哪个名字」，**裸序列在 tmux 里到不了外层终端**，必须走 `ui/pointer_shape.sequence()`（追加 `\x1bPtmux;` DCS，ESC 双写）并在进应用模式时对本 pane `tmux set -p allow-passthrough on`。禁止再直接 `driver.write("\x1b]22;…")` 绕过这层。退出必须发空形状名复位，否则手型会粘在 shell 上。X11 名只发给真 xterm（`XTERM_VERSION`）和 iTerm2（`TERM_PROGRAM=iTerm.app` / `LC_TERMINAL=iTerm2`），不要无条件把 `pointer` 写成 `hand2`——kitty / Ghostty 不认；反过来给 iTerm2 发 CSS 名会被静默忽略、全屏退回 I 型。iTerm2 3.5 / Terminal.app 不支持 OSC 22 是已知限制，不是漏发。回归：`PointerShapeSequenceTests`、`PointerShapeUiTests`。
 - 【隐性依赖】`Footer` 展示的是 `MainScreen.BINDINGS` 的本地化 description。验证时中文环境必须看到 `^t 高级操作`，英文环境必须看到 `^t Advanced`；不要再手绘底部帮助行。**不得出现** `Back to list` / `返回列表`、`Toggle sidebar` / `显隐侧栏`（回列表键仍可隐藏绑定；侧栏显隐没有快捷键，只点顶栏 ◀▶）。品牌与版本号走 `CorralFooter`（`ui/footer.py`）：右端先画固定原文 `x0c/corral`（可点，打开 `https://github.com/x0c/corral`），再画 `v` + `corral.__version__`，不要另起浮层或顶栏徽章。不要恢复 Textual 命令面板或底栏 `^p palette`。底栏应露出 `^n New` / `^n 新建`，禁止再绑单字母 `n`。
 - **AI 易错点**【底栏仓库名是品牌，不是快捷键、也不是亮蓝链接】**2026-09-12 裁定**：TUI 底栏右端、版本号前面必须常驻 `x0c/corral`，点一下用系统浏览器打开公开仓库。颜色只用能跟底栏背景分开的壳层字色（`$footer-foreground`），**禁止** `$primary` / `$accent` / `$text-accent` / `$footer-key-foreground` 那种亮蓝；悬停可加下划线表示能点。仓库名与 `Dragon` 一样保持英文原文，不进 `i18n`。**禁止**用 Textual 自带 `Link`：它默认可聚焦（会从侧栏抢走输入蒙版所需焦点），默认还是强调色。右端簇 `_FooterRight` 必须 `can_focus=False, can_focus_children=False`；品牌控件自身也不可聚焦，点击走 `app.open_url`。回归：`FooterVersionTests`。
 - 【隐性依赖】真实终端冒烟必须跑「`corral` 入口实际加载的包」：`python3 -m corral`、或对 **pipx / site-packages 同一解释器** 覆盖安装后再敲 `corral`。系统 `python3 -c "import corral"` 与 `corral` CLI 可能不是同一份代码（2026-07-21：源码已钉底、pipx 旧包仍顶对齐）。布局、配色、预览滚动改动后也必须重启已打开的 TUI。命令见 `AGENTS.md`「本机入口」。
@@ -528,7 +528,7 @@ python3 -m corral --limit 5
 
 涉及主题跟随时，保持 corral 运行，直接切换系统或终端的深浅外观，确认 2 秒内壳层和右栏底色一起切换、搜索框没有出现 `rgb:` 乱码；再新建一格，确认新格沿用切换后的背景。支持 DEC 2031 的终端还应验证不等轮询即可切换。
 
-涉及指针形状时：在支持 OSC 22 的终端（Ghostty / kitty）确认会话卡是手型、内嵌画面是 I 型、空白处是箭头，退出后 shell 恢复终端默认指针；再套一层 tmux 重复一遍（穿透必须生效）。在 iTerm2 3.5 / Terminal.app 上确认没有把 `\x1b]22;` 打成可见乱码。自测序列：`printf '\033]22;pointer\007'` / `printf '\033]22;\007'`。
+涉及指针形状时：在支持 OSC 22 的终端（iTerm2 / Ghostty / kitty）确认会话卡是手型、内嵌画面与输入框是箭头、空白处是箭头，退出后 shell 恢复终端默认指针；再套一层 tmux 重复一遍（穿透必须生效）。在 iTerm2 3.5 / Terminal.app 上确认没有把 `\x1b]22;` 打成可见乱码。自测序列：`printf '\033]22;pointer\007'` / `printf '\033]22;\007'`。
 
 4. 删除会话是不可恢复的破坏性操作，改动 `action_delete_session`/`_delete_session_group`/`ConfirmModal`/`SessionStore.remove_session` 或任一运行时的 `delete_session()` 后，必须在临时构造的假会话（而不是真实用户历史）上跑一遍 `x → x 确认` 全流程，确认：卡片立即消失（不必等下次重扫）；**让 `delete_session()` 阻塞几秒再返回，确认卡片仍在确认那一刻就消失、且此后连续几轮重扫都不会把它重新灌回来**（这是最容易回归的一条，见上面 tombstone 那条易错点）；对应磁盘文件/目录/数据库行确实被删除；运行中/托管会话先结束再删；删除失败（如模拟磁盘异常）时卡片保留且有失败提示，不能静默摘除列表项。**改动整组删除路径时，额外在临时构造的会话组上跑一遍「光标停在组卡 → `x` → 确认」**：整组成员一起消失、组解散、组外会话不受牵连；混入一条删除失败的成员时其余照删、失败的那条被捞回；含托管成员的组确认后所有保活进程都被结束。
 

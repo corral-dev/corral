@@ -46,6 +46,7 @@ cleanup() {
   # 对应步骤才会被赋值；trap 在函数体内引用是延迟求值，EXIT 时能拿到当时的值。
   [[ -n "${direct_session:-}" ]] && tmux -L "$KEEPALIVE" kill-session -t "$direct_session" 2>/dev/null || true
   [[ -n "${cursor_session:-}" ]] && tmux -L "$KEEPALIVE" kill-session -t "$cursor_session" 2>/dev/null || true
+  [[ -n "${hidden_session:-}" ]] && tmux -L "$KEEPALIVE" kill-session -t "$hidden_session" 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -76,6 +77,11 @@ if [[ "$sid" == "cursortest" ]]; then
   # agent 等待输入时的光标位置），用于验证外层终端的真实硬件光标是否精确
   # 落在这里——这是 IME 候选框定位依赖的同一套机制。
   printf 'PROMPT> '
+  while true; do sleep 1; done
+fi
+if [[ "$sid" == "hiddencursor" ]]; then
+  # 模拟 Claude Code：隐藏真实光标（自己画假光标），但把隐藏光标停在输入插入点。
+  printf 'HIDDEN> \033[?25l'
   while true; do sleep 1; done
 fi
 echo "FAKE-CLAUDE --resume $sid"
@@ -264,6 +270,42 @@ else
   echo "外层真实光标被隐藏（cursor_flag=${outer_cursor_flag}）：位置对但不可见，IME 仍无法工作" >&2
   exit 1
 fi
+
+# ---- IME 回归：助手隐藏自己的光标（Claude Code）时，外层光标仍要锚到插入点 ----
+# 候选框跟外层光标位置走；旧逻辑在内层隐藏时不再锚定，候选框停在别处（机主反馈）。
+# 外层显隐镜像内层：此处必须是 cursor_flag=0，且坐标与内层一致。
+before_hidden="$(sessions | grep '^corral-claude-' || true)"
+tmux -L "$OUTER" new-window -t tui -n hidden
+tmux -L "$OUTER" send-keys -t hidden "cd $REPO && env $ENVV ${SELFTEST_PYTHON_Q} -m corral claude --resume hiddencursor" Enter
+for _ in {1..240}; do
+  tmux -L "$OUTER" capture-pane -p -t hidden 2>/dev/null | grep -qF "HIDDEN>" && break
+  sleep 0.25
+done
+hidden_session="$(comm -13 <(echo "$before_hidden" | sort -u) <(sessions | grep '^corral-claude-' | sort -u) | head -1)"
+if [[ -z "$hidden_session" ]]; then
+  echo "未能识别出 hidden-cursor 测试新建的托管会话名" >&2
+  tmux -L "$OUTER" capture-pane -p -t hidden >&2 || true
+  exit 1
+fi
+hidden_ok=""
+for _ in {1..60}; do
+  inner_cursor="$(tmux -L "$KEEPALIVE" display-message -p -t "$hidden_session" '#{cursor_x},#{cursor_y},#{cursor_flag}')"
+  outer_cursor="$(tmux -L "$OUTER" display-message -p -t hidden '#{cursor_x},#{cursor_y},#{cursor_flag}')"
+  IFS=, read -r inner_x inner_y inner_flag <<<"$inner_cursor"
+  IFS=, read -r outer_x outer_y outer_flag <<<"$outer_cursor"
+  if [[ "$inner_flag" == "0" && "$outer_x" == "$((40 + inner_x))" && "$outer_y" == "$((2 + inner_y))" && "$outer_flag" == "0" ]]; then
+    hidden_ok=1
+    break
+  fi
+  sleep 0.15
+done
+if [[ -n "$hidden_ok" ]]; then
+  ok "助手隐藏光标时外层光标仍锚在插入点且保持隐藏（内 ${inner_cursor} -> 外 ${outer_cursor}）"
+else
+  echo "隐藏光标锚定失败：inner=${inner_cursor} outer=${outer_cursor}" >&2
+  exit 1
+fi
+tmux -L "$OUTER" kill-window -t hidden 2>/dev/null || true
 
 # ---- 划词选中 + Ctrl+C 复制：验证真实 OSC 52 写入到达外层终端（tmux 充当） ----
 tmux -L "$OUTER" send-keys -t cursor -l "$(printf '\033[<0;40;3M')"

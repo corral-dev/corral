@@ -11,9 +11,9 @@ from __future__ import annotations
 import os
 import subprocess
 
-# 真 xterm 认 X11 cursorfont 名；只在 ``XTERM_VERSION`` 存在时替换，避免给只
-# 认 CSS 名的终端发无效名。其它终端（kitty / Ghostty / iTerm2 3.6+ / WezTerm）
-# 走 CSS cursor 关键字。
+# 真 xterm 与 iTerm2 只认 X11 cursorfont 名（iTerm2 3.6 的 ``screenSetPointerShape:``
+# 只有 X11 名表，CSS 名一律被忽略并退回带圈的 I 型）。只对这两种终端替换，避免
+# 给只认 CSS 名的终端（kitty / Ghostty / WezTerm）发无效名。
 _XTERM_NAMES = {
     "default": "left_ptr",
     "pointer": "hand2",
@@ -22,8 +22,18 @@ _XTERM_NAMES = {
 }
 
 
-def _shape_name(shape: str) -> str:
+def _wants_x11_names() -> bool:
     if os.environ.get("XTERM_VERSION"):
+        return True
+    # ``LC_TERMINAL`` 在 tmux / SSH 里仍保留，``TERM_PROGRAM`` 会被 tmux 改写。
+    return (
+        os.environ.get("TERM_PROGRAM") == "iTerm.app"
+        or os.environ.get("LC_TERMINAL") == "iTerm2"
+    )
+
+
+def _shape_name(shape: str) -> str:
+    if _wants_x11_names():
         return _XTERM_NAMES.get(shape, shape)
     return shape
 

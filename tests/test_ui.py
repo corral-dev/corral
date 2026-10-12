@@ -670,13 +670,13 @@ class PointerShapeSequenceTests(unittest.TestCase):
     """OSC 22 序列必须按终端 / tmux / xterm 四种组合发出正确的形状名。"""
 
     def test_bare_css_name_without_tmux(self) -> None:
-        with _pointer_env("TMUX", "XTERM_VERSION"):
+        with _pointer_env("TMUX", "XTERM_VERSION", "TERM_PROGRAM", "LC_TERMINAL"):
             self.assertEqual(sequence("pointer"), "\x1b]22;pointer\x07")
             self.assertEqual(sequence("default"), "\x1b]22;default\x07")
             self.assertEqual(sequence("text"), "\x1b]22;text\x07")
 
     def test_tmux_passthrough_appends_dcs_copy(self) -> None:
-        with _pointer_env("XTERM_VERSION", TMUX="1,0,0"):
+        with _pointer_env("XTERM_VERSION", "TERM_PROGRAM", "LC_TERMINAL", TMUX="1,0,0"):
             raw = sequence("pointer")
             self.assertTrue(raw.startswith("\x1b]22;pointer\x07"))
             self.assertIn("\x1bPtmux;\x1b\x1b]22;pointer\x07\x1b\\", raw)
@@ -693,6 +693,18 @@ class PointerShapeSequenceTests(unittest.TestCase):
             raw = sequence("pointer")
             self.assertTrue(raw.startswith("\x1b]22;hand2\x07"))
             self.assertIn("\x1bPtmux;\x1b\x1b]22;hand2\x07\x1b\\", raw)
+
+    def test_iterm2_uses_x11_cursor_names(self) -> None:
+        """iTerm2 3.6 只认 X11 名；发 CSS 名会被忽略并退回带圈的 I 型（机主反馈）。"""
+        with _pointer_env("TMUX", "XTERM_VERSION", "LC_TERMINAL", TERM_PROGRAM="iTerm.app"):
+            self.assertEqual(sequence("default"), "\x1b]22;left_ptr\x07")
+            self.assertEqual(sequence("pointer"), "\x1b]22;hand2\x07")
+
+    def test_iterm2_inside_tmux_detected_by_lc_terminal(self) -> None:
+        with _pointer_env("XTERM_VERSION", TMUX="1,0,0", TERM_PROGRAM="tmux", LC_TERMINAL="iTerm2"):
+            raw = sequence("default")
+            self.assertTrue(raw.startswith("\x1b]22;left_ptr\x07"))
+            self.assertIn("\x1bPtmux;\x1b\x1b]22;left_ptr\x07\x1b\\", raw)
 
     def test_reset_sequence_uses_empty_shape(self) -> None:
         with _pointer_env("TMUX", "XTERM_VERSION"):
@@ -723,7 +735,7 @@ class PointerShapeSequenceTests(unittest.TestCase):
 
 
 class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
-    """悬停可点区域是手型，内嵌终端是 I 型，空白处是箭头。"""
+    """悬停可点区域是手型，内嵌终端、输入框与空白处都是箭头（不出现 I 型）。"""
 
     async def test_hover_updates_pointer_shape_by_widget(self) -> None:
         store, _ = _make_store()
@@ -737,10 +749,13 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.screen._pointer_shape, "pointer")  # noqa: SLF001
 
             pane = app.screen.query_one(EmbedPane)
-            self.assertEqual(str(pane.styles.pointer), "text")
+            self.assertEqual(str(pane.styles.pointer), "default")
             await pilot.hover(pane)
             await pilot.pause()
-            self.assertEqual(app.screen._pointer_shape, "text")  # noqa: SLF001
+            self.assertEqual(app.screen._pointer_shape, "default")  # noqa: SLF001
+
+            search = app.screen.query_one("#project-search")
+            self.assertEqual(str(search.styles.pointer), "default")
 
             spacer = app.screen.query_one(_TopBarSpacer)
             await pilot.hover(spacer)
@@ -6738,6 +6753,29 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(parse_calls, 2)
             log_error.assert_called_once()
 
+    async def test_hidden_agent_cursor_anchors_ime_but_stays_hidden(self) -> None:
+        """Claude Code 全程 `\\e[?25l`、把隐藏光标停在输入插入点。外层光标必须
+        锚到同一处（候选框跟它走），但保持隐藏，不在假光标旁再画一个真光标。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(
+            ("bash", "-c", "printf 'HIDDEN-CURSOR\\n\\033[?25labc'; cat"), None
+        )
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause(delay=0.5)
+            pane = _primary_embed_pane(app.screen)
+            self._hosted_names.append(pane.session_name)
+            await _wait_for_pane_text(pane, "HIDDEN-CURSOR")
+            await _wait_until(lambda: pane.has_focus)
+            await _wait_until(lambda: pane._cursor is not None and pane._cursor[:2] == (3, 1))
+            self.assertFalse(pane._cursor[2], "fixture must hide the agent cursor")
+            expected = pane.region.offset + pane._cursor_local_offset()
+            await _wait_until(lambda: app.cursor_position == expected)
+            self.assertEqual(app.cursor_position, expected)
+            self.assertFalse(pane._real_cursor_shown)
+
     async def test_focus_shows_real_cursor_blur_hides_it(self) -> None:
         """IME 回归：聚焦内嵌 pane 且有可见光标时必须显式打开外层真实硬件光标
         （`\\e[?25h`），失焦时收起。Textual 全屏运行期默认藏掉真实光标，只移动一个
@@ -6901,6 +6939,12 @@ class EmbedPaneTallerHostTests(unittest.TestCase):
     def test_shorter_pane_shows_bottom_rows(self):
         pane = self._pane(rows=6, height=4)
         self.assertEqual([pane.render_line(y).text.rstrip() for y in range(4)], ["row2", "row3", "row4", "row5"])
+
+    def test_hidden_agent_cursor_still_has_an_anchor(self):
+        """Claude Code 隐藏真实光标但停在插入点；IME 锚点不能因此丢失。"""
+        pane = self._pane(rows=6, height=4)
+        pane._cursor = (3, 5, False)
+        self.assertEqual(tuple(pane._cursor_local_offset()), (3, 3))
 
     def test_cursor_and_wheel_map_through_the_cropped_rows(self):
         pane = self._pane(rows=6, height=4)
