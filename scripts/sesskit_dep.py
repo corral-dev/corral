@@ -41,8 +41,8 @@ def homebrew_resource_block() -> str:
     """Ruby ``resource "sesskit"`` block for the Homebrew formula generator."""
     return (
         '  resource "sesskit" do\n'
-        f'    url "{SDIST_URL}"\n'
-        f'    sha256 "{SDIST_SHA256}"\n'
+        f'    url "{WHEEL_URL}"\n'
+        f'    sha256 "{WHEEL_SHA256}"\n'
         "  end"
     )
 

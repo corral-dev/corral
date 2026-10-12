@@ -16,7 +16,6 @@ import tempfile
 _SCRIPTS = pathlib.Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-import sesskit_dep
 
 ROOT = _SCRIPTS.parent
 
@@ -53,6 +52,8 @@ def _resolve_python() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sesskit_dep
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--with-remote",
@@ -77,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         extra = ".[remote]" if args.with_remote else "."
         _run([*pip, "install", extra], env=env)
         check = (
-            "import corral, sesskit; "
+            "import corral, corral._native, sesskit; "
             "assert corral.__version__; "
             "print(corral.__version__, getattr(sesskit, '__version__', 'sesskit'))"
         )

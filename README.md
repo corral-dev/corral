@@ -42,6 +42,8 @@ corral
 
 Use the full tap name: `brew install corral` installs an unrelated project. Homebrew installs Python and tmux for you.
 
+Upgrade with `brew update && brew upgrade x0c/tap/corral`. The formula uses prebuilt wheels for Corral and its Python dependencies.
+
 <details>
 <summary>Without Homebrew</summary>
 

@@ -42,6 +42,8 @@ corral
 
 请使用完整名称：`brew install corral` 会安装另一个不相关的项目。Homebrew 会一并安装 Python 和 tmux。
 
+升级使用 `brew update && brew upgrade x0c/tap/corral`。配方使用 Corral 和 Python 依赖的预编译 wheel，减少安装时的本地构建。
+
 <details>
 <summary>不使用 Homebrew</summary>
 

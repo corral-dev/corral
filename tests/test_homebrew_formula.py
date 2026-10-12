@@ -53,6 +53,17 @@ class HomebrewFormulaTest(unittest.TestCase):
         self.assertNotIn('depends_on "rust"', formula)
         self.assertIn('Dir["*.whl"].first', formula)
 
+    def test_dependencies_are_universal_wheels_installed_in_one_batch(self):
+        formula = self.formula()
+        resources = formula.split("  def install")[0].split("  resource ")[1:]
+        self.assertEqual(len(resources), 11)
+        for resource in resources:
+            self.assertIn("-py3-none-any.whl", resource)
+            self.assertIn('sha256 "', resource)
+        self.assertIn('venv.pip_install Dir[wheelhouse/"*.whl"].sort.join("\\n")', formula)
+        self.assertNotIn("venv.pip_install resources", formula)
+        self.assertIn('"import corral._native"', formula)
+
     def test_linux_source_fallback_scopes_build_dependencies_to_linux(self):
         formula = self.formula(linux_x86=self.source, linux_arm=self.source)
 
