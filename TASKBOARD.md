@@ -4,7 +4,6 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Fix stale modal dismissal crash (Codex) | 验证中 | ui/modals.py, modal regression tests, terminal UI KB, CLI release | 11:42 | 2026-10-13 11:42 | Textual 8.2.8; checkout environment ready; no dependency changes |
 | Hosted Codex identity on embed path (Claude) | Verifying: code+test done, focused suites green | embed.host_session + keepalive.wrap_plan shared identity wrap (codex_proxy/Pi), tests, identity design doc | 2026-10-11 23:47 | 2026-10-12 00:05 | Fix: hosted_identity() shared helper, embed path now proxy-wraps Codex like wrap_plan; new test_codex test; test_embed+test_codex_identity 123 pass, ruff clean; proxy live re-verified on 0.162.1 pre-interruption; probe leftovers cleaned; release pending shared-tree gate |
 | Split sidebar redesign | Docs then code | Mac sidebar split rows, split naming/rename removal (Mac, TUI card, layout.renameGroup), related docs | 2026-10-11 10:19 | 2026-10-11 10:19 | Owner request: no split names, rail + group-end separator; avoids remote delivery-error edits in progress |
 | Quick filters + Active filter + New Session capsules | Verifying: needs Mac Debug app restart next (one GUI copy) | Mac/iPhone filter chips (MacSidebarFilters, SessionFilterRows), Active sessions board removal (Mac workspace/sidebar, TUI board), NewSessionSheet, TUI filter/new-session modal, related docs | 2026-10-11 10:30 | 2026-10-11 11:05 | Owner request; avoids split-row/rename code of Split sidebar redesign |

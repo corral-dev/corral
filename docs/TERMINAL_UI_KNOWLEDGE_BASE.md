@@ -399,6 +399,12 @@ and continued main-screen interaction, with synthetic-only before/after frames.
 The standalone, non-isolated regression run emitted the already assessed
 scan-worker `ResourceWarning`; its origin and remaining child-handle ownership
 follow-up are recorded in [performance knowledge](PERFORMANCE_KNOWLEDGE_BASE.md).
+The released Homebrew v0.24.299 artifact also passed a private real-tmux probe:
+three new-session open/close cycles with nine rapid SGR mouse clicks, followed
+by full-text search and Escape. Its package path was verified in the Cellar
+before importing fixtures, its F12 frame was inspected, and the private tmux
+server was stopped. This is local installed-artifact evidence; it does not
+assert that the reporting user's other computer has already upgraded.
 
 本域没有 Flow、MQ 或业务定时任务；以下是终端界面的流程型入口。
 

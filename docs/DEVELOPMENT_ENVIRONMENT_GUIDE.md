@@ -91,6 +91,13 @@ remained usable). Their residual risk concerns future maintenance/use of those
 casks or taps, not the observed Corral upgrade. Do not grant whole-tap trust or
 change unrelated casks as part of Corral delivery.
 
+The v0.24.299 upgrade repeated those two diagnostics and additionally reported
+PATH shadowing by an existing pipx `corral`. Both installed channels were
+verified as v0.24.299; the Homebrew behavior probe selected the Cellar interpreter
+explicitly before fixture imports. No PATH configuration or unrelated tap trust
+was changed. Residual risk: ordinary shell resolution can select either channel,
+so verify the actual executable and package path when diagnosing an upgrade.
+
 ## References
 
 - uv project synchronization and lock behavior: <https://docs.astral.sh/uv/concepts/projects/sync/>
