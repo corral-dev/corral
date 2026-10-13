@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from rich.text import Text
 from textual import errors, events
 from textual.app import ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -38,6 +39,13 @@ class OutsideClickDismiss:
     """
 
     outside_click_result = None
+
+    def dismiss(self, result=None) -> AwaitComplete:
+        # pop_screen updates the stack before queued input and DOM removal finish.
+        # An old modal must never pop the main screen or a newer dialog.
+        if not self.is_active:
+            return AwaitComplete.nothing()
+        return super().dismiss(result)
 
     def on_click(self, event: events.Click) -> None:
         try:

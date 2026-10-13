@@ -365,6 +365,41 @@ Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFi
 
 ## §5 本域流程 / 组件 / 任务 / MQ 入口索引
 
+### Modal dismissal lifecycle
+
+Backdrop clicks, Escape, and submitted choices may leave queued messages on a
+modal after it has been popped. A modal may dismiss only while it is the active
+screen; stale dismissals must be a completed no-op, preserving the main screen,
+any newer modal, and the original result callback. Apply this at the shared
+`OutsideClickDismiss` boundary for runtime, new-session, confirmation, text-input,
+and full-text-search dialogs, rather than catching `ScreenStackError` at the app.
+
+Reference inspected: the installed Textual 8.2.8 `Screen.dismiss`,
+`Screen.is_active`, `App.pop_screen`, and `AwaitComplete.nothing`, with the
+[official screen API](https://textual.textualize.io/api/screen/) and
+[screen-stack guide](https://textual.textualize.io/guide/screens/). Reuse native
+dismissal and its awaitable return; only gate stale calls. Textual pops the stack
+synchronously before asynchronous DOM removal, and its dismissal does not check
+the calling screen's identity. This explains the reported v0.24.295 traceback
+from `OutsideClickDismiss.on_click` to an attempt to pop the last screen.
+
+Regression coverage must queue repeated backdrop clicks, deliver a click after
+Escape or selection, and deliver an old modal's click over a newer modal. Verify
+one result delivery and survival of the underlying/new screen. iPhone and native
+Mac use SwiftUI sheets/popovers and do not share this Textual screen-stack path;
+their implementation review is separate from a claim of device acceptance.
+
+Verified for v0.24.299: the unguarded implementation removed `MainScreen` on
+the second synchronous backdrop click; the guarded implementation preserves
+it and delivers the result once. The full 2407-test gate passed with two
+environment-conditional skips, zero failed tests and no warning diagnostics.
+The installed interpreter's isolated five-dialog probe checks an inside click,
+a real Pilot backdrop click, three residual clicks, one cancellation result,
+and continued main-screen interaction, with synthetic-only before/after frames.
+The standalone, non-isolated regression run emitted the already assessed
+scan-worker `ResourceWarning`; its origin and remaining child-handle ownership
+follow-up are recorded in [performance knowledge](PERFORMANCE_KNOWLEDGE_BASE.md).
+
 本域没有 Flow、MQ 或业务定时任务；以下是终端界面的流程型入口。
 
 | 类型 | 标识 | 代码入口 | 适用场景 |

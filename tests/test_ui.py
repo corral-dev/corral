@@ -9122,6 +9122,58 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
             [RuntimeChoice("claude", "Claude", "", True)],
         )
 
+    def _backdrop_click(self, modal):
+        return events.Click(modal, 0, 0, 0, 0, 1, False, False, False)
+
+    async def test_repeated_backdrop_click_preserves_main_screen_and_result(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            main = app.screen
+            modal = RuntimePickerModal("Relay", [RuntimeChoice("claude", "Claude", "", True)])
+            results = []
+            await app.push_screen(modal, results.append)
+            await pilot.pause()
+            modal.on_click(self._backdrop_click(modal))
+            # A queued click may run before the popped modal leaves the DOM.
+            modal.on_click(self._backdrop_click(modal))
+            await pilot.pause()
+            self.assertIs(app.screen, main)
+            self.assertEqual(results, [None])
+
+    async def test_escape_then_queued_backdrop_click_preserves_main_screen(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            main = app.screen
+            modal = RuntimePickerModal("Relay", [RuntimeChoice("claude", "Claude", "", True)])
+            holder = await self._open(app, pilot, modal)
+            modal._on_key(events.Key("escape", None))
+            modal.on_click(self._backdrop_click(modal))
+            await pilot.pause()
+            self.assertIs(app.screen, main)
+            self.assertIsNone(holder.get("result"))
+
+    async def test_old_modal_cannot_dismiss_new_modal_or_replace_selection(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            modal = RuntimePickerModal("Relay", [RuntimeChoice("claude", "Claude", "", True)])
+            results = []
+            await app.push_screen(modal, results.append)
+            await pilot.pause()
+            modal.dismiss("claude")
+            newer = ConfirmModal("Keep this dialog open?")
+            app.push_screen(newer)
+            modal.on_click(self._backdrop_click(modal))
+            await modal.dismiss(None)
+            await pilot.pause()
+            self.assertIs(app.screen, newer)
+            self.assertEqual(results, ["claude"])
+
     async def test_runtime_picker_backdrop_click_cancels(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
