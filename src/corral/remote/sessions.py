@@ -576,6 +576,8 @@ class SessionHub:
         self._scan_results_lock = threading.Lock()
         self._scan_changed = False
         self._scan_title_keys: set[str] = set()
+        # Provisional -> canonical keys already announced to list watchers.
+        self._announced_migrations: set[tuple[str, str]] = set()
         self._history_watcher = None
         # Set once the first scan is loaded. Library users that never call
         # `start()` are ready immediately; the daemon clears it before it opens
@@ -775,6 +777,7 @@ class SessionHub:
                 self._scan_changed = False
                 self._scan_title_keys = set()
             self._follow_key_migrations()
+            self._announce_key_migrations()
             self._detect_attention_changes()
             self._detect_live_changes()
             self._detect_status_changes()
@@ -1217,6 +1220,22 @@ class SessionHub:
                 current.reader = transcript.reader
                 current.generation = transcript.generation
                 current.canonical_key = new_key
+
+    def _announce_key_migrations(self) -> None:
+        """Tell list watchers a provisional key became canonical, before the snapshot.
+
+        Clients keep per-session choices (Mac chat/terminal view, open panes)
+        under the key they created; the event lets them carry those over.
+        """
+        if not self._sessions_watchers:
+            return
+        migrations = self.store.session_key_migrations() or {}
+        for old_key, new_key in migrations.items():
+            pair = (str(old_key), str(new_key))
+            if pair in self._announced_migrations or pair[0] == pair[1]:
+                continue
+            self._announced_migrations.add(pair)
+            self._on_event("sessions", {"old_key": pair[0], "new_key": pair[1]})
 
     def _remember_transcript(self, transcript: _Transcript) -> None:
         with self._lock:

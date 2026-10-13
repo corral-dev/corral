@@ -883,6 +883,20 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.hub.store.sessions = {"codex": [first, second]}
         self.assertEqual(self.hub.resolve_session_key("codex:01a0f11d"), "codex:01a0f11d")
 
+    def test_key_migration_is_announced_once_to_list_watchers(self) -> None:
+        """Retirement reaches list watchers as old_key/new_key, once per pair."""
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        self.hub.store._session_key_migrations["claude:placeholder"] = "claude:real-id"
+        self.hub._announce_key_migrations()
+        self.assertEqual(events, [])
+        self.hub._sessions_watchers = 1
+        self.hub._announce_key_migrations()
+        self.hub._announce_key_migrations()
+        self.assertEqual(
+            events, [("sessions", {"old_key": "claude:placeholder", "new_key": "claude:real-id"})]
+        )
+
     def test_conversation_watch_rebinding_keeps_phone_channel(self) -> None:
         """转正后实时订阅仍走手机原来的通道，但读取正式历史。"""
         old_path = Path(self._tmp.name) / "old.jsonl"
