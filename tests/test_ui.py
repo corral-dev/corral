@@ -42,6 +42,7 @@ from corral import split_layout as _split_layout
 
 _SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="corral-test-sidebar-state-")
 os.environ["CORRAL_CACHE_DIR"] = _SIDEBAR_STATE_DIR
+os.environ["CORRAL_QUICK_START_PATH"] = os.path.join(_SIDEBAR_STATE_DIR, "recent-starts.json")
 _split_layout.reset_default_layout_db()
 _SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
 
@@ -226,6 +227,8 @@ def _make_store(sessions=None, extra_runtimes=()):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(f"{_SIDEBAR_STATE_DB}{suffix}")
     _split_layout.reset_default_layout_db()
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(os.environ["CORRAL_QUICK_START_PATH"])
     sessions = sessions if sessions is not None else [
         {
             "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
@@ -8711,73 +8714,94 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModalTests(unittest.IsolatedAsyncioTestCase):
-    async def test_new_session_quick_launch_from_each_column(self) -> None:
-        store, _ = _make_store()
-        app = CorralApp(store, embed_ok=False)
-        async with app.run_test(size=(110, 30)) as pilot:
-            for focus in ("ns-project-filter", "ns-projects", "ns-runtimes"):
-                results = []
-                modal = NewSessionModal(
-                    [("/tmp/alpha", "alpha", "/tmp/alpha"),
-                     ("/tmp/beta", "beta", "/tmp/beta")],
-                    [RuntimeChoice("claude", "Claude", "", True),
-                     RuntimeChoice("codex", "Codex", "", True)],
-                    project_index=1, runtime_index=1,
-                )
-                await app.push_screen(modal, results.append)
-                await pilot.pause()
-                modal.set_focus(modal.query_one(f"#{focus}"))
-                await pilot.press("ctrl+l")
-                await pilot.pause()
-                self.assertEqual(results, [("/tmp/beta", "codex")], focus)
+    async def test_quick_start_launches_stored_pair_without_changing_choices(self):
+        from corral.recent_starts import RecentStart
 
-    async def test_new_session_agent_shortcuts_have_stable_assignments(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
-        # Deliberately reverse the runtime order: keys belong to identities.
-        runtimes = ["pi", "cursor", "opencode", "codex", "claude"]
-        async with app.run_test(size=(110, 30)) as pilot:
-            for key, runtime in zip(
-                ("f1", "f2", "f3", "f4", "f5"), reversed(runtimes), strict=True,
-            ):
-                results = []
-                modal = NewSessionModal(
-                    [("/tmp/alpha", "alpha", "/tmp/alpha"),
-                     ("/tmp/beta", "beta", "/tmp/beta")],
-                    [RuntimeChoice(item, item, "", True) for item in runtimes],
-                )
-                await app.push_screen(modal, results.append)
-                await pilot.pause()
-                await pilot.press("b", "e", "t", "a", key)
-                await pilot.pause()
-                self.assertEqual(results, [("/tmp/beta", runtime)])
-
-    async def test_new_session_quick_launch_rejects_invalid_choices(self) -> None:
-        store, _ = _make_store()
-        app = CorralApp(store, embed_ok=False)
-        async with app.run_test(size=(110, 30)) as pilot:
+        with tempfile.TemporaryDirectory() as cwd:
             results = []
             modal = NewSessionModal(
-                [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                [("/tmp", "other project", "/tmp")],
                 [RuntimeChoice("claude", "Claude", "", True),
-                 RuntimeChoice("codex", "Codex", "", False)],
-                runtime_index=1,
+                 RuntimeChoice("codex", "Codex", "", True)],
+                initial_query="no matches", recent_combos=[RecentStart("codex", cwd, "My Project")],
             )
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(modal, results.append)
+                await pilot.pause()
+                self.assertTrue(modal.query_one("#ns-project-filter", Input).has_focus)
+                self.assertTrue(await pilot.click("#ns-quick-0"))
+                await pilot.pause()
+                self.assertEqual(results, [(cwd, "codex")])
+
+    async def test_quick_start_errors_preserve_dialog_and_do_not_launch(self):
+        from corral.recent_starts import RecentStart
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        results = []
+        modal = NewSessionModal(
+            [("/tmp", "tmp", "/tmp")],
+            [RuntimeChoice("claude", "Claude", "", True),
+             RuntimeChoice("codex", "Codex", "", False)],
+            recent_combos=[RecentStart("codex", "/tmp", "tmp"),
+                           RecentStart("claude", "/nonexistent-corral-fixture", "Missing")],
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
             await app.push_screen(modal, results.append)
             await pilot.pause()
-            with mock.patch.object(app, "bell") as bell:
-                for key in ("ctrl+l", "f2", "f5"):
-                    await pilot.press(key)
-                    await pilot.pause()
-                    self.assertIs(app.screen, modal)
-                    self.assertEqual(results, [])
-                self.assertEqual(bell.call_count, 3)
-                await pilot.press("z", "z", "z", "f1")
+            for i, reason in ((0, "not installed"), (1, "unavailable")):
+                await pilot.click(f"#ns-quick-{i}")
                 await pilot.pause()
                 self.assertIs(app.screen, modal)
                 self.assertEqual(results, [])
-                self.assertEqual(bell.call_count, 4)
-                self.assertEqual(modal.query_one("#ns-project-filter", Input).value, "zzz")
+                self.assertIn(reason, str(modal.query_one("#ns-error", Label).render()))
+
+    async def test_quick_start_removal_mouse_and_keyboard_preserves_project(self):
+        from corral import recent_starts
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        with tempfile.TemporaryDirectory() as cwd:
+            recent_starts.record("claude", cwd)
+            recent_starts.record("codex", cwd)
+            results = []
+            modal = NewSessionModal(
+                [(cwd, "Project", cwd)],
+                [RuntimeChoice("claude", "Claude", "", True),
+                 RuntimeChoice("codex", "Codex", "", True)],
+            )
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(modal, results.append)
+                await pilot.pause()
+                await pilot.click("#ns-quick-0", button=3)
+                await pilot.pause()
+                self.assertEqual([c.runtime_id for c in recent_starts.load()], ["claude"])
+                modal.query_one("#ns-quick-1").focus()
+                await pilot.press("delete")
+                await pilot.pause()
+                self.assertFalse(modal.query("#ns-quick-starts"))
+                self.assertEqual(recent_starts.load(), [])
+                self.assertEqual(results, [])
+                self.assertTrue(os.path.isdir(cwd))
+
+    async def test_new_session_has_no_function_key_launches(self):
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        results = []
+        modal = NewSessionModal(
+            [("/tmp", "tmp", "/tmp")], [RuntimeChoice("claude", "Claude", "", True)],
+            recent_combos=[],
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await app.push_screen(modal, results.append)
+            await pilot.pause()
+            self.assertFalse(modal.query("#ns-quick-starts"))
+            await pilot.press("ctrl+l", "f1", "f2", "f3", "f4", "f5")
+            await pilot.pause()
+            self.assertIs(app.screen, modal)
+            self.assertEqual(results, [])
 
     async def test_new_session_modal_escape_cancels(self) -> None:
         store, _ = _make_store()

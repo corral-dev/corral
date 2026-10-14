@@ -279,36 +279,59 @@ label; no fresh Mac visual acceptance is claimed. iPhone has no split-group entr
 
 ### 新建、恢复与高级操作
 
-#### New Session quick launch (2026-10-14)
+#### New Session Quick Start combinations (2026-10-14 owner correction)
 
-New Session keeps its immediately focused project filter and existing mouse,
-arrow/Enter selection. Within this modal, Ctrl+L launches the highlighted project
-and runtime from any focus. F1 launches Claude Code, F2 Codex, F3 OpenCode,
-F4 Cursor and F5 Pi for the highlighted project. These assignments are stable
-regardless of ordering or installation status and appear beside the runtime names.
-Unavailable runtimes and empty project results ring the bell and keep the modal
-open; they never select a different runtime or launch a fallback. The existing
-new_session_flow validates the directory and returns the same blank-session
-request, preserving hosting, permission defaults and runtime ownership. These
-shortcuts are modal-only; normal project text, main-screen input and other dialogs
-retain their existing behavior. This feature is scoped to the TUI.
+Quick Start means remembered Agent + Project combinations, matching the Mac
+client. The function-key interpretation shipped in 0.24.302 was incorrect;
+remove its F1–F5 and Ctrl+L bindings and hints. Ctrl+N remains the existing
+entry to New Session.
 
-Inspected references: existing NewSessionModal ListView/_confirm and installed
-Textual 8.2.8 Input.BINDINGS and App._check_bindings. Reuse native priority Binding
-and action dispatch to handle shortcuts before a focused input/list; reuse the
-existing Rich runtime label and row hint without adding a control or focus frame.
-Official applicability: <https://textual.textualize.io/guide/input/#priority-bindings>.
-No history-provider or Apple-client change is required.
+A Quick Start area leads the modal when local remembered combinations exist.
+It shows up to five combinations, most recent first, each as a capsule action
+with the runtime's existing colored name and the project label. Clicking one
+immediately uses its stored runtime and absolute project directory through the
+same blank-session launch path; project filtering and the selected runtime in
+other controls do not change that pair. Keep the project path available as help.
+These are launch actions, with no selected state. Ordinary project/runtime
+selection remains available below a separator and the filter retains initial
+keyboard focus. Missing directories or unavailable runtimes keep the modal open
+and show the reason, never silently launch a different project or assistant.
 
-Acceptance on CLI 0.24.302: all 2,414 tests covered exactly once, no failures or
-warnings, with the two existing environment-conditional skips. Synthetic captures
-cover dark English, light English at 80×24, and dark Chinese, including a filtered
-project. Native tmux keyboard input exercised Ctrl+N → project filtering → F2,
-returned the Codex blank-session request for that project and executed the
-synthetic launch plan, producing the expected marker. No live user session or
-runtime history was used. Warm first-screen scan measured 8 ms; this is not a
-cold-cache measurement.
+Remember combinations only after successful TUI hosting (including top-bar new
+sessions); a failed or cancelled launch creates no entry. Reusing a pair moves it
+to the front without duplicates. Persist local preferences under
+XDG_CONFIG_HOME/corral/recent-session-combos.json (default ~/.config/corral), with
+atomic updates and cross-process serialization. The TUI has one local host;
+Apple clients retain their existing per-host stores. Hide dormant runtimes.
+The keyboard user can focus a combination and press Enter to launch; Delete on
+a focused combination, or right-clicking one, removes only that remembered entry, leaving all sessions,
+history and directories untouched. Show these removal actions in the section hint. Test fixtures isolate this preference
+with the explicit CORRAL_QUICK_START_PATH override.
 
+Inspected component references: apple/Shared/UI/Sessions/NewSessionSheet.swift
+(macContent, quickStartButton, createSession) and
+apple/Shared/Core/Store/RecentSessionComboStore.swift (identity, max-five MRU,
+record-after-success and removal). Adapt their behavior to the terminal by reusing
+ui/quick_filters.py FilterChip's native Textual Button/capsule renderer and
+width-aware Grid packing. Existing terminal runtime text replaces bitmap logos;
+no new icon artwork or Apple UI change is needed. Persistence is owned by
+`src/corral/recent_starts.py`; successful embedded creation records through
+`ui/controllers/host_controller.py::_on_embed_hosted`. Public component contracts:
+<https://textual.textualize.io/widgets/button/> and
+<https://textual.textualize.io/styles/grid/grid_size/>.
+
+Acceptance on CLI 0.24.303 covers all 2,420 tests exactly once, zero failures or
+warnings and two existing environment-conditional skips. Disposable production-app
+fixtures show all five capsules in dark English, light English at 80×24 and dark
+Chinese, including a long project name. Mouse-click and focused Enter launch the
+stored Claude/project pair while the ordinary project filter has zero matches;
+a real isolated tmux capture contains the synthetic launch marker and the
+persistent MRU is updated only after hosting. A fresh app reloads the same saved
+combinations. Right-click removal preserves the modal, remaining entries and all
+project directories. Unit/Pilot checks also cover invalid catalogs, missing paths,
+Delete removal, independent runtime/path identities, bounded MRU, corrupt-file
+recovery, write failure and simultaneous process updates. The thirteen native
+terminal smoke checks pass; fixture sockets are removed at cleanup.
 
 | 用户动作 | 前置条件 | 流程 | 结果 |
 |---|---|---|---|
@@ -316,7 +339,7 @@ cold-cache measurement.
 | 单击会话卡 | 该会话的进程早已不存在 | **只把历史消息摆到右栏，不启动任何进程**，焦点交给该预览格 | 恢复必须在预览格上显式回车 |
 | 回车 | 焦点在右栏静态预览格或「会话已结束」格 | `EmbedPane._is_restart_target()` → `MainScreen._restart_session_from_pane()`；**在别的窗口跑的外部会话不在此列**（2026-08-08 裁定：只保留静态预览、不弹框不起进程） | 就地重启该会话；原属会话组的成员整组摆回、只换它那一格 |
 | 单击会话组卡 | 侧边栏点到会话组 | 右栏跟随展示该组合，输入交给该组当前那一格 | 不再把焦点留在侧边栏 |
-| “＋ 新建会话”或 `Ctrl+N` | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
+| “＋ 新建会话”或 `Ctrl+N` | 新建空白会话 | 点击顶部记住的助手＋项目组合直接启动，或在下方先选项目、再选运行时 | 创建空白会话 |
 | 右栏顶栏点助手 | 当前项目目录已知且未满四格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | 右栏顶栏点「终端」 | 当前项目目录已知且未满四格 | `_on_shell_pick` → `_embed_open_shell` 加一格交互式 shell | 不进侧栏列表；关格或 shell 退出即结束 tmux 会话 |
 | 分屏格 ✕ 关格 | 右栏至少有一格 | `_PaneClose` → `SplitPaneArea._close_spec` | 该格退出当前分屏（托管会话继续在后台跑，可再打开）；右栏留在剩余格，不得切到刚被关掉的那条会话； **Closing a pane in a group preserves the sidebar scroll offset; rebuilding the group or selecting the surviving pane must not scroll its row into view (2026-09-30). Clamp only when the shortened list no longer supports the old offset.**不绑单字母 `c`。 |

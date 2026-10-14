@@ -12,16 +12,17 @@ from rich.text import Text
 from textual import errors, events
 from textual.app import ComposeResult
 from textual.await_complete import AwaitComplete
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Input, Label, ListView, Static
+from textual.widgets import Button, Input, Label, ListView, Static
 
+from corral import recent_starts
 from corral.i18n import t
 from corral.projects import fuzzy_match
 from corral.textutil import fit_cell, text_width
 from corral.theme import runtime_label_style
+from corral.ui.quick_filters import FilterChip, QuickFilters
 from corral.ui.session_list import NoSelectListItem
 
 
@@ -207,6 +208,31 @@ class _ColumnRow(Widget):
         return text
 
 
+class _QuickStartChip(FilterChip):
+    """Reuse capsule buttons; right click removes a preference instead of starting."""
+
+    def __init__(self, combo: recent_starts.RecentStart, runtime_label: str, **kwargs):
+        label = Text(runtime_label, style=runtime_label_style(combo.runtime_id))
+        label.append(f" · {combo.project_label}")
+        super().__init__(label, **kwargs)
+        self.combo = combo
+        self.tooltip = f"{runtime_label} · {combo.project_label}\n{_short_path(combo.cwd)}"
+
+    async def _on_click(self, event: events.Click) -> None:
+        if event.button == 3:
+            event.stop()
+            event.prevent_default()
+            self.screen.call_later(self.screen.remove_quick_start, self)
+        elif event.button == 1:
+            await super()._on_click(event)
+
+    async def on_key(self, event: events.Key) -> None:
+        if event.key == "delete":
+            event.stop()
+            event.prevent_default()
+            self.screen.call_later(self.screen.remove_quick_start, self)
+
+
 class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     """新建会话：左栏选项目、右栏选运行时，一个弹窗里一次选完。
 
@@ -218,17 +244,6 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
 
     返回 (项目目录, 运行时 id)；Esc 或点框外空白返回 None。
     """
-
-    QUICK_LAUNCH_KEYS = {
-        "claude": "f1", "codex": "f2", "opencode": "f3", "cursor": "f4", "pi": "f5",
-    }
-    BINDINGS = [
-        Binding("ctrl+l", "quick_launch", show=False, priority=True),
-        *[
-            Binding(key, f"quick_launch('{runtime}')", show=False, priority=True)
-            for runtime, key in QUICK_LAUNCH_KEYS.items()
-        ],
-    ]
 
     DEFAULT_CSS = """
     NewSessionModal {
@@ -284,6 +299,12 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         height: 1;
         color: $foreground 60%;
     }
+      NewSessionModal #ns-quick-starts { height: auto; }
+      NewSessionModal #ns-quick-heading { height: 1; color: $text-muted; }
+      NewSessionModal #ns-quick-grid { height: auto; grid-gutter: 0; grid-rows: 1; padding: 0 0 1 0; }
+      NewSessionModal #ns-quick-grid > .filter-gap { height: 1; width: 1; }
+      NewSessionModal #ns-quick-divider { height: 1; color: $foreground 20%; }
+      NewSessionModal #ns-error { height: auto; max-height: 2; color: $error; }
     """
 
     def __init__(
@@ -293,12 +314,14 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         project_index: int = 0,
         runtime_index: int = 0,
         initial_query: str = "",
+        recent_combos: list[recent_starts.RecentStart] | None = None,
     ) -> None:
         super().__init__()
         self._projects = projects
         self._runtimes = runtimes
         self._runtime_index = runtime_index
         self._initial_query = initial_query
+        self._recent_combos = recent_combos if recent_combos is not None else recent_starts.load()
         preferred = (
             projects[project_index][0]
             if projects and 0 <= project_index < len(projects)
@@ -340,6 +363,16 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label(f" {t('modal.new_session_title')} ", classes="title")
+            if self._recent_combos:
+                with Vertical(id="ns-quick-starts"):
+                    yield Label(t("modal.quick_start_heading"), id="ns-quick-heading")
+                    with Grid(id="ns-quick-grid"):
+                        for i, combo in enumerate(self._recent_combos):
+                            runtime = next((item for item in self._runtimes if item.id == combo.runtime_id), None)
+                            label = runtime.label if runtime else combo.runtime_id
+                            yield Static("", id=f"ns-quick-{i}-gap", classes="filter-gap")
+                            yield _QuickStartChip(combo, label, id=f"ns-quick-{i}")
+                    yield Static("─" * 120, id="ns-quick-divider")
             with Horizontal(id="ns-columns"):
                 with Vertical(id="ns-project-column"):
                     yield Input(
@@ -359,10 +392,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                             _ColumnRow(
                                 choice.id,
                                 choice.label,
-                                " · ".join(filter(None, (
-                                    self.QUICK_LAUNCH_KEYS.get(choice.id, "").upper(),
-                                    "" if choice.available else t("modal.not_installed_tag"),
-                                ))),
+                                "" if choice.available else t("modal.not_installed_tag"),
                                 choice.available,
                                   runtime_label_style(choice.id),
                             )
@@ -372,10 +402,11 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                     id="ns-runtimes",
                     initial_index=self._runtime_index,
                 )
-            yield Label(t("modal.quick_launch_hint"), classes="hint")
+            yield Label("", id="ns-error")
             yield Label(t("modal.two_column_hint"), classes="hint")
 
     def on_mount(self) -> None:
+        self.call_after_refresh(self._pack_quick_starts)
         projects = self.query_one("#ns-projects", ListView)
         projects.border_title = t("modal.column_project")
         self.query_one("#ns-runtimes", ListView).border_title = t("modal.column_runtime")
@@ -440,18 +471,42 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
             return
         self.dismiss((project.value, runtime.value))
 
-    def action_quick_launch(self, runtime_id: str | None = None) -> None:
-        """Launch the highlighted pair without navigating through both columns."""
-        if runtime_id is not None:
-            index = next(
-                (i for i, choice in enumerate(self._runtimes) if choice.id == runtime_id),
-                None,
-            )
-            if index is None or not self._runtimes[index].available:
-                self.app.bell()
-                return
-            self.query_one("#ns-runtimes", ListView).index = index
-        self._confirm()
+    def _pack_quick_starts(self) -> None:
+        grids = self.query("#ns-quick-grid")
+        if grids:
+            QuickFilters._pack(grids.first())
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self._pack_quick_starts)
+
+    async def remove_quick_start(self, chip: _QuickStartChip) -> None:
+        if not chip.is_mounted:
+            return
+        recent_starts.remove(chip.combo)
+        await self.query_one(f"#{chip.id}-gap").remove()
+        await chip.remove()
+        if not self.query(_QuickStartChip):
+            await self.query_one("#ns-quick-starts").remove()
+        else:
+            self._pack_quick_starts()
+        self.query_one("#ns-project-filter", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if not isinstance(event.button, _QuickStartChip):
+            return
+        event.stop()
+        combo = event.button.combo
+        runtime = next((item for item in self._runtimes if item.id == combo.runtime_id), None)
+        error = None
+        if runtime is None or not runtime.available:
+            error = t("modal.quick_start_unavailable", runtime=runtime.label if runtime else combo.runtime_id)
+        elif not os.path.isdir(combo.cwd):
+            error = t("modal.quick_start_missing_project", path=_short_path(combo.cwd))
+        if error:
+            self.query_one("#ns-error", Label).update(error)
+            self.app.bell()
+            return
+        self.dismiss((combo.cwd, combo.runtime_id))
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """回车 / 点击：在项目栏是「选好了，去挑助手」，在运行时栏才是确认。"""

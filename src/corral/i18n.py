@@ -534,9 +534,17 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Type to filter   ↓ List   ←→ Switch column   Enter Confirm   Esc Back",
         "zh": "直接输入筛选   ↓ 列表   ←→ 切换栏   Enter 确认   Esc 返回",
     },
-    "modal.quick_launch_hint": {
-        "en": "Ctrl+L Launch selected   F1–F5 Launch agent",
-        "zh": "Ctrl+L 启动所选   F1–F5 启动助手",
+    "modal.quick_start_heading": {
+        "en": "Quick Start · Right-click / Delete to remove",
+        "zh": "快捷启动 · 右键 / Delete 移除",
+    },
+    "modal.quick_start_unavailable": {
+        "en": "{runtime} is not installed. Choose another assistant below.",
+        "zh": "{runtime} 未安装，请在下方选择其他助手。",
+    },
+    "modal.quick_start_missing_project": {
+        "en": "Project directory is unavailable: {path}",
+        "zh": "项目目录不可用：{path}",
     },
     "confirm.kill_session": {
         "en": "End session “{title}”? Unsaved progress in the current task will be lost",

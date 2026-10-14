@@ -73,7 +73,7 @@ Install and sign in to at least one supported coding assistant separately. Corra
 
 Open `corral`. Existing assistant sessions appear in the sidebar. Selecting a conversation reads it; it does not start that assistant. Press `Enter` to resume an ended session or attach to a hosted terminal.
 
-Press `Ctrl+N` to start something new. In the dialog, Ctrl+L launches the highlighted project and assistant; F1–F5 launch Claude Code, Codex, OpenCode, Cursor and Pi directly. From your shell you can also choose the assistant:
+Press `Ctrl+N` to start something new. The New Session dialog remembers your five most recent assistant/project combinations under Quick Start. Click a combination to launch it immediately; right-click it to remove it. From your shell you can also choose the assistant:
 
 ```bash
 corral claude

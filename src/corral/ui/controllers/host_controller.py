@@ -210,6 +210,9 @@ class HostControllerMixin:
             fallback = self._detail_renderer_for(current)
         else:
             runtime = self.store.registry.get(request.target_runtime_id)
+            from corral import recent_starts
+
+            recent_starts.record(request.target_runtime_id, request.cwd)
             current = self.store.register_hosted_session(
                 runtime_id=request.target_runtime_id,
                 keepalive_name=name,
