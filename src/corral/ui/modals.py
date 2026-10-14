@@ -12,6 +12,7 @@ from rich.text import Text
 from textual import errors, events
 from textual.app import ComposeResult
 from textual.await_complete import AwaitComplete
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -218,6 +219,17 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     返回 (项目目录, 运行时 id)；Esc 或点框外空白返回 None。
     """
 
+    QUICK_LAUNCH_KEYS = {
+        "claude": "f1", "codex": "f2", "opencode": "f3", "cursor": "f4", "pi": "f5",
+    }
+    BINDINGS = [
+        Binding("ctrl+l", "quick_launch", show=False, priority=True),
+        *[
+            Binding(key, f"quick_launch('{runtime}')", show=False, priority=True)
+            for runtime, key in QUICK_LAUNCH_KEYS.items()
+        ],
+    ]
+
     DEFAULT_CSS = """
     NewSessionModal {
         align: center middle;
@@ -347,7 +359,10 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                             _ColumnRow(
                                 choice.id,
                                 choice.label,
-                                "" if choice.available else t("modal.not_installed_tag"),
+                                " · ".join(filter(None, (
+                                    self.QUICK_LAUNCH_KEYS.get(choice.id, "").upper(),
+                                    "" if choice.available else t("modal.not_installed_tag"),
+                                ))),
                                 choice.available,
                                   runtime_label_style(choice.id),
                             )
@@ -357,6 +372,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                     id="ns-runtimes",
                     initial_index=self._runtime_index,
                 )
+            yield Label(t("modal.quick_launch_hint"), classes="hint")
             yield Label(t("modal.two_column_hint"), classes="hint")
 
     def on_mount(self) -> None:
@@ -423,6 +439,19 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
             self.app.bell()
             return
         self.dismiss((project.value, runtime.value))
+
+    def action_quick_launch(self, runtime_id: str | None = None) -> None:
+        """Launch the highlighted pair without navigating through both columns."""
+        if runtime_id is not None:
+            index = next(
+                (i for i, choice in enumerate(self._runtimes) if choice.id == runtime_id),
+                None,
+            )
+            if index is None or not self._runtimes[index].available:
+                self.app.bell()
+                return
+            self.query_one("#ns-runtimes", ListView).index = index
+        self._confirm()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """回车 / 点击：在项目栏是「选好了，去挑助手」，在运行时栏才是确认。"""

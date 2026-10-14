@@ -279,6 +279,37 @@ label; no fresh Mac visual acceptance is claimed. iPhone has no split-group entr
 
 ### 新建、恢复与高级操作
 
+#### New Session quick launch (2026-10-14)
+
+New Session keeps its immediately focused project filter and existing mouse,
+arrow/Enter selection. Within this modal, Ctrl+L launches the highlighted project
+and runtime from any focus. F1 launches Claude Code, F2 Codex, F3 OpenCode,
+F4 Cursor and F5 Pi for the highlighted project. These assignments are stable
+regardless of ordering or installation status and appear beside the runtime names.
+Unavailable runtimes and empty project results ring the bell and keep the modal
+open; they never select a different runtime or launch a fallback. The existing
+new_session_flow validates the directory and returns the same blank-session
+request, preserving hosting, permission defaults and runtime ownership. These
+shortcuts are modal-only; normal project text, main-screen input and other dialogs
+retain their existing behavior. This feature is scoped to the TUI.
+
+Inspected references: existing NewSessionModal ListView/_confirm and installed
+Textual 8.2.8 Input.BINDINGS and App._check_bindings. Reuse native priority Binding
+and action dispatch to handle shortcuts before a focused input/list; reuse the
+existing Rich runtime label and row hint without adding a control or focus frame.
+Official applicability: <https://textual.textualize.io/guide/input/#priority-bindings>.
+No history-provider or Apple-client change is required.
+
+Acceptance on CLI 0.24.302: all 2,414 tests covered exactly once, no failures or
+warnings, with the two existing environment-conditional skips. Synthetic captures
+cover dark English, light English at 80×24, and dark Chinese, including a filtered
+project. Native tmux keyboard input exercised Ctrl+N → project filtering → F2,
+returned the Codex blank-session request for that project and executed the
+synthetic launch plan, producing the expected marker. No live user session or
+runtime history was used. Warm first-screen scan measured 8 ms; this is not a
+cold-cache measurement.
+
+
 | 用户动作 | 前置条件 | 流程 | 结果 |
 |---|---|---|---|
 | 回车或单击会话卡 | 侧边栏选中**仍活着**的会话（托管中 / 在别的窗口跑） | 构建恢复或接力计划；优先打开已有托管会话 | 右栏内嵌展示；输入直接交给该格 |

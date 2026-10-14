@@ -8711,6 +8711,74 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_session_quick_launch_from_each_column(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            for focus in ("ns-project-filter", "ns-projects", "ns-runtimes"):
+                results = []
+                modal = NewSessionModal(
+                    [("/tmp/alpha", "alpha", "/tmp/alpha"),
+                     ("/tmp/beta", "beta", "/tmp/beta")],
+                    [RuntimeChoice("claude", "Claude", "", True),
+                     RuntimeChoice("codex", "Codex", "", True)],
+                    project_index=1, runtime_index=1,
+                )
+                await app.push_screen(modal, results.append)
+                await pilot.pause()
+                modal.set_focus(modal.query_one(f"#{focus}"))
+                await pilot.press("ctrl+l")
+                await pilot.pause()
+                self.assertEqual(results, [("/tmp/beta", "codex")], focus)
+
+    async def test_new_session_agent_shortcuts_have_stable_assignments(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        # Deliberately reverse the runtime order: keys belong to identities.
+        runtimes = ["pi", "cursor", "opencode", "codex", "claude"]
+        async with app.run_test(size=(110, 30)) as pilot:
+            for key, runtime in zip(
+                ("f1", "f2", "f3", "f4", "f5"), reversed(runtimes), strict=True,
+            ):
+                results = []
+                modal = NewSessionModal(
+                    [("/tmp/alpha", "alpha", "/tmp/alpha"),
+                     ("/tmp/beta", "beta", "/tmp/beta")],
+                    [RuntimeChoice(item, item, "", True) for item in runtimes],
+                )
+                await app.push_screen(modal, results.append)
+                await pilot.pause()
+                await pilot.press("b", "e", "t", "a", key)
+                await pilot.pause()
+                self.assertEqual(results, [("/tmp/beta", runtime)])
+
+    async def test_new_session_quick_launch_rejects_invalid_choices(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            results = []
+            modal = NewSessionModal(
+                [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                [RuntimeChoice("claude", "Claude", "", True),
+                 RuntimeChoice("codex", "Codex", "", False)],
+                runtime_index=1,
+            )
+            await app.push_screen(modal, results.append)
+            await pilot.pause()
+            with mock.patch.object(app, "bell") as bell:
+                for key in ("ctrl+l", "f2", "f5"):
+                    await pilot.press(key)
+                    await pilot.pause()
+                    self.assertIs(app.screen, modal)
+                    self.assertEqual(results, [])
+                self.assertEqual(bell.call_count, 3)
+                await pilot.press("z", "z", "z", "f1")
+                await pilot.pause()
+                self.assertIs(app.screen, modal)
+                self.assertEqual(results, [])
+                self.assertEqual(bell.call_count, 4)
+                self.assertEqual(modal.query_one("#ns-project-filter", Input).value, "zzz")
+
     async def test_new_session_modal_escape_cancels(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)

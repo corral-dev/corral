@@ -534,6 +534,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Type to filter   ↓ List   ←→ Switch column   Enter Confirm   Esc Back",
         "zh": "直接输入筛选   ↓ 列表   ←→ 切换栏   Enter 确认   Esc 返回",
     },
+    "modal.quick_launch_hint": {
+        "en": "Ctrl+L Launch selected   F1–F5 Launch agent",
+        "zh": "Ctrl+L 启动所选   F1–F5 启动助手",
+    },
     "confirm.kill_session": {
         "en": "End session “{title}”? Unsaved progress in the current task will be lost",
         "zh": "结束会话「{title}」？未保存的当前任务进度将丢失",
