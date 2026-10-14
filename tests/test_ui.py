@@ -4942,6 +4942,31 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.multi_count(), 0)
         self.assertIsNone(app.return_value)
 
+    async def test_multi_select_rejects_sessions_from_different_projects(self) -> None:
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"Session {i}",
+                "cwd": f"/tmp/project-{i}/src", "live": False,
+            }
+            for i in range(2)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            cards = list(app.screen.query(SessionCard))
+            await pilot.click(cards[0], control=True)
+            await pilot.click(cards[1], control=True)
+            await pilot.press("enter")
+            await pilot.pause()
+            area = app.screen.query_one(SplitPaneArea)
+            self.assertLess(len(area.ordered_session_keys()), 2)
+            self.assertIsNone(app.screen._split_store.get_group("claude:s0"))
+            self.assertIsNone(app.screen._split_store.get_group("claude:s1"))
+        self.assertIsNone(app.return_value)
+
     async def test_space_toggles_multi_select_on_focused_session(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)

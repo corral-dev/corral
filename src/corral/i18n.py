@@ -327,6 +327,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Select a session in a project first",
         "zh": "请先选择某个项目下的会话",
     },
+    "split.same_project_only": {
+        "en": "A split can contain agents from one project only",
+        "zh": "一个分屏只能包含同一项目的助手",
+    },
     "split.multi_full": {
         "en": "At most {n} panes in a split",
         "zh": "分屏最多 {n} 格",

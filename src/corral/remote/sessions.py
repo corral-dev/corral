@@ -27,6 +27,7 @@ from corral.activity_board import resolve_active_marker
 from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
+from corral.projects import normalize_cwd
 from corral.remote import questions, richmsg, shell_terminal, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
@@ -1742,6 +1743,15 @@ class SessionHub:
         canonical = [self.resolve_session_key(key) for key in keys if key]
         if len(canonical) < 2:
             raise ActionError("usage_error", t("remote.err.layout_group_size"))
+        known_projects = {
+            normalize_cwd(session.get("cwd"))
+            for key in canonical
+            if (session := self.store.find_session(key)) is not None
+        }
+        if len(known_projects) > 1 or (
+            known_projects and normalize_cwd(project) not in known_projects
+        ):
+            raise ActionError("usage_error", t("split.same_project_only"))
         focus_key = self.resolve_session_key(focus) if focus else None
         self.layout_db.set_group(project or "", canonical, focus_key=focus_key)
         return self._layout_mutated()

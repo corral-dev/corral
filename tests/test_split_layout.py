@@ -112,6 +112,23 @@ class SplitLayoutStoreTests(unittest.TestCase):
         self.assertEqual(project, "/p")
         self.assertEqual(keys, ["claude:a"])
 
+    def test_resolve_active_group_excludes_legacy_other_project_member(self) -> None:
+        store = split_layout.SplitLayoutStore()
+        store.set_group("/project-a", ["claude:a", "codex:b", "pi:c"])
+        sessions = {
+            "claude:a": {"cwd": "/project-a", "live": True},
+            "codex:b": {"cwd": "/project-b", "live": True},
+            "pi:c": {"cwd": "/project-a/", "live": True},
+        }
+        project, keys = split_layout.resolve_active_group(
+            store, "codex:b", is_active=lambda k: True, find_session=sessions.get,
+        )
+        self.assertEqual((project, keys), ("/project-b", ["codex:b"]))
+        project, keys = split_layout.resolve_active_group(
+            store, "claude:a", is_active=lambda k: True, find_session=sessions.get,
+        )
+        self.assertEqual((project, keys), ("/project-a", ["claude:a", "pi:c"]))
+
     def test_group_names_are_fruit_based_and_unique(self) -> None:
         store = split_layout.SplitLayoutStore()
         store.set_group("/a", ["claude:a", "codex:b"])

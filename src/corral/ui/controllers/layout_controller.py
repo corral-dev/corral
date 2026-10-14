@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from textual import work
 
+from corral.i18n import t
 from corral.ui.session_list import SessionListView
 
 
@@ -270,11 +271,13 @@ class LayoutControllerMixin:
 
         group = self._split_store.get_group(focus_key)
         if include_inactive and group is not None:
-            project = group.project_cwd
+            selected = self.store.find_session(focus_key)
+            project = corral._normalize_cwd(selected.get("cwd")) if selected else group.project_cwd
             keys = [
                 key
                 for key in group.session_keys
-                if self.store.find_session(key) is not None
+                if (member := self.store.find_session(key)) is not None
+                and corral._normalize_cwd(member.get("cwd")) == project
             ]
         else:
             project, keys = split_layout.resolve_active_group(
@@ -294,8 +297,14 @@ class LayoutControllerMixin:
         preserve_missing_members = _preserve_missing_group_members(
             stored, target_keys, include_inactive=include_inactive,
         )
+        has_other_project_members = stored is not None and any(
+            corral._normalize_cwd(member.get("cwd")) != project
+            for key in stored.session_keys
+            if (member := self.store.find_session(key)) is not None
+        )
         composition_unchanged = (
             preserve_missing_members
+            or has_other_project_members
             or (stored is not None and list(stored.session_keys) == target_keys)
         )
         if preserve_missing_members:
@@ -397,6 +406,14 @@ class LayoutControllerMixin:
         focus_key = keys[0]
         focus_session = self.store.find_session(focus_key)
         project = corral._normalize_cwd(focus_session.get("cwd")) if focus_session else ""
+        if any(
+            corral._normalize_cwd(session.get("cwd")) != project
+            for key in keys
+            if (session := self.store.find_session(key)) is not None
+        ):
+            self.notify(t("split.same_project_only"))
+            self.app.bell()
+            return
         entries = self._build_hosted_entries(keys)
         if len(entries) < 2:
             self.app.bell()

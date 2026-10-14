@@ -52,6 +52,16 @@ class LayoutHubTests(unittest.TestCase):
         with self.assertRaises(ActionError):
             self.hub.layout_set_group("/p", ["claude:a"], None)
 
+    def test_known_sessions_from_different_projects_cannot_form_group(self) -> None:
+        sessions = {
+            "claude:a": {"cwd": "/p"},
+            "codex:b": {"cwd": "/other"},
+        }
+        with mock.patch.object(self.hub.store, "find_session", side_effect=sessions.get):
+            with self.assertRaises(ActionError):
+                self.hub.layout_set_group("/p", ["claude:a", "codex:b"], None)
+        self.assertEqual(self.hub.layout_snapshot()["groups"], [])
+
     def test_closing_pane_below_two_members_dissolves_group(self) -> None:
         self.hub.layout_set_group("/p", ["claude:a", "codex:b"], None)
         snap = self.hub.layout_remove_session("codex:b")

@@ -1063,13 +1063,20 @@ def resolve_active_group(
         if session:
             project = normalize_cwd(session.get("cwd"))
         return project, [session_key]
-    alive = [k for k in group.session_keys if is_active(k)]
+    selected = find_session(session_key)
+    project = normalize_cwd(selected.get("cwd")) if selected else group.project_cwd
+    alive = [
+        k for k in group.session_keys
+        if is_active(k)
+        and (member := find_session(k)) is not None
+        and normalize_cwd(member.get("cwd")) == project
+    ]
     if session_key not in alive:
         alive = [session_key] if is_active(session_key) else []
     if not alive:
-        return group.project_cwd, [session_key]
+        return project, [session_key]
     if session_key in alive and len(alive) == 1:
-        return group.project_cwd, alive
+        return project, alive
     # 保持原顺序，只留活跃成员
     ordered = [k for k in group.session_keys if k in alive]
     if session_key in ordered:
@@ -1077,4 +1084,4 @@ def resolve_active_group(
         pass
     elif session_key in alive:
         ordered = [session_key] + [k for k in ordered if k != session_key]
-    return group.project_cwd, ordered or [session_key]
+    return project, ordered or [session_key]
