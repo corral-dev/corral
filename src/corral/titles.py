@@ -3,7 +3,7 @@
 
 Claude Code 自带 aiTitle 不稳定，不能作为产品展示标题的可信来源。
 统一策略是：先用缓存里的生成标题；没有缓存时显示临时兜底，并提交后台生成。
-生成通道走共享 OpenAI 兼容 LLM 网关（见 titlegen），不经各助手 CLI。
+生成通道优先使用已配置网关，无网关配置时复用本机 Agent 登录（见 titlegen）。
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def _failed_in_current_version(cached: dict | None, *, now: float | None = None)
         return False
     if (
         cached.get("failure_reason") == _FAILURE_REASON_MISSING_CONFIG
-        and titlegen.gateway_key() is not None
+        and titlegen.available_generators()
     ):
         return False
     failed_at = cached.get("failed_at")
@@ -751,10 +751,9 @@ def refresh_titles(
     """对一批待生成的会话批量生成标题,写回缓存,返回 {会话键: title} 增量。
 
     内部按 _BATCH_SIZE 拆批，并以最多 _MAX_PARALLEL_BATCHES 批并行生成。
-    例如 5 条待生成会话会启动 5 个并行任务，每个任务处理 1 条；超过
-    5 条时，完成的任务会继续领取下一批，避免同时启动过多模型请求。
-    generator 为 None 时使用 titlegen 暴露的网关候选；本机未配置虚拟 Key
-    （网关不可用）时返回空增量并写入失败终态，避免界面永久转圈。
+      网关最多两路并行；本地 Agent 串行运行，避免挤占用户的交互会话资源。
+    generator 为 None 时由 titlegen 选择已配置网关或本地 Agent 候选；没有
+    生成通道时返回空增量并写入失败终态，避免界面永久转圈。
     """
     if not sessions:
         return {}
@@ -816,7 +815,8 @@ def refresh_titles(
 
     # 默认策略不偏向任何助手：每轮从随机起点开始，再逐批轮转，足量批次会均分给
     # 所有可用助手；单批失败只影响本批，立刻由余下候选接手。
-    start = secrets.randbelow(len(generators)) if generator is None else 0
+    local = any(isinstance(candidate, titlegen.LocalTitleGenerator) for candidate in generators)
+    start = secrets.randbelow(len(generators)) if generator is None and not local else 0
 
     def _attempt(chunk: list[dict], candidate, *, allow_unavailable: bool = False) -> dict[str, str] | None:
         """尝试一个候选：返回模型原文；None 表示本轮跳过（探测中或已标不可用）。"""
@@ -870,6 +870,8 @@ def refresh_titles(
                 return raw
             fallback.append(candidate)
         for candidate in sorted(fallback, key=lambda c: last_failure.get(c.id, 0.0)):
+            if isinstance(candidate, titlegen.LocalTitleGenerator):
+                continue  # No login/capacity: probe each local runtime once per pass.
             if candidate.id in attempted:
                 continue  # 本批已试过：不立刻原地重试，把机会留给别的候选或下一批。
             raw = _attempt(chunk, candidate, allow_unavailable=True)
@@ -877,9 +879,9 @@ def refresh_titles(
                 return raw
         return _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
 
-    with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(chunks))) as pool:
+    with ThreadPoolExecutor(max_workers=1 if local else min(_MAX_PARALLEL_BATCHES, len(chunks))) as pool:
         futures = {
-            pool.submit(generate_chunk, chunk, (start + index) % len(generators)): chunk
+            pool.submit(generate_chunk, chunk, 0 if local else (start + index) % len(generators)): chunk
             for index, chunk in enumerate(chunks)
         }
         for future in as_completed(futures):

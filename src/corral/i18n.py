@@ -134,9 +134,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Filter projects, titles",
         "zh": "筛选项目、标题",
     },
-    "filter.age_seconds": {"en": "{age}s ago", "zh": "{age} 秒前"},
-    "filter.age_minutes": {"en": "{age}m ago", "zh": "{age} 分钟前"},
-    "filter.age_hours": {"en": "{age}h ago", "zh": "{age} 小时前"},
     "filter.load_error": {
         "en": "Load failed: {error}; retrying",
         "zh": "加载失败：{error}；正在自动重试",

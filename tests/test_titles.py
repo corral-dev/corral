@@ -518,9 +518,9 @@ class TitleGenerationStateTests(unittest.TestCase):
             titles.refresh_titles([session], cache)
 
         self.assertEqual(cache["claude:offline"]["failure_reason"], "missing_config")
-        with mock.patch.object(titles.titlegen, "gateway_key", return_value=None):
+        with mock.patch.object(titles.titlegen, "available_generators", return_value=()):
             self.assertFalse(titles.resolve_initial_title(session, cache)[1])
-        with mock.patch.object(titles.titlegen, "gateway_key", return_value="vk-test"):
+        with mock.patch.object(titles.titlegen, "available_generators", return_value=(mock.Mock(),)):
             self.assertTrue(titles.resolve_initial_title(session, cache)[1])
 
     def test_transport_failure_keeps_cooldown_even_if_key_exists(self) -> None:
@@ -529,7 +529,7 @@ class TitleGenerationStateTests(unittest.TestCase):
             "cursor:net": titles._failed_cache_entry(session, reason="transport"),
         }
 
-        with mock.patch.object(titles.titlegen, "gateway_key", return_value="vk-test"):
+        with mock.patch.object(titles.titlegen, "available_generators", return_value=(mock.Mock(),)):
             title, needs = titles.resolve_initial_title(session, cache)
 
         self.assertEqual(title, "排查网络超时")

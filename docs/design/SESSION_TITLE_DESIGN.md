@@ -1,5 +1,27 @@
 # Shared session titles
 
+## Generation channels (owner ruling, 2026-10-15)
+
+Keep the configured gateway channel. When the gateway URL/key is absent, automatically use an installed local Agent runtime with its existing authentication and model configuration. No separate Corral API key is required for this route. This ruling supersedes the gateway-only/retired-CLI prohibitions in the historical September records below; their title-quality and shared-state requirements remain valid.
+
+Both channels implement the same `TitleGenerator` contract and consume the same bounded prompt. Corral owns routing, timeouts, cache and host coordination; runtime launch/resume adapters and SessKit parsers do not own this transport. Preserve accepted titles, language rules, title-only events, and runtime+session cache identity. A configured gateway failure does not silently change account/channel.
+
+Local jobs are one-shot subprocesses, never resumed user sessions or tmux hosts. Send excerpts on stdin, detach a process group, strip inherited Corral session claims, and terminate the whole job on timeout. Keep user authentication/configuration in place; never copy credentials or change HOME. Run outside the user's project under a private Corral-owned workspace marked `.sesskit-ignore`, retaining the fixed prompt marker as defense in depth. Use native no-session flags for Claude/Codex/Pi. OpenCode v2 uses a private standalone server and database. Cursor uses a separate data directory while retaining its normal configuration/login. Do not delete or rewrite user histories. Keep CLI capability checks in the background worker (first-paint candidate discovery only checks executable paths). Preserve Pi provider extensions because disabling all extensions can remove the user's configured model; `--no-tools` still excludes their tools. Capability-check installed CLI flags; an incompatible or unauthenticated backend fails over to another installed runtime, without opening login flows. Local jobs run serially and a failed local backend is not retried for every queued session in the same pass.
+
+The inspected reference is Corral's pre-gateway `titlegen.py` (before `a87ff62`), reusing its backend boundary and native ephemeral modes, not its credential copying, persistent-session calls in the project, argv prompt delivery, or random account rotation. Official references: [Claude CLI](https://code.claude.com/docs/en/cli-reference), [Claude automation/auth caveat](https://code.claude.com/docs/en/headless), [Codex exec](https://developers.openai.com/codex/cli/reference/), [Pi CLI](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md), [OpenCode standalone](https://dev.opencode.ai/v2/docs/cli), and [Cursor parameters](https://cursor.com/docs/cli/reference/parameters). OpenCode DB isolation was checked in upstream `packages/cli/src/database-path.ts` and `run/run.ts`; Cursor data/config separation was inspected in the installed vendor bundle and needs real-path regression because it is not a documented stable CLI flag. Claude `--bare` is unsuitable: it bypasses subscription OAuth/keychain authentication.
+
+The daemon must close its lock descriptor when another process already holds the lock; a focused contention test exposed an existing ResourceWarning on this exit path.
+
+Missing-channel failures may retry when a compatible local backend appears, as well as when gateway configuration becomes available. Model/transport failures retain cooldown. Validate actual no-key model output, timeout descendant cleanup, unchanged user history, stable successes, five-runtime source inputs, and host title propagation; test fixtures must isolate all cache writes.
+
+### Verification and current limits (2026-10-15)
+
+The installed `corral --generate-titles --limit 1` command, with an empty gateway configuration and a disposable title cache, generated an accepted readable title for a real Claude record in 10.2 seconds. The real user title file was not changed. Separate synthetic requests produced valid JSON titles through native Claude and Codex. Five real source samples (Claude, Codex, OpenCode, Cursor, Pi) retained readable titles and bounded task input; source scanning and title transport remain separate.
+
+Local account failures are not capability failures: this machine's Pi provider returned insufficient credits; its OpenCode default returned a deprecated-model error; original `agent status` also reported not logged in. Therefore model-success and authenticated-data-isolation acceptance for those three local accounts is not established. No credentials, provider settings, or user models were changed to manufacture a pass. Their candidate isolation, routing, malformed-output handling and fallback are covered by isolated subprocess/fixture tests. Cursor's vendor data-directory override remains a compatibility risk to recheck with a logged-in installation.
+
+The contention-path ResourceWarning was fixed by closing the daemon lock descriptor on lock-acquisition failure. Focused title regressions pass without that warning. Whole-tree delivery must use the final shared-workspace full-check stamp, including concurrent calendar/UI changes; an earlier run that observes source drift is not reusable.
+
 ## Confirmed product requirement
 
 iOS and TUI must use the same session-title generation logic, generation channel, and resulting title for the same host and session. iOS must not independently generate a competing title.

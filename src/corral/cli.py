@@ -178,6 +178,7 @@ def _run_title_daemon(registry: RuntimeRegistry, limit: int) -> None:
     try:
         fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        lock_fp.close()
         return  # 已有进程持锁，本次无需重复生成
 
     try:

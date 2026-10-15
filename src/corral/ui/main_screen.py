@@ -71,8 +71,6 @@ REFRESH_MIN_GAP = 3.0
 REFRESH_RECONCILE = 60.0
 # No FSEvents/inotify: fall back to a moderate poll (not the full 60s idle).
 REFRESH_RECONCILE_FALLBACK = 10.0
-# Show "updated Ns ago" in the filter placeholder once the list is this old.
-REFRESH_STALE_HINT_AFTER = 10.0
 # Back-compat aliases for tests that still patch the old names.
 REFRESH_INTERVAL = REFRESH_MIN_GAP
 REFRESH_INTERVAL_MAX = REFRESH_RECONCILE_FALLBACK
@@ -831,17 +829,6 @@ class MainScreen(
         if self.store.dirty.is_set():
             self.store.dirty.clear()
             self.call_next(self._rebuild_list)
-        else:
-            # Event-driven refresh may sleep up to ~60s; tick the filter age hint.
-            age = self.store.refresh_age_seconds()
-            if age is not None and age >= REFRESH_STALE_HINT_AFTER:
-                shown = int(age)
-                if shown != getattr(self, "_stale_hint_age", None):
-                    self._stale_hint_age = shown
-                    self._update_header()
-            elif getattr(self, "_stale_hint_age", None) is not None:
-                self._stale_hint_age = None
-                self._update_header()
         self._sustain_preview_warm()
 
     # 详情预览在会话活跃写入期的续温节流间隔：会话每写一条历史，缓存版本就
@@ -939,22 +926,11 @@ class MainScreen(
             )
             search.placeholder = t("filter.no_sessions", names=names)
         else:
-            age = self.store.refresh_age_seconds()
-            stale = (
-                age is not None
-                and age >= REFRESH_STALE_HINT_AFTER
-                and self.store.loaded
-            )
             search.normal_hint = True
             width = search.content_size.width
             search.placeholder = (fit_cell(t("filter.placeholder"), width, ellipsis=True).rstrip()
                                   if width > 0 else t("filter.placeholder"))
             metadata = str(count) if self.store.loaded else ""
-            if stale:
-                age_i = int(age)
-                unit = "seconds" if age_i < 60 else "minutes" if age_i < 3600 else "hours"
-                value = age_i if unit == "seconds" else age_i // (60 if unit == "minutes" else 3600)
-                metadata += " · " + t(f"filter.age_{unit}", age=value)
             self.query_one("#filter-count", Static).update(metadata)
         if load_error or (self.store.loaded and count == 0 and not any(self.store.sessions.values())):
             self.query_one("#filter-count", Static).update("")

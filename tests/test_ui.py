@@ -3202,12 +3202,12 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 last_region.y + last_region.height, scroll_region.y
             )
 
-    def test_live_or_recent_mtime_counts_as_today(self) -> None:
-        """Calendar-day Today: live wins; yesterday is not today even if < 24h."""
+    def test_live_does_not_override_calendar_date(self) -> None:
+        """Process liveness never changes the activity date bucket."""
         now = _local_day_mtime(0, hour=10)
         old = _local_day_mtime(10, hour=12, now=now)
         yesterday = _local_day_mtime(1, hour=12, now=now)
-        self.assertTrue(
+        self.assertFalse(
             _session_in_today_window({"live": True, "mtime": old}, now)
         )
         self.assertFalse(
@@ -3229,6 +3229,26 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(_session_in_today_window(None, now))
         self.assertFalse(_session_in_today_window({}, now))
+
+    async def test_idle_list_crosses_midnight_without_store_change(self) -> None:
+        before = _local_day_mtime(0, hour=23)
+        after = _local_day_mtime(-1, hour=1, now=before)
+        sessions = [_claude_session("last-night", before - 60, "Last night"),
+                    _claude_session("older", _local_day_mtime(3, now=before), "Older")]
+        sessions[0]["live"] = True
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch("corral.ui.session_list.time.time", return_value=before):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                view = app.screen.query_one(SessionListView)
+                self.assertNotIn(YESTERDAY_SEP_ID, view._current_row_identities())
+                selected = view._displayed_selected_identity()
+                with mock.patch("corral.ui.session_list.time.time", return_value=after):
+                    await view._refresh_calendar()
+                    await pilot.pause()
+                    self.assertIn(YESTERDAY_SEP_ID, view._current_row_identities())
+                    self.assertEqual(view._displayed_selected_identity(), selected)
 
     def test_separator_render_centers_label(self) -> None:
         card = PinSeparatorCard("list.sep_pinned")
@@ -4617,14 +4637,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     metadata = app.screen.query_one("#filter-count", Static)
                     search = app.screen.query_one("#project-search", Input)
                     self.assertEqual(row.region.width, 39)
-                    self.assertEqual(str(metadata.render()), "3 · 45s ago")
-                    self.assertGreaterEqual(metadata.content_size.width, len("3 · 45s ago"))
+                    self.assertEqual(str(metadata.render()), "3")
+                    self.assertGreaterEqual(metadata.content_size.width, len("3"))
                     self.assertTrue(row.region.contains_region(metadata.region))
                     await pilot.click(row, offset=(5, 1))
                     self.assertTrue(search.has_focus)
                     search.value = "会话0"
                     await pilot.pause()
-                    self.assertEqual(str(metadata.render()), "1 · 45s ago")
+                    self.assertEqual(str(metadata.render()), "1")
                     clear = app.screen.query_one("#project-search-clear")
                     self.assertTrue(row.region.contains_region(clear.region))
                     await pilot.click(clear)

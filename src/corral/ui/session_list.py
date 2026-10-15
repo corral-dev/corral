@@ -309,13 +309,11 @@ def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
 def _session_days_ago(session: dict | None, now: float) -> int:
     """Local calendar days between session activity and `now`.
 
-    0 = today (also live or future mtime). Missing/invalid timestamps fall into
+    0 = today (also future mtime). Missing/invalid timestamps fall into
     the unlabeled older bucket so they never steal a named date line.
     """
     if not session:
         return _OLDER_BUCKET
-    if session.get("live"):
-        return 0
     try:
         mtime = float(session.get("mtime") or 0)
     except (TypeError, ValueError):
@@ -329,12 +327,12 @@ def _session_days_ago(session: dict | None, now: float) -> int:
 
 
 def _session_in_today_window(session: dict | None, now: float) -> bool:
-    """Independent session on the local calendar day (or currently running)."""
+    """Independent session with activity on the current local calendar day."""
     return _session_days_ago(session, now) == 0
 
 
 def _block_days_ago(block: list[_SidebarRow], now: float) -> int:
-    """Groups stay intact: the newest member (live counts as today) wins."""
+    """Groups stay intact: the newest member's real activity wins."""
     newest = _OLDER_BUCKET
     for row in block:
         newest = min(newest, _session_days_ago(row.session, now))
@@ -1495,7 +1493,40 @@ class SessionListView(Vertical):
         return by_key
 
     async def on_mount(self) -> None:
+        self._calendar_key = self._local_calendar_key()
+        self._calendar_wall_time = time.time()
+        self._calendar_monotonic = time.monotonic()
+        self._calendar_boundary_timer = None
+        self._schedule_calendar_boundary()
+        # Also catches clock/zone changes and terminal resume without data events.
+        self.set_interval(1.0, self._refresh_calendar)
         await self.rebuild()
+
+    @staticmethod
+    def _local_calendar_key() -> tuple:
+        local = datetime.fromtimestamp(time.time()).astimezone()
+        return local.date(), local.tzname(), local.utcoffset()
+
+    def _schedule_calendar_boundary(self) -> None:
+        if self._calendar_boundary_timer is not None:
+            self._calendar_boundary_timer.stop()
+        now = time.time()
+        local = datetime.fromtimestamp(now)
+        midnight = datetime.combine(local.date() + timedelta(days=1), datetime.min.time())
+        self._calendar_boundary_timer = self.set_timer(
+            max(0.01, midnight.timestamp() - now), self._refresh_calendar
+        )
+
+    async def _refresh_calendar(self) -> None:
+        key = self._local_calendar_key()
+        wall, monotonic = time.time(), time.monotonic()
+        clock_changed = abs((wall - self._calendar_wall_time) - (monotonic - self._calendar_monotonic)) > 2
+        self._calendar_wall_time, self._calendar_monotonic = wall, monotonic
+        if key == self._calendar_key and not clock_changed:
+            return
+        self._calendar_key = key
+        self._schedule_calendar_boundary()
+        await self.rebuild(keep_selection=True)
 
     def _session_items(self) -> list[tuple[ListItem, SessionCard]]:
         """按当前显示顺序返回 (列表项, 会话卡)（跳过顶部固定项）。
@@ -1724,7 +1755,7 @@ class SessionListView(Vertical):
 
         # 未置顶区：按 store 稳定顺序走一遍，组卡落在其「最先出现的成员」位置。
         # 禁止再按当前 mtime 整列重排——否则运行中会话一写盘整组就会在侧边栏里上下飘。
-        # 只按本地日历日分桶：桶内相对顺序不变；live 或当天的块整块进今天。
+        # Group by local activity date, preserving relative order within each day.
         buckets: list[list[_SidebarRow]] = [[] for _ in range(_OLDER_BUCKET + 1)]
         now = time.time()
 

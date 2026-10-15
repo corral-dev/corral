@@ -91,11 +91,11 @@ bottom-right corner; clicking it runs the same install command your install chan
 (`brew upgrade x0c/tap/corral` or `pip install --upgrade`), then offers to restart `corral`. You can also
 trigger this manually any time with `corral update`, or dismiss the notice for the day.
 
-Optional title generation does **not** launch Claude, Codex, OpenCode, Kimi, or Cursor. When a language-model gateway is configured (`~/.config/corral/llm-gateway.json`, or the matching `CORRAL_LLM_GATEWAY_*` / `CORRAL_TITLE_MODEL` environment overrides), Corral sends short session excerpts to that OpenAI-compatible endpoint and may consume quota there. Without a configured key, it keeps local fallback titles and makes no title-generation network request. Failed, invalid, or incomplete results stay on the local title cache so later launches do not automatically resubmit the same session.
+Automatic title generation sends bounded session excerpts to the configured OpenAI-compatible gateway when its URL and key are configured (`~/.config/corral/llm-gateway.json` or the matching environment overrides). Without gateway configuration, Corral can instead launch an installed Claude Code, Codex, OpenCode, Cursor, or Pi runtime in non-interactive mode, using that runtime's existing account and model settings. This may consume the runtime account's quota and send the excerpts to its configured provider; "local Agent" describes the client process, not offline inference.
 
-Failed, timed-out, invalid, or incomplete title results are recorded locally for the current cache
-version. Later launches do not automatically submit those sessions again, preventing repeated quota
-usage; a future cache-version upgrade may retry them under updated rules.
+Title jobs run outside user projects in a private Corral-owned workspace under `~/.config/corral/title-worker/` (or `XDG_CONFIG_HOME`). Claude, Codex, and Pi use native no-session modes; OpenCode uses a private server/database, and Cursor uses a separate data directory. Temporary job data is removed afterward. Corral does not copy credentials or resume/rewrite user conversations. Incompatible or unauthenticated runtimes are skipped; if no channel works, readable local fallback titles remain.
+
+Accepted titles remain stable. Failed or invalid requests have a six-hour cooldown. Missing-channel failures can retry when a usable channel appears; insufficient-context results retry when task input changes. All channels share the same host-side title cache and phone synchronization. Read-only JSON query commands never start title generation.
 
 ## Attention Status And Cursor Observer
 

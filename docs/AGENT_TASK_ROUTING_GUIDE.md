@@ -9,7 +9,7 @@
 - `docs/PUBLIC_PRESENTATION_GUIDE.md`: **must read** before rewriting/reviewing README, GitHub presentation, or Corral icon assets; otherwise retired arrow/horse artwork and implementation-heavy copy can return.
 
 
-- [docs/design/SESSION_TITLE_DESIGN.md](design/SESSION_TITLE_DESIGN.md): **Must read** before designing, changing, reviewing, or troubleshooting iOS/TUI session title differences, shared generation, title quality, or title synchronization—including **「iOS标题和TUI不一致 / 手机标题还是临时兜底 / 标题改了手机列表不更新 / 标题是骂人话 / Session recap / Task / 实现 / 空白会话 / 标题生成失败 / 侧栏莫名出现 cli 生成 s0 / 为什么还用 Claude 生成标题 / 空壳为什么有标题 / cli 是哪个目录」**; otherwise independent title policies, shortest-fallback corruption, invalid cached successes, or mistaking a test empty shell plus a colliding cache title for title-generation-via-Claude can persist. The current channel is the shared gateway, not whichever assistant recently succeeded.
+- [docs/design/SESSION_TITLE_DESIGN.md](design/SESSION_TITLE_DESIGN.md): **Must read** before designing, changing, reviewing, or troubleshooting iOS/TUI session title differences, shared generation, title quality, or title synchronization—including **「iOS标题和TUI不一致 / 手机标题还是临时兜底 / 标题改了手机列表不更新 / 标题是骂人话 / Session recap / Task / 实现 / 空白会话 / 标题生成失败 / 侧栏莫名出现 cli 生成 s0 / 为什么还用 Claude 生成标题 / 空壳为什么有标题 / cli 是哪个目录」**; otherwise independent title policies, shortest-fallback corruption, invalid cached successes, or mistaking a test empty shell plus a colliding cache title for title-generation-via-Claude can persist. The current routing is configured gateway first, otherwise compatible local Agent runtimes using isolated one-shot jobs (owner ruling 2026-10-15).
 
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。
 

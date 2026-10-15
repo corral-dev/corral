@@ -146,7 +146,7 @@ Pairing starts remote access and installs any missing remote components. Scan or
 ## Privacy
 
 - Session browsing and search read local assistant history.
-- Optional title generation may send short excerpts to a configured language-model gateway and can consume quota there.
+- Titles use your configured model gateway, or an installed agent’s existing login when no gateway is configured. Short excerpts may consume quota on that account.
 - Update checks contact GitHub.
 - Pairing a device authorizes it to access and act on your sessions; remote traffic is end-to-end encrypted.
 
