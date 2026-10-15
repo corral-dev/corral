@@ -55,7 +55,8 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(updater, "detect_channel", return_value="pip"), \
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
-             mock.patch.object(updater, "should_prompt", return_value=True):
+             mock.patch.object(updater, "should_prompt", return_value=True), \
+             mock.patch.object(updater, "prepare_stage", return_value=None):
             async with app.run_test(size=(100, 30)):
                 toast = app.screen.query_one(UpdateToast)
                 await _wait_until(lambda: toast.has_class("-visible"))
@@ -94,6 +95,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
              mock.patch.object(updater, "should_prompt", return_value=True), \
+             mock.patch.object(updater, "prepare_stage", return_value=None), \
              mock.patch.object(updater, "run_update") as run_update:
             async with app.run_test(size=(100, 30)) as pilot:
                 toast = app.screen.query_one(UpdateToast)
@@ -104,6 +106,75 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(app.return_value, updater.RestartRequest)
         self.assertEqual(app.return_value.latest, "9.9.9")
         self.assertEqual(app.return_value.channel, "pip")
+        self.assertIsNone(app.return_value.spec)
+
+    async def test_staged_spec_reaches_restart_request(self) -> None:
+        import os
+        import tempfile
+
+        store = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        with tempfile.TemporaryDirectory() as td:
+            staged = os.path.join(td, "corral-9.9.9-py3-none-any.whl")
+            with open(staged, "wb") as fh:
+                fh.write(b"fake")
+            with mock.patch.object(updater, "detect_channel", return_value="pipx"), \
+                 mock.patch.object(updater, "is_updatable", return_value=True), \
+                 mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
+                 mock.patch.object(updater, "should_prompt", return_value=True), \
+                 mock.patch.object(updater, "prepare_stage", return_value=staged):
+                async with app.run_test(size=(100, 30)) as pilot:
+                    toast = app.screen.query_one(UpdateToast)
+                    await _wait_until(lambda: toast.has_class("-visible"))
+                    screen = app.screen
+                    await _wait_until(lambda: screen._update_spec == staged)
+                    body_text = toast.query_one("#toast-body").render().plain
+                    self.assertIn("downloaded", body_text)
+                    await pilot.click("#toast-body")
+                    await _wait_until(lambda: app._exit)
+        self.assertEqual(app.return_value.spec, staged)
+
+    async def test_brew_prewarm_flips_copy_without_spec(self) -> None:
+        store = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch.object(updater, "detect_channel", return_value="brew"), \
+             mock.patch.object(updater, "is_updatable", return_value=True), \
+             mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
+             mock.patch.object(updater, "should_prompt", return_value=True), \
+             mock.patch.object(updater, "prewarm_brew", return_value=True), \
+             mock.patch.object(
+                 updater, "prepare_stage",
+                 side_effect=AssertionError("brew uses prewarm_brew"),
+             ):
+            async with app.run_test(size=(100, 30)):
+                toast = app.screen.query_one(UpdateToast)
+                await _wait_until(lambda: toast.has_class("-visible"))
+                await _wait_until(
+                    lambda: "downloaded" in toast.query_one("#toast-body").render().plain
+                )
+
+    async def test_bottom_row_clicks_reach_widgets_below_toast(self) -> None:
+        # 回归：浮层可见时，底部左半行点下去必须落在页脚/列表上，而不是浮层容器上
+        store = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch.object(updater, "detect_channel", return_value="pip"), \
+             mock.patch.object(updater, "is_updatable", return_value=True), \
+             mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
+             mock.patch.object(updater, "should_prompt", return_value=True), \
+             mock.patch.object(updater, "prepare_stage", return_value=None):
+            async with app.run_test(size=(100, 30)) as pilot:
+                toast = app.screen.query_one(UpdateToast)
+                await _wait_until(lambda: toast.has_class("-visible"))
+                await pilot.pause()
+                region = toast.region
+                self.assertLess(region.width, 100)
+                self.assertGreater(region.x, 0)
+                top, _ = app.screen.get_widget_at(2, 29)
+                self.assertIsNot(toast, top)
+                self.assertNotIn(toast, top.ancestors)
+                await pilot.click(None, offset=(2, 29))
+                await pilot.pause()
+                self.assertFalse(app._exit)
 
     async def test_dismiss_calls_mark_dismissed_and_hides_toast(self) -> None:
         store = _make_store()
@@ -112,6 +183,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
              mock.patch.object(updater, "should_prompt", return_value=True), \
+             mock.patch.object(updater, "prepare_stage", return_value=None), \
              mock.patch.object(updater, "mark_dismissed") as mark_dismissed:
             async with app.run_test(size=(100, 30)) as pilot:
                 toast = app.screen.query_one(UpdateToast)

@@ -444,11 +444,11 @@ class PrepareStageTests(unittest.TestCase):
              mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
              self._urlopen_with(payload, content_length=str(len(payload))):
             staged = updater.prepare_stage("0.21.0", "pip")
-        self.assertIsNotNone(staged)
-        assert staged is not None
-        self.assertTrue(os.path.isfile(staged))
-        with open(staged, "rb") as fh:
-            self.assertEqual(fh.read(), payload)
+            self.assertIsNotNone(staged)
+            assert staged is not None
+            self.assertTrue(os.path.isfile(staged))
+            with open(staged, "rb") as fh:
+                self.assertEqual(fh.read(), payload)
 
     def test_reuses_existing_cache_without_downloading(self) -> None:
         with tempfile.TemporaryDirectory() as td, \

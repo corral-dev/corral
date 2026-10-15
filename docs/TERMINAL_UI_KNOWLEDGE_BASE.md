@@ -19,7 +19,30 @@
 | §8 | 关联文档 | 进入相邻领域时联读 |
 | §9 | 覆盖度与待补充项 | 了解证据边界与未确认事项 |
 
-### Sidebar header capsules (2026-10-11)
+### Inline quick-filter labels (2026-10-15)
+
+The sidebar quick filters must explain their dimensions without separate heading
+rows: `Agent` / `助手` and `Project` / `项目` precede their choices on the same
+line. Keep two content rows at the default 39-cell sidebar width, plus the existing
+owned trailing blank row. The input names the object being filtered (`Filter sessions`
+in English; `筛选会话：项目、标题` in Chinese). The project picker is explicitly
+named `More projects…` / `更多项目…`. Preserve multi-select unions, intersections,
+runtime brand colors, stable recent-project order and keyboard/mouse activation.
+Only the fitting recent-project prefix is visible; all other projects remain in
+the searchable picker. Selections never move quick choices. The picker reserves
+its maximum count width so selection does not cause a layout shift.
+
+Inspected implementation: `ui/quick_filters.py` FilterChip, QuickFilters and
+ProjectFilterModal; native Textual 8.2.8 Button label/Pressed and Grid layout.
+Reuse the existing Button behavior, fill colors and modal. Inline choices use a
+flat text-width fill with a one-cell gap, instead of endcaps consuming two cells
+per choice; the five full assistant names then fit beside the label. New Session
+quick-start chips retain their existing endcaps and wrapping. Public Button contract:
+<https://textual.textualize.io/widgets/button/>. This TUI-only layout does not
+change Apple filter controls or SessKit semantics. Acceptance remains pending
+until the compact rows and overflow picker are exercised and captured.
+
+### Sidebar header capsules (2026-10-11; quick rows superseded above)
 
 The adopted header redesign keeps the 39-cell sidebar and existing filter semantics.
 The filter owns two rows: one capsule with `/`, the native Input, a separate right-aligned
@@ -29,9 +52,8 @@ never displays refresh age (owner correction 2026-10-15); retain the count and l
 session-card activity timestamps unchanged. Loading, errors and an empty catalog hide the count. Error and empty-catalog
 hints put the outcome first, without repeating the normal filter instruction,
 so a 39-cell sidebar reveals the reason before any runtime names or retry suffix.
-Runtime/project quick choices, including dynamically mounted project buttons, use
-the same FilterChip renderer and independent half-block endcaps, stable width-aware
-packing and one final owned blank row. More reserves 11 cells, with counts above 99
+Runtime/project quick choices use the inline layout above and one final owned
+blank row. Counts above 99 are
 shown as `99+`. Hover/focus changes only the capsule fill: dark themes lighten and
 light themes darken, without frames or underlines. Runtime brand colors survive selection.
 New Session and Active labels start one cell in; Active has a right-aligned native
@@ -87,7 +109,7 @@ corral 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 侧边栏会话列表 | 左栏的搜索框、新建入口、会话组三行卡和会话三行卡 | `SessionListView`、`SessionGroupCard`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话；有关键字时框体高亮（`-active`） | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
-| Runtime and project quick filters | Runtime and recent-project choices pack by terminal cell width into as many single-line rows as needed. Runtime and project rows are adjacent, with no blank separator row. Neither dimension has a fixed column count; three short projects must share a row when they fit. The unfiltered recent project snapshot keeps its order across selection, deselection and activity refresh. Selections outside the snapshot stay in the searchable More list; they never evict, prepend or move quick choices. More has a stable width, so changing its count does not reflow the row. No All entries or added selection markers. Runtime names reuse `theme.runtime_label_style`; selection changes the background, not the runtime color. Project selection uses the existing theme colors. Hover, keyboard focus and deselection must not add a white fill, underline or focus frame. | Owner corrections 2026-10-11 supersede fixed two/three-column grids, selected-first ordering and underlined focus. Reuse inspected Textual Button and Grid with cell spans and native spacer widgets; layout is width-aware and labels use Rich cell measurement, preserving CJK width. Runtime/project choices remain multi-select unions, intersected with text and Active. Native arrows/Tab/Enter remain available. Search results retain an actionable first row; Down then Space selects immediately, preserving hidden selections. Only five supported runtimes appear. Acceptance includes three short projects on one line, resizing, unchanged positions after mouse/keyboard toggles and More selections, colored runtime labels, deselection without underline, long names, and dark/light themes. Apple ordering is governed by the Apple UI KB. |
+| Runtime and project quick filters | Two adjacent inline-labeled rows at the default 39-cell width; overflow projects stay in More projects. The unfiltered recent-project snapshot retains its order across selection, deselection and refresh. Hidden selections never replace or move quick choices. More projects reserves count width. No All entries or added selection markers. Runtime names retain brand colors; selection changes the fill. Hover/focus never adds white fill, underlines or frames. | Owner correction 2026-10-15 supersedes unlabeled wrapping rows; see Inline quick-filter labels above. Reuse Button/Grid with terminal-cell measurement. Multi-select unions intersect with text and Active. Mouse and native keyboard selection remain available. Only five active runtimes appear. Apple ordering is governed by the Apple UI KB. |
 | 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提示词，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或任意焦点按 `Ctrl+N`（与 `Ctrl+F` / `Ctrl+P` 同级的全局键），或右栏顶栏点助手加格；打开弹窗时光标必须在项目筛选框，立刻可打字；单字母 `n` 不绑 |
 | Runtime names in dialogs | New Session and the runtime handoff picker reuse `theme.runtime_label_style` for Agent names, including focused and selected rows. Unavailable runtimes keep their brand color with dim styling; project labels and action hints retain their existing styles. | Owner correction 2026-10-11. Reuse the existing Rich Text labels and native Textual ListView selection background; do not recolor every row uniformly. |

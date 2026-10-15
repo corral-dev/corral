@@ -21,7 +21,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "filter.all": {"en": "All", "zh": "全部"},
     "filter.projects": {"en": "Projects", "zh": "项目"},
     "filter.all_projects": {"en": "All projects", "zh": "全部项目"},
-    "filter.more": {"en": "More", "zh": "更多"},
+    "filter.agent_label": {"en": "Agent", "zh": "助手"},
+    "filter.project_label": {"en": "Project", "zh": "项目"},
+    "filter.more": {"en": "More projects…", "zh": "更多项目…"},
     "filter.no_project": {"en": "No project", "zh": "无项目"},
     "filter.projects_search": {"en": "Search projects", "zh": "搜索项目"},
     "filter.done": {"en": "Done", "zh": "完成"},
@@ -135,8 +137,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # 筛选框匹配项目名、路径和会话标题（分屏不起名）；搜对话正文是
     # 另一条路（Ctrl+F 全文搜索弹窗），不在这个框里。
     "filter.placeholder": {
-        "en": "Filter projects, titles",
-        "zh": "筛选项目、标题",
+        "en": "Filter sessions",
+        "zh": "筛选会话：项目、标题",
     },
     "filter.load_error": {
         "en": "Load failed: {error}; retrying",

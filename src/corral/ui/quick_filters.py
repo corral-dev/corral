@@ -139,10 +139,13 @@ class FilterChip(Button):
 
     def render(self) -> Content:
         fill = self.get_visual_style("filter-chip--fill")
-        width = max(0, self.size.width - 2)
+        inline = self.has_class("-inline")
+        width = max(0, self.size.width - (0 if inline else 2))
         label = self.label.truncate(width, ellipsis=True)
         label = label.pad_right(max(0, width - label.cell_length))
         body = label.stylize_before(fill)
+        if inline:
+            return body
         if self.app.native_ansi_color or self.app.console.color_system == "standard":
             return body.pad(1, 1).stylize_before(fill)
         side = Style(foreground=fill.background, background=self.background_colors[1])
@@ -152,6 +155,10 @@ class FilterChip(Button):
 class QuickFilters(Vertical):
     DEFAULT_CSS = """
     QuickFilters { height: auto; padding: 0 0 1 0; }
+    QuickFilters > Horizontal { height: auto; }
+    QuickFilters .filter-dimension {
+        width: auto; height: 1; margin-right: 1; color: $text-muted;
+    }
     QuickFilters Grid { grid-rows: 1; grid-columns: 1; height: auto; }
     QuickFilters .filter-gap { height: 1; }
     """
@@ -165,15 +172,19 @@ class QuickFilters(Vertical):
         self._sync_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
-        with Grid(id="runtime-quick-row"):
-            for runtime in active_runtimes(self.store.registry):
-                label = "Claude" if runtime.id == "claude" else runtime.display_name
-                yield Static("", id=f"runtime-{runtime.id}-gap", classes="filter-gap")
-                yield FilterChip(Text(label, style=runtime_label_style(runtime.id)),
-                             id=f"runtime-{runtime.id}", compact=True)
-        with Grid(id="project-quick-row"):
-            yield Static("", id="project-more-gap", classes="filter-gap")
-            yield FilterChip(t("filter.more"), id="project-more", compact=True)
+        with Horizontal():
+            yield Label(t("filter.agent_label"), classes="filter-dimension")
+            with Grid(id="runtime-quick-row"):
+                for runtime in active_runtimes(self.store.registry):
+                    label = "Claude" if runtime.id == "claude" else runtime.display_name
+                    yield Static("", id=f"runtime-{runtime.id}-gap", classes="filter-gap")
+                    yield FilterChip(Text(label, style=runtime_label_style(runtime.id)),
+                                     id=f"runtime-{runtime.id}", classes="-inline", compact=True)
+        with Horizontal():
+            yield Label(t("filter.project_label"), classes="filter-dimension")
+            with Grid(id="project-quick-row"):
+                yield Static("", id="project-more-gap", classes="filter-gap")
+                yield FilterChip(t("filter.more"), id="project-more", classes="-inline", compact=True)
 
     def on_mount(self) -> None:
         self.call_next(self.sync)
@@ -211,7 +222,7 @@ class QuickFilters(Vertical):
                 choices.extend([
                     Static("", id=f"project-choice-{i}-gap", classes="filter-gap project-gap"),
                     FilterChip(Text(fit_cell(labels[path], 16, ellipsis=True).rstrip()), name=path,
-                           id=f"project-choice-{i}", classes="project-choice",
+                           id=f"project-choice-{i}", classes="project-choice -inline",
                            tooltip=path or t("filter.no_project"), compact=True),
                 ])
             await row.mount(*choices, before=self.query_one("#project-more-gap"))
@@ -220,11 +231,42 @@ class QuickFilters(Vertical):
         more.label = t("filter.more") + ("(99+)" if count > 99 else f" ({count})" if count else "")
         for button in row.query(".project-choice"):
             self._mark(button, button.name in self.nav.project_filters)
-        self._pack(self.query_one("#runtime-quick-row", Grid))
-        self._pack(row)
+        self._pack(self.query_one("#runtime-quick-row", Grid), spacing=1)
+        self._pack_projects(row)
 
     def on_resize(self, event: events.Resize) -> None:
         self.call_next(self.sync)
+
+    @staticmethod
+    def _pack_projects(row: Grid) -> None:
+        """Keep one project line, reserving the picker before exposing shortcuts."""
+        width = max(1, row.content_size.width)
+        row.styles.grid_size_columns = width
+        row.styles.grid_rows = "1"
+        row.styles.height = 1
+        more = row.query_one("#project-more", Button)
+        more_width = min(width, text_width(t("filter.more") + " (99+)"))
+        cursor = 0
+        overflow = False
+        for button in row.query(".project-choice"):
+            cells = text_width(str(button.label))
+            gap = row.query_one(f"#{button.id}-gap")
+            separation = 1 if cursor else 0
+            overflow = overflow or cursor + separation + cells + 1 + more_width > width
+            button.display = not overflow
+            gap.display = not overflow and bool(separation)
+            if not overflow:
+                gap.styles.column_span = 1
+                button.styles.column_span = cells
+                button.styles.width = cells
+                cursor += separation + cells
+            elif button.has_focus:
+                more.focus()
+        gap = row.query_one("#project-more-gap")
+        gap.display = bool(cursor)
+        gap.styles.column_span = 1
+        more.styles.column_span = more_width
+        more.styles.width = more_width
 
     @staticmethod
     def _pack(row: Grid, *, spacing: int = 0, row_spacing: int = 0) -> None:
@@ -234,7 +276,7 @@ class QuickFilters(Vertical):
         cursor = 0
         lines = 1
         for button in row.query(Button):
-            cells = min(width, 11 if button.id == "project-more" else text_width(str(button.label)) + 2)
+            cells = min(width, text_width(str(button.label)) + (0 if button.has_class("-inline") else 2))
             gap = row.query_one(f"#{button.id}-gap")
             if cursor == width:
                 cursor = 0
@@ -282,7 +324,7 @@ class QuickFilters(Vertical):
             buttons = list(self.query("#runtime-quick-row Button"))
             delta = {"left": -1, "right": 1}.get(event.key)
         elif focused.parent.id == "project-quick-row":
-            buttons = list(self.query("#project-quick-row Button"))
+            buttons = [button for button in self.query("#project-quick-row Button") if button.display]
             delta = {"left": -1, "right": 1}.get(event.key)
         else:
             return
