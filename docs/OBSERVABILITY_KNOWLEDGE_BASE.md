@@ -27,7 +27,7 @@ corral 是本地终端应用，诊断信息只留在本机，不发送远程遥�
 | 截图观测（F12） | 用户在真实 TUI 中导出的当前 SVG 画面 | 可能含真实对话，仅供本地排查 |
 | 界面异常排查 | 将事件、异常栈与截图关联定位问题的只读流程 | 不借此修改业务功能或启动会话 |
 | 细日志 | 仅在调试开关开启后追加的 debug 级事件 | 默认关闭，不能把详细内容变成常规日志 |
-| TUI 长卡顿 | 界面事件循环未响应后台探测达到 3 秒 | 每次连续卡顿至多抓一次全线程栈，恢复后记录持续时间；仅本机保存 |
+| TUI stall | The event loop does not answer a background probe for 3 seconds | At most one all-thread stack per continuous stall; recovery records elapsed time locally |
 
 ## §2 诊断闭环
 
@@ -51,11 +51,11 @@ flowchart TD
 4. 需要确认用户实际看见的布局或画面时，让用户在真实 TUI 内按 F12，再结合同一时间段的日志排查。
 5. 默认信息不足时，设置 `CORRAL_DEBUG=1` 或 `CORRAL_LOG=debug` 后重启 TUI，复现一次并读取新增的 debug 事件。
 
-TUI 长卡顿无异常也必须留证：后台线程每 0.5 秒向事件循环送一个轻量探测，最多保留一个未回应探测；等待达到 3 秒时立即在后台把全线程栈写入 `stacks.log`，并写 `tui_stall` 事件。事件循环恢复时写 `tui_stall_recovered`（`duration_ms`、同一 `stall_id`）；若后台线程也受系统调度影响而没能在卡顿中取栈，仍写恢复事件并标明没有现场栈。启动前、退出后、诊断等非 TUI 路径不启动探测。栈只含 Python 文件/函数/行号，不收集会话正文、局部变量，也不上传；本地栈路径仍按敏感材料处理。阈值是取证门槛，不等于已证实的根因或“死锁”。
+A daemon thread sends one event-loop probe every 0.5 seconds, with at most one probe outstanding. At 3 seconds without an answer it writes one all-thread sample to `stacks.log` and emits `tui_stall`. On recovery it emits `tui_stall_recovered` with the same `stall_id` and `duration_ms`; `stack_attempted=false` means the watchdog could not sample during the stall, such as when it was itself starved. Probing exists only while the TUI runs. Python stack dumps include file/function/line, without local variables or conversation bodies, but the local file is still sensitive. The threshold establishes diagnostic evidence, not a deadlock diagnosis.
 
-`events.log` 与 `embed-error.log` 超过 256KB 前改为轮转到各自 `.1` 并继续写新文件，最多保留当前段和上一段；读最近异常先读当前段、为空或不可解析时读上一段。轮转失败只能降级，不可阻断 TUI。跨进程同时写同一路径时仍可能有极短的轮转竞争，不能把日志缺席当成事件未发生。
+Before `events.log` or `embed-error.log` would exceed 256KB, rotate the old segment to `.1` and start a new one. `last_error` reads the current error segment and falls back to `.1` when needed. A failed rotation must not block the TUI. Concurrent processes can still race during rotation, so absence from either segment is not proof an event never happened.
 
-同一台开发机上的 TUI、远程守护和标题生成可能共写事件日志；每条事件固定附加进程 `pid`，先按 pid 分流再比较 `scan_all`、`list_rebuild` 和 `tui_stall`。不同 `session_count` 或相邻时间戳不能单独证明是同一个界面进程。2026-10-15 异机 Pi 现场出现 508/1213 条会话的两轮 3.9/4.8 秒未命中全扫，侧栏重建仅 1–6ms，抓帧约 0.2s：全扫是候选负载来源，主线程是否被拖住仍需同进程卡顿栈确认。
+TUI, remote daemon and title generator can write to the same event log. Every event therefore includes `pid`; group by pid before comparing `scan_all`, `list_rebuild` and `tui_stall`. Adjacent timestamps or different session counts do not establish a common process. In the 2026-10-15 off-host Pi report, two uncached full scans took 3.9/4.8 seconds for 508/1213 sessions, while list rebuilds took 1–6ms and captures about 0.2s. Full scans are a candidate source of load; a same-process stall stack is still needed to prove what held the UI thread.
 
 ### Hosted assistant startup errors
 
@@ -67,16 +67,17 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 
 | 场景 | 入口 | 作用 |
 |---|---|---|
-| 事件日志、脱敏、截断与写失败降级 | `observe.py` | 统一实现事件、细日志、计时、异常记录、崩溃钩子与截图导出 |
+| 事件日志、脱敏、轮转与写失败降级 | `observe.py` | 统一实现事件、细日志、计时、异常记录、崩溃钩子与截图导出 |
 | 一键只读诊断 | `agent_api.py` 的 `cmd_diagnose` | 返回缓存、日志、`last_error`、截图、tmux 与配色自检事实 |
 | F12 绑定与用户提示 | `ui/main_screen.py` 的 `MainScreen.action_save_screenshot` | 调用截图观测并在成功后提示保存位置 |
 | 抓帧/重扫错误桥接 | `observe.log_embed_error` / `corral._log_embed_error` | 将后台异常同时写成事件与 traceback 文件 |
 | 致命闪退落盘 | `observe.install_crash_hooks`、`ui/app.py` 的 `_handle_exception` | 进程/线程未捕获与 TUI 退出前双写 |
 | 按需栈转储 | `observe.install_stack_dumps`（TUI 经 `cli.py main`、常驻服务经 `remote/cli.py` 的 `_run_daemon_foreground` 各调一行） | SIGUSR1 时全线程栈追加到 `stacks.log`，触发只用 `kill -USR1` |
+| Automatic TUI stall capture | `observe.TuiStallWatchdog` / `ui/app.py` | One pending event-loop probe, bounded stack sample, and recovery timing; stops with the app |
 | 后台会话重扫观测 | `store.py` 的 `SessionStore.load` / `refresh` 与 `ui/main_screen.py` 的刷新 worker | 记录 `scan_all`，异常后保留后台循环 |
 | 内嵌会话托管观测 | `ui/main_screen.py` 的 `_host_and_focus` / `_host_direct_worker` | 记录 `host_session` 的耗时、运行时和成功状态 |
 | 抓帧异常与慢帧观测 | `ui/embed_pane.py`、`embed.py` | 记录 `capture_slow`，异常写入异常日志并继续抓帧 |
-| 回归约束 | `test_observe.py` | 覆盖 JSON 行、细日志开关、脱敏、256KB 截断、计时和异常双写 |
+| 回归约束 | `test_observe.py` | 覆盖 JSON 行、细日志开关、脱敏、有界轮转、卡顿取栈、计时和异常双写 |
 
 ## §4 本地数据与路径
 
@@ -84,8 +85,9 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 
 | 本地位置 | 内容 | 读取/写入边界 |
 |---|---|---|
-| `~/.cache/corral/events.log` | 结构化事件日志，一行一个 JSON | 当前实现本地追加，写前超过 256KB 会整文件清空；2026-08-26 Pi 会话错绑取证中因此永久丢失 10:28–11:16 的关键托管/占位迁移事件，不能把它视为可靠历史保留 |
-| `~/.cache/corral/embed-error.log` | 后台异常与致命闪退的完整 traceback | 本地追加；每次写前超过 256KB 则截断 |
+| `~/.cache/corral/events.log` / `.1` | 结构化事件日志，一行一个 JSON | 当前和上一段各限约 256KB；旧版超限整文件清空曾使 Pi 现场证据永久丢失 |
+| `~/.cache/corral/embed-error.log` / `.1` | 后台异常与致命闪退的完整 traceback | 当前和上一段各限约 256KB；`last_error` 优先当前段 |
+| `~/.cache/corral/stacks.log` / `.1` | Manual SIGUSR1 and automatic TUI stall stacks | Bounded current and previous 1MB segments; correlate with event pid and stall id/time |
 | `~/.cache/corral/screenshots/tui-*.svg` | F12 导出的真实 TUI 截图 | 仅用户主动触发；可能包含真实对话 |
 | `~/.cache/corral/` | 诊断、截图和其它本地缓存根目录 | `corral diagnose` 只报告路径与存在性 |
 | `docs/screenshots/list.png` | 文档/验收截图产物 | 仅由虚构演示数据生成，不代表真实现场 |
@@ -104,13 +106,14 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 | `host_size_drift` | 抓帧线程发现 tmux 真实尺寸落后于**有效尺寸**（最近被使用的仍存活观看方登记的宽高）并重发 `resize` | 实际/期望宽高与重试次数；同一目标最多 3 次、间隔约 2s。有效尺寸由 `desired_host_size` 按各方 `used_at` 取最近使用者；非赢家窗口自己 crop 或留白。**同一会话在约 2 倍宽度之间来回（如 165↔82）且期间没人操作 = 有路径在后台续票时刷新了 `used_at`、观看方登记丢失，或 `window-size latest` 把窗打回 80 列**，不是单次 resize 失败 |
 | `screenshot` | 用户按 F12 成功导出截图 | 本地路径和 SVG 格式 |
 | `error` | 抓帧、重扫、截图、TUI/进程未捕获异常等路径 | 位置、异常类型、短消息；完整栈另存 |
+| `tui_stall` / `tui_stall_recovered` | UI probe reaches 3 seconds / eventually receives its answer | `pid`, `stall_id`, elapsed or total `duration_ms`, and whether a live stack was attempted/captured |
 | debug 事件 | 已开启细日志时 | 仅用于补充诊断上下文，不应承载正文 |
 | `corral diagnose` → `last_error` | 只读解析 `embed-error.log` 末条 | `ts`/`where`/`exc_type`/`exc_msg`/`traceback`；无记录为 null |
 | 远程 RPC 服务端耗时（Slice0） | 每个成功 RPC 在 `RemoteService.handle` 计业务耗时 | audit 条目 `method` / `duration_ms` / `plane`（control/data）/ `ok` / `req_id`；失败请求不记耗时，由 `remote_method_failed` / `remote_response_send_failed` 覆盖。不记会话 key、正文与参数 |
 | `corral remote status` 最近操作 | 运行快照 `recent` + 人读输出 | 每行 `时间 设备 方法 耗时ms [平面]`；旧条目（无耗时字段）只显示前三段 |
 | 按需栈转储（SIGUSR1） | 任何运行中的 Corral 进程（TUI、`corral remote _serve`）收到 SIGUSR1 时 | 经 `observe.install_stack_dumps()` 安装的处理器写头行（ISO 时间 + pid）再 `faulthandler.dump_traceback(all_threads=True)`，追加到 `~/.cache/corral/stacks.log`；超 1MB 则轮转保留一代（`stacks.log.1`）。触发只用 shell `kill -USR1 <pid>`，pid 取自只读 `list --live` 可见性；不新增 `agent_api` 子命令（发信号属进程控制副作用，违只读约束） |
 
-`timed` 在操作结束时补充 `duration_ms`，使“发生了什么”和“是否变慢”可在同一事件日志中关联。事件日志默认只记录低基数名称和状态；会话文本、提示词、命令参数、令牌等不应作为诊断字段。
+`timed` 在操作结束时补充 `duration_ms`，使“发生了什么”和“是否变慢”可在同一事件日志中关联。所有事件含进程 `pid`；其余默认只记录低基数名称和状态。会话文本、提示词、命令参数、令牌等不应作为诊断字段。
 
 ## §6 核心业务规则与隐性约束
 
@@ -118,7 +121,7 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 2. **写日志失败必须吞掉。** 创建目录、截断或写文件失败都不能拖死抓帧、后台重扫或界面线程；观测是降级能力，不得成为主流程可用性的前置条件。
 3. **默认只写低基数事件。** 常规日志仅保留事件名、耗时、状态、运行时等可聚合事实；细粒度上下文只在 `CORRAL_DEBUG=1` 或 `CORRAL_LOG=debug` 时写入。
 4. **敏感内容必须脱敏。** 字段名为 `text`、`prompt`、`messages`、`message`、`content`、`body`、`argv`、`command`、`token`、`api_key`、`password`、`secret`（含大小写变化）时，一律以 `<redacted>` 落盘；不要新增近义字段来绕过该规则。
-5. **当前 256KB 整文件截断只是一项已知有害的容量保护，不是可靠保留策略。** 2026-08-26 排查“Pi 新会话消失、标题与提示词挂错分屏”时，`events.log` 因超限直接清空，10:28–11:16 的 `host_session`、占位卡转正和分屏键迁移证据永久丢失，只能靠第三方扩展日志与文件 birth 时间反推。后续改造应使用有界轮转并至少保留上一段；在轮转落地前，排障必须立刻复制/读取现场日志，禁止把“文件里没有”当成“事件没发生”。日志仍不得无限增长或记录会话正文。
+5. **Bounded rotation preserves one previous segment.** The former 256KB whole-file truncation lost Pi `host_session` and identity-migration evidence on 2026-08-26. Current logs rotate to `.1`; inspect both segments promptly because the next rotation replaces `.1`. Interprocess rotation is not transactional, so a missing event still cannot establish that it never happened. Logs must remain bounded and exclude conversation text.
 6. **异常需要双层证据。** 事件日志写无 traceback 的 `error`，异常日志写完整 traceback；不要把完整栈或会话内容塞回结构化事件。致命闪退必须经 `sys.excepthook` / 线程 hook / Textual `_handle_exception` 落盘，不能只依赖终端瞬间打印。Textual `WorkerFailed` 等包装异常必须展开到根因（`.error` / `__cause__`）再落盘，事件里可用 `via` 标明外层类型。
 7. **诊断必须只读。** `corral diagnose` 只检查本地路径、文件是否存在、tmux 版本和配色自检，并解析 `last_error`；不得启动 TUI、创建会话、写入历史、消费模型额度或改变会话状态。
 8. **F12 与验收截图不能混用。** F12 是真实用户现场截图，可能含隐私；`docs/screenshots/capture.py` 用虚构夹具生成仓库验收图。不能用后者替代现场取证，也不能把前者提交到仓库。
@@ -133,11 +136,12 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 |---|---|---|
 | 事件日志基础契约 | `python3 -m unittest -v test_observe.py` | JSON 行包含时间、级别和事件名 |
 | 细日志开关 | 在测试或本机分别关闭/开启 `CORRAL_DEBUG=1`、`CORRAL_LOG=debug` | 默认不写 debug，开启后才出现 debug 事件 |
-| 脱敏与容量边界 | `python3 -m unittest -v test_observe.py` | 敏感字段变为 `<redacted>`；当前实现超限后仍可继续写入，但整文件清空是已知取证缺陷，改轮转时须断言上一段可追查 |
+| 脱敏与容量边界 | `python3 -m unittest -v test_observe.py` | 敏感字段变为 `<redacted>`；超限后当前段继续写，上一段在 `.1` 可追查 |
+| Automatic stall sample | `test_observe.py` and a real TUI/Pilot run | One outstanding probe, one stack per continuous stall, matching recovery id/duration, watchdog stops with TUI |
 | 异常双写 | `python3 -m unittest -v test_observe.py` | `error` 事件无 traceback，异常日志有完整 traceback |
-| 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回日志/截图目录、存在性、`last_error`、tmux 与配色事实；不启动 TUI |
+| 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回当前/上一段日志路径、栈路径、`last_error`、tmux 与配色事实；不启动 TUI |
 | 事件现场读取 | `python3 -m corral diagnose` 后读取 `data.last_error` 或 `~/.cache/corral/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |
-| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，再读 `events.log` 最近几分钟的 `scan_all` / `list_rebuild` / `capture_slow`；对照 `corral --version` | 无远程遥测。卡顿时常见：`scan_all` 约每 3–4s、`session_count`≈界面深度、`duration_ms` 经常 ≥300。v0.24.185+ 在签名命中时应看到 `reason=refresh_live`、`cache_hit=true`；只有 `refresh` 且尖峰很大 → 先核是否未重启旧进程，再进 `PERFORMANCE_KNOWLEDGE_BASE.md`。**`cache_hit=true` 却零条 `refresh_live`**：v0.24.212 前占位卡会挡住轻量合并；升到该版并重启 TUI 后再看 |
+| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，按 `pid` 读两段事件日志的 `tui_stall` / `tui_stall_recovered`、`scan_all` / `list_rebuild` / `capture_slow`，再看 `stacks.log`；对照 `corral --version` | A stack sampled during the same stall identifies the blocked Python path; timings alone show correlation, not causation. `refresh` spikes with `cache_hit=false` point to full scans; check old-process state and `PERFORMANCE_KNOWLEDGE_BASE.md`. |
 | 远程 RPC 服务端耗时取证 | `corral remote status` 看最近操作行的 `耗时ms [平面]`，或读运行快照 `recent` 的 `duration_ms` / `plane` / `req_id` | 成功 RPC 必带耗时与平面；`session.*` 走 data 说明数据面生效，走 control 说明未附着或回落。失败请求无耗时条目，查 `events.log` 的 `remote_method_failed` |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/corral/screenshots/tui-*.svg`，并只作本地排查使用 |
 | 按需栈转储 | 对活进程 `kill -USR1 <pid>` 后读 `~/.cache/corral/stacks.log`（`test_observe_stacks.py` 覆盖头行/追加/轮转） | 头行含 ISO 时间与 pid，其后为全线程栈；超 1MB 时上一段仍在 `stacks.log.1` 可查 |

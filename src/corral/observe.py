@@ -451,9 +451,10 @@ class TuiStallWatchdog:
                     self._pending_at = sent_at
                     self._reported = False
             if should_sample:
-                captured = _dump_stacks("tui_stall")
+                stall_id = int(sent_at * 1_000_000_000)
+                captured = _dump_stacks(f"tui_stall stall_id={stall_id}")
                 event(
-                    "tui_stall", stall_id=int(sent_at * 1_000_000_000),
+                    "tui_stall", stall_id=stall_id,
                     elapsed_ms=int((time.monotonic() - sent_at) * 1000),
                     stack_captured=captured,
                 )

@@ -775,6 +775,22 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
             app._set_pointer_shape("default")
 
 
+class AppWatchdogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_watchdog_runs_only_with_mounted_tui(self) -> None:
+        from textual.screen import Screen
+
+        app = CorralApp(object(), embed_ok=False)
+        self.assertIsNone(app._stall_watchdog)
+        with mock.patch("corral.ui.app.MainScreen", return_value=Screen()):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                watchdog = app._stall_watchdog
+                self.assertIsNotNone(watchdog)
+                self.assertTrue(watchdog._thread.is_alive())
+        self.assertIsNone(app._stall_watchdog)
+        self.assertTrue(watchdog._stop.is_set())
+
+
 class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     """corral 自身界面配色应跟随外层终端探测到的深浅色（真机反馈：浅色终端下
     配色不对——此前只处理了托管会话内的深浅色注入，没接 corral 自己的界面）。"""

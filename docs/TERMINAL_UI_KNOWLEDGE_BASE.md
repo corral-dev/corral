@@ -293,7 +293,22 @@ with the runtime's existing colored name and the project label. Clicking one
 immediately uses its stored runtime and absolute project directory through the
 same blank-session launch path; project filtering and the selected runtime in
 other controls do not change that pair. Keep the project path available as help.
-These are launch actions, with no selected state. Ordinary project/runtime
+These are launch actions, with no selected state.
+
+Visual correction (owner capture, 2026-10-15): neighboring combinations must be
+visibly separate in the light theme. Leave three terminal cells between buttons,
+and one empty row between wrapped lines. The heading owns an empty line before
+the buttons. Only the runtime name uses its brand color; the separator is muted
+and the project name is bold neutral foreground. Reuse the existing FilterChip
+capsule, native Button behavior and character-width Grid packing; add spacing
+parameters to the packer with zero-spacing defaults so sidebar filters retain
+their own layout. Preserve recent order, click/Enter launch, right-click/Delete
+removal and the initially focused project filter. Validate the owner's repeated
+OpenCode/project pairs, mixed runtimes, long/CJK names, wrapping, hover and focus
+in light/dark terminals at 80 and 120 columns. Mac capsules and iPhone recent
+rows use native layout spacing and are checked separately for this symptom.
+
+ Ordinary project/runtime
 selection remains available below a separator and the filter retains initial
 keyboard focus. Missing directories or unavailable runtimes keep the modal open
 and show the reason, never silently launch a different project or assistant.

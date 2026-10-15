@@ -112,7 +112,8 @@ class ObserveTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertTrue(os.path.isfile(self._stacks_log))
             with open(self._stacks_log, encoding="utf-8") as fh:
-                self.assertIn("reason=tui_stall", fh.read())
+                stack_body = fh.read()
+            self.assertIn("reason=tui_stall", stack_body)
             time.sleep(0.05)
             callback(*args)
             rows = self._lines()
@@ -121,8 +122,29 @@ class ObserveTests(unittest.TestCase):
             self.assertEqual(len(stalls), 1)
             self.assertEqual(len(recovered), 1)
             self.assertEqual(stalls[0]["stall_id"], recovered[0]["stall_id"])
+            self.assertIn(f"stall_id={stalls[0]['stall_id']}", stack_body)
             self.assertGreaterEqual(recovered[0]["duration_ms"], 80)
             self.assertTrue(stalls[0]["stack_captured"])
+        finally:
+            watchdog.stop()
+
+    def test_recovery_is_recorded_when_watchdog_could_not_sample(self) -> None:
+        callbacks: queue.Queue = queue.Queue()
+
+        class Loop:
+            def call_soon_threadsafe(self, callback, *args) -> None:  # noqa: ANN001
+                callbacks.put((callback, args))
+
+        watchdog = self.observe.TuiStallWatchdog(Loop(), interval=0.2, threshold=0.05)
+        watchdog.start()
+        try:
+            callback, args = callbacks.get(timeout=2)
+            time.sleep(0.07)
+            self.assertTrue(callbacks.empty())  # one outstanding probe, no queue buildup
+            callback(*args)
+            rows = self._lines()
+            self.assertEqual([row["name"] for row in rows], ["tui_stall_recovered"])
+            self.assertFalse(rows[0]["stack_attempted"])
         finally:
             watchdog.stop()
 
