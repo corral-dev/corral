@@ -302,13 +302,28 @@ the buttons. Only the runtime name uses its brand color; the separator is muted
 and the project name is bold neutral foreground. Reuse the existing FilterChip
 capsule, native Button behavior and character-width Grid packing; add spacing
 parameters to the packer with zero-spacing defaults so sidebar filters retain
-their own layout. Preserve recent order, click/Enter launch, right-click/Delete
+their own layout. Taller native Grid rows provide the vertical gap; the
+[Textual 8.2.8 sizing issue](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#textual-828-grid-gutter-axes)
+explains why nonzero native gutters are unsuitable for these character spans.
+Preserve recent order, click/Enter launch, right-click/Delete
 removal and the initially focused project filter. Validate the owner's repeated
 OpenCode/project pairs, mixed runtimes, long/CJK names, wrapping, hover and focus
-in light/dark terminals at 80 and 120 columns. Mac capsules and iPhone recent
-rows use native layout spacing and are checked separately for this symptom.
+in light/dark terminals at 80 and 120 columns. Mac capsules already use a six-point HStack gap; iPhone recent entries are
+separate full-width rows with neutral title text. Source comparison finds neither
+TUI-specific cause in those clients; no Apple code change is needed and no fresh
+physical-client visual acceptance is claimed.
 
- Ordinary project/runtime
+Spacing acceptance uses the owner's three pairs (OpenCode/Corral,
+OpenCode/NeatWebApp, Codex/Corral), plus five-entry long/CJK fixtures. Mounted
+regions establish three empty columns between neighbors and an empty row on
+wrapping. Light/dark, English/Chinese, 80/100/120-column captures include idle,
+hover and keyboard focus. Short labels remain complete; project text is neutral
+while the assistant keeps its brand color. Clicking and focused Enter return the
+stored pair; the production host fixture verifies real isolated tmux output and
+recent-combination persistence. Warm first-screen scan measured 3 ms, not a cold
+cache result.
+
+Ordinary project/runtime
 selection remains available below a separator and the filter retains initial
 keyboard focus. Missing directories or unavailable runtimes keep the modal open
 and show the reason, never silently launch a different project or assistant.

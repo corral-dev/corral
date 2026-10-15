@@ -227,7 +227,7 @@ class QuickFilters(Vertical):
         self.call_next(self.sync)
 
     @staticmethod
-    def _pack(row: Grid) -> None:
+    def _pack(row: Grid, *, spacing: int = 0, row_spacing: int = 0) -> None:
         """Pack native grid cells by label width without remounting controls."""
         width = max(1, row.content_size.width)
         row.styles.grid_size_columns = width
@@ -239,17 +239,25 @@ class QuickFilters(Vertical):
             if cursor == width:
                 cursor = 0
                 lines += 1
-            remainder = width - cursor if cursor and cursor + cells > width else 0
-            gap.styles.display = "block" if remainder else "none"
-            if remainder:
-                gap.styles.column_span = remainder
-                gap.styles.width = remainder
+            separation = spacing if cursor else 0
+            wrapping = cursor and cursor + separation + cells > width
+            if wrapping:
+                separation = width - cursor
                 cursor = 0
                 lines += 1
+            else:
+                cursor += separation
+            gap.styles.display = "block" if separation else "none"
+            if separation:
+                gap.styles.column_span = separation
+                gap.styles.width = separation
             button.styles.column_span = cells
             button.styles.width = cells
             cursor += cells
-        row.styles.height = lines + row.styles.padding.bottom
+        # Textual 8.2.8 applies grid-gutter's vertical axis to columns. Taller
+        # native rows leave an owned blank line without shrinking cell spans.
+        row.styles.grid_rows = str(1 + row_spacing)
+        row.styles.height = lines + (lines - 1) * row_spacing + row.styles.padding.top + row.styles.padding.bottom
 
     @staticmethod
     def _mark(button: Button, selected: bool) -> None:

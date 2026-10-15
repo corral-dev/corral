@@ -346,6 +346,8 @@ class InstrumentationTests(unittest.TestCase):
         registry = corral.RuntimeRegistry((runtime,))
         with mock.patch.object(corral.titles, "load_cache", return_value={}), mock.patch.object(
             corral.liveness, "annotate"
+        ), mock.patch.object(corral.SessionStore, "_ensure_scan_worker"), mock.patch(
+            "corral.scan_index.try_consume", return_value=None
         ):
             store = corral.SessionStore(limit=5, registry=registry)
             store.load()

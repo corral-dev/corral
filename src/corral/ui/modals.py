@@ -212,8 +212,10 @@ class _QuickStartChip(FilterChip):
     """Reuse capsule buttons; right click removes a preference instead of starting."""
 
     def __init__(self, combo: recent_starts.RecentStart, runtime_label: str, **kwargs):
-        label = Text(runtime_label, style=runtime_label_style(combo.runtime_id))
-        label.append(f" · {combo.project_label}")
+        label = Text()
+        label.append(runtime_label, style=runtime_label_style(combo.runtime_id))
+        label.append(" · ", style="dim")
+        label.append(combo.project_label, style="bold")
         super().__init__(label, **kwargs)
         self.combo = combo
         self.tooltip = f"{runtime_label} · {combo.project_label}\n{_short_path(combo.cwd)}"
@@ -300,9 +302,10 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         color: $foreground 60%;
     }
       NewSessionModal #ns-quick-starts { height: auto; }
-      NewSessionModal #ns-quick-heading { height: 1; color: $text-muted; }
+        NewSessionModal #ns-quick-heading { height: 2; color: $text-muted; }
       NewSessionModal #ns-quick-grid { height: auto; grid-gutter: 0; grid-rows: 1; padding: 0 0 1 0; }
       NewSessionModal #ns-quick-grid > .filter-gap { height: 1; width: 1; }
+        NewSessionModal _QuickStartChip .filter-chip--fill { color: $foreground; }
       NewSessionModal #ns-quick-divider { height: 1; color: $foreground 20%; }
       NewSessionModal #ns-error { height: auto; max-height: 2; color: $error; }
     """
@@ -474,7 +477,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     def _pack_quick_starts(self) -> None:
         grids = self.query("#ns-quick-grid")
         if grids:
-            QuickFilters._pack(grids.first())
+            QuickFilters._pack(grids.first(), spacing=3, row_spacing=1)
 
     def on_resize(self) -> None:
         self.call_after_refresh(self._pack_quick_starts)

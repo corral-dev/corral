@@ -86,6 +86,11 @@ class ReliabilityTests(unittest.TestCase):
         duplicate = service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
         self.assertEqual(duplicate["status"], "delivered")
         self.assertEqual(calls, ["injected"])
+        # Target admission releases asynchronously after the worker settles.
+        deadline = time.monotonic() + 2
+        while service._input_targets:
+            self.assertLess(time.monotonic(), deadline)
+            threading.Event().wait(.01)
         self.assertFalse(service._input_targets)
 
     def test_proven_dead_pane_after_injection_stays_unknown_without_replay(self):
@@ -119,6 +124,10 @@ class ReliabilityTests(unittest.TestCase):
         # Unknown never replays: same identity returns the receipt, no new inject.
         service._run_receipted_input(connection, {"command_id": "dead"}, **kwargs)
         self.assertEqual(calls, ["injected"])
+        deadline = time.monotonic() + 2
+        while service._input_targets:
+            self.assertLess(time.monotonic(), deadline)
+            threading.Event().wait(.01)
         self.assertFalse(service._input_targets)
 
     def test_waiting_input_expires_without_injection_when_target_stays_busy(self):
