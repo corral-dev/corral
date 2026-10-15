@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -28,7 +29,7 @@ from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
 from corral.projects import normalize_cwd
-from corral.remote import questions, richmsg, shell_terminal, transcript_cache
+from corral.remote import questions, richmsg, shell_terminal, terminal_stream, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
@@ -1981,6 +1982,28 @@ class SessionHub:
 
     def terminal_resync(self, key: str) -> None:
         self._terminal(key).request_snapshot()
+
+    def terminal_peek(self, key: str) -> dict:
+        """One-shot raw screen without a size vote or subscription (cold reveal).
+
+        Never resumes a stopped session and never touches viewer votes: an
+        ended or unhosted session stays an honest ``unavailable``/``not_found``
+        for the client's own ended/disconnected states.
+        """
+        name = self._hosted_name(key)
+        if not name:
+            if shell_terminal.is_shell_key(key):
+                raise ActionError("not_found", t("remote.err.shell_ended"))
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
+        snapshot = terminal_stream.peek_snapshot(name)
+        if snapshot is None:
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
+        cols, rows, data = snapshot
+        return {
+            "cols": cols,
+            "rows": rows,
+            "data": base64.b64encode(data).decode("ascii"),
+        }
 
     def terminal_theme(self, key: str, report: bytes) -> None:
         self._terminal(key).set_theme(report)

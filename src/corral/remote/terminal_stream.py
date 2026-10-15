@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import re
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -141,6 +142,68 @@ def build_snapshot(state: PaneState, main_lines: list[str], alt_lines: list[str]
         parts += ["\x1b[?1049h\x1b[H\x1b[2J", reset_line.join(alt_lines), "\x1b[0m"]
     data = "".join(parts).encode("utf-8", "replace")
     return data + state.modes()
+
+
+_PEEK_ATTEMPTS = 4
+_PEEK_CALL_TIMEOUT = 1.5
+
+
+def _peek_run(argv: tuple[str, ...], env: dict[str, str], args: list[str]) -> list[str] | None:
+    """One synchronous tmux query for the peek path (never touches the channel pool)."""
+    try:
+        out = subprocess.check_output(
+            [*argv, *args], stderr=subprocess.DEVNULL,
+            timeout=_PEEK_CALL_TIMEOUT, env=env,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    return out.decode("utf-8", errors="replace").splitlines()
+
+
+def peek_snapshot(name: str) -> tuple[int, int, bytes] | None:
+    """One-shot raw screen of a hosted pane, without a size vote or subscription.
+
+    Cold-reveal prefetch for a desktop viewer that has never opened this
+    session's terminal (chat → TUI first switch): the caller shows these bytes
+    immediately, then attaches the live stream for ordered follow-ups. The
+    pane keeps its current size; no viewer is registered and the shared
+    control-channel pool is left alone, so an already-attached live stream
+    keeps its ``on_data`` callback and channel.
+
+    Subprocess-only: ``state + capture-pane + state`` with the same barrier
+    retry as the streaming capture. Returns ``(cols, rows, data)`` or None
+    when the pane is gone or keeps changing under the capture.
+    """
+    argv = embed.keepalive.tmux_argv(name)
+    env = embed.keepalive.tmux_env()
+    state_argv = ["display-message", "-p", "-t", name, _STATE_FORMAT]
+    for _ in range(_PEEK_ATTEMPTS):
+        before = _peek_run(argv, env, state_argv)
+        if not before:
+            return None
+        try:
+            state = PaneState(before[0])
+        except (ValueError, IndexError):
+            return None
+        if state.alternate:
+            main = _peek_run(argv, env, ["capture-pane", "-p", "-e", "-a", "-q", "-t", name])
+            alt = _peek_run(argv, env, ["capture-pane", "-p", "-e", "-t", name])
+            if main is None or alt is None:
+                continue
+            alt_lines: list[str] | None = alt
+        else:
+            main = _peek_run(
+                argv, env,
+                ["capture-pane", "-p", "-e", "-S", f"-{HISTORY_LINES}", "-t", name],
+            )
+            if main is None:
+                continue
+            alt_lines = None
+        after = _peek_run(argv, env, state_argv)
+        if not after or after[0] != before[0]:
+            continue
+        return state.cols, state.rows, build_snapshot(state, main, alt_lines)
+    return None
 
 
 class TerminalStream:

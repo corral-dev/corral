@@ -287,6 +287,10 @@ M_TERMINAL_RESIZE = "terminal.resize"   # {key, cols, rows, active?} → {cols, 
 M_TERMINAL_RESYNC = "terminal.resync"   # {key}: a fresh snapshot event (after a seq gap)
 M_TERMINAL_INPUT = "terminal.input"     # {key, data: base64}: raw bytes to the pane
 M_TERMINAL_DETACH = "terminal.detach"   # {key}
+# {key} → {cols, rows, data: base64}: one-shot raw screen, no size vote and no
+# subscription (cold chat-to-TUI reveal prefetch; the live stream still comes
+# from terminal.attach and its snapshot events).
+M_TERMINAL_PEEK = "terminal.peek"
 # {key, background, foreground?} (#rrggbb): the viewer's terminal colours, answered to the
 # agent's OSC 10/11 queries; attach accepts the same two fields.
 M_TERMINAL_THEME = "terminal.theme"

@@ -74,6 +74,7 @@ _READONLY_METHODS = frozenset(
         protocol.M_TERMINAL_RESIZE,
         protocol.M_TERMINAL_RESYNC,
         protocol.M_TERMINAL_DETACH,
+        protocol.M_TERMINAL_PEEK,
         protocol.M_PUSH_REGISTER,
         protocol.M_SESSION_MARK_READ,
         protocol.M_COMMAND_STATUS,
@@ -124,6 +125,7 @@ _SHELL_KEY_METHODS = frozenset(
         protocol.M_TERMINAL_INPUT,
         protocol.M_TERMINAL_DETACH,
         protocol.M_TERMINAL_THEME,
+        protocol.M_TERMINAL_PEEK,
         protocol.M_INPUT_TEXT,
         protocol.M_SHELL_CLOSE,
     }
@@ -1019,6 +1021,9 @@ class RemoteService:
             self.hub.terminal_detach(key, _terminal_viewer(connection))
         return {"ok": True}
 
+    def _terminal_peek(self, connection: Connection, params: dict):
+        return self.hub.terminal_peek(_key(params))
+
     # -- project shells ---------------------------------------------------
 
     def _shell_list(self, connection: Connection, params: dict):
@@ -1563,6 +1568,7 @@ _DATA_PAYLOAD_METHODS = frozenset(
         protocol.M_SESSION_WATCH,
         protocol.M_SCREEN_WATCH,
         protocol.M_SCREEN_SCROLL,
+        protocol.M_TERMINAL_PEEK,
     }
 )
 
@@ -1590,6 +1596,7 @@ _HANDLERS = {
     protocol.M_TERMINAL_INPUT: RemoteService._terminal_input,
     protocol.M_TERMINAL_DETACH: RemoteService._terminal_detach,
     protocol.M_TERMINAL_THEME: RemoteService._terminal_theme,
+    protocol.M_TERMINAL_PEEK: RemoteService._terminal_peek,
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,

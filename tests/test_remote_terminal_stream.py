@@ -145,6 +145,12 @@ class _TerminalHub:
     def terminal_detach(self, key, viewer):
         self.calls.append(("detach", key))
 
+    def terminal_peek(self, key):
+        self.calls.append(("peek", key))
+        import base64 as _base64
+
+        return {"cols": 80, "rows": 24, "data": _base64.b64encode(b"peek").decode("ascii")}
+
 
 class ServiceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -246,6 +252,29 @@ class ServiceTests(unittest.TestCase):
         self._call(connection, protocol.M_TERMINAL_ATTACH, {"key": "codex:a", "cols": 80, "rows": 24})
         self.service._dispatch_event("term:codex:a", {"kind": "output", "seq": 1, "data": ""})
         self.assertEqual(data_frames[-1]["c"], "term:codex:a")
+
+    def test_peek_returns_a_snapshot_without_voting_or_subscribing(self) -> None:
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_TERMINAL_PEEK, {"key": "codex:a"})
+        self.assertTrue(reply["ok"])
+        self.assertEqual(
+            (reply["d"]["cols"], reply["d"]["rows"]),
+            (80, 24),
+        )
+        self.assertEqual(base64.b64decode(reply["d"]["data"]), b"peek")
+        self.assertIn(("peek", "codex:a"), self.hub.calls)
+        # No size vote, no channel subscription, no follow-up snapshot request.
+        self.assertFalse([c for c in self.hub.calls if c[0] in ("attach", "resize", "resync")])
+        self.assertNotIn("term:codex:a", connection.channels)
+        self.assertIn(protocol.M_TERMINAL_PEEK, _READONLY_METHODS)
+
+    def test_peek_is_readable_without_a_size_vote_and_rejects_shell_keys(self) -> None:
+        connection = self._paired(mode="readonly")
+        reply = self._call(connection, protocol.M_TERMINAL_PEEK, {"key": "codex:a"})
+        self.assertTrue(reply["ok"])
+        self.assertIn(("peek", "codex:a"), self.hub.calls)
+        blocked = self._call(connection, protocol.M_TERMINAL_PEEK, {"key": "shell:1234abcd"})
+        self.assertEqual(blocked["e"]["code"], protocol.E_UNAUTHORIZED)
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs real tmux")
@@ -364,6 +393,24 @@ class RealTmuxStreamTests(unittest.TestCase):
         data = base64.b64decode(self._wait(lambda e: e["kind"] == "snapshot")["data"])
         self.assertIn(b"main-line", data[: data.index(b"\x1b[?1049h")])
         self.assertIn(b"alt-line", data[data.index(b"\x1b[?1049h"):])
+
+    def test_peek_snapshot_needs_no_stream_vote_or_channel(self) -> None:
+        subprocess.run(["tmux", "-L", self.SOCKET, "send-keys", "-t", self.SESSION,
+                        "printf 'peek-%s\\n' cold", "Enter"], check=True)
+        time.sleep(0.4)
+        snapshot = ts.peek_snapshot(self.SESSION)
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        cols, rows, data = snapshot
+        self.assertEqual((cols, rows), (80, 24))
+        self.assertIn(b"peek-cold", data)
+        # Subprocess-only: the shared control-channel pool is untouched and no
+        # viewer vote resized the pane.
+        self.assertIsNone(embed.active_channel(self.SESSION))
+        self.assertEqual(embed.pane_size(self.SESSION), (80, 24))
+
+    def test_peek_snapshot_returns_none_for_a_missing_pane(self) -> None:
+        self.assertIsNone(ts.peek_snapshot("corral-test-stream-no-such-pane"))
 
 
 if __name__ == "__main__":
