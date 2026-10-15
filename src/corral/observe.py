@@ -142,6 +142,7 @@ def event(name: str, **fields: Any) -> None:
         "level": "info",
         "name": name,
         **_sanitize(fields),
+        "pid": os.getpid(),
     }
     with _lock:
         _write_line(EVENTS_LOG, payload)
@@ -158,6 +159,7 @@ def debug(name: str, **fields: Any) -> None:
             "level": "debug",
             "name": name,
             **_sanitize(fields),
+            "pid": os.getpid(),
         }
         _write_line(EVENTS_LOG, payload)
 

@@ -53,6 +53,7 @@ class ObserveTests(unittest.TestCase):
         self.assertEqual(rows[0]["name"], "scan_done")
         self.assertEqual(rows[0]["duration_ms"], 12)
         self.assertEqual(rows[0]["runtime_count"], 2)
+        self.assertEqual(rows[0]["pid"], os.getpid())
         self.assertIn("ts", rows[0])
 
     def test_debug_silent_unless_debug_enabled(self) -> None:

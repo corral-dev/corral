@@ -37,7 +37,9 @@ os.environ["CORRAL_CACHE_DIR"] = _tmp_cache
 from corral import embed, keepalive  # noqa: E402
 from corral.remote import protocol, ratelimit  # noqa: E402
 from corral.remote.command_receipts import (  # noqa: E402
+    STATUS_ACCEPTED,
     STATUS_DELIVERED,
+    STATUS_DISPATCHING,
     STATUS_REJECTED,
     STATUS_UNKNOWN,
 )
@@ -98,25 +100,43 @@ def main() -> int:
             assert len(sent) == 1, (method, sent)
             return sent[0]
 
+        def _poll_status(command_id: str, timeout: float = 20.0) -> dict:
+            """Receipted input is async: the RPC returns accepted/dispatching
+            at once and a bounded worker settles it. Poll read-only status."""
+            deadline = time.monotonic() + timeout
+            while True:
+                status = _call(protocol.M_COMMAND_STATUS, {"command_id": command_id})
+                if status["d"]["status"] not in (STATUS_ACCEPTED, STATUS_DISPATCHING):
+                    return status
+                assert time.monotonic() < deadline, status
+                time.sleep(0.05)
+
         _call(protocol.M_PAIR, {"name": "Acceptance"})
         _call(protocol.M_HELLO, {"name": "Acceptance", "want_command_receipts": True})
         assert connection.command_receipts
 
         # -- delivered ----------------------------------------------------
+        # Option B (2026-10-15): the probe pane runs plain sh with no native
+        # history at all — delivery is proven injection into the live pane,
+        # not a history record. The RPC still answers accepted at once.
         text = f"echo {MARK_OK}"
         reply = _call(
             protocol.M_INPUT_TEXT,
             {"key": "codex:svcprobe1", "text": text, "submit": True,
              "command_id": "acc-delivered-1"},
         )
-        assert reply["ok"] and reply["d"]["status"] == STATUS_DELIVERED, reply
-        assert "reason" not in reply["d"] and "detail" not in reply["d"], reply
+        assert reply["ok"] and reply["d"]["status"] in (
+            STATUS_ACCEPTED, STATUS_DISPATCHING,
+        ), reply
+        settled = _poll_status("acc-delivered-1")
+        assert settled["d"]["status"] == STATUS_DELIVERED, settled
+        assert "reason" not in settled["d"] and "detail" not in settled["d"], settled
         time.sleep(0.8)
         pane = _capture()
         assert MARK_OK in pane, pane[-300:]
         status = _call(protocol.M_COMMAND_STATUS, {"command_id": "acc-delivered-1"})
         assert status["d"]["status"] == STATUS_DELIVERED, status
-        evidence.append(f"delivered: receipt+status delivered, pane shows {MARK_OK}")
+        evidence.append(f"delivered: accepted->delivered, pane shows {MARK_OK}")
 
         # exact-once: same command_id must not re-dispatch into the pane.
         before = _capture().count(MARK_OK)
@@ -130,12 +150,16 @@ def main() -> int:
         evidence.append("exact-once: redelivered command_id did not re-inject")
 
         # -- rejected -----------------------------------------------------
+        # Unknown keys fail synchronously at target binding (no worker).
         bad = _call(
             protocol.M_INPUT_TEXT,
             {"key": "codex:does-not-exist", "text": REJECT_TEXT, "submit": True,
              "command_id": "acc-rejected-1"},
         )
-        assert bad["ok"] and bad["d"]["status"] == STATUS_REJECTED, bad
+        assert bad["ok"], bad
+        if bad["d"]["status"] in (STATUS_ACCEPTED, STATUS_DISPATCHING):
+            bad = _poll_status("acc-rejected-1")
+        assert bad["d"]["status"] == STATUS_REJECTED, bad
         assert bad["d"]["reason"] == "not_found", bad
         assert bad["d"]["retryable"] is False, bad
         assert "detail" in bad["d"] and REJECT_TEXT not in bad["d"]["detail"], bad
@@ -160,9 +184,13 @@ def main() -> int:
                 {"key": "codex:svcprobe1", "text": MARK_UNKNOWN, "submit": True,
                  "command_id": "acc-unknown-1"},
             )
-        assert unk["ok"] and unk["d"]["status"] == STATUS_UNKNOWN, unk
-        assert unk["d"]["reason"] == "partial_injection", unk
-        assert MARK_UNKNOWN.split(" ", 1)[1] not in unk["d"].get("detail", ""), unk
+            assert unk["ok"] and unk["d"]["status"] in (
+                STATUS_ACCEPTED, STATUS_DISPATCHING,
+            ), unk
+            unk_settled = _poll_status("acc-unknown-1")
+        assert unk_settled["d"]["status"] == STATUS_UNKNOWN, unk_settled
+        assert unk_settled["d"]["reason"] == "partial_injection", unk_settled
+        assert MARK_UNKNOWN.split(" ", 1)[1] not in unk_settled["d"].get("detail", ""), unk_settled
         unk_status = _call(protocol.M_COMMAND_STATUS, {"command_id": "acc-unknown-1"})
         assert unk_status["d"]["status"] == STATUS_UNKNOWN, unk_status
         evidence.append("unknown: paste-buffer timeout -> partial_injection, no retry/resume")

@@ -55,6 +55,8 @@ TUI 长卡顿无异常也必须留证：后台线程每 0.5 秒向事件循环�
 
 `events.log` 与 `embed-error.log` 超过 256KB 前改为轮转到各自 `.1` 并继续写新文件，最多保留当前段和上一段；读最近异常先读当前段、为空或不可解析时读上一段。轮转失败只能降级，不可阻断 TUI。跨进程同时写同一路径时仍可能有极短的轮转竞争，不能把日志缺席当成事件未发生。
 
+同一台开发机上的 TUI、远程守护和标题生成可能共写事件日志；每条事件固定附加进程 `pid`，先按 pid 分流再比较 `scan_all`、`list_rebuild` 和 `tui_stall`。不同 `session_count` 或相邻时间戳不能单独证明是同一个界面进程。2026-10-15 异机 Pi 现场出现 508/1213 条会话的两轮 3.9/4.8 秒未命中全扫，侧栏重建仅 1–6ms，抓帧约 0.2s：全扫是候选负载来源，主线程是否被拖住仍需同进程卡顿栈确认。
+
 ### Hosted assistant startup errors
 
 `host_session` with `ok: true` confirms that Corral hosted the child process; it does not confirm that the assistant completed its own account initialization. The startup-failure panel preserves the child exit code and output, as described in [the embedded terminal knowledge base](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md). Correlate the failure time before treating `corral diagnose`'s `last_error` as relevant: it can describe an older, unrelated Corral exception.
