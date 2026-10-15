@@ -628,6 +628,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "New version v{version} available — click to update",
         "zh": "发现新版本 v{version}，点击更新",
     },
+    "update.ready": {
+        "en": "v{version} downloaded — click to install & restart",
+        "zh": "v{version} 已备好，点击安装并重启",
+    },
     "update.updating": {
         "en": "Updating…",
         "zh": "更新中…",

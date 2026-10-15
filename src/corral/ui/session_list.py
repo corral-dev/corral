@@ -1217,8 +1217,8 @@ class SessionListView(Vertical):
         # 右栏当前开着的会话：活跃筛选开启时也照列（打开未读会话会变已读）。
         self._open_keys: frozenset[str] = frozenset()
         self._older_stack_expanded = False
-        # 筛选中的折叠覆盖：进入新筛选先展开匹配项，之后用户可自由收起；
-        # 退出筛选后普通列表保留原来状态，筛选覆盖随筛选签名重置。
+        # 筛选中的折叠覆盖：筛选不改变折叠状态，沿用普通列表；
+        # 筛选中手动收起/展开只记在筛选覆盖里，不污染普通列表。
         self._filtered_older_expanded: bool | None = None
         self._filtered_group_collapsed: dict[str, bool] = {}
         self._filter_scope_seen: tuple | None = None
@@ -1645,7 +1645,7 @@ class SessionListView(Vertical):
         filtered = self.visible_sessions()
         filtered_keys = {corral.session_key(session) for session in filtered}
         # 关键字或活跃筛选任一生效都算「在筛」：组只认看得见的成员；
-        # 进入新筛选先展开匹配项，之后用户可自由收起（覆盖随筛选签名重置）。
+        # 筛选不改变折叠状态，之后用户可自由收起/展开。
         narrowing = self._sync_filtered_scope()
         pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
         unpinned_by_id: dict[str, list[_SidebarRow]] = {}
@@ -1826,7 +1826,7 @@ class SessionListView(Vertical):
         # Collapse only when today/yesterday already give the user something to
         # look at. An all-older list should open flat — a lone stack gate with
         # no recent sessions above it is just an extra click for no gain.
-        # 筛选中初次展开匹配项，之后用户可自由收起（覆盖随筛选签名重置）。
+        # 筛选不改变折叠状态，之后用户可自由收起/展开。
         expand_older = self._effective_older_expanded(narrowing, has_recent)
         count = _count_top_level_blocks(older_rows)
         if count > 0 and has_recent:
@@ -1884,30 +1884,33 @@ class SessionListView(Vertical):
         )
 
     def _sync_filtered_scope(self) -> bool:
-        """筛选签名变化时重置筛选中的折叠覆盖；返回当前是否在筛。"""
+        """筛选变化时保持折叠状态；返回当前是否在筛。"""
         signature = self._filter_scope_signature()
         if signature != self._filter_scope_seen:
             self._filter_scope_seen = signature
-            self._filtered_older_expanded = None
-            self._filtered_group_collapsed = {}
         return self.nav.narrowing
 
     def _effective_older_expanded(self, narrowing: bool, has_recent: bool) -> bool:
         if not has_recent:
             return True
         if narrowing:
-            # 进入新筛选先展示匹配项，之后按用户的收起/展开覆盖。
-            return self._filtered_older_expanded if self._filtered_older_expanded is not None else True
+            # 筛选不展开已折叠的叠卡：沿用普通列表状态，之后按用户的收起/展开覆盖。
+            if self._filtered_older_expanded is not None:
+                return self._filtered_older_expanded
+            return self._older_stack_expanded
         return self._older_stack_expanded
 
     def _effective_group_collapsed(self, group_id: str, stored: bool, narrowing: bool) -> bool:
         if narrowing:
-            return self._filtered_group_collapsed.get(group_id, False)
+            return self._filtered_group_collapsed.get(group_id, stored)
         return stored
 
     def toggle_older_stack(self) -> None:
         if self.nav.narrowing:
-            current = self._filtered_older_expanded if self._filtered_older_expanded is not None else True
+            if self._filtered_older_expanded is not None:
+                current = self._filtered_older_expanded
+            else:
+                current = self._older_stack_expanded
             self._filtered_older_expanded = not current
         else:
             self._older_stack_expanded = not self._older_stack_expanded
@@ -2170,7 +2173,7 @@ class SessionListView(Vertical):
             return
         if self.nav.narrowing:
             # 筛选中只改本次筛选的覆盖，不污染普通列表的收起状态。
-            current = self._filtered_group_collapsed.get(group_id, False)
+            current = self._filtered_group_collapsed.get(group_id, group.collapsed)
             self._filtered_group_collapsed[group_id] = not current
             self.call_next(self.rebuild)
             return

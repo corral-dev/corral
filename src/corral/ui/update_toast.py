@@ -1,9 +1,16 @@
-"""右下角新版本浮层：docked 定位容器 + 内部可点击主体。
+"""右下角新版本浮层：内容宽的 overlay 盒子，只占右下角那一小块。
 
-外层 UpdateToast 用 `dock: bottom` + `align: right bottom` 把自己锚到屏幕右下角
-（镜像 Textual 内置 Toast/ToastRack 的定位手法：单个 leaf widget 自身 docked 时
-无法把自己右对齐——`align` 只作用于容器的子节点，所以外层必须是容器）。不挂进
-`#list-pane`，不受侧边栏末行间隔的硬约定牵连。
+定位：外层 UpdateToast 用 `layer: overlay` 出流（不挤占布局，显隐不抖动底栏），
+靠父级 `MainScreen { align: right bottom; }` 钉到右下角，自身 `width/height: auto`
+缩到内容宽——命中区域只有浮层本身，底部其余整行照常可点。不要改回
+`dock: bottom + width: 1fr` 的整宽写法：那会让透明的外层横跨整个底条，
+底下那几行全都点不到（session_hud 的注释里点过名；Textual 原生 ToastRack 也是
+整宽，但它是_transient_通知，无所谓）。
+
+`MainScreen{align}` 对其它子控件是 no-op：列表区 Horizontal(1fr×1fr)、龙动画
+(100%×100% dock top)、页脚(dock bottom 整宽) 都是填满的，只有内容宽的浮层
+会被 align 挪动。加新 overlay 浮层时先确认它是不是内容宽，否则会被一起甩到
+右下角。
 
 状态机：hidden → available(version) → updating → done(version) / failed(reason)。
 点击主体按当前状态触发不同回调；除 updating（正在跑子进程，关掉会让用户以为
@@ -107,11 +114,13 @@ class UpdateToast(Container):
     DEFAULT_CSS = """
     UpdateToast {
         layer: overlay;
-        dock: bottom;
-        width: 1fr;
+        width: auto;
         height: auto;
-        align: right bottom;
+        margin: 0 2 1 0;
         display: none;
+    }
+    MainScreen {
+        align: right bottom;
     }
     UpdateToast.-visible {
         display: block;
@@ -119,7 +128,6 @@ class UpdateToast(Container):
     UpdateToast Horizontal {
         width: auto;
         height: auto;
-        margin: 0 2 1 0;
     }
     UpdateToast _ToastBody {
         width: auto;
@@ -164,6 +172,9 @@ class UpdateToast(Container):
         self._state = "hidden"  # hidden | available | updating | done | failed
         self._version = ""
         self._reason = ""
+        # 后台预热完成（安装包已下到本地 / brew bottle 已备好）：available 文案
+        # 换成"已备好"，让用户敢点——点下去只是本地安装 + 重启，不是漫长等待。
+        self._ready = False
         self._spin_index = 0
         self._spin_timer = None
 
@@ -176,7 +187,20 @@ class UpdateToast(Container):
 
     def show_available(self, version: str) -> None:
         self._version = version
+        self._ready = False
         self._set_state("available")
+
+    def show_ready(self, version: str) -> None:
+        """预热完成：还是 available 态，只换"已备好"文案。
+
+        用户可能已经点了更新（已退出）或忽略了（hidden）：那两种情况什么都不做，
+        绝不把浮层重新顶出来。
+        """
+        if self._state != "available" or self._version != version:
+            return
+        self._ready = True
+        if self.is_mounted:
+            self._sync_display()
 
     def show_updating(self) -> None:
         self._set_state("updating")
@@ -212,7 +236,8 @@ class UpdateToast(Container):
         body = self.query_one("#toast-body", _ToastBody)
         body.remove_class("-failed", "-done")
         if self._state == "available":
-            body.update(Text(t("update.available", version=self._version)))
+            key = "update.ready" if self._ready else "update.available"
+            body.update(Text(t(key, version=self._version)))
         elif self._state == "updating":
             frame = SPINNER_FRAMES[self._spin_index % len(SPINNER_FRAMES)]
             body.update(Text(f"{frame} {t('update.updating')}"))

@@ -43,10 +43,15 @@ class RestartRequest:
     包管理器会替换甚至删除当前进程正在使用的安装目录；若在 Textual worker 中
     原地升级，旧界面下一帧再惰性导入模块时就会随机崩溃。因此请求只携带升级所需
     的稳定值，真正的文件替换必须发生在界面主循环完全退出之后。
+
+    spec 是后台预热好的本地安装目标（pip/pipx 预下载的 wheel 文件路径）；
+    为 None 时沿用旧的在线解析路径（慢，但结果一致）。点击更新时预热还没做完
+    也会是 None——只是慢一点，绝不因此阻断更新。
     """
 
     latest: str
     channel: Channel
+    spec: str | None = None
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:
@@ -436,6 +441,104 @@ def update_command(
     return None
 
 
+_PREFETCH_TIMEOUT = 180.0  # 秒；后台预热线程专用：wheel 几十 MB，慢网络也该下完
+_BREW_FORMULA = "x0c/tap/corral"
+
+
+def _download_to_cache(url: str, filename: str, timeout: float = _PREFETCH_TIMEOUT) -> str | None:
+    """把 url 原样下到缓存目录并原子落盘，返回文件路径；任何失败返回 None。
+
+    与 `_ensure_sesskit_wheel` 同一惯用法（tmp 写完再 `os.replace`），区别是这里
+    没有上游 digest 可验：只校验非空 + Content-Length 一致（服务端给了的话）。
+    坏包会在安装时自然报错走失败态，不毒化后续安装（下次预热覆盖重下）。
+    """
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        dest = os.path.join(CACHE_DIR, filename)
+        req = urllib.request.Request(url, headers={"User-Agent": "corral-updater"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            headers = getattr(resp, "headers", None)
+            expected = headers.get("Content-Length") if headers is not None else None
+            data = resp.read()
+        if not data:
+            return None
+        if expected is not None:
+            try:
+                if len(data) != int(expected):
+                    return None
+            except ValueError:
+                return None
+        tmp_path = dest + f".tmp.{os.getpid()}"
+        try:
+            with open(tmp_path, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp_path, dest)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return None
+        return dest
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+
+def prepare_stage(latest_tag: str, channel: Channel | None = None) -> str | None:
+    """后台预热：把升级要花的下载时间提前花掉，返回可直接安装的本地目标。
+
+    pip/pipx：解析预编译包并下载到缓存（顺手把 SessKit wheel 也预热进缓存，
+    免得点击后还为它再等一次 DNS+下载）。源码兜底（git+https）不预热——为一次
+    预热克隆整个仓库不划算，点击后走旧路径。
+
+    brew：不管（`brew upgrade` 的下载由 brew 自己管），走 `prewarm_brew()`。
+
+    任何失败一律返回 None，调用方降级为旧行为，绝不抛异常。只做网络 I/O，
+    不碰现役安装目录，后台跑安全。
+    """
+    channel = channel or detect_channel()
+    if channel not in ("pip", "pipx"):
+        return None
+    try:
+        target = install_spec(latest_tag)
+    except Exception:  # noqa: BLE001 - 预热失败只降级，不阻断提示
+        return None
+    if not target.endswith(".whl"):
+        return None
+    filename = target.rsplit("/", 1)[-1].split("?", 1)[0].split("#", 1)[0]
+    if not filename.endswith(".whl") or "/" in filename or not filename:
+        return None
+    dest = os.path.join(CACHE_DIR, filename)
+    if not (os.path.isfile(dest) and os.path.getsize(dest) > 0):
+        if _download_to_cache(target, filename) is None:
+            return None
+    _ensure_sesskit_wheel()
+    return dest
+
+
+def prewarm_brew(timeout: float = _PREFETCH_TIMEOUT) -> bool:
+    """brew 渠道的后台预热：tap 刷新 + bottle 预取，只下不装。
+
+    `brew update`/`brew fetch` 都不替换现役 Cellar，后台跑安全。tap 刷新与 bottle
+    预取都成功才返回 True（离线时 fetch 可能命中旧 bottle，那不算备好）。任何失败
+    返回 False，调用方当没预热过，绝不抛异常。
+    """
+    env = os.environ.copy()
+    env.pop("HOMEBREW_NO_AUTO_UPDATE", None)
+    try:
+        update = subprocess.run(
+            ["brew", "update"], capture_output=True, text=True,
+            timeout=min(timeout, 120), env=env,
+        )
+        fetch = subprocess.run(
+            ["brew", "fetch", _BREW_FORMULA], capture_output=True, text=True,
+            timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return update.returncode == 0 and fetch.returncode == 0
+
+
 def _brew_installed_version() -> tuple[int, ...] | None:
     """查询 Homebrew 中 corral 实际已安装的最高版本；查不到返回 None（此时不阻断，
     避免把「查询失败」误判成「升级失败」）。"""
@@ -454,9 +557,11 @@ def _brew_installed_version() -> tuple[int, ...] | None:
     return max(versions) if versions else None
 
 
-def run_update(latest_tag: str, channel: Channel | None = None) -> tuple[bool, str]:
+def run_update(latest_tag: str, channel: Channel | None = None, *, spec: str | None = None) -> tuple[bool, str]:
     """跑升级命令；返回 (是否成功, 合并输出摘要)。dev 渠道直接失败。
 
+    spec 是 `prepare_stage` 预热好的本地安装目标：文件还在就直接用它装
+    （省掉再次解析 + 下载），丢了/坏了就当没给过，走旧的在线路径。
     pipx 渠道的坑：pipx venv 里没有 pip，任何 `python -m pip` 路线都会以
     "No module named pip" 失败，必须交给 pipx 自己覆盖安装。
 
@@ -473,7 +578,7 @@ def run_update(latest_tag: str, channel: Channel | None = None) -> tuple[bool, s
             "找不到 pipx 命令：corral 装在 pipx 隔离环境里，只能由 pipx 自己升级。"
             "请确认 pipx 在 PATH 中后重试，或手动执行：pipx upgrade corral"
         )
-    cmd = update_command(latest_tag, channel)
+    cmd = update_command(latest_tag, channel, spec=spec if spec and os.path.isfile(spec) else None)
     if cmd is None:
         return False, "当前安装方式（源码/开发安装）不支持一键更新"
     env = os.environ.copy()

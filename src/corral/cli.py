@@ -51,7 +51,7 @@ def _finish_self_update(request: updater.RestartRequest) -> bool:
     from corral.i18n import t
 
     print(t("update.cli_updating", version=request.latest))
-    ok, output = updater.run_update(request.latest, request.channel)
+    ok, output = updater.run_update(request.latest, request.channel, spec=request.spec)
     observe.event(
         "self_update", ok=ok, latest=request.latest, channel=request.channel
     )

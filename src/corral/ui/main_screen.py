@@ -451,6 +451,7 @@ class MainScreen(
         self._app_focused = True
         self._update_channel: str | None = None
         self._update_latest: str | None = None
+        self._update_spec: str | None = None
         # 全文搜索索引：首屏卡片画完后再延后预热，Ctrl+F 打开弹窗时通常已就绪。
         self._search_index = None
         self._search_warm_scheduled = False

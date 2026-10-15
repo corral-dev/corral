@@ -380,6 +380,156 @@ class RunUpdateTests(unittest.TestCase):
         ensure.assert_not_called()
         self.assertEqual(spy.call_args.kwargs["env"].get("PIP_FIND_LINKS"), "/user/links")
 
+    def test_staged_spec_file_is_used_without_resolving(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            staged = os.path.join(td, "corral-0.21.0-py3-none-any.whl")
+            with open(staged, "wb") as fh:
+                fh.write(b"fake")
+            with mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
+                 mock.patch.object(
+                     updater, "install_spec",
+                     side_effect=AssertionError("must use staged spec"),
+                 ), \
+                 mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
+                 mock.patch.object(
+                     updater.subprocess, "run",
+                     return_value=self._completed(0, "ok"),
+                 ) as spy:
+                ok, _ = updater.run_update("0.21.0", "pipx", spec=staged)
+        self.assertTrue(ok)
+        self.assertEqual(
+            spy.call_args.args[0],
+            ["/usr/local/bin/pipx", "install", "--force", staged],
+        )
+
+    def test_missing_staged_spec_falls_back_to_online_path(self) -> None:
+        with mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
+             mock.patch.object(updater, "install_spec", return_value="WHEEL_URL") as spec, \
+             mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
+             mock.patch.object(
+                 updater.subprocess, "run", return_value=self._completed(0, "ok"),
+             ):
+            ok, _ = updater.run_update(
+                "0.21.0", "pipx", spec="/nonexistent/corral-0.21.0.whl",
+            )
+        self.assertTrue(ok)
+        spec.assert_called_once()
+
+
+class PrepareStageTests(unittest.TestCase):
+    """prepare_stage：pip/pipx 预下载 wheel，失败一律 None 且不抛异常."""
+
+    _URL = "https://github.com/corral-dev/corral/releases/download/v0.21.0/corral-0.21.0-cp310-abi3-macosx_11_0-universal2.whl"
+
+    def _urlopen_with(self, payload: bytes, content_length: str | None = None):
+        class _Resp:
+            headers = {"Content-Length": content_length} if content_length else {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload
+
+        return mock.patch.object(updater.urllib.request, "urlopen", return_value=_Resp())
+
+    def test_downloads_wheel_to_cache(self) -> None:
+        payload = b"fake-wheel-bytes"
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(updater, "CACHE_DIR", td), \
+             mock.patch.object(updater, "install_spec", return_value=self._URL), \
+             mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
+             self._urlopen_with(payload, content_length=str(len(payload))):
+            staged = updater.prepare_stage("0.21.0", "pip")
+        self.assertIsNotNone(staged)
+        assert staged is not None
+        self.assertTrue(os.path.isfile(staged))
+        with open(staged, "rb") as fh:
+            self.assertEqual(fh.read(), payload)
+
+    def test_reuses_existing_cache_without_downloading(self) -> None:
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(updater, "CACHE_DIR", td), \
+             mock.patch.object(updater, "install_spec", return_value=self._URL), \
+             mock.patch.object(updater, "_ensure_sesskit_wheel") as ensure:
+            name = self._URL.rsplit("/", 1)[-1]
+            with open(os.path.join(td, name), "wb") as fh:
+                fh.write(b"already-here")
+            with mock.patch.object(
+                updater.urllib.request, "urlopen",
+                side_effect=AssertionError("must use cache"),
+            ):
+                staged = updater.prepare_stage("0.21.0", "pipx")
+        self.assertEqual(staged, os.path.join(td, name))
+        ensure.assert_called_once()
+
+    def test_source_fallback_is_not_staged(self) -> None:
+        with mock.patch.object(
+            updater, "install_spec",
+            return_value="git+https://github.com/corral-dev/corral.git@v0.21.0",
+        ), mock.patch.object(
+            updater.urllib.request, "urlopen",
+            side_effect=AssertionError("must not download source"),
+        ):
+            self.assertIsNone(updater.prepare_stage("0.21.0", "pip"))
+
+    def test_brew_channel_is_not_staged_here(self) -> None:
+        with mock.patch.object(
+            updater, "install_spec",
+            side_effect=AssertionError("brew uses prewarm_brew"),
+        ):
+            self.assertIsNone(updater.prepare_stage("0.21.0", "brew"))
+
+    def test_download_failure_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(updater, "CACHE_DIR", td), \
+             mock.patch.object(updater, "install_spec", return_value=self._URL), \
+             mock.patch.object(
+                 updater.urllib.request, "urlopen",
+                 side_effect=updater.urllib.error.URLError("boom"),
+             ):
+            self.assertIsNone(updater.prepare_stage("0.21.0", "pip"))
+
+    def test_truncated_download_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(updater, "CACHE_DIR", td), \
+             mock.patch.object(updater, "install_spec", return_value=self._URL), \
+             self._urlopen_with(b"half", content_length="100"):
+            self.assertIsNone(updater.prepare_stage("0.21.0", "pip"))
+
+
+class PrewarmBrewTests(unittest.TestCase):
+    """prewarm_brew：tap 刷新 + bottle 预取，只下不装，失败一律 False."""
+
+    def _completed(self, code: int) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=code, stdout="", stderr="")
+
+    def test_success_when_update_and_fetch_succeed(self) -> None:
+        seen = []
+        with mock.patch.object(
+            updater.subprocess, "run",
+            side_effect=lambda cmd, **kw: (seen.append(cmd), self._completed(0))[1],
+        ):
+            self.assertTrue(updater.prewarm_brew())
+        self.assertEqual(
+            seen, [["brew", "update"], ["brew", "fetch", "x0c/tap/corral"]],
+        )
+
+    def test_false_when_fetch_fails(self) -> None:
+        with mock.patch.object(
+            updater.subprocess, "run", return_value=self._completed(1),
+        ):
+            self.assertFalse(updater.prewarm_brew())
+
+    def test_false_on_subprocess_error(self) -> None:
+        with mock.patch.object(
+            updater.subprocess, "run", side_effect=OSError("no brew"),
+        ):
+            self.assertFalse(updater.prewarm_brew())
+
 
 class FetchLatestTests(unittest.TestCase):
     def test_parses_tag_name_and_strips_v(self) -> None:
