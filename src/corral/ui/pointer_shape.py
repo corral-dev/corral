@@ -19,6 +19,10 @@ _XTERM_NAMES = {
     "pointer": "hand2",
     "text": "xterm",
     "wait": "watch",
+    # 侧边栏拖拽把手（CSS `ew-resize`）：iTerm2 名表里的 `sb_h_double_arrow`
+    # 即 macOS 原生左右调整箭头（PTYSession.screenSetPointerShape: 已核实）；
+    # 真 xterm 的 cursorfont 同样拥有该名字。
+    "ew-resize": "sb_h_double_arrow",
 }
 
 

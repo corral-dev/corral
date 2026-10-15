@@ -476,6 +476,7 @@ class SidebarLayoutDB:
         # 库打不开时的进程内兜底状态：界面照常工作，只是本次不落盘。
         self._memory: SplitLayoutStore | None = None
         self._memory_sidebar_visible: bool | None = None
+        self._memory_sidebar_width: int | None = None
         # 常驻连接：读写都持 self._lock，跨线程只在这个实例内部串行使用。
         # 之前每次读写都 connect+PRAGMA+建表+迁移探测再 close，单次写实测 8~18ms
         # 且全压在界面线程上；read_revision 还是每秒轮询路径，一直在白付这笔钱。
@@ -857,6 +858,42 @@ class SidebarLayoutDB:
                 return
             try:
                 self._set_meta(conn, "sidebar_visible", "1" if visible else "0")
+                conn.commit()
+            except (OSError, sqlite3.Error) as error:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                self._discard_conn(conn)
+                self._report_degraded(error)
+
+    # ---- 侧边栏宽度（与显隐同一条规则：启动时套用的偏好，不跨窗口实时同步）----
+
+    def sidebar_width(self, *, default: int = 39) -> int:
+        with self._lock:
+            conn = self._open()
+            if conn is None:
+                value = self._memory_sidebar_width
+                return default if value is None else value
+            try:
+                raw = self._get_meta(conn, "sidebar_width")
+                if raw is None:
+                    return default
+                return int(raw)
+            except (TypeError, ValueError, OSError, sqlite3.Error) as error:
+                if isinstance(error, (OSError, sqlite3.Error)):
+                    self._discard_conn(conn)
+                    self._report_degraded(error)
+                return default
+
+    def set_sidebar_width(self, width: int) -> None:
+        with self._lock:
+            conn = self._open()
+            if conn is None:
+                self._memory_sidebar_width = int(width)
+                return
+            try:
+                self._set_meta(conn, "sidebar_width", str(int(width)))
                 conn.commit()
             except (OSError, sqlite3.Error) as error:
                 try:

@@ -57,6 +57,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Toggle sidebar",
         "zh": "显隐侧栏",
     },
+    "sidebar.resize_hint": {
+        "en": "Drag to resize sidebar · double-click to reset",
+        "zh": "拖动调整侧边栏宽度 · 双击恢复默认",
+    },
     "pane.masked_hint": {
         "en": "Not receiving input — press Enter or click here",
         "zh": "当前输入不会进入这里 · 回车或点击接管",

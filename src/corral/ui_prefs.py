@@ -18,3 +18,28 @@ def load_sidebar_visible(*, default: bool = True) -> bool:
 def save_sidebar_visible(visible: bool) -> None:
     """保存侧边栏可见性。"""
     default_layout_db().set_sidebar_visible(bool(visible))
+
+
+SIDEBAR_WIDTH_MIN = 28
+SIDEBAR_WIDTH_DEFAULT = 39
+SIDEBAR_WIDTH_MAX = 72
+
+
+def load_sidebar_width(*, default: int = SIDEBAR_WIDTH_DEFAULT) -> int:
+    """读取侧边栏宽度；没有记录、损坏或存储不可用时回落 default 并做钳制。"""
+    try:
+        width = int(default_layout_db().sidebar_width(default=default))
+    except (TypeError, ValueError):
+        return default
+    return max(SIDEBAR_WIDTH_MIN, min(SIDEBAR_WIDTH_MAX, width))
+
+
+def save_sidebar_width(width: int) -> None:
+    """保存侧边栏宽度（先钳制到允许范围）。"""
+    try:
+        value = int(width)
+    except (TypeError, ValueError):
+        return
+    default_layout_db().set_sidebar_width(
+        max(SIDEBAR_WIDTH_MIN, min(SIDEBAR_WIDTH_MAX, value))
+    )

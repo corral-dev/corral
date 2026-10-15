@@ -88,7 +88,11 @@ CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重
 # 秒，侧边栏记忆的跨窗口同步间隔。每次只读一个版本号（单行 SELECT），版本号没变就什么都不做；
 # 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
 LAYOUT_POLL_INTERVAL = 1.0
-LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BAND
+LIST_PANE_WIDTH = 39  # 侧边栏默认宽度；实际宽度可拖拽调整，见 SIDEBAR_WIDTH_DEFAULT
+SIDEBAR_WIDTH_DEFAULT = LIST_PANE_WIDTH
+# 拖拽过窄时首行「● 项目 标题」与固定 11 格的「更多」按钮不可读，过宽则挤占托管格。
+# 另按当前屏宽动态保留右栏至少 _SIDEBAR_MIN_RIGHT 列（含把手）。
+_SIDEBAR_MIN_RIGHT = 24
 
 
 class _FilterClear(Static):
@@ -146,6 +150,103 @@ class _FilterRow(Horizontal):
 
     def on_click(self, event: events.Click) -> None:
         self.query_one(Input).focus()
+
+
+class _SidebarResizer(Static):
+    """侧边栏与右栏之间 1 列拖拽把手：按住横向拖动调整侧边栏宽度。
+
+    平时透明（即原来那 1 列空白空隙），悬停/拖动时给底色提示。焦点、滚轮
+    都不拦截：单击仅吞掉（避免清掉右栏内嵌终端里的划词选中），双击恢复
+    默认宽度。`ALLOW_SELECT = False` 使其不进文本选择分支，与点击闪退的
+    屏幕级兜底（`get_widget_and_offset_at`）无关。
+    """
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    _SidebarResizer {
+        width: 1;
+        height: 1fr;
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        pointer: ew-resize;
+    }
+    _SidebarResizer:hover {
+        background: $primary 40%;
+    }
+    _SidebarResizer.-dragging {
+        background: $primary 70%;
+    }
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__("", **kwargs)
+        self._dragging = False
+        self._drag_start_x = 0
+        self._drag_moved = False
+        self._swallow_click = False
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        event.stop()
+        event.prevent_default()
+        self._dragging = True
+        self._drag_start_x = event.screen_x
+        self._drag_moved = False
+        self.add_class("-dragging")
+        self.capture_mouse()
+        begin = getattr(self.screen, "_begin_sidebar_drag", None)
+        if begin is not None:
+            begin(event.screen_x)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        if event.screen_x != self._drag_start_x:
+            self._drag_moved = True
+        update = getattr(self.screen, "_update_sidebar_drag", None)
+        if update is not None:
+            update(event.screen_x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        self._finish_drag()
+
+    def on_mouse_release(self, event: events.MouseRelease) -> None:
+        # 捕获异常丢失时的兜底：状态与持久化与正常松手一致。
+        if self._dragging:
+            self._finish_drag()
+
+    def _finish_drag(self) -> None:
+        self._dragging = False
+        self.remove_class("-dragging")
+        try:
+            self.release_mouse()
+        except Exception:  # noqa: BLE001 - 松手失败不能影响已落地的宽度
+            pass
+        if self._drag_moved:
+            # 拖过的这一轮松手会合成一次 Click，不能触发双击恢复默认。
+            self._swallow_click = True
+        end = getattr(self.screen, "_end_sidebar_drag", None)
+        if end is not None:
+            end()
+
+    def on_click(self, event: events.Click) -> None:
+        # 落在把手上的单击一律吞掉：不得清掉右栏的划词选中，也不得改焦点。
+        event.stop()
+        event.prevent_default()
+        if self._swallow_click:
+            self._swallow_click = False
+            return
+        if event.chain >= 2:
+            reset = getattr(self.screen, "_reset_sidebar_width", None)
+            if reset is not None:
+                reset()
 
 
 # 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
@@ -328,6 +429,9 @@ class MainScreen(
         self.sidebar_visible = (
             True if not embed_ok else ui_prefs.load_sidebar_visible(default=True)
         )
+        # 侧边栏宽度：启动时套用的偏好（与显隐同一条规则，不跨窗口实时同步）。
+        self.sidebar_width = ui_prefs.load_sidebar_width()
+        self._sidebar_drag_start: tuple[int, int] | None = None
         # 选择跟随的节流状态，见 _schedule_follow_selection
         self._follow_timer = None
         self._follow_last_run = 0.0
@@ -383,6 +487,9 @@ class MainScreen(
                     id="session-list",
                 )
             if self.embed_ok:
+                resizer = _SidebarResizer(id="sidebar-resizer")
+                resizer.tooltip = t("sidebar.resize_hint")
+                yield resizer
                 yield SplitPaneArea(
                     self.store,
                     on_runtime_pick=self._on_runtime_pick,
@@ -1619,15 +1726,35 @@ class MainScreen(
         self._apply_sidebar_visible(persist=True)
 
     def _apply_sidebar_visible(self, *, persist: bool) -> None:
-        """按 sidebar_visible 显隐左栏，并同步顶栏开关字形。"""
+        """按 sidebar_visible 显隐左栏，并同步顶栏开关字形。
+
+        把手占用原来那 1 列空白空隙：侧栏可见时右栏左边距归零（把手即空隙），
+        藏起时把手隐藏、边距恢复为 1，保持原来的藏栏外观。
+        """
         list_pane = self.query_one("#list-pane")
+        try:
+            handle = self.query_one("#sidebar-resizer", _SidebarResizer)
+        except NoMatches:
+            handle = None
+        try:
+            area = self.query_one("#split-pane-area", SplitPaneArea)
+        except NoMatches:
+            area = None
         if self.sidebar_visible:
             list_pane.display = True
-            list_pane.styles.width = LIST_PANE_WIDTH
+            self._apply_sidebar_width(persist=False)
+            if handle is not None:
+                handle.display = True
+            if area is not None:
+                area.styles.margin = (0, 0, 0, 0)
         else:
             if self._focus_is_in_list_pane():
                 self._focus_away_from_hidden_sidebar()
             list_pane.display = False
+            if handle is not None:
+                handle.display = False
+            if area is not None:
+                area.styles.margin = (0, 0, 0, 1)
         try:
             self.query_one("#runtime-top-bar", RuntimeTopBar).set_sidebar_visible(
                 self.sidebar_visible
@@ -1636,6 +1763,60 @@ class MainScreen(
             pass
         if persist:
             ui_prefs.save_sidebar_visible(self.sidebar_visible)
+
+    # ---- 侧边栏宽度（拖拽调整） ----
+
+    def _clamp_sidebar_width(self, width: int) -> int:
+        """把宽度钳制到 [MIN, MAX]，并按当前屏宽给右栏留至少 _SIDEBAR_MIN_RIGHT 列。"""
+        try:
+            value = int(width)
+        except (TypeError, ValueError):
+            value = ui_prefs.SIDEBAR_WIDTH_DEFAULT
+        lo = ui_prefs.SIDEBAR_WIDTH_MIN
+        hi = ui_prefs.SIDEBAR_WIDTH_MAX
+        try:
+            screen_w = self.size.width or 0
+        except Exception:  # noqa: BLE001 - 布局前尺寸不可用时只按固定上下限
+            screen_w = 0
+        if screen_w > 0:
+            hi = max(lo, min(hi, screen_w - 1 - _SIDEBAR_MIN_RIGHT))
+        return max(lo, min(hi, value))
+
+    def _apply_sidebar_width(self, *, persist: bool) -> None:
+        """把当前 sidebar_width 落到布局；persist 时一并写记忆库。"""
+        self.sidebar_width = self._clamp_sidebar_width(self.sidebar_width)
+        try:
+            self.query_one("#list-pane").styles.width = self.sidebar_width
+        except NoMatches:
+            pass
+        if persist:
+            ui_prefs.save_sidebar_width(self.sidebar_width)
+
+    def _begin_sidebar_drag(self, start_x: int) -> None:
+        self._sidebar_drag_start = (start_x, self.sidebar_width)
+
+    def _update_sidebar_drag(self, x: int) -> None:
+        start = self._sidebar_drag_start
+        if start is None:
+            start = (x, self.sidebar_width)
+        start_x, start_w = start
+        new_width = self._clamp_sidebar_width(start_w + (x - start_x))
+        if new_width != self.sidebar_width:
+            self.sidebar_width = new_width
+            try:
+                self.query_one("#list-pane").styles.width = new_width
+            except NoMatches:
+                pass
+        # 拖动中不落盘：右栏托管窗的 resize-window 本就走防抖，松手再写一次即可。
+
+    def _end_sidebar_drag(self) -> None:
+        self._sidebar_drag_start = None
+        ui_prefs.save_sidebar_width(self.sidebar_width)
+
+    def _reset_sidebar_width(self) -> None:
+        """双击把手：恢复默认宽度并持久化。"""
+        self.sidebar_width = ui_prefs.SIDEBAR_WIDTH_DEFAULT
+        self._apply_sidebar_width(persist=True)
 
     def _focus_is_in_list_pane(self) -> bool:
         focused = self.app.focused

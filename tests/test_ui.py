@@ -709,6 +709,15 @@ class PointerShapeSequenceTests(unittest.TestCase):
             self.assertTrue(raw.startswith("\x1b]22;left_ptr\x07"))
             self.assertIn("\x1bPtmux;\x1b\x1b]22;left_ptr\x07\x1b\\", raw)
 
+    def test_resize_shape_maps_to_x11_double_arrow(self) -> None:
+        """侧边栏把手的 ew-resize：iTerm2/xterm 走 sb_h_double_arrow，其它终端保持 CSS 名。"""
+        with _pointer_env("TMUX", "XTERM_VERSION", "LC_TERMINAL", TERM_PROGRAM="iTerm.app"):
+            self.assertEqual(sequence("ew-resize"), "\x1b]22;sb_h_double_arrow\x07")
+        with _pointer_env("TMUX", XTERM_VERSION="XTerm(379)"):
+            self.assertEqual(sequence("ew-resize"), "\x1b]22;sb_h_double_arrow\x07")
+        with _pointer_env("TMUX", "XTERM_VERSION", "TERM_PROGRAM", "LC_TERMINAL"):
+            self.assertEqual(sequence("ew-resize"), "\x1b]22;ew-resize\x07")
+
     def test_reset_sequence_uses_empty_shape(self) -> None:
         with _pointer_env("TMUX", "XTERM_VERSION"):
             self.assertEqual(reset_sequence(), "\x1b]22;\x07")
@@ -926,7 +935,19 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
+            # 侧栏可见时把手本身就是那 1 列：右栏左边距归零，总空隙仍是 1 列。
+            self.assertEqual(area.styles.margin.left, 0)
+            handle = app.screen.query_one("#sidebar-resizer")
+            self.assertEqual(handle.styles.width.value, 1)
+            self.assertTrue(handle.display)
+            # 藏起侧栏时把手一并隐藏，右栏左边距恢复为 1，外观与原来一致。
+            app.screen.action_toggle_sidebar()
+            await pilot.pause()
+            self.assertFalse(handle.display)
             self.assertEqual(area.styles.margin.left, 1)
+            app.screen.action_toggle_sidebar()
+            await pilot.pause()
+            self.assertEqual(area.styles.margin.left, 0)
             sessions = store.all_sessions()[:2]
             area.show_hosted_group(
                 "/tmp",
@@ -6549,6 +6570,228 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chip.render().plain, "▶")
         # 不影响后续用例默认态
         _ui_prefs.save_sidebar_visible(True)
+
+
+class SidebarResizeTests(unittest.IsolatedAsyncioTestCase):
+    """侧边栏拖拽调宽：把手存在性、拖动、钳制、落盘、双击恢复、藏栏联动。"""
+
+    async def test_handle_visible_with_default_geometry(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            self.assertTrue(handle.display)
+            self.assertEqual(str(handle.styles.pointer), "ew-resize")
+            list_pane = app.screen.query_one("#list-pane")
+            self.assertEqual(list_pane.styles.width.value, 39)
+            self.assertEqual(app.screen.sidebar_width, 39)
+            # 把手占用原来那 1 列空白：右栏左边距归零，总几何与原来一致。
+            area = app.screen.query_one(SplitPaneArea)
+            self.assertEqual(area.styles.margin.left, 0)
+
+    async def test_no_handle_without_embed(self) -> None:
+        from textual.css.query import NoMatches
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            with self.assertRaises(NoMatches):
+                app.screen.query_one("#sidebar-resizer")
+
+    async def test_hidden_sidebar_hides_handle_and_restores_margin(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            area = app.screen.query_one(SplitPaneArea)
+            app.screen.action_toggle_sidebar()
+            await pilot.pause()
+            self.assertFalse(handle.display)
+            self.assertEqual(area.styles.margin.left, 1)
+            app.screen.action_toggle_sidebar()
+            await pilot.pause()
+            self.assertTrue(handle.display)
+            self.assertEqual(area.styles.margin.left, 0)
+
+    async def test_drag_changes_width_and_persists(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            list_pane = app.screen.query_one("#list-pane")
+            await pilot.mouse_down(handle)
+            await pilot.pause()
+            # 捕获中：落在右栏的移动也路由到把手（+12 列）。
+            await pilot.hover(handle, offset=(12, 0))
+            await pilot.pause()
+            self.assertEqual(app.screen.sidebar_width, 51)
+            self.assertEqual(list_pane.styles.width.value, 51)
+            # 拖动中不落盘，松手才写。
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 39)
+            # 注意：mouse_up 会先补发一次 MouseMove，落点按把手当前位置算；
+            # 用 offset=(0, 0) 让这次移动成为空操作，再松手持久化。
+            await pilot.mouse_up(handle)
+            await pilot.pause()
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 51)
+            self.assertNotIn("-dragging", handle.classes)
+        # 新窗口按记忆宽度恢复。
+        _ui_prefs.save_sidebar_visible(True)
+        app2 = CorralApp(store, embed_ok=True)
+        async with app2.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            self.assertEqual(app2.screen.sidebar_width, 51)
+            self.assertEqual(
+                app2.screen.query_one("#list-pane").styles.width.value, 51
+            )
+        _ui_prefs.save_sidebar_width(39)
+
+    async def test_drag_clamps_to_min_and_max(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            await pilot.mouse_down(handle)
+            # 越界偏移按屏幕绝对坐标走（把手原点会随宽度移动，不能再相对把手）。
+            await pilot.hover(None, offset=(0, 5))
+            await pilot.pause()
+            self.assertEqual(app.screen.sidebar_width, 28)
+            await pilot.hover(None, offset=(119, 5))
+            await pilot.pause()
+            # 120 列屏：min(72, 120-1-24=95) = 72。
+            self.assertEqual(app.screen.sidebar_width, 72)
+            await pilot.mouse_up(None, offset=(119, 5))
+            await pilot.pause()
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 72)
+        _ui_prefs.save_sidebar_width(39)
+
+    async def test_narrow_screen_caps_width_for_right_pane(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            await pilot.mouse_down(handle)
+            await pilot.hover(None, offset=(79, 5))
+            await pilot.pause()
+            # 80 列屏：80-1-24=55 < 72，按 55 钳制。
+            self.assertEqual(app.screen.sidebar_width, 55)
+            await pilot.mouse_up(None, offset=(79, 5))
+            await pilot.pause()
+        _ui_prefs.save_sidebar_width(39)
+
+    async def test_double_click_resets_to_default(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        _ui_prefs.save_sidebar_width(60)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            self.assertEqual(app.screen.sidebar_width, 60)
+            await pilot.double_click(handle)
+            await pilot.pause()
+            self.assertEqual(app.screen.sidebar_width, 39)
+            self.assertEqual(
+                app.screen.query_one("#list-pane").styles.width.value, 39
+            )
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 39)
+
+    async def test_click_after_drag_does_not_reset(self) -> None:
+        """拖动松手合成的那次 Click 不得触发双击恢复（单击链，无移动=无操作）。"""
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            await pilot.mouse_down(handle)
+            await pilot.hover(handle, offset=(10, 0))
+            await pilot.mouse_up(handle)
+            await pilot.pause()
+            # 拖了 10 列：宽度保留，松手 Click 被吞掉而非重置。
+            self.assertEqual(app.screen.sidebar_width, 49)
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 49)
+            await pilot.click(handle)
+            await pilot.pause()
+            self.assertEqual(app.screen.sidebar_width, 49)
+        _ui_prefs.save_sidebar_width(39)
+
+    async def test_hover_shows_resize_pointer(self) -> None:
+        from corral.ui.main_screen import _SidebarResizer
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            await pilot.hover(handle)
+            await pilot.pause()
+            self.assertEqual(app.screen._pointer_shape, "ew-resize")  # noqa: SLF001
+        _ui_prefs.save_sidebar_width(39)
+
+    async def test_drag_with_three_split_panes_adapts_all(self) -> None:
+        """右栏 3 格分屏时拖侧栏：每格同步变窄、无异常、无格丢失。
+
+        机主要求：多分屏会话下调整侧边栏宽度，全部格子都要流畅自适应。
+        """
+        from corral.ui.main_screen import _SidebarResizer
+
+        sessions = _live_split_sessions(3)
+        store, _ = _make_store(sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            area, _keys = await _open_split_group(pilot, app, sessions)
+            handle = app.screen.query_one("#sidebar-resizer", _SidebarResizer)
+            before = [cell.embed_pane().region.width for cell in area.cells()]
+            self.assertEqual(len(before), 3)
+            self.assertTrue(all(w > 0 for w in before))
+
+            await pilot.mouse_down(handle)
+            await pilot.hover(handle, offset=(12, 0))
+            await pilot.pause()
+            await pilot.pause()
+            self.assertEqual(app.screen.sidebar_width, 51)
+            after = [cell.embed_pane().region.width for cell in area.cells()]
+            # 右栏总共让出 12 列：3 格均分，每格窄 4 列。
+            self.assertEqual([a - b for a, b in zip(before, after, strict=True)], [4, 4, 4])
+            self.assertEqual(len(area.cells()), 3)
+            self.assertTrue(
+                all(cell.embed_pane() is not None for cell in area.cells())
+            )
+            await pilot.mouse_up(handle)
+            await pilot.pause()
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 51)
+
+            # 往回拖：每格同步变宽回到原尺寸。
+            await pilot.mouse_down(handle)
+            await pilot.hover(None, offset=(39, 5))
+            await pilot.pause()
+            await pilot.pause()
+            self.assertEqual(app.screen.sidebar_width, 39)
+            restored = [cell.embed_pane().region.width for cell in area.cells()]
+            self.assertEqual(restored, before)
+            await pilot.mouse_up(handle)
+            await pilot.pause()
+            self.assertEqual(_ui_prefs.load_sidebar_width(), 39)
+            self.assertEqual(len(area.cells()), 3)
+        _ui_prefs.save_sidebar_width(39)
 
 
 class InputMaskFilterTests(unittest.TestCase):

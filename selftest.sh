@@ -229,6 +229,9 @@ if [[ -z "$cursor_session" ]]; then
   exit 1
 fi
 # 直启已自动聚焦右栏；等外层光标跟上内嵌 pane 光标即可。
+# PANEL_BASE = 侧边栏默认宽 + 1（把手/空隙列），从源码常量推导，隔离环境恒为默认。
+SIDEBAR_W="$("$SELFTEST_PYTHON" -c 'import sys; sys.path.insert(0, "'"$REPO"'/src"); from corral.ui.main_screen import SIDEBAR_WIDTH_DEFAULT; print(SIDEBAR_WIDTH_DEFAULT)')"
+PANEL_BASE=$((SIDEBAR_W + 1))
 expected_x=""
 outer_cursor=""
 inner_cursor=""
@@ -237,10 +240,12 @@ for _ in {1..40}; do
   outer_cursor="$(tmux -L "$OUTER" display-message -p -t cursor '#{cursor_x},#{cursor_y}')"
   outer_x="${outer_cursor%,*}"; outer_y="${outer_cursor#*,}"
   inner_x="${inner_cursor%,*}"; inner_y="${inner_cursor#*,}"
-  # 左栏固定宽度 39，右栏前保留 1 列空隙，因此面板起点在第 40 列；
-  # 真实外层光标列 = 40 + pane 内真实光标列；顶栏与格标题各占 1 行，因此外层行
-  # = 2 + pane 内真实光标行。算错了说明光标坐标换算或时机有问题。
-  expected_x=$((40 + inner_x))
+  # 左栏宽度可拖拽调整（默认 39，见 corral.ui.main_screen.SIDEBAR_WIDTH_DEFAULT），
+  # 右栏前保留 1 列（把手或空隙），因此面板起点在第 PANEL_BASE 列；
+  # 真实外层光标列 = PANEL_BASE + pane 内真实光标列；顶栏与格标题各占 1 行，
+  # 因此外层行 = 2 + pane 内真实光标行。算错了说明光标坐标换算或时机有问题。
+  # PANEL_BASE 从源码常量推导（隔离 HOME 下宽度恒为默认），不再硬编码 40。
+  expected_x=$((PANEL_BASE + inner_x))
   expected_y=$((2 + inner_y))
   if [[ "$outer_x" == "$expected_x" && "$outer_y" == "$expected_y" ]]; then
     break
@@ -249,7 +254,7 @@ for _ in {1..40}; do
 done
 outer_x="${outer_cursor%,*}"; outer_y="${outer_cursor#*,}"
 inner_x="${inner_cursor%,*}"; inner_y="${inner_cursor#*,}"
-expected_x=$((40 + inner_x))
+expected_x=$((PANEL_BASE + inner_x))
 expected_y=$((2 + inner_y))
 if [[ "$outer_x" == "$expected_x" && "$outer_y" == "$expected_y" ]]; then
   ok "外层终端真实光标精确落在托管 pane 内的真实光标位置（内 ${inner_cursor} -> 外 ${outer_cursor}，IME 候选框定位依据的机制验证通过）"
@@ -292,7 +297,7 @@ for _ in {1..60}; do
   outer_cursor="$(tmux -L "$OUTER" display-message -p -t hidden '#{cursor_x},#{cursor_y},#{cursor_flag}')"
   IFS=, read -r inner_x inner_y inner_flag <<<"$inner_cursor"
   IFS=, read -r outer_x outer_y outer_flag <<<"$outer_cursor"
-  if [[ "$inner_flag" == "0" && "$outer_x" == "$((40 + inner_x))" && "$outer_y" == "$((2 + inner_y))" && "$outer_flag" == "0" ]]; then
+  if [[ "$inner_flag" == "0" && "$outer_x" == "$((PANEL_BASE + inner_x))" && "$outer_y" == "$((2 + inner_y))" && "$outer_flag" == "0" ]]; then
     hidden_ok=1
     break
   fi
@@ -307,7 +312,9 @@ fi
 tmux -L "$OUTER" kill-window -t hidden 2>/dev/null || true
 
 # ---- 划词选中 + Ctrl+C 复制：验证真实 OSC 52 写入到达外层终端（tmux 充当） ----
-tmux -L "$OUTER" send-keys -t cursor -l "$(printf '\033[<0;40;3M')"
+# 按下坐标按 1-based 计：第 PANEL_BASE+1 列是右栏内容首列（PANEL_BASE 本身是
+# 侧栏与右栏之间的拖拽把手/空隙，落上去会开始调宽而不是选词）。
+tmux -L "$OUTER" send-keys -t cursor -l "$(printf '\033[<0;%s;3M' "$((PANEL_BASE + 1))")"
 sleep 0.05
 tmux -L "$OUTER" send-keys -t cursor -l "$(printf '\033[<32;70;3M')"
 sleep 0.05
@@ -320,7 +327,7 @@ copied="$(tmux -L "$OUTER" show-buffer 2>/dev/null || true)"
 if [[ "$copied" == *"PROMPT>"* ]]; then
   ok "划词选中托管 pane 画面文字后 Ctrl+C 复制，真实 OSC 52 写入到达外层终端"
 else
-  echo "划词复制未生效，tmux 缓冲区内容：${copied@Q}" >&2
+  echo "划词复制未生效，tmux 缓冲区内容：$copied" >&2
   exit 1
 fi
 
