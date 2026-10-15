@@ -186,6 +186,8 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 **已落地（v0.24.308，2026-10-15 异机 Pi 现场实锤）**：周期整机卡死 13~16s（`tui_stall` / `tui_stall_recovered` 同 `stall_id`、同 `pid`），根因不是扫描慢，而是 `_merge_scanned` 持 `SessionStore.lock` 的区间内逐占位卡 fork `tmux has-session`（`_reconcile_provisional_sessions` → `pane_liveness` / `is_alive`，忙时单次可达 1.5s；509 会话 × 约 25~30ms ≈ 13~16s），0.5s UI 标题轮询（`poll_title_updates`）撞同一把锁。现场栈：UI 线程停在 `with self.lock` 的 C 级 acquire，刷新线程停在 `subprocess._wait`。修法：锁外快照存活态（`_probe_provisional_liveness`；`alive`/`dead` 短路、仅 `unknown` 走 `is_alive`），锁内只查表、不确定保卡。回归：`test_provisional_order.py` 断言探测时锁空闲（旧代码必挂）。禁止把探测加回锁内；存活态禁止跨刷新 TTL 缓存（沿 v0.24.185 第 2 条）。
 
+**P1 裁定（2026-10-15，用户体验优先，机主授权 agent 定）**：OpenCode 列表签名覆盖 `message` / `session_message` 含 `data` 列（SessKit `parsers/opencode.py` `_SIGNATURE_TABLES`），流式输出每块都改变指纹 → `cache_hit` 永 False；本机实测 632MB 库单次签名约 1s 且背靠背不稳定。**不做消息不敏感签名**：`_merge_live_state` 只刷新托管标注与关注态，`_freshen_from_disk` 只覆盖 `claude/codex/pi` 文件型运行时——opencode 卡片的相对时间在签名稳定期间会冻住，这是可见倒退，而后台 CPU 是 P0/P2 之后不可见的。注意：P2 共享命中后 TUI 直接跳过签名计算，P1 的界面影响自然消失，只剩后台单解析进程的固有哈希成本。纯降本（不改变翻转语义，如按计数而非 data 哈希）可后续单独立项，需 SessKit 发版 + 升 pin，本轮不做。
+
 **已落地（v0.24.186，2026-09-12）——跨进程共享扫描索引 + 首帧优先 + 远程降档**：
 
 用户体感「启动白屏好几秒、会话中又卡」在 16GB 忙机上复现：`load` 一次 28s、首铺 `list_rebuild` full 3.5s、界面与 `remote _serve` 各扫一遍。阶段 0 拆解（负载已回落时）：冷 `scan_all(50)` ≈540ms（OpenCode/Claude 等并行），签名全命中仍 ≈100ms，`annotate` ≈70ms——所以「共享索引跳过整段扫描」比「把轮询间隔拉长」更符合体验优先。

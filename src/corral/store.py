@@ -487,6 +487,7 @@ class SessionStore:
             session_count = sum(len(items) for items in scanned.values())
             cache_hit = bool(getattr(self.registry, "last_scan_cache_hit_all", False))
             shared = bool(getattr(self.registry, "last_scan_shared", False))
+            shared_miss = getattr(self.registry, "last_scan_shared_miss", None)
             if not shared:
                 self._last_local_scan_at = now
             use_live = (
@@ -505,6 +506,7 @@ class SessionStore:
                 reason="refresh_live" if use_live else "refresh",
                 cache_hit=cache_hit,
                 shared_index=shared,
+                **({"shared_miss": shared_miss} if shared_miss else {}),
             )
             before = self._sessions_signature()
             if use_live:

@@ -31,6 +31,15 @@ class ScanIndexTests(unittest.TestCase):
             scan_index._LAST_PUBLISH.update,
             {"at": 0.0, "path": "", "limit": 0, "keys": None},
         )
+        scan_index._LAST_MISS.update({"at": 0.0, "reason": "none", "detail": {}})
+        self.addCleanup(
+            scan_index._LAST_MISS.update,
+            {"at": 0.0, "reason": "none", "detail": {}},
+        )
+        scan_index._LAST_MISS_EVENT.update({"at": 0.0, "reason": ""})
+        self.addCleanup(
+            scan_index._LAST_MISS_EVENT.update, {"at": 0.0, "reason": ""},
+        )
 
     def _session(self, runtime: str, sid: str, mtime: float) -> dict:
         return {
@@ -139,6 +148,55 @@ class ScanIndexTests(unittest.TestCase):
             )
             self.assertIsNone(scan_index.try_consume(50))
             self.assertFalse(scan_index.index_path().exists())
+
+    def test_miss_reason_recorded_without_session_ids(self) -> None:
+        scan_index.publish(
+            {"claude": [self._session("claude", "a", 1)]},
+            limit=10,
+        )
+        self.assertIsNone(scan_index.try_consume(50))
+        miss = scan_index.last_miss()
+        self.assertEqual(miss["reason"], "limit")
+        self.assertEqual(miss["detail"]["published_limit"], 10)
+        self.assertEqual(miss["detail"]["need_limit"], 50)
+        scan_index.publish(
+            {"claude": [self._session("claude", "b", 2)]},
+            limit=50,
+        )
+        self.assertIsNone(scan_index.try_consume(50, {"claude": {"missing"}}))
+        miss = scan_index.last_miss()
+        self.assertEqual(miss["reason"], "keep_ids")
+        self.assertEqual(miss["detail"]["runtime"], "claude")
+        self.assertEqual(miss["detail"]["missing_count"], 1)
+        self.assertIsNone(scan_index.try_consume(50, max_age=-1))
+        self.assertEqual(scan_index.last_miss()["reason"], "ttl")
+
+    def test_registry_reports_consume_miss_reason(self) -> None:
+        from corral.runtime.registry import RuntimeRegistry
+
+        runtime = mock.Mock(id="claude", display_name="Claude")
+        runtime.scan_signature.return_value = None
+        runtime.scan_sessions.return_value = []
+        registry = RuntimeRegistry((runtime,))
+        scan_index.publish({"claude": []}, limit=10)
+        registry.scan_all(50)
+        self.assertFalse(registry.last_scan_shared)
+        self.assertEqual(registry.last_scan_shared_miss, "limit")
+
+    def test_miss_event_throttled_per_reason(self) -> None:
+        with mock.patch("corral.observe.event") as emitted, mock.patch(
+            "corral.scan_index.getenv", return_value=""
+        ):
+            self.assertIsNone(scan_index.try_consume(50))
+            self.assertIsNone(scan_index.try_consume(50))
+            self.assertEqual(emitted.call_count, 1)
+            self.assertEqual(emitted.call_args[0][0], "scan_index_miss")
+            scan_index.publish(
+                {"claude": [self._session("claude", "a", 1)]},
+                limit=10,
+            )
+            self.assertIsNone(scan_index.try_consume(50))
+            self.assertEqual(emitted.call_count, 2)
 
     def test_isolate_managed_hosts_disables_shared_index(self) -> None:
         for patch in self.patches:

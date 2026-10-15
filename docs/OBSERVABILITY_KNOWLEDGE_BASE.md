@@ -98,7 +98,8 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 
 | 组件/事件 | 何时产生 | 默认记录内容 |
 |---|---|---|
-| `scan_all` | 会话初始加载或后台重扫完成 | `duration_ms`、会话数量、`reason`（`load` / `refresh` / `refresh_live`）、可选 `cache_hit` |
+| `scan_all` | 会话初始加载或后台重扫完成 | `duration_ms`、会话数量、`reason`（`load` / `refresh` / `refresh_live`）、可选 `cache_hit`；未命中共享索引时带 `shared_miss`（`ttl` / `limit` / `keep_ids` / `cohort` / `unreadable` / `disabled`，只记数量与版本，不记会话 id） |
+| `scan_index_miss` | 同上 miss 原因变化时（同原因 5 分钟最多一条） | 同 `shared_miss` 的原因与 publisher 事实；定位“`shared_index` 恒 False 到底卡在哪一关” |
 | `list_rebuild` | 界面会话列表重建结束 | 耗时与重建模式 |
 | `split_group_member_missing` | 浏览既有会话组时，后台扫描暂时未发现某个成员 | 缺失数量；不记录会话名称、标题或正文 |
 | `host_session` | 内嵌会话托管成功或失败 | 耗时、运行时、`ok` |
@@ -141,7 +142,7 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 | 异常双写 | `python3 -m unittest -v test_observe.py` | `error` 事件无 traceback，异常日志有完整 traceback |
 | 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回当前/上一段日志路径、栈路径、`last_error`、tmux 与配色事实；不启动 TUI |
 | 事件现场读取 | `python3 -m corral diagnose` 后读取 `data.last_error` 或 `~/.cache/corral/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |
-| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，按 `pid` 读两段事件日志的 `tui_stall` / `tui_stall_recovered`、`scan_all` / `list_rebuild` / `capture_slow`，再看 `stacks.log`；对照 `corral --version` | A stack sampled during the same stall identifies the blocked Python path; timings alone show correlation, not causation. `refresh` spikes with `cache_hit=false` point to full scans; check old-process state and `PERFORMANCE_KNOWLEDGE_BASE.md`. |
+| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，按 `pid` 读两段事件日志的 `tui_stall` / `tui_stall_recovered`、`scan_all` / `list_rebuild` / `capture_slow`，再看 `stacks.log`；对照 `corral --version` | A stack sampled during the same stall identifies the blocked Python path; timings alone show correlation, not causation. `refresh` spikes with `cache_hit=false` point to full scans; check old-process state and `PERFORMANCE_KNOWLEDGE_BASE.md`. faulthandler 栈没有线程名，按栈内容区分等锁者与持锁者再定责：停在 `with self.lock` 的 C 级 acquire（Textual/asyncio 帧在下）的是被堵住的 UI 线程，停在 `subprocess._wait` 且上层是 `_merge_scanned` 的是持锁的刷新线程——2026-10-15 现场曾把后者误读成“主线程卡在 reconcile”。 |
 | 远程 RPC 服务端耗时取证 | `corral remote status` 看最近操作行的 `耗时ms [平面]`，或读运行快照 `recent` 的 `duration_ms` / `plane` / `req_id` | 成功 RPC 必带耗时与平面；`session.*` 走 data 说明数据面生效，走 control 说明未附着或回落。失败请求无耗时条目，查 `events.log` 的 `remote_method_failed` |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/corral/screenshots/tui-*.svg`，并只作本地排查使用 |
 | 按需栈转储 | 对活进程 `kill -USR1 <pid>` 后读 `~/.cache/corral/stacks.log`（`test_observe_stacks.py` 覆盖头行/追加/轮转） | 头行含 ISO 时间与 pid，其后为全线程栈；超 1MB 时上一段仍在 `stacks.log.1` 可查 |

@@ -42,6 +42,9 @@ class RuntimeRegistry:
         self.last_scan_cache_hit_all = False
         # 上一轮是否来自跨进程共享扫描索引（见 scan_index）；与签名命中互斥。
         self.last_scan_shared = False
+        # 本轮尝试消费共享索引但未命中时的原因（ttl/limit/keep_ids/cohort…，
+        # 见 scan_index.last_miss）；命中、未尝试或无记录时为 None。
+        self.last_scan_shared_miss: str | None = None
 
     def __iter__(self):
         return iter(self._runtimes.values())
@@ -117,6 +120,7 @@ class RuntimeRegistry:
         runtimes = list(self)
         keep_ids_by_runtime = keep_ids_by_runtime or {}
         self.last_scan_shared = False
+        self.last_scan_shared_miss = None
 
         if prefer_shared:
             shared = scan_index.try_consume(limit, keep_ids_by_runtime)
@@ -126,6 +130,9 @@ class RuntimeRegistry:
                 self.last_scan_cache_hit_all = True
                 self.last_scan_shared = True
                 return result
+            miss_reason = scan_index.last_miss().get("reason")
+            if miss_reason not in (None, "", "none"):
+                self.last_scan_shared_miss = str(miss_reason)
 
         def _copy_sessions(sessions: list[SessionInfo]) -> list[SessionInfo]:
             """缓存与调用方之间隔离可变会话字典，避免界面注入字段反向污染缓存。"""

@@ -43,6 +43,51 @@ STALE_TMP_MAX_AGE_SECONDS = 300.0
 # scan_all callers are sequential per process for a given registry.
 _PUBLISH_LOCK = threading.Lock()
 _LAST_PUBLISH: dict[str, object] = {"at": 0.0, "limit": 0, "keys": None}
+# Most recent consume miss (reason + publisher facts, counts only — never
+# session ids). Misses can occur every few seconds per process, so the events
+# log only gets a periodic reminder per reason; the in-memory record always
+# reflects the latest miss and is what unit tests assert on.
+MISS_EVENT_MIN_INTERVAL_SECONDS = 300.0
+_MISS_LOCK = threading.Lock()
+_LAST_MISS: dict[str, object] = {"at": 0.0, "reason": "none", "detail": {}}
+_LAST_MISS_EVENT: dict[str, object] = {"at": 0.0, "reason": ""}
+
+
+def last_miss() -> dict[str, object]:
+    """Most recent consume miss: ``reason`` + ``at`` + publisher-fact ``detail``."""
+    with _MISS_LOCK:
+        snapshot = dict(_LAST_MISS)
+    snapshot["detail"] = dict(snapshot.get("detail") or {})
+    return snapshot
+
+
+def _note_miss(reason: str, **detail: object) -> None:
+    """Record why ``try_consume`` fell through to a local scan.
+
+    Always updates the in-memory record; emits a throttled
+    ``scan_index_miss`` event (at most one per reason per
+    ``MISS_EVENT_MIN_INTERVAL_SECONDS``) so a field ``events.log`` shows
+    whether misses are TTL, limit, keep-id, cohort or absence — instead of
+    a bare ``shared_index=false`` on every line. Details carry counts and
+    versions only, never session ids or titles.
+    """
+    now_mono = time.monotonic()
+    with _MISS_LOCK:
+        _LAST_MISS.update({"at": time.time(), "reason": reason, "detail": dict(detail)})
+        last_at = float(_LAST_MISS_EVENT.get("at") or 0.0)
+        last_reason = str(_LAST_MISS_EVENT.get("reason") or "")
+        if reason == last_reason and now_mono - last_at < MISS_EVENT_MIN_INTERVAL_SECONDS:
+            return
+        _LAST_MISS_EVENT.update({"at": now_mono, "reason": reason})
+    isolate = (getenv("ISOLATE_MANAGED_HOSTS", "") or "").strip().lower()
+    if isolate in {"1", "true", "yes", "on"}:
+        return
+    try:
+        from corral import observe
+
+        observe.event("scan_index_miss", reason=reason, **detail)
+    except Exception:  # noqa: BLE001 — diagnostics must never break scans
+        pass
 
 
 def _shared_index_enabled() -> bool:
@@ -93,31 +138,42 @@ def try_consume(
 ) -> dict[str, list[dict[str, Any]]] | None:
     """Return a deep-copy of a fresh covering index, or ``None`` to scan locally."""
     if not _shared_index_enabled():
+        _note_miss("disabled")
         return None
     try:
         path = index_path()
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        _note_miss("unreadable")
         return None
     if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
+        _note_miss("version")
         return None
     if payload.get("provider_cohort") != provider_cohort():
         # An obsolete shared worker's snapshot must never be reused by a new
         # provider cohort: fall through to a local scan instead.
+        _note_miss("cohort")
         return None
     try:
         published_at = float(payload.get("published_at") or 0)
         published_limit = int(payload.get("limit") or 0)
     except (TypeError, ValueError):
+        _note_miss("version")
         return None
     if published_limit < limit:
+        _note_miss("limit", published_limit=published_limit, need_limit=limit)
         return None
     age = time.time() - published_at
     if age < 0 or age > max_age:
+        _note_miss(
+            "ttl", age_s=round(age, 1), max_age_s=max_age,
+            published_limit=published_limit,
+        )
         return None
     sessions = payload.get("sessions")
     if not isinstance(sessions, dict):
+        _note_miss("sessions")
         return None
     keep_ids_by_runtime = keep_ids_by_runtime or {}
     uncoverable_raw = payload.get("uncoverable_keep")
@@ -133,6 +189,7 @@ def try_consume(
             continue
         bucket = sessions.get(runtime_id)
         if not isinstance(bucket, list):
+            _note_miss("keep_ids", runtime=str(runtime_id), missing_count=len(keep_ids))
             return None
         present = {str(item.get("id") or "") for item in bucket if isinstance(item, dict)}
         # Keep ids the publisher's own scan could not cover (stale pins/groups
@@ -140,7 +197,12 @@ def try_consume(
         # requiring them would fail every consume. Newly pinned ids the
         # publisher never saw are NOT excused and still force a local scan.
         excused = uncoverable.get(runtime_id) or set()
-        if not (set(keep_ids) - excused) <= present:
+        missing = (set(keep_ids) - excused) - present
+        if missing:
+            _note_miss(
+                "keep_ids", runtime=str(runtime_id), missing_count=len(missing),
+                published_count=len(present),
+            )
             return None
     narrowed: dict[str, list[dict[str, Any]]] = {}
     for runtime_id, bucket in sessions.items():
