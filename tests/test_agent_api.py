@@ -504,7 +504,9 @@ class AgentApiTests(unittest.TestCase):
         data = result["data"]
         self.assertIn("cache_dir", data)
         self.assertIn("events_log", data)
+        self.assertEqual(data["events_log_previous"], data["events_log"] + ".1")
         self.assertIn("embed_error_log", data)
+        self.assertIn("stacks_log", data)
         self.assertIn("last_error", data)
         self.assertEqual(data["runtime_label_style_claude"], "bold #D97757")
         self.assertIsInstance(data["hints"], list)

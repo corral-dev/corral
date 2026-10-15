@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-10-07.1"  # invalidate mixed sequence generations after rebuild
+PARSER_VERSION = "2026-10-15.1"  # publish hidden question settlement on retained cards
 _SCHEMA_VERSION = 1
 
 

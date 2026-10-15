@@ -2277,8 +2277,19 @@ class SessionHub:
         """
         if shell_terminal.is_shell_key(key):
             return ("shell", 0, 0, "")
-        name = self._keepalive_name(key, resume_if_needed=True)
+        resumed: list[bool] = []
+        name = self._keepalive_name(key, resume_if_needed=True, resumed=resumed)
+        if self._pane_proven_dead(name):
+            name, restarted = self._recover_dead_pane_binding(key, name, cause="pane_missing")
+            if restarted:
+                resumed.append(True)
         session = self.require_session(key)
+        if resumed and not session.get("provisional"):
+            # Preflight already resumed a formal history. The later send sees
+            # its binding and cannot know it still needs the startup guard.
+            self._wait_pane_settled(
+                name, timeout=min(_RESUME_SETTLE_TIMEOUT, max(0.0, deadline - time.monotonic() - 1.0)),
+            )
         if session.get("provisional"):
             runtime = str(session.get("source") or "")
             markers = {
@@ -2312,7 +2323,11 @@ class SessionHub:
     def confirm_text_delivery(
         self, key: str, text: str, baseline: tuple[str, int, int, str], deadline: float,
     ) -> None:
-        """Require a new native user record; never resend an uncertain instruction."""
+        """Require a new native user record; never resend an uncertain instruction.
+
+        Legacy gate: the receipt path (option B, 2026-10-15) no longer blocks on
+        this — see ``verify_text_injected``. Kept for direct unit coverage.
+        """
         path, generation, newest, original_name = baseline
         if path == "shell":
             return
@@ -2340,6 +2355,42 @@ class SessionHub:
             if self._stop.is_set() or time.monotonic() >= deadline:
                 raise PartialInjectionError(t("remote.err.native_unconfirmed"))
             time.sleep(_TURN_READY_POLL)
+
+    def verify_text_injected(self, key: str, baseline: object) -> None:
+        """Post-injection liveness gate (owner decision 2026-10-15, option B).
+
+        Delivery = preflight ok + terminal injection ok + pane still alive.
+        Native history is eventual consistency and is NOT waited for here: a
+        busy agent (Pi steering mid-turn) persists the user message only when
+        its run ends. Only a proven-dead pane after a successful inject stays
+        uncertain (``unknown`` via ``PartialInjectionError``), never a silent
+        success. Shell keys are terminal-only and return immediately.
+        """
+
+        def _original_name(value: object) -> str:
+            if isinstance(value, tuple) and len(value) == 4:
+                path, _gen, _newest, original = value
+                if path == "shell":
+                    return ""
+                return str(original or "")
+            return ""
+
+        if shell_terminal.is_shell_key(key):
+            return
+        name = _original_name(baseline)
+        if not name:
+            try:
+                session = self.store.find_session(self.resolve_session_key(key))
+            except Exception:
+                session = None
+            name = str((session or {}).get("keepalive_name") or "")
+        if name and self._pane_proven_dead(name):
+            report = embed.take_exit_report(name)
+            if report is None:
+                raise PartialInjectionError(t("remote.err.native_unconfirmed"))
+            message = t("remote.err.native_exited", reason=embed.exit_reason(report))
+            line = embed.exit_detail_line(report)
+            raise PartialInjectionError(f"{message} {line}" if line else message)
 
     def send_text(self, key: str, text: str, submit: bool = True) -> None:
         """把一段文本送进会话。

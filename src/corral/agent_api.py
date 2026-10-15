@@ -912,7 +912,8 @@ def cmd_diagnose(args, registry) -> dict:
     install = updater.install_report()
     hints = [
         "界面异常/闪退时先看 data.last_error（最近一次完整 traceback）",
-        "也可直接读 events.log / embed-error.log",
+        "TUI 长卡顿看 events.log 的 tui_stall/tui_stall_recovered，并按 stall_id 对照 stacks.log",
+        "日志轮转后上一段保留在对应的 .1 文件",
         "TUI 内按 F12 导出当前截图到 screenshots_dir",
         "开发机请用 bash scripts/dev-install.sh（editable），勿只信 python3 -c import",
     ]
@@ -921,8 +922,12 @@ def cmd_diagnose(args, registry) -> dict:
         "cache_dir": observe.CACHE_DIR,
         "events_log": observe.EVENTS_LOG,
         "events_log_exists": os.path.isfile(observe.EVENTS_LOG),
+        "events_log_previous": observe.EVENTS_LOG + ".1",
         "embed_error_log": observe.EMBED_ERROR_LOG,
         "embed_error_log_exists": os.path.isfile(observe.EMBED_ERROR_LOG),
+        "embed_error_log_previous": observe.EMBED_ERROR_LOG + ".1",
+        "stacks_log": observe.STACKS_LOG,
+        "stacks_log_exists": os.path.isfile(observe.STACKS_LOG),
         "last_error": observe.read_last_error(),
         "screenshots_dir": shots_dir,
         "debug": bool(getenv("DEBUG")),
@@ -1175,8 +1180,12 @@ COMMANDS = [
             "cache_dir": "本地缓存目录（默认 ~/.cache/corral）",
             "events_log": "结构化事件日志路径",
             "events_log_exists": "events.log 是否已存在",
+            "events_log_previous": "轮转前一段事件日志路径（.1）",
             "embed_error_log": "异常 traceback 日志路径（后台线程 + 致命闪退）",
             "embed_error_log_exists": "embed-error.log 是否已存在",
+            "embed_error_log_previous": "轮转前一段异常日志路径（.1）",
+            "stacks_log": "TUI 长卡顿或 SIGUSR1 的全线程栈路径",
+            "stacks_log_exists": "stacks.log 是否已存在",
             "last_error": "embed-error.log 末条解析结果（ts/where/exc_type/exc_msg/traceback；已展开 WorkerFailed 等包装）；无记录时为 null",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "screenshots_dir": "F12 截图输出目录",
             "debug": "当前是否开启 CORRAL_DEBUG",

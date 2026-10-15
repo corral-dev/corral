@@ -1065,8 +1065,10 @@ class RemoteService:
             return {"ok": True}
         digest = digest_for_text(key=key, text=text, submit=submit)
         prepare = getattr(self.hub, "prepare_text_delivery", None)
-        confirm = getattr(self.hub, "confirm_text_delivery", None)
-        track_native = bool(text.strip() and submit and callable(prepare) and callable(confirm))
+        # Option B (2026-10-15): submitted text keeps the async worker with the
+        # startup/dead-binding preflight, but delivery no longer waits for the
+        # native history record — injection into a live pane is the proof.
+        needs_preflight = bool(text.strip() and submit and callable(prepare))
         return self._run_receipted_input(
             connection,
             params,
@@ -1074,9 +1076,7 @@ class RemoteService:
             target_key=key,
             digest=digest,
             side_effect=lambda: self.hub.send_text(key, text, submit),
-            prepare=(lambda deadline: prepare(key, deadline)) if track_native else None,
-            confirm=(lambda baseline, deadline: confirm(key, text, baseline, deadline))
-            if track_native else None,
+            prepare=(lambda deadline: prepare(key, deadline)) if needs_preflight else None,
         )
 
     def _input_keys(self, connection: Connection, params: dict):
@@ -1251,9 +1251,22 @@ class RemoteService:
                         for d in state.devices
                     ):
                         raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_revoked"))
+                    # Option B (2026-10-15): delivery is proven injection into a
+                    # live pane. The native history record follows as eventual
+                    # consistency (busy agents persist it when their run ends),
+                    # so the receipt no longer blocks on it. A passed legacy
+                    # ``confirm`` is intentionally ignored here; only the
+                    # post-injection liveness gate can still turn success into
+                    # ``unknown`` (proven-dead pane right after injection).
+                    verify = getattr(self.hub, "verify_text_injected", None)
+
+                    def _post_inject() -> None:
+                        if callable(verify):
+                            verify(canonical_key, baseline)
+
                     self._dispatch_receipted_input(
                         connection, receipt, method, target_key, side_effect,
-                        confirm=lambda: confirm(baseline, receipt.lease_expires_mono),
+                        confirm=_post_inject,
                     )
                 except ActionError as exc:
                     self.receipts.mark_rejected(

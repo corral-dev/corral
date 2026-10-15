@@ -2204,6 +2204,10 @@ def _project_typed_batch(
 ) -> list[RichMessage]:
     """Project one event batch, collecting each touched host once in order."""
     batch = _TypedBatch()
+    pending = [
+        (tool, reader._host_by_call.get(call_id), tool.status)
+        for call_id, tool in reader._pending.items()
+    ]
     for event in events or ():
         host, _is_new = _feed_typed_event(
             reader, event, runtime=runtime, groups=groups, batch=batch
@@ -2215,6 +2219,13 @@ def _project_typed_batch(
             continue
         batch.seen.add(host.seq)
         batch.out.append(host)
+    # Hidden native answers and turn boundaries can settle an earlier card
+    # without producing any visible message of their own. Publish that mutation
+    # too, so remote clients refresh their authoritative pending-question list.
+    for tool, host, previous in pending:
+        if host is not None and tool.status != previous and host.seq not in batch.seen:
+            batch.seen.add(host.seq)
+            batch.out.append(host)
     return batch.out
 
 

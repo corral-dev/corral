@@ -1006,6 +1006,22 @@ class NativeReplyDisplayTests(unittest.TestCase):
     so settlement must come from the envelope itself.
     """
 
+    def test_incremental_hidden_answer_emits_settled_question_card(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(path, _async_history())
+            session = {"source": "codex", "path": str(path), "id": "async", "cwd": directory}
+            reader = richmsg.RichReader(session)
+            messages = reader.read_all()
+            self.assertEqual(_async_statuses(messages), ["running"])
+            envelope = _native_envelope("call_async1", [(0, "q0", "Wi-Fi"), (1, "q1", "hi"), (2, "q2", "fine")])
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(_codex_user(envelope), ensure_ascii=False) + "\n")
+            changed = reader.poll()
+            self.assertEqual(_async_statuses(changed), ["ok"], "Hidden native answers must publish settlement")
+            self.assertEqual(_leaked(changed), [])
+            self.assertEqual(questions.pending_prompts(session, messages), [])
+
     def test_valid_answer_no_bubble_settles_while_turn_active(self) -> None:
         envelope = _native_envelope(
             "call_async1",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
 import tempfile
 import time
@@ -21,10 +22,12 @@ class ObserveTests(unittest.TestCase):
         self.observe = observe
         self._events_log = os.path.join(self.cache_dir, "events.log")
         self._embed_error_log = os.path.join(self.cache_dir, "embed-error.log")
+        self._stacks_log = os.path.join(self.cache_dir, "stacks.log")
         self._patchers = [
             mock.patch.object(observe, "CACHE_DIR", self.cache_dir),
             mock.patch.object(observe, "EVENTS_LOG", self._events_log),
             mock.patch.object(observe, "EMBED_ERROR_LOG", self._embed_error_log),
+            mock.patch.object(observe, "STACKS_LOG", self._stacks_log),
         ]
         for p in self._patchers:
             p.start()
@@ -78,15 +81,49 @@ class ObserveTests(unittest.TestCase):
         self.assertEqual(row["messages"], "<redacted>")
         self.assertEqual(row["runtime"], "claude")
 
-    def test_truncates_when_over_size_cap(self) -> None:
+    def test_rotates_events_without_discarding_previous_context(self) -> None:
         self.observe.init(debug=False)
-        # 写成超过上限，再追加一条仍应成功且文件不大爆炸。
         with open(self._events_log, "w", encoding="utf-8") as fh:
-            fh.write("x" * (256 * 1024 + 10))
-        self.observe.event("after_truncate", ok=True)
+            fh.write('{"name":"before_rotation"}\n')
+            fh.write("x" * (256 * 1024 - 100))
+        self.observe.event("after_rotation", ok=True)
         self.assertLessEqual(os.path.getsize(self._events_log), 256 * 1024 + 512)
         rows = self._lines()
-        self.assertTrue(any(r.get("name") == "after_truncate" for r in rows))
+        self.assertEqual([row["name"] for row in rows], ["after_rotation"])
+        with open(self._events_log + ".1", encoding="utf-8") as fh:
+            self.assertIn("before_rotation", fh.read())
+
+    def test_stall_records_live_stack_once_and_recovery_duration(self) -> None:
+        callbacks: queue.Queue = queue.Queue()
+
+        class Loop:
+            def call_soon_threadsafe(self, callback, *args) -> None:  # noqa: ANN001
+                callbacks.put((callback, args))
+
+        watchdog = self.observe.TuiStallWatchdog(Loop(), interval=0.01, threshold=0.08)
+        watchdog.start()
+        try:
+            callback, args = callbacks.get(timeout=2)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if os.path.isfile(self._stacks_log):
+                    break
+                time.sleep(0.01)
+            self.assertTrue(os.path.isfile(self._stacks_log))
+            with open(self._stacks_log, encoding="utf-8") as fh:
+                self.assertIn("reason=tui_stall", fh.read())
+            time.sleep(0.05)
+            callback(*args)
+            rows = self._lines()
+            stalls = [row for row in rows if row["name"] == "tui_stall"]
+            recovered = [row for row in rows if row["name"] == "tui_stall_recovered"]
+            self.assertEqual(len(stalls), 1)
+            self.assertEqual(len(recovered), 1)
+            self.assertEqual(stalls[0]["stall_id"], recovered[0]["stall_id"])
+            self.assertGreaterEqual(recovered[0]["duration_ms"], 80)
+            self.assertTrue(stalls[0]["stack_captured"])
+        finally:
+            watchdog.stop()
 
     def test_timed_records_duration_ms(self) -> None:
         self.observe.init(debug=False)
@@ -136,6 +173,21 @@ class ObserveTests(unittest.TestCase):
         self.assertIn("_project_groups", last["exc_msg"])
         self.assertIn("Traceback", last["traceback"])
         self.assertIn("ts", last)
+
+    def test_error_log_rotation_preserves_last_error(self) -> None:
+        with mock.patch.object(self.observe, "_MAX_LOG_BYTES", 500):
+            try:
+                raise RuntimeError("before rotation")
+            except RuntimeError as exc:
+                self.observe.log_exception("scan", exc)
+            try:
+                raise RuntimeError("after rotation")
+            except RuntimeError as exc:
+                self.observe.log_exception("capture", exc)
+        self.assertTrue(os.path.isfile(self._embed_error_log + ".1"))
+        last = self.observe.read_last_error()
+        self.assertIsNotNone(last)
+        self.assertIn("after rotation", last["exc_msg"])
 
     def test_crash_hooks_log_uncaught_exception(self) -> None:
         self.observe.init(debug=False)

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import os
 import sys
@@ -192,6 +193,7 @@ class CorralApp(App):
         # Textual compositor 在窗口高度骤变时偶发 chops/spans 行数不一致（IndexError）；
         # 连续恢复有上限，避免真故障时死循环刷屏。
         self._compositor_recovery_budget = 0
+        self._stall_watchdog = None
 
     def _on_terminal_supports_synchronized_output(self, message) -> None:
         # Textual 默认在终端支持时把每帧包进同步输出（`\e[?2026h…l`，原子提交整帧防撕裂）。
@@ -268,6 +270,10 @@ class CorralApp(App):
         # 没接这一段，Textual 默认主题在浅色终端下会显得配色不对（真机实测发现）。
         # 深/浅都用 corral 自有「冷静工作台」主题，不用 Textual 默认高饱和主色。
         import corral
+        from corral.observe import TuiStallWatchdog
+
+        self._stall_watchdog = TuiStallWatchdog(asyncio.get_running_loop())
+        self._stall_watchdog.start()
 
         self.register_theme(_CORRAL_DARK)
         self.register_theme(_CORRAL_LIGHT)
@@ -276,6 +282,11 @@ class CorralApp(App):
         self.push_screen(MainScreen(self._store, self._embed_ok, self._direct, self._osc_report))
         if supports_runtime_theme_tracking(self._driver):
             self.set_interval(BACKGROUND_POLL_INTERVAL, self._query_runtime_theme)
+
+    def on_unmount(self) -> None:
+        if self._stall_watchdog is not None:
+            self._stall_watchdog.stop()
+            self._stall_watchdog = None
 
     def _query_runtime_theme(self) -> None:
         query_runtime_theme(self._driver)
@@ -396,3 +407,6 @@ def run_app(store, embed_ok: bool, direct=None, osc_report: bytes | None = None)
         # Python 堆栈打到壳层。这里吞掉中断、同步恢复终端，当作正常退出。
         restore_terminal()
         return None
+    finally:
+        if app._stall_watchdog is not None:
+            app._stall_watchdog.stop()

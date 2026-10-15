@@ -43,28 +43,31 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(mismatch["reason"], "digest_mismatch")
         self.assertEqual(hub.new_session.call_count, 1)
 
-    def test_async_receipt_stays_pending_until_native_confirmation_and_never_replays(self):
+    def test_async_receipt_delivers_on_live_injection_without_native_history(self):
+        """Option B (2026-10-15): injection into a live pane is the proof.
+
+        The receipt must NOT wait for the native history record: a busy agent
+        (Pi steering mid-turn) persists the user message only when its run
+        ends. A passed legacy ``confirm`` is ignored; only a proven-dead pane
+        after injection stays ``unknown`` and never replays.
+        """
         hub = mock.Mock(spec=SessionHub)
         hub.resolve_session_key.side_effect = lambda key: key
         hub.delivery_binding.return_value = "same-pane"
+        hub.verify_text_injected.return_value = None
         service = RemoteService(hub)
         connection = Connection("fixture-device", lambda _: None)
         service.refresh_state = lambda: SimpleNamespace(
             devices=[SimpleNamespace(public_key="fixture-device", access="full")]
         )
-        gate = threading.Event()
-        finished = threading.Event()
         calls = []
 
         def prepare(deadline):
             self.assertGreater(deadline, time.monotonic())
             return "baseline"
 
-        def confirm(baseline, deadline):
-            self.assertEqual(baseline, "baseline")
-            self.assertTrue(gate.wait(2))
-            finished.set()
-            raise PartialInjectionError("native acceptance missing")
+        def confirm(baseline, deadline):  # legacy native gate: must be ignored
+            self.fail("native-history confirm must not gate delivery")
 
         from corral.remote.command_receipts import digest_for_text
         kwargs = dict(
@@ -74,29 +77,48 @@ class ReliabilityTests(unittest.TestCase):
         )
         first = service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
         self.assertEqual(first["status"], "accepted")
-        duplicate = service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
-        self.assertIn(duplicate["status"], ("accepted", "dispatching"))
-        # Another device's input for the same pane waits its turn; it is never refused as busy.
-        alias_kwargs = {**kwargs, "target_key": "codex:alias",
-                        "digest": digest_for_text(key="codex:alias", text="hello", submit=True),
-                        "side_effect": lambda: calls.append("second"),
-                        "confirm": lambda baseline, deadline: None}
-        queued = service._run_receipted_input(connection, {"command_id": "two"}, **alias_kwargs)
-        self.assertEqual(queued["status"], "accepted")
-        threading.Event().wait(.05)
-        self.assertEqual(calls, ["injected"])
-        gate.set()
-        self.assertTrue(finished.wait(2))
         deadline = time.monotonic() + 2
-        while (service.receipts.status("fixture-device", "one")["status"] == "dispatching"
-               or service.receipts.status("fixture-device", "two")["status"] != "delivered"):
+        while service.receipts.status("fixture-device", "one")["status"] != "delivered":
             self.assertLess(time.monotonic(), deadline)
             threading.Event().wait(.01)
-        final = service.receipts.status("fixture-device", "one")
+        self.assertEqual(calls, ["injected"])
+        # Same command identity never re-dispatches.
+        duplicate = service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
+        self.assertEqual(duplicate["status"], "delivered")
+        self.assertEqual(calls, ["injected"])
+        self.assertFalse(service._input_targets)
+
+    def test_proven_dead_pane_after_injection_stays_unknown_without_replay(self):
+        hub = mock.Mock(spec=SessionHub)
+        hub.resolve_session_key.side_effect = lambda key: key
+        hub.delivery_binding.return_value = "same-pane"
+        hub.verify_text_injected.side_effect = PartialInjectionError("pane exited")
+        service = RemoteService(hub)
+        connection = Connection("fixture-device", lambda _: None)
+        service.refresh_state = lambda: SimpleNamespace(
+            devices=[SimpleNamespace(public_key="fixture-device", access="full")]
+        )
+        calls = []
+        from corral.remote.command_receipts import digest_for_text
+        kwargs = dict(
+            method="input.text", target_key="codex:a",
+            digest=digest_for_text(key="codex:a", text="hello", submit=True),
+            side_effect=lambda: calls.append("injected"),
+            prepare=lambda deadline: "baseline",
+        )
+        first = service._run_receipted_input(connection, {"command_id": "dead"}, **kwargs)
+        self.assertEqual(first["status"], "accepted")
+        deadline = time.monotonic() + 2
+        while service.receipts.status("fixture-device", "dead")["status"] in (
+            "accepted", "dispatching",
+        ):
+            self.assertLess(time.monotonic(), deadline)
+            threading.Event().wait(.01)
+        final = service.receipts.status("fixture-device", "dead")
         self.assertEqual(final["status"], "unknown")
-        self.assertIn("native acceptance", final["detail"])
-        service._run_receipted_input(connection, {"command_id": "one"}, **kwargs)
-        self.assertEqual(calls, ["injected", "second"])
+        # Unknown never replays: same identity returns the receipt, no new inject.
+        service._run_receipted_input(connection, {"command_id": "dead"}, **kwargs)
+        self.assertEqual(calls, ["injected"])
         self.assertFalse(service._input_targets)
 
     def test_waiting_input_expires_without_injection_when_target_stays_busy(self):
@@ -160,6 +182,33 @@ class ReliabilityTests(unittest.TestCase):
             transcript.generation = 8
             with self.assertRaises(PartialInjectionError):
                 hub.confirm_text_delivery("codex:a", "hello", ("history", 7, 1, ""), time.monotonic())
+
+    def test_resumed_formal_history_waits_before_capturing_delivery_baseline(self):
+        hub = SessionHub()
+        self.addCleanup(hub.stop)
+        order = []
+        session = {"source": "pi", "id": "old", "path": "history", "keepalive_name": "resumed-pane"}
+        transcript = SimpleNamespace(path="history", generation=7, messages=[RichMessage(1, "user", "old")])
+
+        def resume(key, *, resume_if_needed, resumed):
+            self.assertTrue(resume_if_needed)
+            resumed.append(True)
+            order.append("resumed")
+            return "resumed-pane"
+
+        def baseline(_):
+            self.assertEqual(order, ["resumed", "ready"])
+            return transcript
+
+        with (
+            mock.patch.object(hub, "_keepalive_name", side_effect=resume),
+            mock.patch.object(hub, "_pane_proven_dead", return_value=False),
+            mock.patch.object(hub, "require_session", return_value=session),
+            mock.patch.object(hub, "_wait_pane_settled", side_effect=lambda *a, **kw: order.append("ready")),
+            mock.patch.object(hub, "_ensure_transcript", side_effect=baseline),
+        ):
+            result = hub.prepare_text_delivery("pi:old", time.monotonic() + 30)
+        self.assertEqual(result, ("history", 7, 1, "resumed-pane"))
 
     def test_startup_exit_is_rejected_before_input(self):
         hub = SessionHub()

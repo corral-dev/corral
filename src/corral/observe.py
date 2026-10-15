@@ -46,6 +46,7 @@ _ERROR_HEADER_RE = re.compile(
 )
 
 _lock = threading.Lock()
+_stacks_write_lock = threading.Lock()
 _debug = False
 _inited = False
 _hooks_installed = False
@@ -114,10 +115,10 @@ def _sanitize(fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _truncate_if_needed(path: str) -> None:
+def _rotate_if_needed(path: str, incoming_bytes: int) -> None:
     try:
-        if os.path.exists(path) and os.path.getsize(path) > _MAX_LOG_BYTES:
-            os.truncate(path, 0)
+        if os.path.exists(path) and os.path.getsize(path) + incoming_bytes > _MAX_LOG_BYTES:
+            os.replace(path, path + ".1")
     except OSError:
         pass
 
@@ -125,9 +126,10 @@ def _truncate_if_needed(path: str) -> None:
 def _write_line(path: str, payload: dict[str, Any]) -> None:
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        _truncate_if_needed(path)
+        line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+        _rotate_if_needed(path, len(line.encode("utf-8")))
         with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+            fh.write(line)
     except OSError:
         pass
 
@@ -219,19 +221,20 @@ def log_exception(where: str, exc: BaseException) -> None:
     event("error", **fields)
     try:
         os.makedirs(os.path.dirname(EMBED_ERROR_LOG) or ".", exist_ok=True)
-        _truncate_if_needed(EMBED_ERROR_LOG)
+        header = (
+            f"{datetime.now().isoformat(timespec='seconds')} [{where}] "
+            f"{type(root).__name__}: {root}"
+        )
+        if wrapper is not None:
+            header += f" (via {type(wrapper).__name__})"
+        tb = _format_exception_block(root)
+        if wrapper is not None and wrapper is not root:
+            # 外层包装本身往往没有有用栈；补一行说明即可。根因栈才是定位关键。
+            tb = f"via {type(wrapper).__name__}: {wrapper}\n{tb}"
+        block = f"{header}\n{tb}\n"
+        _rotate_if_needed(EMBED_ERROR_LOG, len(block.encode("utf-8")))
         with open(EMBED_ERROR_LOG, "a", encoding="utf-8") as fh:
-            header = (
-                f"{datetime.now().isoformat(timespec='seconds')} [{where}] "
-                f"{type(root).__name__}: {root}"
-            )
-            if wrapper is not None:
-                header += f" (via {type(wrapper).__name__})"
-            tb = _format_exception_block(root)
-            if wrapper is not None and wrapper is not root:
-                # 外层包装本身往往没有有用栈；补一行说明即可。根因栈才是定位关键。
-                tb = f"via {type(wrapper).__name__}: {wrapper}\n{tb}"
-            fh.write(f"{header}\n{tb}\n")
+            fh.write(block)
     except OSError:
         pass
 
@@ -242,26 +245,25 @@ def read_last_error() -> dict[str, str] | None:
     返回字段：ts / where / exc_type / exc_msg / traceback（整段原文，含头行与栈）。
     """
     try:
-        if not os.path.isfile(EMBED_ERROR_LOG):
-            return None
-        with open(EMBED_ERROR_LOG, encoding="utf-8") as fh:
-            body = fh.read()
+        for path in (EMBED_ERROR_LOG, EMBED_ERROR_LOG + ".1"):
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+            matches = list(_ERROR_HEADER_RE.finditer(body))
+            if matches:
+                last = matches[-1]
+                chunk = body[last.start():].strip()
+                return {
+                    "ts": last.group(1),
+                    "where": last.group(2),
+                    "exc_type": last.group(3),
+                    "exc_msg": last.group(4),
+                    "traceback": chunk,
+                }
     except OSError:
         return None
-    if not body.strip():
-        return None
-    matches = list(_ERROR_HEADER_RE.finditer(body))
-    if not matches:
-        return None
-    last = matches[-1]
-    chunk = body[last.start():].strip()
-    return {
-        "ts": last.group(1),
-        "where": last.group(2),
-        "exc_type": last.group(3),
-        "exc_msg": last.group(4),
-        "traceback": chunk,
-    }
+    return None
 
 
 def install_crash_hooks() -> None:
@@ -322,7 +324,14 @@ def _stacks_handler(signum, frame) -> None:  # noqa: ANN001
     只写转储专用文件（平时无其它写者），失败一律吞掉：诊断能力不得
     影响被观测进程。轮转在处理器内就地做（关→改名→下次写时重开）。
     """
+    _dump_stacks("signal")
+
+
+def _dump_stacks(reason: str) -> bool:
+    """Write one bounded all-thread sample without delaying the observed UI."""
     global _stacks_file
+    if not _stacks_write_lock.acquire(blocking=False):
+        return False
     try:
         path = STACKS_LOG
         try:
@@ -349,13 +358,16 @@ def _stacks_handler(signum, frame) -> None:  # noqa: ANN001
             _stacks_file = open(path, "a", encoding="utf-8", buffering=1)
         _stacks_file.write(
             f"\n=== stacks {datetime.now().isoformat(timespec='seconds')} "
-            f"pid={os.getpid()} ===\n"
+            f"pid={os.getpid()} reason={reason} ===\n"
         )
         _stacks_file.flush()
         faulthandler.dump_traceback(file=_stacks_file, all_threads=True)
         _stacks_file.flush()
+        return True
     except Exception:
-        pass
+        return False
+    finally:
+        _stacks_write_lock.release()
 
 
 def install_stack_dumps() -> bool:
@@ -382,6 +394,72 @@ def install_stack_dumps() -> bool:
             _stacks_installed = False
         return False
     return True
+
+
+class TuiStallWatchdog:
+    """Probe the Textual event loop from a daemon thread; sample long stalls once."""
+
+    def __init__(self, loop: Any, *, interval: float = 0.5, threshold: float = 3.0) -> None:
+        self._loop = loop
+        self._interval = interval
+        self._threshold = threshold
+        self._stop = threading.Event()
+        self._state_lock = threading.Lock()
+        self._pending_at: float | None = None
+        self._reported = False
+        self._thread = threading.Thread(target=self._run, name="corral-tui-watchdog", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=0.2)
+
+    def _ack(self, sent_at: float) -> None:
+        """Runs on the UI loop; clears the outstanding probe without blocking."""
+        now = time.monotonic()
+        with self._state_lock:
+            if self._stop.is_set() or self._pending_at != sent_at:
+                return
+            reported = self._reported
+            self._pending_at = None
+        elapsed = now - sent_at
+        if elapsed >= self._threshold:
+            event(
+                "tui_stall_recovered", stall_id=int(sent_at * 1_000_000_000),
+                duration_ms=int(elapsed * 1000), stack_attempted=reported,
+            )
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            with self._state_lock:
+                sent_at = self._pending_at
+                new_probe = sent_at is None
+                should_sample = (
+                    sent_at is not None
+                    and not self._reported
+                    and time.monotonic() - sent_at >= self._threshold
+                )
+                if should_sample:
+                    self._reported = True
+                if new_probe:
+                    sent_at = time.monotonic()
+                    self._pending_at = sent_at
+                    self._reported = False
+            if should_sample:
+                captured = _dump_stacks("tui_stall")
+                event(
+                    "tui_stall", stall_id=int(sent_at * 1_000_000_000),
+                    elapsed_ms=int((time.monotonic() - sent_at) * 1000),
+                    stack_captured=captured,
+                )
+            elif new_probe:
+                try:
+                    self._loop.call_soon_threadsafe(self._ack, sent_at)
+                except RuntimeError:
+                    self._stop.set()
 
 
 SCREENSHOTS_DIR_NAME = "screenshots"
