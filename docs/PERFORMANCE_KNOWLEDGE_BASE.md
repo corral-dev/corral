@@ -184,6 +184,8 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 **修完后验收**：必须完全退出再开 TUI（旧进程仍跑旧代码）。再读 `~/.cache/corral/events.log`：助手流式写入期间应出现 `reason=refresh_live` + `cache_hit=true`；若仍全是 `reason=refresh` 且每 3–4s 一条、`duration_ms` 经常数百毫秒以上，先核版本号与 SessKit ≥0.1.2，再查是否两扇窗口 / `remote on` 同盘重复扫。
 
+**已落地（v0.24.308，2026-10-15 异机 Pi 现场实锤）**：周期整机卡死 13~16s（`tui_stall` / `tui_stall_recovered` 同 `stall_id`、同 `pid`），根因不是扫描慢，而是 `_merge_scanned` 持 `SessionStore.lock` 的区间内逐占位卡 fork `tmux has-session`（`_reconcile_provisional_sessions` → `pane_liveness` / `is_alive`，忙时单次可达 1.5s；509 会话 × 约 25~30ms ≈ 13~16s），0.5s UI 标题轮询（`poll_title_updates`）撞同一把锁。现场栈：UI 线程停在 `with self.lock` 的 C 级 acquire，刷新线程停在 `subprocess._wait`。修法：锁外快照存活态（`_probe_provisional_liveness`；`alive`/`dead` 短路、仅 `unknown` 走 `is_alive`），锁内只查表、不确定保卡。回归：`test_provisional_order.py` 断言探测时锁空闲（旧代码必挂）。禁止把探测加回锁内；存活态禁止跨刷新 TTL 缓存（沿 v0.24.185 第 2 条）。
+
 **已落地（v0.24.186，2026-09-12）——跨进程共享扫描索引 + 首帧优先 + 远程降档**：
 
 用户体感「启动白屏好几秒、会话中又卡」在 16GB 忙机上复现：`load` 一次 28s、首铺 `list_rebuild` full 3.5s、界面与 `remote _serve` 各扫一遍。阶段 0 拆解（负载已回落时）：冷 `scan_all(50)` ≈540ms（OpenCode/Claude 等并行），签名全命中仍 ≈100ms，`annotate` ≈70ms——所以「共享索引跳过整段扫描」比「把轮询间隔拉长」更符合体验优先。

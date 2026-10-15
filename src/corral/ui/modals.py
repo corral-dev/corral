@@ -302,8 +302,8 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         color: $foreground 60%;
     }
       NewSessionModal #ns-quick-starts { height: auto; }
-        NewSessionModal #ns-quick-heading { height: 2; color: $text-muted; }
-      NewSessionModal #ns-quick-grid { height: auto; grid-gutter: 0; grid-rows: 1; padding: 0 0 1 0; }
+        NewSessionModal #ns-quick-heading { height: 1; color: $text-muted; }
+      NewSessionModal #ns-quick-grid { height: auto; grid-gutter: 0; grid-rows: 1; padding: 0; }
       NewSessionModal #ns-quick-grid > .filter-gap { height: 1; width: 1; }
         NewSessionModal _QuickStartChip .filter-chip--fill { color: $foreground; }
       NewSessionModal #ns-quick-divider { height: 1; color: $foreground 20%; }

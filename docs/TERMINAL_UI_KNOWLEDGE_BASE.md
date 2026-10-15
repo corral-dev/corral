@@ -88,7 +88,7 @@ corral 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话；有关键字时框体高亮（`-active`） | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
 | Runtime and project quick filters | Runtime and recent-project choices pack by terminal cell width into as many single-line rows as needed. Runtime and project rows are adjacent, with no blank separator row. Neither dimension has a fixed column count; three short projects must share a row when they fit. The unfiltered recent project snapshot keeps its order across selection, deselection and activity refresh. Selections outside the snapshot stay in the searchable More list; they never evict, prepend or move quick choices. More has a stable width, so changing its count does not reflow the row. No All entries or added selection markers. Runtime names reuse `theme.runtime_label_style`; selection changes the background, not the runtime color. Project selection uses the existing theme colors. Hover, keyboard focus and deselection must not add a white fill, underline or focus frame. | Owner corrections 2026-10-11 supersede fixed two/three-column grids, selected-first ordering and underlined focus. Reuse inspected Textual Button and Grid with cell spans and native spacer widgets; layout is width-aware and labels use Rich cell measurement, preserving CJK width. Runtime/project choices remain multi-select unions, intersected with text and Active. Native arrows/Tab/Enter remain available. Search results retain an actionable first row; Down then Space selects immediately, preserving hidden selections. Only five supported runtimes appear. Acceptance includes three short projects on one line, resizing, unchanged positions after mouse/keyboard toggles and More selections, colored runtime labels, deselection without underline, long names, and dark/light themes. Apple ordering is governed by the Apple UI KB. |
-| 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
+| 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提示词，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或任意焦点按 `Ctrl+N`（与 `Ctrl+F` / `Ctrl+P` 同级的全局键），或右栏顶栏点助手加格；打开弹窗时光标必须在项目筛选框，立刻可打字；单字母 `n` 不绑 |
 | Runtime names in dialogs | New Session and the runtime handoff picker reuse `theme.runtime_label_style` for Agent names, including focused and selected rows. Unavailable runtimes keep their brand color with dim styling; project labels and action hints retain their existing styles. | Owner correction 2026-10-11. Reuse the existing Rich Text labels and native Textual ListView selection background; do not recolor every row uniformly. |
 | Active filter | Active means waiting, working or real recent hosted activity, using normalized evidence and the existing ended-turn guard. Unread alone is never active; the red unread dot remains visible independently. A completed/interrupted idle session is excluded even if it is open in a workspace pane. Counts use the same activity predicate as the filtered list. | Owner correction 2026-10-11 supersedes the "any status dot" membership and the open-pane exception. TUI, Mac and iPhone must agree; selection/search never changes source history, hosting or unread state. Active is a presentation-only list switch, never a paginated board. |
@@ -220,14 +220,14 @@ stateDiagram-v2
 右栏格右上角浮着一个会话小窗（`ui/session_hud.py`），用来"扫一眼就知道这个会话在干啥、进行到哪"：
 
 - **两种形态都是从上到下、由旧到新**，与右栏完整对话方向一致。
-- **展开态（默认）**：列出**全部**真人提问（不再砍中间），每条最多两行（`_MAX_PROMPT_LINES`），超出末行加 `...`；续行缩进与首行正文同一列（时间列固定 7 格）。浮层仍有高度上限，多出来的提问靠区域内滚动查看——**禁止**再画「中间省略 N 条」或静默丢掉中间提问。浮层底色是格子高光的一部分：选中 / 持焦格 `$pane-active-background`（蓝条），没选中 `$panel`（比 `$surface` 略亮的深灰，跟未选中顶底条同色，避免融进助手画布）。提问块按奇偶叠一层 40% `$primary` 斑马纹（从**当前**浮层底混合，禁止叠 `$foreground`——那是灰，会把激活条的蓝洗脏），页眉 / 页脚不涂；hover 切 `$primary-muted` 时条纹跟着走。
-- **收起态**：固定三行 —— `▶ N 条提问` / `最初  <本会话第一条提问>` / `最近  <最新一条提问>`。这两头各自回答一个问题：最初那条说明"这个会话本来是要干嘛"，最近那条说明"现在做到哪"。只有一条提问时省掉"最初"那行。收起态只摘要两头是刻意压缩遮挡面积，与展开态「可滚看全」不矛盾。
-- **展开态有高度上限（`_MAX_EXPANDED_HEIGHT` 与本格高度取小），超出靠滚动**，不截内容：页眉（`▼ 本会话提问（N）`）和页脚（收起提示）**常驻**，中间正文按 `_scroll` 开窗；**默认钉在最底（`_stick_bottom`）**，保证最新提问在视野里；用户上滚后取消钉底，新提问到来不再强行跳回，滚回底部或收起再展开后恢复钉底。可滚时页脚文案换成带"滚轮看更多"的那条。滚轮事件在小窗内被消费（本来也穿不到托管画面）。
-- **时间列不用 `format_message_time`**：小窗自己的 `_short_time()` 当天只给 `HH:MM`、更早只给 `MM-DD`，两种都恰好 5 格宽（列不会错位）。共用的 `MM-DD HH:MM` 是 11 格，在浮层里会把正文挤掉一截，而同一会话的提问绝大多数在当天，日期纯冗余。消息缺时间戳时（如 Cursor `store.db` blob 没有逐条时间）展开态用 `N/A` 占位（补齐到 5 格），不留空白缩进。
+- **展开态（默认）**：列出**全部**真人提示词（不再砍中间），每条最多两行（`_MAX_PROMPT_LINES`），超出末行加 `...`；续行缩进与首行正文同一列（时间列固定 7 格）。浮层仍有高度上限，多出来的提示词靠区域内滚动查看——**禁止**再画「中间省略 N 条」或静默丢掉中间提示词。浮层底色是格子高光的一部分：选中 / 持焦格 `$pane-active-background`（蓝条），没选中 `$panel`（比 `$surface` 略亮的深灰，跟未选中顶底条同色，避免融进助手画布）。提示词块按奇偶叠一层 40% `$primary` 斑马纹（从**当前**浮层底混合，禁止叠 `$foreground`——那是灰，会把激活条的蓝洗脏），页眉 / 页脚不涂；hover 切 `$primary-muted` 时条纹跟着走。
+- **收起态**：固定三行 —— `▶ N 条提示词` / `最初  <本会话第一条提示词>` / `最近  <最新一条提示词>`。这两头各自回答一个问题：最初那条说明"这个会话本来是要干嘛"，最近那条说明"现在做到哪"。只有一条提示词时省掉"最初"那行。收起态只摘要两头是刻意压缩遮挡面积，与展开态「可滚看全」不矛盾。
+- **展开态有高度上限（`_MAX_EXPANDED_HEIGHT` 与本格高度取小），超出靠滚动**，不截内容：页眉（`▼ 本会话提示词（N）`）和页脚（收起提示）**常驻**，中间正文按 `_scroll` 开窗；**默认钉在最底（`_stick_bottom`）**，保证最新提示词在视野里；用户上滚后取消钉底，新提示词到来不再强行跳回，滚回底部或收起再展开后恢复钉底。可滚时页脚文案换成带"滚轮看更多"的那条。滚轮事件在小窗内被消费（本来也穿不到托管画面）。
+- **时间列不用 `format_message_time`**：小窗自己的 `_short_time()` 当天只给 `HH:MM`、更早只给 `MM-DD`，两种都恰好 5 格宽（列不会错位）。共用的 `MM-DD HH:MM` 是 11 格，在浮层里会把正文挤掉一截，而同一会话的提示词绝大多数在当天，日期纯冗余。消息缺时间戳时（如 Cursor `store.db` blob 没有逐条时间）展开态用 `N/A` 占位（补齐到 5 格），不留空白缩进。
 - **宽度上限 55 格**（`_MAX_WIDTH`），实际宽度取 `min(上限, 本格可用宽度 - 4)`：三分屏那种窄格不受影响，只有单格 / 宽终端吃得到上限；收起态还会再按内容实宽收缩。既然展开态靠换行而不是靠宽度救截断，就没必要铺得更宽——浮层越宽盖住的助手画面越多。
 - **触发**：点击浮层任意位置切换；`Ctrl+G` 是同一动作，但属于列表侧按键，右栏实时格持有输入时让路给助手（见 §6）。
-- **实时托管格与静态对话预览格都画，且每个分屏格各自一份**：长对话里完整预览仍要翻很久，小窗用来扫提问脉络；多分屏时每一格都画自己的提问摘要，不再只给激活格。
-- **数据来源**：`SessionStore.get_conversation()` 里 `role == "user"` 的消息，与右栏完整对话共用同一份内存缓存，不另开解析路径。小窗在 `summarize_user_messages` 里再滤掉 runtime 注入（Cursor 计划附件、`Briefly inform…`、Codex `<skill>`/`<turn_aborted>`/`<subagent_notification>`、OpenConductor 角色提示等）；corral 自身的跨运行时接力提示词视作真人提问，不在这里过滤；相邻且展示正文相同的提问只留先到的那条（新版 Codex 同一句会双写 `response_item` + `event_msg`，扫描层已按原文去重，这里再兜一层）；`$doc-update`、`/grilling` 和带图提问是真人输入，要留下。`load_conversation` / `corral show` 仍保留原文（Codex 相邻双写除外），不要把注入过滤下沉到扫描器。
+- **实时托管格与静态对话预览格都画，且每个分屏格各自一份**：长对话里完整预览仍要翻很久，小窗用来扫提示词脉络；多分屏时每一格都画自己的提示词摘要，不再只给激活格。
+- **数据来源**：`SessionStore.get_conversation()` 里 `role == "user"` 的消息，与右栏完整对话共用同一份内存缓存，不另开解析路径。小窗在 `summarize_user_messages` 里再滤掉 runtime 注入（Cursor 计划附件、`Briefly inform…`、Codex `<skill>`/`<turn_aborted>`/`<subagent_notification>`、OpenConductor 角色提示等）；corral 自身的跨运行时接力提示词视作真人提示词，不在这里过滤；相邻且展示正文相同的提示词只留先到的那条（新版 Codex 同一句会双写 `response_item` + `event_msg`，扫描层已按原文去重，这里再兜一层）；`$doc-update`、`/grilling` 和带图提示词是真人输入，要留下。`load_conversation` / `corral show` 仍保留原文（Codex 相邻双写除外），不要把注入过滤下沉到扫描器。
 
 ### 侧边栏关注状态
 
@@ -297,9 +297,13 @@ These are launch actions, with no selected state.
 
 Visual correction (owner capture, 2026-10-15): neighboring combinations must be
 visibly separate in the light theme. Leave three terminal cells between buttons,
-and one empty row between wrapped lines. The heading owns an empty line before
-the buttons. Only the runtime name uses its brand color; the separator is muted
-and the project name is bold neutral foreground. Reuse the existing FilterChip
+and one empty row between wrapped lines. Only the runtime name uses its brand
+color; the separator is muted and the project name is bold neutral foreground.
+Compact correction (owner capture, 2026-10-15, supersedes the owned blank rows):
+a single line keeps zero blank rows — the heading is one row tall, the grid has
+no bottom padding and no forced extra track — so the stack reads
+title / hint / buttons / divider with no gaps. The empty row exists only between
+wrapped lines. Reuse the existing FilterChip
 capsule, native Button behavior and character-width Grid packing; add spacing
 parameters to the packer with zero-spacing defaults so sidebar filters retain
 their own layout. Taller native Grid rows provide the vertical gap; the

@@ -937,8 +937,15 @@ class SessionStore:
             self._adopt_foreign_hosted(annotated)
         _freshen_from_disk(annotated)
 
+        # Provisional liveness forks tmux subprocesses (tens of ms each,
+        # up to 1.5s on a busy server). Resolve them BEFORE taking the store
+        # lock: holding it across the probe sequence froze the TUI for
+        # 13-16s per refresh on a loaded Mac (2026-10-15 field stack), while
+        # the 0.5s UI title poll blocked on the same lock. Lock-protected
+        # merging below only consults this snapshot, never forks.
+        live = self._probe_provisional_liveness()
         with self.lock:
-            attention_migrations = self._reconcile_provisional_sessions(scanned)
+            attention_migrations = self._reconcile_provisional_sessions(scanned, live)
             attention_sessions = self._rebuild_order_and_titles()
             if not self._initial_scan_merged:
                 self._sort_initial_order()
@@ -1040,10 +1047,52 @@ class SessionStore:
             for runtime_id, bucket in scanned.items()
         }
 
+    def _provisional_probe_names(self) -> list[str]:
+        """Names needing a liveness probe for the next provisional reconcile.
+
+        Only provisional cards are reconciled, so only their names are
+        probed — stable hosted sessions with real history cost zero forks.
+        Brief lock only to snapshot the names; the actual tmux probes run in
+        `_probe_provisional_liveness` without holding the lock.
+        """
+        with self.lock:
+            names = [
+                str(self.hosted.get(key) or item.get("keepalive_name") or "")
+                for key, item in self._provisional.items()
+            ]
+        return list(dict.fromkeys(name for name in names if name))
+
+    def _probe_provisional_liveness(self) -> dict[str, tuple[str, bool]]:
+        """Probe hosted panes WITHOUT holding the store lock.
+
+        Returns name -> (pane_liveness state, is_alive). A pane that answers
+        ``"alive"`` counts as alive and a ``"dead"`` one as gone without a
+        second fork; only ``"unknown"`` falls through to ``is_alive``, which
+        alone may consult recent success marks. Unknown names later resolve
+        to ``("unknown", True)`` so probe uncertainty preserves the card.
+        """
+        from corral import embed
+
+        live: dict[str, tuple[str, bool]] = {}
+        for name in self._provisional_probe_names():
+            state = embed.pane_liveness(name)
+            if state == "alive":
+                live[name] = (state, True)
+            elif state == "dead":
+                live[name] = (state, False)
+            else:
+                live[name] = (state, liveness.is_alive(name))
+        return live
+
     def _reconcile_provisional_sessions(
         self, scanned: dict[str, list[dict]],
+        live: dict[str, tuple[str, bool]] | None = None,
     ) -> list[tuple[str, str, str]]:
         """占位卡 reconcile：调用方必须已持有 `self.lock`。
+
+        `live` 是锁外预取的存活快照（见 `_probe_provisional_liveness`）：锁内
+        只查表，绝不 fork 子进程。`None` 保留现场探测，仅供直接调用本方法的
+        旧单测；`_merge_scanned` 必须传快照。
 
         把本轮扫描结果并入 `self.sessions`，判定跨运行时接力/空白新建插入的
         占位卡是否已被真实会话取代（退役）或托管进程已死（清理），仍存活且
@@ -1070,9 +1119,7 @@ class SessionStore:
                 self._provisional.pop(key, None)
                 self.hosted.pop(key, None)
                 continue
-            from corral import embed
-
-            if embed.pane_liveness(str(name)) == "dead":
+            if self._pane_is_dead(str(name), live):
                 # A local mapping is ownership, not proof that the child lives.
                 # Probe uncertainty must preserve the card.
                 self._drop_provisional(key, provisional)
@@ -1083,7 +1130,7 @@ class SessionStore:
                 # 落盘 id 已与占位 ident 相同（Pi `--session-id`）：占位完成使命。
                 self._provisional.pop(key, None)
                 continue
-            claimed = self._claim_unique_hosted_newcomer(key, provisional)
+            claimed = self._claim_unique_hosted_newcomer(key, provisional, live)
             if claimed is not None:
                 self._retire_provisional(key, provisional, claimed, name, attention_migrations)
                 continue
@@ -1123,8 +1170,25 @@ class SessionStore:
             self._session_key_migrations[key] = new_key
             self.hosted.pop(key, None)
 
+    @staticmethod
+    def _pane_is_dead(name: str, live: dict[str, tuple[str, bool]] | None) -> bool:
+        """Consult the pre-probed snapshot; unknown names preserve the card."""
+        if live is not None:
+            return live.get(name, ("unknown", True))[0] == "dead"
+        from corral import embed
+
+        return embed.pane_liveness(name) == "dead"
+
+    @staticmethod
+    def _sibling_is_alive(name: str, live: dict[str, tuple[str, bool]] | None) -> bool:
+        """Consult the pre-probed snapshot; unknown names preserve the card."""
+        if live is not None:
+            return live.get(name, ("unknown", True))[1]
+        return liveness.is_alive(name)
+
     def _claim_unique_hosted_newcomer(
         self, key: str, provisional: dict,
+        live: dict[str, tuple[str, bool]] | None = None,
     ) -> dict | None:
         """真实 id 与占位 ident 不同、annotate 又没贴上 keepalive 时的兜底。
 
@@ -1200,7 +1264,7 @@ class SessionStore:
             if normalize_cwd(other.get("cwd")) != cwd:
                 continue
             other_name = self.hosted.get(other_key) or other.get("keepalive_name")
-            if other_name and liveness.is_alive(str(other_name)):
+            if other_name and self._sibling_is_alive(str(other_name), live):
                 sibling_provisionals += 1
         if len(candidates) == 1 and sibling_provisionals == 0:
             return candidates[0]

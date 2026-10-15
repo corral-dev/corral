@@ -254,10 +254,17 @@ class QuickFilters(Vertical):
             button.styles.column_span = cells
             button.styles.width = cells
             cursor += cells
-        # Textual 8.2.8 applies grid-gutter's vertical axis to columns. Taller
-        # native rows leave an owned blank line without shrinking cell spans.
-        row.styles.grid_rows = str(1 + row_spacing)
-        row.styles.height = lines + (lines - 1) * row_spacing + row.styles.padding.top + row.styles.padding.bottom
+        if lines > 1:
+            # Textual 8.2.8 applies grid-gutter's vertical axis to columns. Taller
+            # native rows leave an owned blank line without shrinking cell spans.
+            row.styles.grid_rows = str(1 + row_spacing)
+            row.styles.height = lines + (lines - 1) * row_spacing + row.styles.padding.top + row.styles.padding.bottom
+        else:
+            # Single line keeps zero blank rows (Quick Start compact layout,
+            # owner correction 2026-10-15); the gap row exists only between
+            # wrapped lines. Zero spacing values are unchanged either way.
+            row.styles.grid_rows = "1"
+            row.styles.height = 1 + row.styles.padding.top + row.styles.padding.bottom
 
     @staticmethod
     def _mark(button: Button, selected: bool) -> None:

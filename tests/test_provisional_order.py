@@ -53,6 +53,35 @@ class ProvisionalOrderTests(unittest.TestCase):
         self.adopt("new", 0)
         self.assertEqual(self.store._order[0], "claude:new")
 
+    def test_merge_scanned_probes_liveness_outside_store_lock(self):
+        # 2026-10-15 现场栈：刷新线程持 SessionStore.lock 逐会话 fork tmux
+        # has-session（单次可达 1.5s），0.5s 标题轮询撞同一把锁 → TUI 卡 13~16s。
+        # 锁内只许查快照，子进程探测必须在锁外。
+        lock_held_during_probe = []
+
+        def pane_probe(name):
+            lock_held_during_probe.append(self.store.lock.locked())
+            # One alive (short-circuit) and one unknown (falls through to
+            # is_alive) so both probe types are exercised outside the lock.
+            return "unknown" if name.endswith("-other") else "alive"
+
+        def alive_probe(name):
+            lock_held_during_probe.append(self.store.lock.locked())
+            return True
+
+        self.adopt("empty", 10)
+        self.adopt("other", 10)
+        with mock.patch("corral.embed.pane_liveness", side_effect=pane_probe), \
+                mock.patch("corral.liveness.is_alive", side_effect=alive_probe):
+            self.store._merge_scanned({"claude": [self.session("recent", 60)]})
+        self.assertTrue(lock_held_during_probe, "expected liveness probes to run")
+        self.assertFalse(
+            any(lock_held_during_probe),
+            "liveness probes must not run while holding the store lock",
+        )
+        self.assertIn("claude:empty", self.store._provisional)
+        self.assertIn("claude:other", self.store._provisional)
+
     def test_discovered_twelve_hour_history_does_not_prepend_on_refresh(self):
         self.store._merge_scanned({"claude": [self.session("recent", 60)]})
         self.store._merge_scanned({"claude": [

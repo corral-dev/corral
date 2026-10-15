@@ -8822,6 +8822,36 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(results, [])
                 self.assertTrue(os.path.isdir(cwd))
 
+    async def test_quick_start_single_line_has_no_blank_rows(self) -> None:
+        """单行组合上下零空行：标题/提示/按钮/分隔线连续排布；换行仍保留间隔行。"""
+        from corral.recent_starts import RecentStart
+        from corral.ui.modals import _QuickStartChip
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        combos = [RecentStart("codex", "/tmp", "Corral"),
+                  RecentStart("opencode", "/tmp", "Corral"),
+                  RecentStart("opencode", "/tmp/neat", "NeatWebApp")]
+        modal = NewSessionModal(
+            [("/tmp", "Corral", "/tmp")],
+            [RuntimeChoice("codex", "Codex", "", True),
+             RuntimeChoice("opencode", "OpenCode", "", True)],
+            recent_combos=combos,
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await app.push_screen(modal, lambda *a: None)
+            await pilot.pause()
+            chips = list(modal.query(_QuickStartChip))
+            self.assertEqual(len(chips), 3)
+            rows = {chip.region.y for chip in chips}
+            self.assertEqual(len(rows), 1)
+            grid = modal.query_one("#ns-quick-grid")
+            self.assertEqual(grid.region.height, 1)
+            heading = modal.query_one("#ns-quick-heading")
+            self.assertEqual(heading.region.height, 1)
+            divider = modal.query_one("#ns-quick-divider")
+            self.assertEqual(divider.region.y, grid.region.y + 1)
+
     async def test_new_session_has_no_function_key_launches(self):
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)

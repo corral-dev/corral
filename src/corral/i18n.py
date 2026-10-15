@@ -73,16 +73,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Session card",
         "zh": "会话小窗",
     },
-    # 右上角会话小窗（收起态一行，展开态列最近提问）
+    # 右上角会话小窗（收起态一行，展开态列最近提示词）
     # ▶ / ▼ 与顶栏侧边开关的 ◀ / ▶ 同属一个字形块，字体覆盖面广；不要换成 ▸ / ▾
     # 这类少见的小三角，实测出图与部分终端字体会渲成豆腐块。
     "hud.count": {
         "en": "▶ {count} prompts",
-        "zh": "▶ {count} 条提问",
+        "zh": "▶ {count} 条提示词",
     },
     "hud.count_one": {
         "en": "▶ 1 prompt",
-        "zh": "▶ 1 条提问",
+        "zh": "▶ 1 条提示词",
     },
     "hud.label_first": {
         "en": "First",
@@ -94,7 +94,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "hud.title": {
         "en": "▼ Your prompts ({count})",
-        "zh": "▼ 本会话提问（{count}）",
+        "zh": "▼ 本会话提示词（{count}）",
     },
     "hud.collapse_hint": {
         "en": "Click to collapse",
