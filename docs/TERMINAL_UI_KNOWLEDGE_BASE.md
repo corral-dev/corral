@@ -162,16 +162,16 @@ sequenceDiagram
 2. **不做 tmux 穿透**：套 tmux 时 OSC 22 被 tmux 吞掉，外层终端收不到。`ui/pointer_shape.py` 在 `$TMUX` 下追加 `\x1bPtmux;…` DCS 副本（ESC 双写，与主题查询同一套）；进应用模式时对本 pane `tmux set -p allow-passthrough on`，退出 `tmux set -pu allow-passthrough`。顺带让现有 OSC 11 主题跟随在 tmux 下也不再依赖用户自己配过。
 3. **退出不复位**：`stop_application_mode` 发空形状名 `\x1b]22;\x07`（kitty 规范的复位），避免手型/箭头粘在退出后的 shell 上。
 
-`CorralApp._set_pointer_shape` 覆写 Textual 原实现，一律走 `pointer_shape.sequence()`。**只认 X11 cursorfont 名的终端**改发 X11 名（`default→left_ptr`、`pointer→hand2`、`text→xterm`、`wait→watch`）：真 xterm（`XTERM_VERSION` 存在）与 **iTerm2**（`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`；后者在 tmux / SSH 里仍保留）。其它终端发 CSS 名，避免给只认 CSS 名的终端发无效名。iTerm2 3.6.11 的 `screenSetPointerShape:` 只有 X11 名表，认不出的名字一律退回它在鼠标上报模式下的默认指针（带圈的 I 型）——这正是 2026-10-12 机主反馈「iTerm2 里 corral 全屏都是大写 I」的根因。
+`CorralApp._set_pointer_shape` 覆写 Textual 原实现，一律走 `pointer_shape.sequence()`。**只认 X11 cursorfont 名的终端**改发 X11 名（`default→left_ptr`、`pointer→hand2`、`text→xterm`、`wait→watch`、`ew-resize→sb_h_double_arrow`，最后一个是侧边栏拖拽把手的形状；iTerm2 名表实测含 `sb_h_double_arrow`，对应 macOS 原生左右调整箭头）：真 xterm（`XTERM_VERSION` 存在）与 **iTerm2**（`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`；后者在 tmux / SSH 里仍保留）。其它终端发 CSS 名，避免给只认 CSS 名的终端发无效名。iTerm2 3.6.11 的 `screenSetPointerShape:` 只有 X11 名表，认不出的名字一律退回它在鼠标上报模式下的默认指针（带圈的 I 型）——这正是 2026-10-12 机主反馈「iTerm2 里 corral 全屏都是大写 I」的根因。
 
-控件规则（2026-10-12 机主裁定：TUI 里不出现 I 型指针）：会话卡 / 组卡 / 新建项 / 顶栏 chip / 关格按钮 / 弹窗选项 / 搜索结果 / 升级浮层是 `pointer: pointer`（手型）；其余一律箭头，包括 `EmbedPane` 内嵌画面和 Textual 自带的 `Input` / `TextArea`（Textual 默认 `pointer: text`，由 `CorralApp.CSS` 覆盖成 `default`）。禁止再给任何控件写 `pointer: text`。
+控件规则（2026-10-12 机主裁定：TUI 里不出现 I 型指针）：会话卡 / 组卡 / 新建项 / 顶栏 chip / 关格按钮 / 弹窗选项 / 搜索结果 / 升级浮层是 `pointer: pointer`（手型）；侧边栏拖拽把手是 `pointer: ew-resize`；其余一律箭头，包括 `EmbedPane` 内嵌画面和 Textual 自带的 `Input` / `TextArea`（Textual 默认 `pointer: text`，由 `CorralApp.CSS` 覆盖成 `default`）。禁止再给任何控件写 `pointer: text`。
 
 | 终端 | OSC 22 | 备注 |
 |---|---|---|
 | kitty 0.31+ | 支持 | CSS 名 + 栈 |
 | Ghostty | 支持 | |
 | WezTerm / foot / xterm | 支持 | xterm 认 X11 名，corral 仅在 `XTERM_VERSION` 下改名 |
-| iTerm2 3.7.0+ | 支持 | 只认 X11 名（`left_ptr` / `hand2` / `xterm`）；corral 按 `TERM_PROGRAM` / `LC_TERMINAL` 改名。机主 2026-10-12 在 3.7 上验收箭头生效 |
+| iTerm2 3.7.0+ | 支持 | 只认 X11 名（`left_ptr` / `hand2` / `xterm` / `sb_h_double_arrow`）；corral 按 `TERM_PROGRAM` / `LC_TERMINAL` 改名。机主 2026-10-12 在 3.7 上验收箭头生效 |
 | iTerm2 3.6.x | **鼠标上报时不生效** | `updateCursor:` 在程序开启鼠标上报时无条件显示带圈 I 型、不看 OSC 22（3.7.0 起改为优先采用程序请求）。corral 必须开鼠标上报，应用侧无解，只能升级 iTerm2 |
 | iTerm2 3.5 稳定版、Terminal.app | **不支持** | 已知限制；应用侧无解。不支持的终端应静默忽略该序列，不得出现乱码 |
 | 套 tmux | 需穿透 | 见上；自测前确认 pane 的 `allow-passthrough` |
@@ -541,6 +541,7 @@ assert that the reporting user's other computer has already upgraded.
 - **AI 易错点**【命中表可能给出已脱离 DOM 的控件】合成器的命中表按帧更新，全量重建列表 / 换格的中间帧里 `get_widget_and_offset_at()` 会返回 `parent is None` 的控件，Textual 8.2.8 的鼠标按下 / 拖拽分支对它取 `parent.region` 就是未捕获 `AttributeError`，整个 TUI 当场退出。`MainScreen` 已覆写该方法把这种命中当成没命中；**新增会走鼠标命中的屏（新 Screen / 新弹窗）若要放允许文本选择的控件，必须一并带上这道过滤**，光给控件设 `ALLOW_SELECT = False` 只挡得住「被点中的是它自己」那一种。细节与两次真机闪退记录见 [维护指南](MAINTAINER_GUIDE.md)「点击崩溃第二波」。
 - **AI 易错点**【Textual `LRUCache` 驱逐偶发 KeyError】长跑 + 多分屏频繁布局后，`PaneCell._get_box_model` 写入 `_box_model_cache` 时上游 `LRUCache.set` 可能因链表/dict 不同步在 `del self._cache[last[2]]` 抛 `KeyError` 并退出整个 TUI。补丁在 `ui/textual_patches.py`（随 `CorralApp` 导入安装）；**禁止**在 `_handle_exception` 里吞任意 `KeyError`。细节见 [维护指南](MAINTAINER_GUIDE.md)「长跑双分屏 LRUCache KeyError 闪退」。
 - **AI 易错点**【分屏格数上限只有一个来源】右栏能并排几格由 `split_layout.MAX_PANES` 唯一决定（当前 4）：多选上限、顶栏加格判定、会话组成员数、持久化截断全部读它，禁止在界面层另写字面量。提示文案按上限格式化（`split.full` / `split.multi_full` 带 `{n}`），不要把数字写死进中英文案。改这个数时必须连带确认两处非界面约束：控制通道池 `embed._MAX_CHANNELS` 要严格大于它（否则满屏分屏会挤掉在用格的通道），以及最小托管宽度 `embed.MIN_HOST_WIDTH`（格宽低于 40 列时托管窗不再跟着缩，右侧内容被裁），两条细则都在 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) §6。
+- **AI 易错点**【侧边栏宽度可拖拽，不再是固定 39】`#sidebar-resizer`（1 列，平时刻透明即原来的空白空隙）占用右栏原来的 `margin-left: 1`：侧栏可见时该边距归零，藏栏时把手隐藏、边距恢复为 1。右栏起点恒为「宽度 + 1」，`selftest.sh` 用 `PANEL_BASE`（从 `SIDEBAR_WIDTH_DEFAULT` 推导）表达，不再硬编码 40。宽度 28~72、按屏宽给右栏留至少 24 列，存在侧边栏记忆库（启动套用，不跨窗口同步）。**真机选词/自测 SGR 按压坐标必须落在右栏内容首列**（1-based `PANEL_BASE + 1`），落在把手列会开始调宽（带鼠标捕获，后续移动到不了内嵌格）而不是选词——2026-10-15 自测 OSC 52 一度因此失败。回归：`SidebarResizeTests`（含 3 分屏拖动每格同步 ±4 列）。
 - **AI 易错点**【改会话卡文案要同步 selftest】`selftest.sh` 用 `grep` 匹配侧边栏卡片原文来判定首屏、筛选和退出（`workA 修复切换体验` 等）。卡片格式一变（2026-07-31 发现：首行去掉冒号后，脚本仍在等 `workA: …`），第一条断言就卡死 60 秒然后整个冒烟脚本失败——更坏的是 `grep -q "workB:"` 那种**否定**判断会永远成立，变成一条静默假通过。改卡片首行格式、分隔符或字段顺序时，必须回头改这几处断言并真跑一遍 `bash selftest.sh`。**同类陷阱还有光标导航假设**（脚本按方向键的次数），2026-08-05 实测记录见本节「碰侧边栏记忆的测试/验证脚本必须设 `CORRAL_CACHE_DIR`」条目末尾。
 - **AI 易错点**【关注状态优先级固定】只显示一个圆点，必须按等待回答黄 > 执行中绿 > 未读新结果红 > 无裁决；本窗口托管且「刚刚」仍有活动、无待办信号的会话画绿点，禁止单独画青/蓝。等待回答必须来自结构化问题，不可用普通问号或自然语言关键词猜测。黄绿不重叠：黄点只在真正等待用户输入时覆盖绿点，普通执行过程仍显示绿点。
 - **AI 易错点**【红点不是选中即已读】只有右侧对应内容成功加载并真实可见才清红，就绪即清、不再计停留时长。分屏里所有正在画面上的格子都算看见了，红点一起清。快速掠过（右栏尚未换成该会话）、加载失败、选择变化和应用失焦都不得清。观察集合必须认分屏区当前规格，不能扫换页残留控件，否则已切走的会话会被误清。查看不能清黄点/绿点。首次升级的历史结果按已读基线处理，但当前执行/等待仍照常显示。

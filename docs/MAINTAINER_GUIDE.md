@@ -637,7 +637,7 @@ old/current-version verification are in [project-shell list portability](REMOTE_
 
 仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。克隆后若尚未装 hook，先 `bash scripts/install-git-hooks.sh`。
 
-**多 Agent 并行时的发版卫生**：发版准备与全局无条件 ship-all 规则一致；完整 workspace 的改动（包括其他 Agent 的未提交工作）一并集成、完整验证并交付。脏树、并行窗口或尚未完成的 foreign work 不是只发自己的部分或延后发布的理由；不得搬移、隐藏或丢弃其他人的文件。遇到版本冲突时，bump 前重新读取当前版本；验证失败时按环境准备指南分类并修复，再验证完整工作区。
+**多 Agent 并行时的发版卫生**：发版准备与全局无条件 ship-all 规则一致；完整 workspace 的改动（包括其他 Agent 的未提交工作）一并集成、完整验证并交付。脏树、并行窗口或尚未完成的 foreign work 不是只发自己的部分或延后发布的理由；不得搬移、隐藏或丢弃其他人的文件。遇到版本冲突时，bump 前重新读取当前版本；验证失败时按环境准备指南分类并修复，再验证完整工作区。**bump 版本号后必须重跑 `uv lock`**：lock 里自引用的 corral 版本标记会 stale，发版戳门禁直接拒绝（2026-10-15：v0.24.309 bump 后未重 lock，第一遍 `publish-release.sh` 被门禁拦下）。顺序固定为改版本文件 → `uv lock` → `dev_env.py prepare` → 提交/tag/推送 → `publish-release.sh`。**发版脚本跑在裸 `python3` 下**：本机若它低于 3.10（如 Xcode 自带 3.9），`publish_assets.py` / `homebrew_formula.py` 会直接报语法或 API 错——在 PATH 最前垫一个目录，把已装的高版本解释器（如 `/opt/homebrew/bin/python3.12`）软链成 `python3`；干净安装检查另用 `CORRAL_CLEAN_PYTHON` 指定（脚本自带该逃生口，见 `verify_clean_install.py`）。
 
 1. `CORRAL_SKIP_PUSH_GATE=1` 只可绕过本地推送钩子，不能绕过完整验证、发布门禁或全局泄漏门禁；仅当同一工作区的源码与环境指纹都匹配一份完整验证结果、且原因只是重复钩子检查时使用。已发布过同版本本身不能替代当前工作区的完整验证。
 2. 推 tag 后用 `git ls-remote --tags origin` / `github` 确认远端确有该 tag。显式给旧 tag 收尾时，工作区版本必须与 tag 完全一致；`publish-release.sh` 不会切回 tag 源码。

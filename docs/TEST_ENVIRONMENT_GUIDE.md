@@ -60,7 +60,6 @@ replacement test framework.
   launch line.
 
 ## Resize-hold fixture ownership
-
 A synthetic session name and a prefilled live grid are unit-test inputs, not a
 running tmux host. Stop, wake and join the pane's capture worker before injecting
 that state into a resize-hold test. Otherwise a slow runner can accumulate three
@@ -70,6 +69,20 @@ a longer debounce and shorter polling interval; it is not evidence that a real
 live host loses its hold. Keep the real Textual timer, resize-call assertion,
 changing-frame rejection, minimum hold and stable-frame release assertions.
 Separate capture-worker and real-tmux tests retain their existing coverage.
+
+## Pilot drag-test coordinates
+
+Textual `Pilot.mouse_down` / `mouse_up` each post a leading `MouseMove`
+before the button event, and `widget + offset` coordinates resolve against
+the widget's **current** region. While dragging a handle the region moves
+with the width, so offsets relative to the handle double-count (verified
+2026-10-15: `hover(handle, offset=(12, 0))` lands at handle-origin + 12,
+but a trailing `mouse_up(handle, offset=(12, 0))` re-resolves against the
+moved handle and drags 12 more). Write drag tests with screen-absolute
+targets (`pilot.hover(None, offset=(x, y))`) and release with
+`pilot.mouse_up(handle)` (offset `(0, 0)` makes the precursor move a
+no-op). This is harness geometry, not product behavior: real terminals
+send absolute coordinates. Regression: `SidebarResizeTests`.
 
 ## Running the isolated acceptance
 
