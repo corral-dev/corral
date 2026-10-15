@@ -36,7 +36,7 @@ class FinishSelfUpdateTests(unittest.TestCase):
         request = updater.RestartRequest("9.9.9", "brew")
         order: list[str] = []
 
-        def run_update(latest, channel):
+        def run_update(latest, channel, spec=None):
             self.assertEqual((latest, channel), ("9.9.9", "brew"))
             order.append("更新")
             return True, "ok"
