@@ -4621,10 +4621,17 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             runtime.scan_sessions.return_value = []
             runtimes.append(runtime)
         store, _ = _make_store(sessions, extra_runtimes=tuple(runtimes))
-        app = CorralApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 32)) as pilot:
             await pilot.pause(delay=0.3)
             filters = app.screen.query_one(QuickFilters)
+            agents = list(filters.query("#runtime-quick-row Button"))
+            projects = [button for button in filters.query(".project-choice") if button.display]
+            self.assertEqual(len(agents), 5)
+            self.assertEqual(len({button.region.y for button in agents}), 1)
+            self.assertEqual(agents[0].region.x, projects[0].region.x)
+            self.assertEqual(agents[0].region.y, app.screen.query_one("#project-search-row").region.bottom)
+            self.assertEqual(filters.region.height, 3)
             for row_id in ("runtime-quick-row", "project-quick-row"):
                 row = filters.query_one(f"#{row_id}")
                 for button in (button for button in row.query(Button) if button.display):
@@ -4743,7 +4750,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         for session, path in zip(sessions, ["/tmp/Codes", "/tmp/Corral", "/tmp/SessKit"], strict=True):
             session["cwd"] = path
         store, _ = _make_store(sessions)
-        app = CorralApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 32)) as pilot:
             await pilot.pause(delay=0.3)
             filters = app.screen.query_one(QuickFilters)

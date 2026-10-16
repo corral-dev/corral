@@ -1,9 +1,9 @@
 """右下角新版本浮层：内容宽的 overlay 盒子，只占右下角那一小块。
 
 定位：外层 UpdateToast 用 `layer: overlay` 出流（不挤占布局，显隐不抖动底栏），
-靠父级 `MainScreen { align: right bottom; }` 钉到右下角，自身 `width/height: auto`
-缩到内容宽——命中区域只有浮层本身，底部其余整行照常可点。不要改回
-`dock: bottom + width: 1fr` 的整宽写法：那会让透明的外层横跨整个底条，
+靠父级对齐（`CorralApp.CSS` 里的 `MainScreen { align: right bottom; }`）钉到右下角，
+自身 `width/height: auto` 缩到内容宽——命中区域只有浮层本身，底部其余整行照常可点。
+不要改回 `dock: bottom + width: 1fr` 的整宽写法：那会让透明的外层横跨整个底条，
 底下那几行全都点不到（session_hud 的注释里点过名；Textual 原生 ToastRack 也是
 整宽，但它是_transient_通知，无所谓）。
 
@@ -118,9 +118,6 @@ class UpdateToast(Container):
         height: auto;
         margin: 0 2 1 0;
         display: none;
-    }
-    MainScreen {
-        align: right bottom;
     }
     UpdateToast.-visible {
         display: block;

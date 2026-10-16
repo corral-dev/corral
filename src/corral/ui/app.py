@@ -168,6 +168,14 @@ class CorralApp(App):
     #project-search-row #filter-count { color: $text-muted; }
     #project-search-row.-active #project-search-clear { background: $primary-muted; color: $warning; }
     #project-search-row.-active #project-search-clear:hover { color: $error; }
+    /* 新版本浮层的定位锚：UpdateToast 是内容宽的 overlay 盒子，靠父级右下对齐
+       钉到右下角。注意这条不能写进 update_toast.py 的 DEFAULT_CSS——控件的
+       DEFAULT_CSS 作用不到别的控件（MainScreen 规则会被静默丢弃，真机回归过）。
+       对其它子控件是 no-op：列表区/龙动画/页脚都是填满的，只有内容宽的浮层
+       会被 align 挪动。 */
+    MainScreen {
+        align: right bottom;
+    }
     """
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
