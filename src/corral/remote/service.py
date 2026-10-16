@@ -75,6 +75,7 @@ _READONLY_METHODS = frozenset(
         protocol.M_TERMINAL_RESYNC,
         protocol.M_TERMINAL_DETACH,
         protocol.M_TERMINAL_PEEK,
+        protocol.M_TERMINAL_PROMPT,
         protocol.M_PUSH_REGISTER,
         protocol.M_SESSION_MARK_READ,
         protocol.M_COMMAND_STATUS,
@@ -792,6 +793,7 @@ class RemoteService:
                 protocol.CAPABILITY_SESSION_CREATE_RECEIPTS: True,
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
+                protocol.CAPABILITY_TERMINAL_PROMPT: True,
                 protocol.CAPABILITY_USER_PROMPTS: True,
                 protocol.CAPABILITY_PROJECT_SHELL: True,
             },
@@ -1020,6 +1022,18 @@ class RemoteService:
         if self._unsubscribe(connection, protocol.terminal_channel(key)):
             self.hub.terminal_detach(key, _terminal_viewer(connection))
         return {"ok": True}
+
+    def _terminal_prompt(self, connection: Connection, params: dict):
+        native = params.get("native", False)
+        if not isinstance(native, bool):
+            raise ActionError(protocol.E_USAGE, t("remote.err.prompt_unavailable"))
+        if native and connection.access == "readonly":
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
+        return self.hub.terminal_prompt(
+            _key(params), _int_param(params, "seq", 0, max_value=1_000_000_000),
+            _int_param(params, "generation", 0, max_value=1_000_000_000_000_000_000),
+            native=native,
+        )
 
     def _terminal_peek(self, connection: Connection, params: dict):
         return self.hub.terminal_peek(_key(params))
@@ -1597,6 +1611,7 @@ _HANDLERS = {
     protocol.M_TERMINAL_DETACH: RemoteService._terminal_detach,
     protocol.M_TERMINAL_THEME: RemoteService._terminal_theme,
     protocol.M_TERMINAL_PEEK: RemoteService._terminal_peek,
+    protocol.M_TERMINAL_PROMPT: RemoteService._terminal_prompt,
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,

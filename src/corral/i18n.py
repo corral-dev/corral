@@ -102,6 +102,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "▼ Your prompts ({count})",
         "zh": "▼ 本会话提示词（{count}）",
     },
+    "remote.err.prompt_unavailable": {
+        "en": "This prompt is not available in the current terminal. The agent's search view could not be verified.",
+        "zh": "当前终端无法定位这条提问，或无法确认助手的搜索界面。",
+    },
+    "remote.err.prompt_ambiguous": {
+        "en": "This text appears more than once. The terminal cannot identify this prompt reliably.",
+        "zh": "这段文字出现了多次，终端无法可靠区分这条提问。",
+    },
+    "remote.err.prompt_stale": {
+        "en": "Session history changed. Reopen Your prompts and try again.",
+        "zh": "会话历史已变化，请重新打开提示词列表再试。",
+    },
     "hud.collapse_hint": {
         "en": "Click to collapse",
         "zh": "点击收起",

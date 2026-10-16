@@ -358,6 +358,12 @@ class PaneCell(Vertical):
         # 浮层放在最后：同层内单独排版，dock 到右上角，不参与上面三个的纵向堆叠。
         yield SessionHud(self._on_hud_toggle, classes="hud")
 
+    def on_session_hud_prompt_selected(self, event: SessionHud.PromptSelected) -> None:
+        event.stop()
+        if self._pooled:
+            return
+        self.screen.jump_to_terminal_prompt(self.spec.session_key, event.body, self)
+
     def on_mount(self) -> None:
         # 格池闲置格挂上时不启动会话；真正绑定走 rebind → _start_session。
         if self._pooled:

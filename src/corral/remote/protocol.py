@@ -291,6 +291,8 @@ M_TERMINAL_DETACH = "terminal.detach"   # {key}
 # subscription (cold chat-to-TUI reveal prefetch; the live stream still comes
 # from terminal.attach and its snapshot events).
 M_TERMINAL_PEEK = "terminal.peek"
+M_TERMINAL_PROMPT = "terminal.prompt"
+CAPABILITY_TERMINAL_PROMPT = "terminal_prompt"
 # {key, background, foreground?} (#rrggbb): the viewer's terminal colours, answered to the
 # agent's OSC 10/11 queries; attach accepts the same two fields.
 M_TERMINAL_THEME = "terminal.theme"

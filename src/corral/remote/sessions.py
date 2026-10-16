@@ -1983,6 +1983,44 @@ class SessionHub:
     def terminal_resync(self, key: str) -> None:
         self._terminal(key).request_snapshot()
 
+    def terminal_prompt(self, key: str, seq: int, generation: int, *, native: bool = False) -> dict:
+        from corral.ui.terminal_prompt_navigation import (
+            PromptNavigationError,
+            buffer_offset,
+            navigate_native,
+            prompt_query,
+        )
+
+        session = self.require_session(key)
+        if str(session.get("source") or "") not in {"claude", "codex", "pi", "opencode", "cursor"}:
+            raise ActionError("unavailable", t("remote.err.prompt_unavailable"))
+        name = self._hosted_name(key)
+        if not name:
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
+        self.user_prompts(key)  # Fill normalized history, never parse native files here.
+        transcript = self._ensure_transcript(session)
+        with self._lock:
+            if generation <= 0 or generation != transcript.generation:
+                raise ActionError("stale", t("remote.err.prompt_stale"))
+            if transcript.reader.has_earlier():
+                raise ActionError("unavailable", t("remote.err.prompt_unavailable"))
+            messages = list(transcript.messages)
+        target = next((m for m in messages if m.seq == seq and m.role == "user"), None)
+        if target is None:
+            raise ActionError("not_found", t("remote.err.prompt_unavailable"))
+        try:
+            query = prompt_query(messages, target)
+            if native:
+                if self._hosted_name(key) != name:
+                    raise PromptNavigationError("prompt_stale")
+                navigate_native(name, str(session.get("source") or ""), query,
+                                is_current=lambda: self._hosted_name(key) == name
+                                and transcript.generation == generation)
+                return {"query": query, "native": True}
+            return {"query": query, "offset": buffer_offset(name, query), "native": False}
+        except PromptNavigationError as exc:
+            raise ActionError("unavailable", t(f"remote.err.{exc}")) from exc
+
     def terminal_peek(self, key: str) -> dict:
         """One-shot raw screen without a size vote or subscription (cold reveal).
 

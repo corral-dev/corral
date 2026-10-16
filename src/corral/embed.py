@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -782,6 +783,28 @@ def resize(name: str, width: int, height: int) -> None:
         pass
 
 
+# Search navigation must not interleave its query with another Corral input.
+# Keep a lock alive while an operation owns it, without retaining ended sessions.
+_input_locks: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+_input_locks_guard = threading.Lock()
+
+
+def input_transaction(name: str):
+    with _input_locks_guard:
+        return _input_locks.setdefault(name, threading.RLock())
+
+
+def _serialized_input(function):
+    from functools import wraps
+
+    @wraps(function)
+    def serialized(name, *args, **kwargs):
+        with input_transaction(name):
+            return function(name, *args, **kwargs)
+    return serialized
+
+
+@_serialized_input
 def send_literal(name: str, text: str, *, force_fork: bool = False) -> None:
     """按字面量发送文本（不做键名解释），用于可打印字符的批量输入。
 
@@ -796,6 +819,7 @@ def send_literal(name: str, text: str, *, force_fork: bool = False) -> None:
     _send(name, ["send-keys", "-l", "-t", name, "--", text])
 
 
+@_serialized_input
 def send_key(name: str, *keys: str) -> bool:
     """按 tmux 键名发送特殊键（Enter / C-c / Up / BSpace …）。
 
@@ -810,6 +834,7 @@ def send_key(name: str, *keys: str) -> bool:
     return _send(name, ["send-keys", "-t", name, "--", *keys])
 
 
+@_serialized_input
 def send_bytes(name: str, data: bytes) -> bool:
     """Send raw input bytes (``send-keys -H``): what a terminal emulator would
     write to the pane, never parsed as key names. Channel first, fork fallback."""
@@ -826,6 +851,7 @@ def send_bytes(name: str, data: bytes) -> bool:
 _RAW_INPUT_CHUNK = 256
 
 
+@_serialized_input
 def send_key_detailed(name: str, *keys: str) -> InjectionResult:
     """`send_key` 的可诊断版：失败时附带安全的原因码与不确定标记。
 
@@ -990,6 +1016,7 @@ def _paste_buffer_name() -> str:
     return f"{_PASTE_BUFFER}-{os.getpid()}-{threading.get_ident()}-{time.monotonic_ns()}"
 
 
+@_serialized_input
 def paste(name: str, text: str) -> bool:
     """整段粘贴：经 paste buffer 一次性注入，-p 让目标程序按 bracketed paste 接收。
 
@@ -1005,6 +1032,7 @@ def paste(name: str, text: str) -> bool:
     return paste_detailed(name, text).ok
 
 
+@_serialized_input
 def paste_detailed(name: str, text: str) -> InjectionResult:
     """`paste` 的可诊断版：返回成功 / 确定失败 / 不确定（可能已送达）。
 

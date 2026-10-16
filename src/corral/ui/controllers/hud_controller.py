@@ -98,3 +98,53 @@ class HudControllerMixin:
             return
         self._hud_expanded = not self._hud_expanded
         self._sync_hud()
+
+    def jump_to_terminal_prompt(self, key: str, body: str, cell) -> None:
+        self._prompt_navigation_revision = getattr(self, "_prompt_navigation_revision", 0) + 1
+        revision = self._prompt_navigation_revision
+        self._navigate_terminal_prompt(key, body, cell, revision)
+
+    @work(thread=True, group="prompt-navigation")
+    def _navigate_terminal_prompt(self, key: str, body: str, cell, revision: int) -> None:
+        from corral.i18n import t
+        from corral.ui.session_hud import _one_line
+        from corral.ui.terminal_prompt_navigation import (
+            PromptNavigationError,
+            buffer_offset,
+            navigate_native,
+            prompt_query,
+        )
+
+        try:
+            session = self.store.find_session(key)
+            name = str((session or {}).get("keepalive_name") or "")
+            if not name or cell.spec.session_key != key:
+                raise PromptNavigationError("prompt_unavailable")
+            messages = self.store.get_conversation(session)
+            targets = [m for m in messages if m.role == "user" and _one_line(m.text) == body]
+            if len(targets) != 1:
+                raise PromptNavigationError("prompt_ambiguous")
+            query = prompt_query(messages, targets[0])
+            if revision != self._prompt_navigation_revision:
+                return
+            offset = buffer_offset(name, query)
+            if offset is None:
+                navigate_native(name, str(session.get("source") or ""), query,
+                                is_current=lambda: revision == self._prompt_navigation_revision
+                                and cell.spec.session_key == key)
+                offset = 0
+            self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
+        except PromptNavigationError as exc:
+            if revision == self._prompt_navigation_revision:
+                self.app.call_from_thread(self.notify, t(f"remote.err.{exc}"), severity="warning")
+
+    def _apply_prompt_jump(self, key: str, name: str, cell, revision: int, offset: int) -> None:
+        if revision != self._prompt_navigation_revision or cell.spec.session_key != key:
+            return
+        pane = cell.embed_pane()
+        if pane is None or pane.session_name != name:
+            return
+        pane.history_offset = offset
+        pane._request_immediate_capture()
+        self._hud_expanded = False
+        self._sync_hud()

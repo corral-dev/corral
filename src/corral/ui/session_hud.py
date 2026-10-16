@@ -34,6 +34,7 @@ from rich.text import Text
 from textual import events
 from textual.color import Color as TextualColor
 from textual.geometry import Size
+from textual.message import Message
 from textual.widget import Widget
 
 from corral.i18n import t
@@ -237,6 +238,11 @@ def _plural(key: str, count: int, **kwargs: object) -> str:
 
 class SessionHud(Widget):
     """右上角悬浮小窗本体。数据与展开状态都由 `MainScreen` 统一喂，自己不查 store。"""
+
+    class PromptSelected(Message):
+        def __init__(self, body: str) -> None:
+            super().__init__()
+            self.body = body
 
     ALLOW_SELECT = False
     can_focus = False
@@ -501,10 +507,20 @@ class SessionHud(Widget):
             out.append_text(line)
         return out
 
-    # ---- 交互：点哪儿都是展开/收起；不抢焦点（自身与祖先都不可聚焦） ----
+    # ---- Interaction: rows navigate; header/footer collapse without taking focus. ----
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
+        if self._expanded:
+            width = self.content_size.width or self._inner_width(self.container_size.width)
+            self.lines(width, self.content_size.height or None)
+            row = event.y - self.styles.padding.top - 1 + self._scroll
+            for stamp, body in self._data.entries:
+                count = len(self._entry_lines(stamp, body, width))
+                if 0 <= row < count and 0 < event.y - self.styles.padding.top < self.content_size.height - 1:
+                    self.post_message(self.PromptSelected(body))
+                    return
+                row -= count
         if self._on_toggle is not None:
             self._on_toggle()
 
