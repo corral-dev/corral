@@ -188,6 +188,8 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 **P1 裁定（2026-10-15，用户体验优先，机主授权 agent 定）**：OpenCode 列表签名覆盖 `message` / `session_message` 含 `data` 列（SessKit `parsers/opencode.py` `_SIGNATURE_TABLES`），流式输出每块都改变指纹 → `cache_hit` 永 False；本机实测 632MB 库单次签名约 1s 且背靠背不稳定。**不做消息不敏感签名**：`_merge_live_state` 只刷新托管标注与关注态，`_freshen_from_disk` 只覆盖 `claude/codex/pi` 文件型运行时——opencode 卡片的相对时间在签名稳定期间会冻住，这是可见倒退，而后台 CPU 是 P0/P2 之后不可见的。注意：P2 共享命中后 TUI 直接跳过签名计算，P1 的界面影响自然消失，只剩后台单解析进程的固有哈希成本。纯降本（不改变翻转语义，如按计数而非 data 哈希）可后续单独立项，需 SessKit 发版 + 升 pin，本轮不做。
 
+**已落地（v0.24.313，2026-10-16 现场 `shared_miss` 定点）**：`shared_index` 恒 False 的第一根子因是窄发布抢写——TUI/标题进程每轮把 `limit:50` 索引盖掉 worker 的 `limit:200`，深度 200 的消费方（daemon、worker 自己）永远 `published_limit < need`。修法：发布前经 `published_meta()` 检查同 cohort 的现有索引；其深度覆盖本次请求且年龄在 `DEFAULT_TTL_SECONDS` 内时，保留现有索引，避免窄发布覆盖宽索引。过期、未来时间、cohort / 版本不匹配或不可读时照常发布；不再把 worker 存活作为覆盖证据。窄消费方仍可从宽索引收窄消费。keep_ids 侧（TUI 缺 shell 1 条、pi 缺 186/400）待稳定单发布源后用现场 keep 集合复核，再定是布局库抖动还是 pi id 不稳——不先猜修。
+
 **已落地（v0.24.186，2026-09-12）——跨进程共享扫描索引 + 首帧优先 + 远程降档**：
 
 用户体感「启动白屏好几秒、会话中又卡」在 16GB 忙机上复现：`load` 一次 28s、首铺 `list_rebuild` full 3.5s、界面与 `remote _serve` 各扫一遍。阶段 0 拆解（负载已回落时）：冷 `scan_all(50)` ≈540ms（OpenCode/Claude 等并行），签名全命中仍 ≈100ms，`annotate` ≈70ms——所以「共享索引跳过整段扫描」比「把轮询间隔拉长」更符合体验优先。

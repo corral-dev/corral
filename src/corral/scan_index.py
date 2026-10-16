@@ -213,6 +213,40 @@ def try_consume(
     return narrowed
 
 
+def _covered_by_fresh_index(limit: int) -> bool:
+    """True when a fresh STRICTLY WIDER index already serves our consumers.
+
+    A narrower publish would only clobber it: slower-cadence deep consumers
+    (remote daemon, the worker itself) then see ``published_limit < need`` on
+    every pass — measured 2026-10-16 (``published_limit=50, need_limit=200``
+    on every daemon/worker line while the TUI republished 50 every ~13s).
+    Same-depth publishes always proceed (fresh data must land; the
+    identical-keys throttle already skips true duplicates), so this only
+    ever refuses to NARROW a fresh index. Skipping is safe for freshness:
+    the covering index is at most TTL old, arrivals are picked up by the
+    next parse of any process, and once it goes stale narrow publishers
+    resume — a stuck worker degrades to status quo within one TTL instead
+    of silencing everyone. Cohort/version/unreadable indexes never cover
+    (``published_meta`` returns None for those), so mixed-version peers
+    keep publishing for their own cohort. Never raises.
+    """
+    try:
+        meta = published_meta()
+    except Exception:  # noqa: BLE001 — no usable cover means publish
+        return False
+    if meta is None:
+        return False
+    try:
+        published_at, published_limit = meta
+        age = time.time() - float(published_at)
+    except (TypeError, ValueError):
+        return False
+    return (
+        int(published_limit) > int(limit)
+        and 0 <= age <= DEFAULT_TTL_SECONDS
+    )
+
+
 def publish(
     scanned: dict[str, list[dict[str, Any]]],
     *,
@@ -221,6 +255,8 @@ def publish(
 ) -> None:
     """Atomically replace the shared index after a successful local scan."""
     if not _shared_index_enabled():
+        return
+    if _covered_by_fresh_index(limit):
         return
     try:
         keep_payload = {

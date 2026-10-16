@@ -183,6 +183,34 @@ class ScanIndexTests(unittest.TestCase):
         self.assertFalse(registry.last_scan_shared)
         self.assertEqual(registry.last_scan_shared_miss, "limit")
 
+    def test_narrow_publish_defers_to_fresh_wide_index(self) -> None:
+        wide = {"claude": [self._session("claude", "a", 1)]}
+        scan_index.publish(wide, limit=200)
+        before = scan_index.index_path().read_text(encoding="utf-8")
+        scan_index.publish(
+            {"claude": [self._session("claude", "b", 2)]}, limit=50,
+        )
+        # Narrower publish must not clobber the fresh wide index deep
+        # consumers (daemon/worker at 200) depend on.
+        self.assertEqual(scan_index.index_path().read_text(encoding="utf-8"), before)
+
+    def test_narrow_publish_proceeds_when_cover_stale_or_narrow(self) -> None:
+        scan_index.publish(
+            {"claude": [self._session("claude", "a", 1)]}, limit=50,
+        )
+        path = scan_index.index_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["published_at"] = time.time() - 100
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        scan_index.publish(
+            {"claude": [self._session("claude", "b", 2)]}, limit=50,
+        )
+        fresh = json.loads(path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(fresh["published_at"], payload["published_at"])
+        self.assertEqual(
+            [item["id"] for item in fresh["sessions"]["claude"]], ["b"],
+        )
+
     def test_miss_event_throttled_per_reason(self) -> None:
         with mock.patch("corral.observe.event") as emitted, mock.patch(
             "corral.scan_index.getenv", return_value=""
