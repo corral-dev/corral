@@ -108,6 +108,33 @@ stateDiagram-v2
 - 滚轮命中右栏即处理，不要求右栏持有键盘焦点；命中左栏则滚会话列表。
 - **单击转发、拖拽留给 Corral（2026-10-07 机主要求）**：实时格里的助手声明了鼠标捕获（`mouse_any_flag`）且正看直播（`history_offset == 0`）时，按下与松开落在同一格的一次单击（左 / 中 / 右键，带 Shift/Alt/Ctrl 修饰）在松开时以「press + release」一对鼠标序列转发给助手——OpenCode 等自带可点 TUI 的助手因此能直接点选。按下后移动过的**拖拽不转发**，仍由 Textual 原生选择完成并经 OSC 52 复制：内层程序自己的选区复制只会写进 tmux，到不了系统剪贴板（托管 tmux 没有真实终端客户端），把拖拽交出去等于「能选不能复制」。转发的连击不再触发 Textual 的双击全选。悬停移动（1003 any-motion）与按住拖动类交互暂不转发，产品需要时先重新定义与选词的冲突。编码按 pane 声明走 SGR 1006，未声明 SGR 时用经典 X10 编码（坐标超过 95 列 / 行时放弃该次转发）。点击与滚轮同走后台鼠标发送队列，点击序列不会因积压被丢弃。回归：`EmbedMouseClickTests`。
 
+### Prompt navigation feasibility (investigation, 2026-10-16)
+
+Status: feasibility research only; Your prompts terminal clicks still have their existing behavior. No product navigation implementation or client acceptance is claimed. The owner requested investigation of prompt jumps while keeping the native agent TUI visible.
+
+Shared interpretation and safeguards: [terminal navigation versus stored history](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#terminal-navigation-and-stored-history). Corral owns prompt navigation and transport; SessKit continues supplying normalized user prompts. This does not require a second native history parser.
+
+Observed against CLI 0.24.317 and the pinned SwiftTerm 1.20.0 native Mac build:
+
+- Existing `embed.capture(name, scroll_offset, pane_height)` reached synthetic prompt 42 in a 300-line real tmux fixture (284 history lines; target at row 42; offset 252). Resizing from 80 to 40 columns moved a later marker from row 102 to 106. Resolve against the current buffer rather than keeping fixed row numbers.
+- Hosting config allows 10,000 history lines, while normal-screen remote snapshots request the latest 1,500. These are retention/request limits, not guarantees that an agent's full transcript exists in either buffer. Alternate snapshots preserve separate screen state; increasing the normal-history budget cannot recover overwritten alternate-screen content.
+- A native probe using production `StreamTerminalView` found and selected Chinese prompt fragments, moved the viewport into history, distinguished two identical matches at rows 31 and 91, and found the fragment after width reflow. Current alternate-screen text was searchable; overwritten text and normal-buffer history were unavailable through that active alternate buffer.
+- A specific full Chinese query crossing a 40-column wrap failed. Omitting the glyph at the previous row's final wide cell made it match; individual fragments matched correctly. The inspected `SearchLineCache.translateBufferLineToStringWithWrap` removes the last translated character when a null trailing cell precedes a wide first cell. That condition also covers the trailing half of a wide glyph. This is a pinned-dependency feasibility limitation, not a repaired product defect or a claim that every wrapped query fails.
+
+Native-runtime experiments used unique disposable tmux sockets, isolated configuration and synthetic saved histories, without model requests or input to user sessions:
+
+| Runtime | Evidence | Limit |
+|---|---|---|
+| Claude Code 2.1.301, fullscreen | Loaded 40 synthetic turns; tmux history was zero. `Ctrl+O`, transcript search `/`, query and Enter brought prompt 7 into the screen. Returning to the composer preserved an unsent draft. | Search is a transcript surface; runtime/keymap and active-surface detection remain integration work. |
+| Codex 0.163.0, fullscreen, private `--no-daemon` | Loaded 50 synthetic turns; tmux history was zero. F3 searched the full transcript and accepting with Enter retained prompt 7 in view and preserved the unsent draft. | Ctrl+F did not open search in this version; the test query appeared in the composer instead. Synthetic imported turns displayed interruption notices, so this does not verify active-turn behavior. |
+| Pi 1.3.0, fullscreen, offline | Loaded 50 synthetic turns; tmux history was zero. Native transcript search (`Ctrl+Shift+F`, encoded as CSI-u) reached prompt 7. Escape closed search while retaining the position and unsent draft. | No Corral extension or end-to-end client command was implemented. |
+| OpenCode 2.0.30 | Inspected the exact tag's `DialogTimeline`, `jumpToMessage`, `alignMessage` and message-boundary navigation: the native TUI already maps user messages to IDs and layout anchors. | Source evidence only; no live jump or externally callable message-ID navigation contract was verified. V1 SDK docs are not evidence for the installed V2. |
+| Cursor 2026.10.14-941492e | Isolated launch with a synthetic credential and deliberately unreachable backend exited before presenting the TUI. | Preparation failure; arbitrary prompt jumps remain unverified, not unsupported. |
+
+References: [Claude fullscreen](https://code.claude.com/docs/en/fullscreen), [Codex 0.163.0 keymap](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/tui/src/keymap.rs), [Pi fullscreen keybindings](https://pi.dev/docs/latest/keybindings), [OpenCode 2.0.30 session component](https://github.com/anomalyco/opencode/blob/v2.0.30/packages/tui/src/routes/session/index.tsx), and [SwiftTerm pinned search integration](https://github.com/migueldeicaza/SwiftTerm/blob/5d14406844143538cd8f8851d2d8a67c1fe443e5/Sources/SwiftTerm/TerminalViewSearch.swift).
+
+Private evidence and reproducible probes: `~/.config/corral/development/prompt-feasibility-20261016/` (`tmux_probe.py`, `SearchProbe.swift`, native-runtime scripts and synthetic captured text). Every native probe confirmed its private tmux server was gone in cleanup. No real Mac/iPhone Corral prompt-card interaction, remote navigation protocol, concurrent-output/double-click race, custom keymap, duplicate-message identity mapping, or five-runtime end-to-end acceptance was exercised. Implementation still needs those checks and an explicit result when the target cannot be reached; this investigation does not change existing terminal-click policy.
+
 ### 运行时状态的所有权
 
 | 状态 | 持有者 | 更新来源 | 使用者 | 失效方式 |
