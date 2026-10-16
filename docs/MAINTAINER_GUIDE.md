@@ -591,6 +591,10 @@ The original v0.24.291 universal2 wheel fails dyld loading with a misaligned LIN
 - **PyPI 这条路暂时走不通**：`corral` 这个分发名在 PyPI 已被一个无关项目占用（`corral 1.4`，Modular backup script），要上只能改成别的分发名（如 `corral-cli`），安装命令会和 README / Homebrew / 一键脚本里写的不一致。2026-07-30 评估过一次，结论是不值得为此制造第四种叫法；真要上，先想清楚分发名与命令名的对外说法怎么统一。
 - **已知缺口（未修）**：用一键脚本装的用户属于 `pip` 渠道，应用内点更新执行的是 `pip install --upgrade git+https://github.com/x0c/corral.git@v<tag>`——**从源码构建，需要用户本机有 Rust 工具链**，而他们当初装的是预编译包、多半没有。安装脚本本身会优先下预编译包，所以「装得上、却升不动」。要修就让 `update_command` 的 pip 分支也去 Release 里挑匹配当前平台的预编译包（与 `install.sh` 同一套匹配规则），失败再退回源码。
 
+### Retained installation diagnostics (2026-10-16)
+
+The v0.24.316 Homebrew install emitted `Calling postflight is deprecated! Use postflight_steps instead` from the unrelated tap cask `Casks/agentsync.rb:36`, plus an untrusted-taps notice naming unrelated taps. Corral's trusted formula still downloaded, installed and passed the real installed handoff path. Retain these environment diagnostics for this Corral fix: no Corral compiler/lint warning or blocked Corral install was observed, and changing another product's cask or broadening tap trust is outside this defect's scope. Residual risk is future rejection of that AgentSync cask and intentionally unavailable commands from the listed untrusted taps. Follow up in AgentSync's Homebrew cask migration; opt into trust only for a separately requested tool, never to silence the notice.
+
 ## CI 工作流（`.github/workflows/test.yml`）
 
 排查「只 Ubuntu 红、macOS 绿 / Smoke host_session 报 server exited unexpectedly / 托管 UI 卡在 Press Enter to restart」时，先看 `keepalive.tmux_env()` 是否仍剥掉 `LD_LIBRARY_PATH`（见「会话保活」节），不要先猜 terminfo 或缺 tmux。
