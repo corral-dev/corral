@@ -18,4 +18,3 @@
 | Question card polish + blocked-send gate UI (opencode) | Review | apple Shared AnswerOptionsView/ChatView/SessionDetailView/MessageBubbleView + fixture; cli remote/questions blocks_input (ships in next CLI patch) | 2026-10-12 | 2026-10-12 | Touches SessionDetailView/ConversationStore shared with stop-button work; Mac Debug + sim captures done, owner signed off |
 
 | Codex handoff delivery follow-up (Codex) | Fixing CI fixture | tests/test_remote_state_latency.py, codex_proxy Unicode roots, docs and release 0.24.317 | 2026-10-16 | 2026-10-16 | Cloud probe-count assertion depends on scheduling; retain count and verify while scan blocked |
-| Your prompts 跳转静默化 (Codex) | Implementing | cli hud_controller failure notify removal + regression test; no protocol/scan changes | 2026-10-16 | 2026-10-16 | Owner: no visible popup on success or failure; failures silent |
