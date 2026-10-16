@@ -351,37 +351,34 @@ same blank-session launch path; project filtering and the selected runtime in
 other controls do not change that pair. Keep the project path available as help.
 These are launch actions, with no selected state.
 
-Visual correction (owner capture, 2026-10-15): neighboring combinations must be
-visibly separate in the light theme. Leave three terminal cells between buttons,
-and one empty row between wrapped lines. Only the runtime name uses its brand
-color; the separator is muted and the project name is bold neutral foreground.
-Compact correction (owner capture, 2026-10-15, supersedes the owned blank rows):
-a single line keeps zero blank rows — the heading is one row tall, the grid has
-no bottom padding and no forced extra track — so the stack reads
-title / hint / buttons / divider with no gaps. The empty row exists only between
-wrapped lines. Reuse the existing FilterChip
-capsule, native Button behavior and character-width Grid packing; add spacing
-parameters to the packer with zero-spacing defaults so sidebar filters retain
-their own layout. Taller native Grid rows provide the vertical gap; the
-[Textual 8.2.8 sizing issue](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#textual-828-grid-gutter-axes)
-explains why nonzero native gutters are unsuitable for these character spans.
-Preserve recent order, click/Enter launch, right-click/Delete
-removal and the initially focused project filter. Validate the owner's repeated
-OpenCode/project pairs, mixed runtimes, long/CJK names, wrapping, hover and focus
-in light/dark terminals at 80 and 120 columns. Mac capsules already use a six-point HStack gap; iPhone recent entries are
-separate full-width rows with neutral title text. Source comparison finds neither
-TUI-specific cause in those clients; no Apple code change is needed and no fresh
-physical-client visual acceptance is claimed.
+Layout correction (owner capture, 2026-10-16) supersedes the previous
+three-cell/blank-row spacing: Quick Start is one compact, leading-aligned group.
+Use two empty terminal cells between neighboring capsule actions, wrap in recent
+order onto the immediately following row, and start every row at the same left
+edge as its heading, divider and project-filter surface. Do not distribute spare
+width across buttons or retain empty rows between wrapped lines. The title uses
+the same leading content edge. Only the runtime name uses its brand color; the
+separator is muted and the project name is bold neutral foreground.
 
-Spacing acceptance uses the owner's three pairs (OpenCode/Corral,
-OpenCode/NeatWebApp, Codex/Corral), plus five-entry long/CJK fixtures. Mounted
-regions establish three empty columns between neighbors and an empty row on
-wrapping. Light/dark, English/Chinese, 80/100/120-column captures include idle,
-hover and keyboard focus. Short labels remain complete; project text is neutral
-while the assistant keeps its brand color. Clicking and focused Enter return the
-stored pair; the production host fixture verifies real isolated tmux output and
-recent-combination persistence. Warm first-screen scan measured 3 ms, not a cold
-cache result.
+Inspected references: the existing `ui/modals.py` Quick Start and
+`ui/quick_filters.py` FilterChip/QuickFilters._pack, plus
+`apple/Shared/UI/Sessions/NewSessionSheet.swift` macContent's leading-aligned
+Quick Start group. Reuse the native Textual Button/capsule renderer and
+character-width Grid packing, adapting only the modal's spacing and alignment.
+The [public Grid contract](https://textual.textualize.io/guide/layout/#grid)
+provides ordered left-to-right placement. Keep native gutters at zero for the
+installed Textual 8.2.8, following the
+[version-specific sizing guidance](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#textual-828-grid-gutter-axes).
+Sidebar quick-filter geometry remains governed by its separate contract.
+
+Preserve click/Enter launch, right-click/Delete removal, and the initially
+focused project filter. Validate single and wrapped rows at 80/100/120 columns,
+including five combinations, mixed runtimes, long/CJK labels, resize, removal,
+hover and keyboard focus in both themes. Check actual mounted row starts and
+vertical adjacency as well as rendered captures. Apple Mac capsules already use
+a leading-aligned horizontal row; iPhone recent entries use separate full-width rows.
+Inspect both implementations for the reported cause; do not claim physical
+Apple acceptance from source comparison.
 
 Ordinary project/runtime
 selection remains available below a separator and the filter retains initial

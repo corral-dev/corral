@@ -9076,7 +9076,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(os.path.isdir(cwd))
 
     async def test_quick_start_single_line_has_no_blank_rows(self) -> None:
-        """单行组合上下零空行：标题/提示/按钮/分隔线连续排布；换行仍保留间隔行。"""
+        """The title, hint, actions and divider occupy consecutive rows."""
         from corral.recent_starts import RecentStart
         from corral.ui.modals import _QuickStartChip
 
@@ -9104,6 +9104,50 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(heading.region.height, 1)
             divider = modal.query_one("#ns-quick-divider")
             self.assertEqual(divider.region.y, grid.region.y + 1)
+
+    async def test_quick_start_wrapping_stays_compact_and_left_aligned(self) -> None:
+        from corral.recent_starts import RecentStart
+        from corral.ui.modals import _QuickStartChip
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        modal = NewSessionModal(
+            [("/tmp", "Corral", "/tmp")],
+            [RuntimeChoice(rid, label, "", True) for rid, label in
+             (("codex", "Codex"), ("opencode", "OpenCode"), ("claude", "Claude"))],
+            recent_combos=[
+                RecentStart(rid, f"/tmp/quick-{i}", project)
+                for i, (rid, project) in enumerate((
+                    ("codex", "Codes"), ("codex", "Corral"),
+                    ("opencode", "Corral"), ("claude", "Corral"),
+                    ("opencode", "NeatWebApp"),
+                ))
+            ],
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await app.push_screen(modal, lambda *a: None)
+            for width in (120, 80, 100, 120):
+                with self.subTest(width=width):
+                    await pilot.resize_terminal(width, 30)
+                    await pilot.pause()
+                    grid = modal.query_one("#ns-quick-grid")
+                    chips = list(modal.query(_QuickStartChip))
+                    rows: dict[int, list] = {}
+                    for chip in chips:
+                        rows.setdefault(chip.region.y, []).append(chip)
+                        self.assertEqual(chip.region.height, 1)
+                        self.assertLessEqual(chip.region.right, grid.region.right)
+                    self.assertGreater(len(rows), 1)
+                    self.assertEqual(sorted(rows), list(range(grid.region.y, grid.region.y + len(rows))))
+                    self.assertEqual(grid.region.height, len(rows))
+                    left = modal.query_one("#ns-project-filter").region.x
+                    for row in rows.values():
+                        self.assertEqual(row[0].region.x, left)
+                        for previous, following in zip(row, row[1:], strict=False):
+                            self.assertEqual(following.region.x - previous.region.right, 2)
+                    for selector in (".title", "#ns-quick-heading", "#ns-quick-divider"):
+                        self.assertEqual(modal.query_one(selector).region.x, left)
+                    self.assertEqual(modal.query_one("#ns-quick-divider").region.y, grid.region.bottom)
 
     async def test_new_session_has_no_function_key_launches(self):
         store, _ = _make_store()

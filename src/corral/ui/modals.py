@@ -301,13 +301,13 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         height: 1;
         color: $foreground 60%;
     }
-      NewSessionModal #ns-quick-starts { height: auto; }
-        NewSessionModal #ns-quick-heading { height: 1; color: $text-muted; }
-      NewSessionModal #ns-quick-grid { height: auto; grid-gutter: 0; grid-rows: 1; padding: 0; }
-      NewSessionModal #ns-quick-grid > .filter-gap { height: 1; width: 1; }
-        NewSessionModal _QuickStartChip .filter-chip--fill { color: $foreground; }
-      NewSessionModal #ns-quick-divider { height: 1; color: $foreground 20%; }
-      NewSessionModal #ns-error { height: auto; max-height: 2; color: $error; }
+    NewSessionModal #ns-quick-starts { height: auto; }
+    NewSessionModal #ns-quick-heading { height: 1; color: $text-muted; }
+    NewSessionModal #ns-quick-grid { height: auto; grid-gutter: 0; grid-rows: 1; padding: 0; }
+    NewSessionModal #ns-quick-grid > .filter-gap { height: 1; width: 1; }
+    NewSessionModal _QuickStartChip .filter-chip--fill { color: $foreground; }
+    NewSessionModal #ns-quick-divider { height: 1; color: $foreground 20%; }
+    NewSessionModal #ns-error { height: auto; max-height: 2; color: $error; }
     """
 
     def __init__(
@@ -365,7 +365,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(f" {t('modal.new_session_title')} ", classes="title")
+            yield Label(t("modal.new_session_title"), classes="title")
             if self._recent_combos:
                 with Vertical(id="ns-quick-starts"):
                     yield Label(t("modal.quick_start_heading"), id="ns-quick-heading")
@@ -477,7 +477,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     def _pack_quick_starts(self) -> None:
         grids = self.query("#ns-quick-grid")
         if grids:
-            QuickFilters._pack(grids.first(), spacing=3, row_spacing=1)
+            QuickFilters._pack(grids.first(), spacing=2)
 
     def on_resize(self) -> None:
         self.call_after_refresh(self._pack_quick_starts)
