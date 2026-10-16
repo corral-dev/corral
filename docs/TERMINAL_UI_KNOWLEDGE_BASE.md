@@ -23,12 +23,20 @@
 
 The sidebar quick filters must explain their dimensions without separate heading
 rows: `Agent` / `助手` and `Project` / `项目` precede their choices on the same
-line. Keep two content rows at the default 39-cell sidebar width, plus the existing
-owned trailing blank row. Both dimension labels use the same terminal-cell width,
+line. Keep two content rows at the default 39-cell sidebar width. Both dimension
+labels use the same terminal-cell width,
 so choices start in the same column in English and Chinese. The input directly
 adjoins the Agent row; its former trailing blank row is removed, keeping the
-complete filter group together. The owned blank row remains after the Project
-row before New Session. This supersedes the search-row height of two below.
+complete filter group together. The complete header order is input, Agent,
+Project, Only active, one owned blank row, then New Session. Active is part of
+the filter group and must never be separated from it by the creation action.
+Its existing two-row control owns the separator after the filter group; quick
+choices add no blank row. This supersedes the search-row height of two and
+New-before-Active ordering below. Review the complete first screen for semantic
+grouping, alignment and vertical space, not only the quick-choice rows.
+Header actions resolve by stable item identity: `__hint__` selects New Session
+by `NEW_SESSION_ID`, never index zero (now occupied by Active). Stripe checks
+exclude every fixed header control through `STICKY_IDS`.
 The input names the object being filtered (`Filter sessions`
 in English; `筛选会话：项目、标题` in Chinese). The project picker is explicitly
 named `More projects…` / `更多项目…`. Preserve multi-select unions, intersections,
@@ -43,25 +51,46 @@ Reuse the existing Button behavior, fill colors and modal. Inline choices use a
 flat text-width fill with a one-cell gap, instead of endcaps consuming two cells
 per choice; the five full assistant names then fit beside the label. New Session
 quick-start chips retain their existing endcaps and wrapping. Public Button contract:
-<https://textual.textualize.io/widgets/button/>. This TUI-only layout does not
-change Apple filter controls or SessKit semantics. Acceptance remains pending
-until the compact rows and overflow picker are exercised and captured.
+<https://textual.textualize.io/widgets/button/>. This TUI layout leaves Apple
+filter controls and SessKit semantics unchanged. Mac/iPhone use separate native
+filter rows with accessibility labels; this source comparison does not establish
+their first-use clarity or fresh device visual acceptance.
+
+Acceptance exercises all five assistants at 39 cells in English and Chinese,
+light and dark themes: option starts align at cell 8 (English) or 5 (Chinese),
+both filter dimensions remain one row, and the input directly adjoins them.
+The final Active-before-New layout was recaptured in all four language/theme
+combinations: Active occupies row 3 and New Session row 5, with exactly one
+separator between them. Thirty-two complete TUI captures cover idle, assistant
+selection, Active on/off, New Session, searchable overflow-project selection,
+hidden selections, 99+ counts and a 60-cell sidebar. Actual Pilot clicks/keys
+verify selection, native-switch toggles, New Session's focused input, count
+rendering and stable positions. New Session uses a synthetic project catalog.
+The macOS window-capture helper found no available desktop windows; these are
+production-renderer captures of isolated synthetic data, not native-window
+acceptance. Complete checks and post-install evidence are recorded separately.
+The final complete CLI gate covers all 2,475 expected tests with zero first-pass
+failures, complete exact-once coverage and no compiler/lint/test warnings in its
+diagnostic output. The two conditional skips are absent fish and the
+zeroconf-missing branch when zeroconf is installed. Native packaging and the
+installed artifact still require their separate delivery evidence.
 
 ### Sidebar header capsules (2026-10-11; quick rows superseded above)
 
 The adopted header redesign keeps the 39-cell sidebar and existing filter semantics.
-The filter owns two rows: one capsule with `/`, the native Input, a separate right-aligned
-match count label and a one-row clear action; the second row is transparent
-and clicking it focuses the Input. Counts remain visible while typing. The filter header
+The filter owns one row: a capsule with `/`, the native Input, a separate
+right-aligned match count label and a one-row clear action. Counts remain visible
+while typing. The filter header
 never displays refresh age (owner correction 2026-10-15); retain the count and leave
 session-card activity timestamps unchanged. Loading, errors and an empty catalog hide the count. Error and empty-catalog
 hints put the outcome first, without repeating the normal filter instruction,
 so a 39-cell sidebar reveals the reason before any runtime names or retry suffix.
-Runtime/project quick choices use the inline layout above and one final owned
-blank row. Counts above 99 are
+Runtime/project quick choices use the inline layout above; the Active control
+owns the blank row after the complete filter group. Counts above 99 are
 shown as `99+`. Hover/focus changes only the capsule fill: dark themes lighten and
 light themes darken, without frames or underlines. Runtime brand colors survive selection.
-New Session and Active labels start one cell in; Active has a right-aligned native
+New Session starts one cell in; Active aligns with the filter dimension labels
+and has a right-aligned native
 Textual Switch with its standard 0.3-second basic animation and disabled-animation support.
 The row still owns its trailing blank row and toggles through existing NavState policy.
 Full list replacement preserves the two fixed header controls so slider animation
@@ -561,7 +590,7 @@ assert that the reporting user's other computer has already upgraded.
 - **Keyboard smoke-test contract:** use the live pane’s `Ctrl+\` handler to return to the list, `/` for search focus, Esc to clear the query, then press Enter once to leave the search input for the list and a second time to reopen the selected session before testing input forwarding; Ctrl+Q quits. Retired `c` / Esc-exit bindings must not produce false passing assertions. Pane-close mouse behavior is verified through Pilot with real isolated tmux panes.
 
 - **AI 易错点**【禁止】恢复旧的全屏预览或纯列表第二套界面。非进行中会话在右栏直接展示完整对话，已托管会话在右栏挂接内嵌实时终端；「运行中(其他窗口)」走完整对话那一路（它不在任何 tmux 里，抓不到画面）。Space 全屏预览已经退役。原因：双入口会使按键、滚动、选择和展示语义重新分叉。
-- **AI 易错点**【侧边栏末行间隔与关注圆点】搜索框、新建会话项和未来新增的左栏控件，最后一行必须是控件自身高度内的间隔空行；搜索框高 2、新建项高 2。会话卡固定高 3，三行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
+- **AI 易错点**【侧边栏末行间隔与关注圆点】独立的新建会话项和未来新增的左栏控件，最后一行是控件自身高度内的间隔空行；顶部完整筛选组是例外：搜索框高 1，助手与项目各一行且无尾空行，仅活跃会话开关高 2 并拥有组后的空行，之后才是高 2 的新建项（2026-10-16；见文首布局约定）。会话卡固定高 3，三行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
 - **AI 易错点**【斑马纹是块级、画在卡片层、必须半透明、相位锚段尾】相位按块交替：独立会话一块，会话组（组卡 + 全部成员）一块；`＋ 新建` 与分隔线不参与；跨过分隔线重置，展开/收起不会翻转其后块的条纹。**锚在段尾而非段首**：段首插块零翻转，代价只是视觉上「段末无条纹」而非「段首无条纹」，详见性能知识库的 set_class 成本记录。类标在 `SessionCard` / `SessionGroupCard` 上，背景用 `$foreground 8%`——Textual 子类 `DEFAULT_CSS` 的 tie-breaker 高于基类，写到 `ListItem.-stripe` 会压过 `ListView` 自带的 `.-highlight`，把选中底色吃掉。失焦选中色 `block-cursor-blurred-background` 必须够不透明（约 `CC`），否则条纹会把它压平，焦点在右栏时分不清哪行是选中。全量重建与原地更新都要 `_apply_stripes()`。回归：`SidebarStripeTests`。
 - **AI 易错点**【时间行是四档亮度，不是二值 dim】第三行时间按「多久以前」分四档（半小时 / 三小时 / 一天为界），最新一档与标题同色以示着重，越旧越暗。档位色必须用 `$foreground` + 透明度经组件样式解析（深浅色主题各自与背景混合），不要写死灰值、也不要退回单级 `dim`；`SessionCard._time_style()` 只取混色后的**前景**，带上背景色会把整行的选中/分屏底色盖出一块缺口。档位本身要进 `_compute_signature()`：`mtime` 不变但会话「变旧」跨档时，原地更新路径不重绘就会一直亮着。文案阈值另算：`JUST_NOW_SECONDS`（3 分钟）内显示「刚刚」并在卡片上加粗；相对时间字符串也要进签名，否则「刚刚」↔「Xm ago」与加粗不会随墙钟更新。
 - **AI 易错点**【会话组树、圆点和高亮不要重复表达】右栏形成两到四格后，侧边栏必须出现独立三行组卡，并把成员从顶层移到树形子项；组卡第一行只有三角、可选置顶标记和组名，**绝不能再画关注圆点**。右栏 ≥2 格时给当前组卡和全部成员铺 `-in-split`，激活格对应成员再叠 `-split-active`。**光标停在组卡上时不得把 `active_key` 清成 `None`**，并且必须给组卡和全部成员贴 `-group-selected`——ListView 的 `.-highlight` 只落在当前一行，不贴这层的话成员看起来像没被选中。激活格对应成员在整组选中态下仍要更重（`-split-active.-group-selected`）。改选某个成员后立刻清掉 `-group-selected`。**光标停到组卡 / 激活子项上时必须比不停更重**：仍需 `:focus > ListItem.-in-split.-highlight` / `.-split-active.-highlight` 与 `-group-selected` 合成色，由 `_SIDEBAR_SPLIT_LADDER` 统一给值。**独立项与组内成员选中底色必须同档（2026-09-12）**：`block-cursor-background` 必须等于 `sidebar-split-cursor-background`（对齐组内选中色）；两色分叉会出现「组内选中深、组外选中淡」。组卡在成员也贴了 `-in-split` 时仍要能贴 `-in-split`（`_apply_split_marks` 只看 keys ⊆ group）。全量重建会换掉全部 `ListItem`，末尾必须重新贴标。回归：`SessionGroupSidebarTests`、`SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group`、`test_standalone_and_group_member_selection_share_cursor_color`。

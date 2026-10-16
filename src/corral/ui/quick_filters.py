@@ -154,7 +154,7 @@ class FilterChip(Button):
 
 class QuickFilters(Vertical):
     DEFAULT_CSS = """
-    QuickFilters { height: auto; padding: 0 0 1 0; }
+    QuickFilters { height: auto; padding: 0; }
     QuickFilters > Horizontal { height: auto; }
     QuickFilters .filter-dimension {
         width: auto; height: 1; margin-right: 1; color: $text-muted;

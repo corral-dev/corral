@@ -62,7 +62,7 @@ from corral.projects import normalize_cwd
 
 NEW_SESSION_ID = "__new_session__"
 ACTIVE_FILTER_ID = "__active_filter__"
-STICKY_IDS = (NEW_SESSION_ID, ACTIVE_FILTER_ID)
+STICKY_IDS = (ACTIVE_FILTER_ID, NEW_SESSION_ID)
 _STICKY_ID_SET = frozenset(STICKY_IDS)
 PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
@@ -859,7 +859,7 @@ class ActiveFilterCard(Widget):
 
     def render(self) -> Text:
         on = self._owner.nav.active_only
-        out = Text(" ")
+        out = Text()
         out.append(t("list.active_filter"), style="bold")
         out.append(f"  {self._owner.active_count()}", style="bold" if on else "dim")
         return out + Text("\n")
@@ -2193,17 +2193,16 @@ class SessionListView(Vertical):
         """
         import corral
 
-        if session_key == "__hint__":
-            if self.index != 0:
-                self.index = 0
-            return True
         for i, item in enumerate(self._list_items()):
             card = item.children[0] if item.children else None
-            if isinstance(card, SessionCard) and corral.session_key(card.session) == session_key:
+            new_hint = session_key == "__hint__" and item.id == NEW_SESSION_ID
+            if new_hint or (isinstance(card, SessionCard) and corral.session_key(card.session) == session_key):
                 target = i
                 if self.index != target:
                     self.index = target
                 return True
+        if session_key == "__hint__":
+            return False
         self._expand_older_stack_for(session_key)
         # 筛选中展开的是本次筛选覆盖，普通列表展开的是持久状态；任一变化都重建。
         if self._older_stack_expanded or self._filtered_older_expanded:
@@ -2519,8 +2518,8 @@ class SessionListView(Vertical):
 
         display_titles = self.store.snapshot()
         items = [
-            NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID),
             NoSelectListItem(ActiveFilterCard(self), id=ACTIVE_FILTER_ID),
+            NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID),
         ]
         for row in rows:
             item = self._item_for_row(row, display_titles)

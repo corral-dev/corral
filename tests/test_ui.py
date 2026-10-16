@@ -2171,7 +2171,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVE_FILTER_ID])
+            self.assertEqual(sticky_ids, [ACTIVE_FILTER_ID, NEW_SESSION_ID])
             self.assertIsNotNone(app.screen.query_one(NewSessionCard))
 
     async def test_search_and_card_spacing_are_explicit(self) -> None:
@@ -2203,7 +2203,9 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             filters = app.screen.query_one("#quick-filters")
             self.assertEqual(filters.region.y, search.parent.region.bottom)
             self.assertEqual(filters.region.height,
-                             1 + sum(row.region.height for row in filters.query("Grid")))
+                             sum(row.region.height for row in filters.query("Grid")))
+            self.assertEqual(active_card.region.y, filters.region.bottom)
+            self.assertEqual(new_card.region.y, active_card.region.bottom)
             self.assertEqual(items[0].region.y, filters.region.bottom)
 
     async def test_ended_card_title_is_dimmed_to_80_percent(self) -> None:
@@ -2483,7 +2485,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             list_view.set_split_marks(keys[:2], keys[1])
             list_view.focus()
             # 先停在「＋ 新建」，避免组选中把成员也抬到光标档，污染四级阶梯的「静止」色。
-            list_view.index = 0
+            self.assertTrue(list_view.select_session_key("__hint__"))
             await pilot.pause()
 
             group_row = list_view._group_items()[0][0]
@@ -2558,9 +2560,9 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     def _assert_dom_matches_rows(self, list_view: SessionListView) -> None:
         rows = list_view._sidebar_rows()
-        new_item = list_view.list_children[0]
-        self.assertEqual(new_item.id, NEW_SESSION_ID)
-        self.assertFalse(new_item.children[0].has_class("-stripe"))
+        for item in list_view.list_children:
+            if item.id in STICKY_IDS:
+                self.assertFalse(item.children[0].has_class("-stripe"))
         for item, row in zip(
             [child for child in list_view.list_children if child.id not in STICKY_IDS],
             rows,
@@ -3148,7 +3150,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVE_FILTER_ID])
+            self.assertEqual(sticky_ids, [ACTIVE_FILTER_ID, NEW_SESSION_ID])
             self.assertEqual(pinned_card.parent.parent, scroll)
             search_y = search.region.y
             new_y = new_card.region.y
@@ -3205,7 +3207,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             self.assertEqual(
                 [child.id for child in sticky.children],
-                [NEW_SESSION_ID, ACTIVE_FILTER_ID],
+                [ACTIVE_FILTER_ID, NEW_SESSION_ID],
             )
             pinned_cards = [
                 card
@@ -4631,7 +4633,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len({button.region.y for button in agents}), 1)
             self.assertEqual(agents[0].region.x, projects[0].region.x)
             self.assertEqual(agents[0].region.y, app.screen.query_one("#project-search-row").region.bottom)
-            self.assertEqual(filters.region.height, 3)
+            self.assertEqual(filters.region.height, 2)
             for row_id in ("runtime-quick-row", "project-quick-row"):
                 row = filters.query_one(f"#{row_id}")
                 for button in (button for button in row.query(Button) if button.display):
@@ -4839,7 +4841,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 sticky = list_view.query_one("#sidebar-sticky")
                 self.assertEqual(
                     [child.id for child in sticky.children],
-                    [NEW_SESSION_ID, ACTIVE_FILTER_ID],
+                    [ACTIVE_FILTER_ID, NEW_SESSION_ID],
                 )
                 area = app.screen.query_one(SplitPaneArea)
                 await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
@@ -9426,7 +9428,9 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(store, "projects", return_value=projects):
             async with app.run_test(size=(110, 30)) as pilot:
                 await pilot.pause()
-                app.screen.query_one(SessionListView).index = 0  # ＋ 新建会话
+                view = app.screen.query_one(SessionListView)
+                self.assertTrue(view.select_session_key("__hint__"))
+                self.assertTrue(view.is_new_session_selected())
                 await pilot.press("enter")
                 await pilot.pause(delay=0.2)
                 self.assertIsInstance(app.screen, NewSessionModal)

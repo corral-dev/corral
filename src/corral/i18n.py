@@ -211,8 +211,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "＋ 新建会话",
     },
     "list.active_filter": {
-        "en": "Active",
-        "zh": "活跃",
+        "en": "Only active",
+        "zh": "仅活跃会话",
     },
     "list.sep_pinned": {
         "en": "Pinned",
