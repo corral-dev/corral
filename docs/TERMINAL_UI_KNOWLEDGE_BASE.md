@@ -380,6 +380,16 @@ a leading-aligned horizontal row; iPhone recent entries use separate full-width 
 Inspect both implementations for the reported cause; do not claim physical
 Apple acceptance from source comparison.
 
+The v0.24.314 verification covered five combinations in both themes at
+80/100/120 columns, including hover/focus, Click/Enter launch, removal and
+resize reflow. Mounted regions prove adjacent rows, two-cell button gaps and
+matching leading edges. Chinese/long-label captures use the
+[wide-text SVG evidence procedure](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#rich-svg-captures-with-wide-text),
+which corrects capture-only glyph advances without changing terminal geometry.
+Complete lint/test coverage: 2,478 tests, two environment-conditional skips;
+the known filesystem watcher debounce case passed its isolated retry. The warm
+shared-index first-screen scan measured 8 ms, not cold-cache performance.
+
 Ordinary project/runtime
 selection remains available below a separator and the filter retains initial
 keyboard focus. Missing directories or unavailable runtimes keep the modal open

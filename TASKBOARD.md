@@ -4,7 +4,6 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Quick Start compact wrapping (Codex) | Verifying v0.24.314 | ui/modals.py, Quick Start layout regression, terminal UI KB; CLI release | 10-16 | 2026-10-16 | Owner screenshot: remove blank wrapped rows and align the full group left; existing capsule behavior retained. |
 | Inline quick-filter labels (Codex) | Final whole-workspace delivery v0.24.313 | TUI filter grouping, header identity, docs; integrate current scan_index.py/tests/performance KB into whole-tree release | 10-15 19:58 | 2026-10-16 10:53 | 0.24.312 published/download verified, Homebrew + pipx installed; 2475 full tests and 32 final captures passed. Additional shared-index fix appeared during publication, so reverify and ship current tree as 313; never replace 312 assets. |
 | 更新浮层定位+后台预热 (opencode) | Done, verified, 待 0.24.312 一起发 | updater.py prepare_stage/prewarm_brew, update_toast 内容宽右下角+ready 文案, controller/app.py/i18n, 3 个测试文件, 维护指南 | 2026-10-16 | 84 个定向用例绿，全套件 2475 零失败；发版搭 0.24.312 顺风车，不单独 commit/tag |
 | Cold running-agent terminal snapshot (Codex) | Host API done + verified; Mac client integration after 0.3.105 GUI slot; CLI release pending slot | remote terminal stream/service/protocol, tests, remote KB; Mac client integration after 0.3.105 GUI slot | 2026-10-15 | 2026-10-15 | `terminal.peek` one-shot snapshot, no vote/subscription/channel-pool touch; focused 25+80 tests green, ruff clean, real-tmux verified. |
