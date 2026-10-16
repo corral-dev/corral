@@ -54,8 +54,9 @@ def _remote_launch_args(args: list[str]) -> tuple[list[str], list[str]]:
         server_args += ["-c", "approval_policy=never", "-c", "sandbox_mode=danger-full-access"]
     if roots:
         # --remote rejects both --add-dir and TUI writable_roots overrides.
-        # JSON strings/arrays are valid TOML values, including quoted paths.
-        server_args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots)]
+        # Keep non-BMP Unicode literal: JSON surrogate escapes are invalid TOML.
+        encoded_roots = json.dumps(roots, ensure_ascii=False).replace("\x7f", r"\u007f")
+        server_args += ["-c", "sandbox_workspace_write.writable_roots=" + encoded_roots]
     return tui_args, server_args
 
 

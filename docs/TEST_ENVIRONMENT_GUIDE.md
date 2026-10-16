@@ -131,3 +131,7 @@ The runner must never read real session history. A successful focused run does
 not stand in for mandatory complete verification or release acceptance; the
 serialized integrator records those separate results and may rerun this entry
 when shared UI/tmux jobs are idle.
+
+## State-probe independence under a blocked scan
+
+The state loop regression must prove at least four additional probes while the full-scan worker is still blocked, using a condition/event to observe probe progress with a bounded deadline. A fixed 0.3-second sleep does not establish that independence: the 2026-10-16 macOS/Python 3.10 cloud run and its isolated retry both observed exactly three probes and failed the `> 3` threshold, while the local full suite passed. Preserve the probe-count threshold, blocked scan, production loop and cleanup; synchronize on the observed progress instead of treating runner scheduling as product cadence. Runtime latency requirements remain separate and must not be relaxed by this fixture repair.

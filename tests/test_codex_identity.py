@@ -84,7 +84,7 @@ class CodexClaimTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory) / "project"
             project.mkdir()
-            history = Path(directory) / 'history with "quotes" 和中文' / "session.jsonl"
+            history = Path(directory) / 'history with "quotes" 和中文 📚 \x7f' / "session.jsonl"
             handoff = Handoff("claude", "Claude Code", "Resume work", str(history),
                               str(project), "Read JSONL")
             plan = CodexRuntime().build_new_plan(handoff)
@@ -95,6 +95,8 @@ class CodexClaimTests(unittest.TestCase):
             roots_arg = next(arg for arg in server_args if arg.startswith(
                 "sandbox_workspace_write.writable_roots="))
             self.assertEqual(json.loads(roots_arg.split("=", 1)[1]), [str(history.parent)])
+            self.assertIn("📚", roots_arg)
+            self.assertNotIn("\x7f", roots_arg)
             self.assertIn("approval_policy=never", server_args)
             self.assertIn("sandbox_mode=danger-full-access", server_args)
 

@@ -516,6 +516,7 @@ class RemoteLoopTests(unittest.TestCase):
         scan_started = threading.Event()
         release = threading.Event()
         probes: list[float] = []
+        probe_progress = threading.Condition()
 
         def slow_scan():
             scan_started.set()
@@ -523,7 +524,9 @@ class RemoteLoopTests(unittest.TestCase):
             return False
 
         def refresh_state(**_kwargs):
-            probes.append(time.monotonic())
+            with probe_progress:
+                probes.append(time.monotonic())
+                probe_progress.notify_all()
             return False
 
         with (
@@ -540,9 +543,12 @@ class RemoteLoopTests(unittest.TestCase):
             worker.start()
             try:
                 self.assertTrue(scan_started.wait(5.0))
-                during = len(probes)
-                time.sleep(0.3)
-                self.assertGreater(len(probes) - during, 3, "probe stalled behind the scan")
+                with probe_progress:
+                    during = len(probes)
+                    self.assertTrue(probe_progress.wait_for(
+                        lambda: len(probes) - during > 3, timeout=5.0,
+                    ), "probe stalled behind the scan")
+                self.assertFalse(release.is_set())
             finally:
                 release.set()
                 hub._stop.set()
