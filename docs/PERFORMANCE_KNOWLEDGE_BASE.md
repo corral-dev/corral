@@ -190,6 +190,8 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 **已落地（v0.24.313，2026-10-16 现场 `shared_miss` 定点）**：`shared_index` 恒 False 的第一根子因是窄发布抢写——TUI/标题进程每轮把 `limit:50` 索引盖掉 worker 的 `limit:200`，深度 200 的消费方（daemon、worker 自己）永远 `published_limit < need`。修法：发布前经 `published_meta()` 检查同 cohort 的现有索引；其深度覆盖本次请求且年龄在 `DEFAULT_TTL_SECONDS` 内时，保留现有索引，避免窄发布覆盖宽索引。过期、未来时间、cohort / 版本不匹配或不可读时照常发布；不再把 worker 存活作为覆盖证据。窄消费方仍可从宽索引收窄消费。keep_ids 侧（TUI 缺 shell 1 条、pi 缺 186/400）待稳定单发布源后用现场 keep 集合复核，再定是布局库抖动还是 pi id 不稳——不先猜修。
 
+**已落地（v0.24.315，2026-10-16 现场复核定点）**：仅剩的 `keep_ids` miss 是置顶的纯终端分屏格（`shell:552da174` 这类键）：没有任何扫描器覆盖该运行时，发布里根本没有 shell 桶，而旧逻辑遇到缺桶直接判 miss，连 `uncoverable` 的原谅分支都走不到 → 永久 miss。修法：缺桶时按空集合走同一套原谅逻辑——发布方也覆盖不了的 id 照样原谅，全新 shell 钉选仍强制一次本地扫描（下一次发布即原谅，自愈）。上午的 pi 186 条在稳定单发布源后已不再现，判定为混版本窗口期的抖动，不另修。
+
 **已落地（v0.24.186，2026-09-12）——跨进程共享扫描索引 + 首帧优先 + 远程降档**：
 
 用户体感「启动白屏好几秒、会话中又卡」在 16GB 忙机上复现：`load` 一次 28s、首铺 `list_rebuild` full 3.5s、界面与 `remote _serve` 各扫一遍。阶段 0 拆解（负载已回落时）：冷 `scan_all(50)` ≈540ms（OpenCode/Claude 等并行），签名全命中仍 ≈100ms，`annotate` ≈70ms——所以「共享索引跳过整段扫描」比「把轮询间隔拉长」更符合体验优先。

@@ -188,10 +188,16 @@ def try_consume(
         if not keep_ids:
             continue
         bucket = sessions.get(runtime_id)
-        if not isinstance(bucket, list):
-            _note_miss("keep_ids", runtime=str(runtime_id), missing_count=len(keep_ids))
-            return None
-        present = {str(item.get("id") or "") for item in bucket if isinstance(item, dict)}
+        # No scanner covers this runtime (e.g. pinned plain-terminal split
+        # panes): an absent bucket is not itself a miss. Fall through to the
+        # same excuse logic with an empty present set, so ids the publisher
+        # also could not cover are excused while genuinely new pins still
+        # force one local scan (the next publish then excuses them too).
+        present = (
+            {str(item.get("id") or "") for item in bucket if isinstance(item, dict)}
+            if isinstance(bucket, list)
+            else set()
+        )
         # Keep ids the publisher's own scan could not cover (stale pins/groups
         # pointing at long-gone sessions) can never be covered by any scan, so
         # requiring them would fail every consume. Newly pinned ids the

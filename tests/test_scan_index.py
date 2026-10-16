@@ -94,7 +94,30 @@ class ScanIndexTests(unittest.TestCase):
         got = scan_index.try_consume(50, {"claude": {"a", "gone-1", "gone-2"}})
         self.assertIsNotNone(got)
 
-    def test_new_pin_not_seen_by_publisher_still_forces_miss(self) -> None:
+    def test_unscanned_runtime_bucket_missing_but_excused_still_hits(self) -> None:
+        # Pinned plain-terminal split panes ("shell" keys) are covered by no
+        # scanner: with no shell bucket at all, a consumer holding the same
+        # sidebar memory must still hit instead of missing forever.
+        scanned = {"claude": [self._session("claude", "a", 1)]}
+        scan_index.publish(
+            scanned,
+            limit=50,
+            keep_ids_by_runtime={"claude": {"a"}, "shell": {"552da174"}},
+        )
+        got = scan_index.try_consume(
+            50, {"claude": {"a"}, "shell": {"552da174"}},
+        )
+        self.assertIsNotNone(got)
+        self.assertNotIn("shell", got)
+        # A genuinely new shell pin the publisher never saw still forces one
+        # local scan; the next publish then excuses it too.
+        self.assertIsNone(
+            scan_index.try_consume(
+                50, {"claude": {"a"}, "shell": {"552da174", "fresh-pin"}},
+            )
+        )
+
+    def test_new_pin_in_unscanned_runtime_still_forces_miss(self) -> None:
         scanned = {"claude": [self._session("claude", "a", 1)]}
         scan_index.publish(
             scanned, limit=50, keep_ids_by_runtime={"claude": {"a"}},
