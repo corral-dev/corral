@@ -1,10 +1,15 @@
 """Actual Textual hit routing; no real user sessions or desktop pointer."""
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 import unittest
+from types import SimpleNamespace
 
 from textual.app import App
 
+from corral.ui.controllers.hud_controller import HudControllerMixin
 from corral.ui.session_hud import HudData, SessionHud
 
 
@@ -68,3 +73,40 @@ class PromptHitTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click(hud, offset=(3, 1))
             await pilot.pause()
             self.assertEqual(app.selected, [f"prompt {first_visible}"])
+
+
+class SilentFailureApp(App, HudControllerMixin):
+    """Owner requirement: a failed prompt jump shows nothing, not even a toast."""
+
+    def __init__(self):
+        super().__init__()
+        self.notified: list = []
+        self.worker_ran = threading.Event()
+        store = SimpleNamespace(session={"keepalive_name": ""})
+
+        def find_session(key):
+            self.worker_ran.set()
+            return store.session
+
+        self.store = SimpleNamespace(find_session=find_session)
+
+    def notify(self, message, *args, **kwargs):  # type: ignore[override]
+        self.notified.append(message)
+
+
+class SilentFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_jump_never_notifies(self):
+        app = SilentFailureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            cell = SimpleNamespace(spec=SimpleNamespace(session_key="gone"))
+            app.jump_to_terminal_prompt("gone", "继续", cell)
+            # The worker must actually run; an unstarted worker would vacuously pass.
+            deadline = time.monotonic() + 10
+            while not app.worker_ran.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            self.assertTrue(app.worker_ran.is_set())
+            # Failure path has no sleeps; a grace window catches late toasts.
+            await asyncio.sleep(1.0)
+            await pilot.pause()
+            self.assertEqual(app.notified, [])

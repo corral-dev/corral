@@ -106,7 +106,6 @@ class HudControllerMixin:
 
     @work(thread=True, group="prompt-navigation")
     def _navigate_terminal_prompt(self, key: str, body: str, cell, revision: int) -> None:
-        from corral.i18n import t
         from corral.ui.session_hud import _one_line
         from corral.ui.terminal_prompt_navigation import (
             PromptNavigationError,
@@ -134,9 +133,10 @@ class HudControllerMixin:
                                 and cell.spec.session_key == key)
                 offset = 0
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
-        except PromptNavigationError as exc:
-            if revision == self._prompt_navigation_revision:
-                self.app.call_from_thread(self.notify, t(f"remote.err.{exc}"), severity="warning")
+        except PromptNavigationError:
+            # Owner requirement: prompt jumps never surface anything visible,
+            # on success or on failure. A miss is a silent no-op by design.
+            return
 
     def _apply_prompt_jump(self, key: str, name: str, cell, revision: int, offset: int) -> None:
         if revision != self._prompt_navigation_revision or cell.spec.session_key != key:
