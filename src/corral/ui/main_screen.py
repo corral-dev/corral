@@ -90,7 +90,7 @@ CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重
 LAYOUT_POLL_INTERVAL = 1.0
 LIST_PANE_WIDTH = 39  # 侧边栏默认宽度；实际宽度可拖拽调整，见 SIDEBAR_WIDTH_DEFAULT
 SIDEBAR_WIDTH_DEFAULT = LIST_PANE_WIDTH
-# 拖拽过窄时首行「● 项目 标题」与固定 11 格的「更多」按钮不可读，过宽则挤占托管格。
+# 侧栏过窄时首行「● 项目 标题」与项目筛选入口不可读，过宽则挤占托管格。
 # 另按当前屏宽动态保留右栏至少 _SIDEBAR_MIN_RIGHT 列（含把手）。
 _SIDEBAR_MIN_RIGHT = 24
 
@@ -146,7 +146,7 @@ class _FilterInput(Input):
             ).rstrip()
 
 class _FilterRow(Horizontal):
-    """The owned second row and metadata keep the same input focus target."""
+    """The compact filter row and metadata share the input focus target."""
 
     def on_click(self, event: events.Click) -> None:
         self.query_one(Input).focus()

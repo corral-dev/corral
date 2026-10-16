@@ -2188,7 +2188,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(search.styles.background, Color.parse("#1C2430"))
             self.assertLess(search.styles.color.a, 1.0)
             self.assertEqual(search.region.height, 1)
-            self.assertEqual(search.parent.region.height, 2)
+            self.assertEqual(search.parent.region.height, 1)
             self.assertGreaterEqual(len(items), 3)
             # 分隔空行画在卡片自身内，两项 region 紧挨、无外边距空隙
             self.assertEqual(items[1].region.y - items[0].region.bottom, 0)
@@ -3775,7 +3775,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.index, len(STICKY_IDS))  # 默认落在第一条会话，跳过固定头
             self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
-            self.assertIn("Filter projects, titles", search.placeholder)
+            self.assertIn("Filter sessions", search.placeholder)
             self.assertFalse(search.has_class("-active"))
 
             await pilot.press("down")
@@ -4627,7 +4627,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             filters = app.screen.query_one(QuickFilters)
             for row_id in ("runtime-quick-row", "project-quick-row"):
                 row = filters.query_one(f"#{row_id}")
-                for button in row.query(Button):
+                for button in (button for button in row.query(Button) if button.display):
                     self.assertEqual(button.region.height, 1)
                     self.assertTrue(row.region.contains_region(button.region))
                     self.assertNotIn("*", str(button.label))
@@ -4651,8 +4651,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await filters.sync()
             await pilot.pause()
             self.assertEqual([(button.name, button.region) for button in filters.query(".project-choice")], before)
-            self.assertEqual(str(filters.query_one("#project-more", Button).label), "More (3)")
+            self.assertEqual(str(filters.query_one("#project-more", Button).label), "More projects… (3)")
             for button in filters.query(".project-choice"):
+                if not button.display:
+                    continue
                 self.assertEqual(button.region.height, 1)
                 self.assertTrue(filters.region.contains_region(button.region))
 
@@ -4677,7 +4679,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(str(metadata.render()), "3")
                     self.assertGreaterEqual(metadata.content_size.width, len("3"))
                     self.assertTrue(row.region.contains_region(metadata.region))
-                    await pilot.click(row, offset=(5, 1))
+                    await pilot.click(search)
                     self.assertTrue(search.has_focus)
                     search.value = "会话0"
                     await pilot.pause()
@@ -4699,8 +4701,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.click(project_chip)
                     await pilot.pause()
                     self.assertTrue(project_chip.has_class("-chosen"))
-                    self.assertEqual(project_chip.render().plain[0], "▐")
-                    self.assertEqual(project_chip.render().plain[-1], "▌")
+                    self.assertEqual(project_chip.render().plain.strip(), str(project_chip.label))
                     await pilot.click(project_chip)
                     chip = filters.query_one("#runtime-claude", FilterChip)
                     await pilot.hover("#project-search")
@@ -4712,15 +4713,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     focused = chip.get_component_rich_style("filter-chip--fill")
                     self.assertNotEqual(neutral.bgcolor, focused.bgcolor)
                     strip = list(chip.render_line(0))
-                    self.assertEqual(strip[0].text, "▐")
-                    self.assertEqual(strip[-1].text, "▌")
-                    self.assertEqual(strip[0].style.color, strip[1].style.bgcolor)
-                    self.assertEqual(strip[-1].style.color, strip[1].style.bgcolor)
+                    self.assertEqual("".join(segment.text for segment in strip).strip(), "Claude")
+                    self.assertNotIn("▐", chip.render().plain)
                     self.assertFalse(chip.styles.text_style.underline)
                     filters.nav.project_filters = {f"/tmp/p{n}" for n in range(120)}
                     await filters.sync()
                     more = filters.query_one("#project-more", Button)
-                    self.assertEqual(more.region.width, 11)
+                    self.assertEqual(more.region.width, 20)
                     self.assertIn("99+", more.render().plain)
                     filters.nav.project_filters.clear()
                     await filters.sync()
@@ -4736,7 +4735,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(app.screen.nav.active_only)
                     self.assertFalse(switch.value)
 
-    async def test_short_project_filters_pack_three_and_do_not_move_after_toggling(self) -> None:
+    async def test_project_shortcuts_fit_one_row_and_do_not_move_after_toggling(self) -> None:
 
         from corral.ui.quick_filters import QuickFilters
 
@@ -4748,7 +4747,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 32)) as pilot:
             await pilot.pause(delay=0.3)
             filters = app.screen.query_one(QuickFilters)
-            choices = list(filters.query(".project-choice"))
+            choices = [button for button in filters.query(".project-choice") if button.display]
+            self.assertTrue(choices)
+            self.assertLess(len(choices), 3)
             self.assertEqual(len({button.region.y for button in choices}), 1)
             positions = [button.region for button in choices]
             choices[-1].focus()

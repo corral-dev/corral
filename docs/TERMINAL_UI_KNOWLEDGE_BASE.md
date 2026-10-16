@@ -24,7 +24,12 @@
 The sidebar quick filters must explain their dimensions without separate heading
 rows: `Agent` / `助手` and `Project` / `项目` precede their choices on the same
 line. Keep two content rows at the default 39-cell sidebar width, plus the existing
-owned trailing blank row. The input names the object being filtered (`Filter sessions`
+owned trailing blank row. Both dimension labels use the same terminal-cell width,
+so choices start in the same column in English and Chinese. The input directly
+adjoins the Agent row; its former trailing blank row is removed, keeping the
+complete filter group together. The owned blank row remains after the Project
+row before New Session. This supersedes the search-row height of two below.
+The input names the object being filtered (`Filter sessions`
 in English; `筛选会话：项目、标题` in Chinese). The project picker is explicitly
 named `More projects…` / `更多项目…`. Preserve multi-select unions, intersections,
 runtime brand colors, stable recent-project order and keyboard/mouse activation.

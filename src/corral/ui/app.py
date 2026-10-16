@@ -141,7 +141,7 @@ class CorralApp(App):
     /* 机主裁定：TUI 里不出现 I 型指针；Textual 自带输入控件默认 pointer: text。 */
     Input, TextArea { pointer: default; }
     #project-search-row {
-        height: 2; width: 1fr; margin: 0; padding: 0 0 1 0;
+        height: 1; width: 1fr; margin: 0; padding: 0;
         background: transparent;
     }
     #project-search-row > Static, #project-search {

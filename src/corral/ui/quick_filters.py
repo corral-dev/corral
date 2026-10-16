@@ -172,8 +172,11 @@ class QuickFilters(Vertical):
         self._sync_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
+        dimension_width = max(text_width(t(key)) for key in ("filter.agent_label", "filter.project_label"))
         with Horizontal():
-            yield Label(t("filter.agent_label"), classes="filter-dimension")
+            label = Label(t("filter.agent_label"), classes="filter-dimension")
+            label.styles.width = dimension_width
+            yield label
             with Grid(id="runtime-quick-row"):
                 for runtime in active_runtimes(self.store.registry):
                     label = "Claude" if runtime.id == "claude" else runtime.display_name
@@ -181,7 +184,9 @@ class QuickFilters(Vertical):
                     yield FilterChip(Text(label, style=runtime_label_style(runtime.id)),
                                      id=f"runtime-{runtime.id}", classes="-inline", compact=True)
         with Horizontal():
-            yield Label(t("filter.project_label"), classes="filter-dimension")
+            label = Label(t("filter.project_label"), classes="filter-dimension")
+            label.styles.width = dimension_width
+            yield label
             with Grid(id="project-quick-row"):
                 yield Static("", id="project-more-gap", classes="filter-gap")
                 yield FilterChip(t("filter.more"), id="project-more", classes="-inline", compact=True)
@@ -228,7 +233,7 @@ class QuickFilters(Vertical):
             await row.mount(*choices, before=self.query_one("#project-more-gap"))
             self._project_signature = signature
         count = len(self.nav.project_filters)
-        more.label = t("filter.more") + ("(99+)" if count > 99 else f" ({count})" if count else "")
+        more.label = t("filter.more") + (" (99+)" if count > 99 else f" ({count})" if count else "")
         for button in row.query(".project-choice"):
             self._mark(button, button.name in self.nav.project_filters)
         self._pack(self.query_one("#runtime-quick-row", Grid), spacing=1)
