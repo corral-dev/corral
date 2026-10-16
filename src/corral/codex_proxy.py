@@ -24,14 +24,38 @@ _NO_DAEMON = "--no-daemon"
 
 
 def _remote_launch_args(args: list[str]) -> tuple[list[str], list[str]]:
-    """Keep direct-resume flags off the private remote TUI and set server defaults."""
-    # The private app-server already bypasses the shared daemon. Codex rejects
-    # combining --no-daemon with --remote, which this bridge adds below.
-    tui_args = [arg for arg in args[1:] if arg != _NO_DAEMON]
+    """Move local launch policy and workspace roots onto the private server."""
+    tui_args: list[str] = []
+    roots: list[str] = []
+    auto_approve = False
+    remaining = iter(args[1:])
+    for arg in remaining:
+        if arg == "--":
+            tui_args.extend((arg, *remaining))
+            break
+        if arg == _NO_DAEMON:
+            continue
+        if arg == _AUTO_APPROVE:
+            auto_approve = True
+        elif arg == "--add-dir":
+            root = next(remaining, None)
+            if not root:
+                raise ValueError("--add-dir requires a directory")
+            roots.append(os.path.abspath(root))
+        elif arg.startswith("--add-dir="):
+            root = arg.partition("=")[2]
+            if not root:
+                raise ValueError("--add-dir requires a directory")
+            roots.append(os.path.abspath(root))
+        else:
+            tui_args.append(arg)
     server_args = ["app-server", "--stdio"]
-    if tui_args and tui_args[0] in ("resume", "fork") and _AUTO_APPROVE in tui_args:
-        tui_args = [arg for arg in tui_args if arg != _AUTO_APPROVE]
+    if auto_approve:
         server_args += ["-c", "approval_policy=never", "-c", "sandbox_mode=danger-full-access"]
+    if roots:
+        # --remote rejects both --add-dir and TUI writable_roots overrides.
+        # JSON strings/arrays are valid TOML values, including quoted paths.
+        server_args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots)]
     return tui_args, server_args
 
 

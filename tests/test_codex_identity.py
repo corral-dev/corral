@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from corral import codex_identity, codex_proxy, keepalive, liveness
-from corral.models import LaunchPlan
+from corral.models import Handoff, LaunchPlan
 from corral.runtime.codex import CodexRuntime
 from corral.store import SessionStore
 
@@ -79,6 +79,49 @@ class CodexClaimTests(unittest.TestCase):
         self.assertEqual(server_args[:2], ["app-server", "--stdio"])
         self.assertIn("approval_policy=never", server_args)
         self.assertIn("sandbox_mode=danger-full-access", server_args)
+
+    def test_hosted_handoff_moves_history_root_to_server_without_changing_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            project.mkdir()
+            history = Path(directory) / 'history with "quotes" 和中文' / "session.jsonl"
+            handoff = Handoff("claude", "Claude Code", "Resume work", str(history),
+                              str(project), "Read JSONL")
+            plan = CodexRuntime().build_new_plan(handoff)
+            self.assertEqual(plan.cwd, str(project))
+            self.assertIn("--add-dir", plan.argv)
+            tui_args, server_args = codex_proxy._remote_launch_args(list(plan.argv))
+            self.assertEqual(tui_args, [handoff.render_prompt()])
+            roots_arg = next(arg for arg in server_args if arg.startswith(
+                "sandbox_workspace_write.writable_roots="))
+            self.assertEqual(json.loads(roots_arg.split("=", 1)[1]), [str(history.parent)])
+            self.assertIn("approval_policy=never", server_args)
+            self.assertIn("sandbox_mode=danger-full-access", server_args)
+
+    def test_remote_roots_support_repeated_equals_and_relative_paths(self) -> None:
+        for command in ([], ["resume", "thread-id"], ["fork", "thread-id"]):
+            with self.subTest(command=command):
+                tui_args, server_args = codex_proxy._remote_launch_args([
+                    "codex", *command, "--add-dir", "relative history",
+                    "--add-dir=/tmp/other history", "--no-daemon",
+                ])
+                self.assertEqual(tui_args, command)
+                self.assertEqual(json.loads(server_args[-1].split("=", 1)[1]), [
+                    str(Path("relative history").absolute()), "/tmp/other history",
+                ])
+                self.assertNotIn("approval_policy=never", server_args)
+
+    def test_remote_argument_terminator_preserves_prompt_literals(self) -> None:
+        args = ["--", "--add-dir", "--no-daemon", *CodexRuntime.auto_approve_args]
+        self.assertEqual(codex_proxy._remote_launch_args(["codex", *args]),
+                         (args, ["app-server", "--stdio"]))
+
+    def test_remote_missing_history_root_is_reported(self) -> None:
+        for option in ("--add-dir", "--add-dir="):
+            with self.subTest(option=option), self.assertRaisesRegex(
+                ValueError, "--add-dir requires a directory",
+            ):
+                codex_proxy._remote_launch_args(["codex", option])
 
     def test_short_pane_name_cannot_claim_a_codex_history(self) -> None:
         session = {"source": "codex", "id": "01a0d813-c110-7ff0-893d-27f06fffa28d"}
