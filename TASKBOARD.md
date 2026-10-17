@@ -18,5 +18,3 @@
 | Question card polish + blocked-send gate UI (opencode) | Review | apple Shared AnswerOptionsView/ChatView/SessionDetailView/MessageBubbleView + fixture; cli remote/questions blocks_input (ships in next CLI patch) | 2026-10-12 | 2026-10-12 | Touches SessionDetailView/ConversationStore shared with stop-button work; Mac Debug + sim captures done, owner signed off |
 
 | Codex handoff delivery follow-up (Codex) | Fixing CI fixture | tests/test_remote_state_latency.py, codex_proxy Unicode roots, docs and release 0.24.317 | 2026-10-16 | 2026-10-16 | Cloud probe-count assertion depends on scheduling; retain count and verify while scan blocked |
-
-| Send after prompt navigation regression (Codex primary) | Reproducing | Host submit preparation and navigation footer recognition, regression/real-runtime acceptance, CLI release | 2026-10-17 | 2026-10-17 | Owner screenshot: ordinary send incorrectly reports prompt navigation unavailable; no native subagents |
