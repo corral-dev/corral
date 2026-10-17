@@ -21,4 +21,3 @@
 
 | Direct prompt navigation (Codex primary) | Implementing | Local buffer jumps, read-only history fallback, no native page/search input; both Apple clients and TUI | 2026-10-17 | 2026-10-17 | Owner rejects visible scrolling and requests immediate navigation; preserve drafts and card |
 
-| Your prompts jump top landing (Claude) | TUI + iPhone delivered; Mac debug verified, awaiting 0.3.121 install | TUI buffer/preview top landing + tests; Apple chat/SwiftTerm top anchors; docs | 2026-10-17 18:00 | 2026-10-17 18:48 | TUI top landing shipped in 0.24.322 (installed, real tmux verified, hosted jumps stay in the live terminal); iPhone 1.0.177 (187) installed + AppShelf 276, physical landing screenshots blocked by lock; Mac Debug geometry/captures pass; verify installed Mac 0.3.121 when corral-71's publication finishes |
