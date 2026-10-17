@@ -20,6 +20,3 @@
 | Codex handoff delivery follow-up (Codex) | Fixing CI fixture | tests/test_remote_state_latency.py, codex_proxy Unicode roots, docs and release 0.24.317 | 2026-10-16 | 2026-10-16 | Cloud probe-count assertion depends on scheduling; retain count and verify while scan blocked |
 
 | Direct prompt navigation (Codex primary) | Implementing | Local buffer jumps, read-only history fallback, no native page/search input; both Apple clients and TUI | 2026-10-17 | 2026-10-17 | Owner rejects visible scrolling and requests immediate navigation; preserve drafts and card |
-
-
-| Relay reconnect latency and diagnostics (Codex primary) | Delivering | remote/transport/relay.py, relay transport tests, remote/observability KB and CLI delivery | 2026-10-17 20:23 | 2026-10-17 20:23 | Independent bulk recovery and structured attempt timings; existing prepared venv/websockets; no UI edits |
