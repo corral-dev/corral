@@ -20,3 +20,5 @@
 | Codex handoff delivery follow-up (Codex) | Fixing CI fixture | tests/test_remote_state_latency.py, codex_proxy Unicode roots, docs and release 0.24.317 | 2026-10-16 | 2026-10-16 | Cloud probe-count assertion depends on scheduling; retain count and verify while scan blocked |
 
 | Direct prompt navigation (Codex primary) | Implementing | Local buffer jumps, read-only history fallback, no native page/search input; both Apple clients and TUI | 2026-10-17 | 2026-10-17 | Owner rejects visible scrolling and requests immediate navigation; preserve drafts and card |
+
+| Physical iPhone relay acceptance (Codex primary) | Awaiting Corral foreground | Existing iPhone app, CLI remote KB; no source or pairing changes | 2026-10-17 20:49 | 2026-10-17 20:53 | Read physical inventory and historical diagnostics; 96.253 s incident wait; current reports stale, user asked to open Corral; preserve foreground call |
