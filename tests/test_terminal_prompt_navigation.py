@@ -20,6 +20,29 @@ from corral.ui import terminal_prompt_navigation as nav
 
 
 class QueryIdentityTests(unittest.TestCase):
+    def test_normal_composer_never_scrolls_for_bottom_labels_in_content(self):
+        for runtime, composer in [("codex", "›"), ("claude", "❯")]:
+            for content in ["Back to bottom", "Jump to bottom", "Back to bottom and Jump to bottom"]:
+                with (
+                    self.subTest(runtime=runtime, content=content),
+                    mock.patch.object(embed, "send_key") as keys,
+                    mock.patch.object(nav, "_screen", side_effect=AssertionError("ordinary send entered navigation")),
+                ):
+                    screen = f"Assistant quoted {content}\n{composer} draft also quotes {content}\n? for shortcuts"
+                    self.assertFalse(nav.restore_composer("fixture", runtime, screen=screen))
+                    keys.assert_not_called()
+
+    def test_legacy_search_recovery_ignores_bottom_labels_remaining_in_messages(self):
+        normal = "Assistant: Back to bottom and Jump to bottom\n› draft\n? for shortcuts"
+        trapped = "› draft\nFind: quoted\nNo matches · full transcript · esc cancel"
+        with (
+            mock.patch.object(nav, "_screen", return_value=normal) as capture,
+            mock.patch.object(embed, "send_key") as keys,
+        ):
+            self.assertTrue(nav.restore_composer("fixture", "codex", screen=trapped))
+        keys.assert_called_once_with("fixture", "Escape")
+        capture.assert_called_once()
+
     def test_find_without_matches_still_owns_the_composer(self):
         self.assertTrue(nav._codex_find("› draft\nFind: 文字不对\nNo matches · full transcript · esc cancel\n"))
 

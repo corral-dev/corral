@@ -1093,6 +1093,31 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("codex:find", "next message")
         self.assertEqual(order, ["restore", ("admit", composer), "paste"])
 
+    def test_send_text_with_quoted_bottom_labels_uses_real_composer_preparation(self) -> None:
+        from corral.ui import terminal_prompt_navigation
+
+        for source, marker in [("codex", "›"), ("claude", "❯")]:
+            with self.subTest(source=source):
+                session = _session(source=source, sid="quoted-labels")
+                session["keepalive_name"] = "pane-labels"
+                self.hub.store.sessions = {source: [session]}
+                screen = f"Assistant explains Back to bottom and Jump to bottom\n{marker} draft\n? for shortcuts"
+                with (
+                    mock.patch.object(remote_sessions.embed, "capture", return_value=object()),
+                    mock.patch.object(remote_sessions, "_plain_pane_text", return_value=screen),
+                    mock.patch.object(terminal_prompt_navigation, "_screen",
+                                      side_effect=AssertionError("ordinary send entered navigation")),
+                    mock.patch.object(remote_sessions.embed, "send_key") as navigation_key,
+                    mock.patch.object(remote_sessions.embed, "paste_detailed",
+                                      return_value=InjectionResult(True)) as paste,
+                    mock.patch.object(self.hub, "_submit_enter", return_value=InjectionResult(True)) as submit,
+                    mock.patch.object(remote_sessions.time, "sleep"),
+                ):
+                    self.hub.send_text(f"{source}:quoted-labels", "next message")
+                navigation_key.assert_not_called()
+                paste.assert_called_once_with("pane-labels", "next message")
+                submit.assert_called_once_with("pane-labels", session)
+
     def test_send_text_resumes_when_session_not_hosted(self) -> None:
         session = _session(sid="ended")
         self.hub.store.sessions = {"claude": [session]}

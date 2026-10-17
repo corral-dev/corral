@@ -312,10 +312,9 @@ def restore_composer(name: str, runtime: str, *, screen: str | None = None) -> b
             changed = True
             embed.send_key(name, "C-o")
             screen = _await_screen(name, lambda s: not _claude_transcript(s))
-        if "Back to bottom" in screen or "Jump to bottom" in screen:
-            changed = True
-            embed.send_key(name, "C-End")
-            _await_screen(name, lambda s: "Back to bottom" not in s and "Jump to bottom" not in s)
+        # The normal composer accepts input while reading older output. Its
+        # viewport position is not an admission condition, and message/draft
+        # text may quote navigation labels indefinitely.
         return changed
 
 
