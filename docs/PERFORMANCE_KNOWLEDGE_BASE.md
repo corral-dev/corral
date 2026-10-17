@@ -459,3 +459,33 @@ CORRAL_NATIVE=0 python3 scripts/benchmark.py
 python3 -c "import time; from corral.runtime import default_registry; r
 
 <!-- 该文档整理/压缩于 2026-09-29 -->
+
+
+### Relay recovery release diagnostic assessment (2026-10-17)
+
+The complete six-worker CLI gate ran 2562 tests with zero failures and two explicit environment skips (installed zeroconf makes the missing-dependency branch inapplicable; fish is absent). It emitted no Python runtime/resource/deprecation warnings. The deliberate `test_observe` crash-hook fixture prints `ValueError: fatal flash`; its shard passes and the exception is the test input, not an uncaught product failure.
+
+Asyncio debug mode also reported 101 existing UI fixture callbacks over its 100ms logging threshold. Each observed group is assessed below; none originates in relay transport or the new real-WebSocket recovery fixtures. These are retained scheduling diagnostics under the parallel GUI fixture workload, not proof of a network delay. No threshold, logger or test was weakened. Residual risk for every row is short UI latency under contention; follow-up is an isolated real-window profile if the same path is slow for the user, rather than inferring a relay defect from a test callback.
+
+| Origin (coroutine/test) | Count | Observed duration (s) | Assessment |
+|---|---:|---:|---|
+| `AppThemeTests.test_clicking_close_on_unfocused_pane_does_not_switch_to_it()` | 1 | 0.126–0.126 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_closing_focused_split_pane_stays_on_remaining_not_closed()` | 1 | 0.126–0.126 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_closing_middle_focused_pane_keeps_left_neighbor()` | 1 | 0.216–0.216 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_closing_one_split_pane_keeps_sibling_widget()` | 1 | 0.125–0.125 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_closing_unfocused_split_pane_keeps_remaining_split()` | 1 | 0.166–0.166 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_focusing_split_pane_highlights_matching_sidebar_session()` | 1 | 0.141–0.141 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll()` | 4 | 0.148–0.166 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_pending_selection_follow_after_close_does_not_open_closed_session()` | 1 | 0.113–0.113 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_pi_provisional_refresh_keeps_split_group_without_duplicate()` | 1 | 0.119–0.119 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_reconcile_split_keys_after_provisional_becomes_real()` | 1 | 0.134–0.134 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `AppThemeTests.test_stale_focus_notify_after_close_is_ignored()` | 1 | 0.161–0.161 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `MessagePump._process_messages()` | 73 | 0.100–0.219 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `PreviewRefreshReviewTests.test_focused_preview_refresh_keeps_manual_scroll_position()` | 1 | 0.121–0.121 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `SessionHudPlacementTests.test_every_live_pane_draws_its_own_hud()` | 1 | 0.126–0.126 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `SessionHudPlacementTests.test_hud_background_follows_pane_chrome()` | 1 | 0.124–0.124 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `SidebarResizeTests.test_drag_changes_width_and_persists()` | 1 | 0.113–0.113 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `SidebarResizeTests.test_drag_with_three_split_panes_adapts_all()` | 1 | 0.111–0.111 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group()` | 1 | 0.134–0.134 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `Timer._run_timer()` | 7 | 0.103–0.158 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+| `UpdateCheckWorkerTests.test_dismiss_calls_mark_dismissed_and_hides_toast()` | 1 | 0.111–0.111 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |

@@ -21,7 +21,9 @@ import contextlib
 import json
 import os
 import random
+import sys
 import time
+from dataclasses import dataclass
 
 from corral import __version__, observe
 from corral.remote import config as remote_config
@@ -34,6 +36,11 @@ _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 60.0
 _PING_INTERVAL = 20.0
 _PING_TIMEOUT = 60.0  # 解析大历史会占 GIL；20s 超时会把手机正在等的回包连同连接一起掐掉
+_OPEN_TIMEOUT = 10.0
+_ACK_TIMEOUT = 10.0
+_CLOSE_TIMEOUT = 2.0
+_RESUME_CHECK_INTERVAL = 1.0
+_RESUME_GAP = 5.0
 # 正常用户个位数手机；略大于中继侧 16，给瞬断重连留余量，但仍是硬顶
 _MAX_CHANNELS = 8
 
@@ -54,6 +61,77 @@ def _websockets():
     except ImportError as exc:  # pragma: no cover - 依赖缺失路径
         raise RelayUnavailable() from exc
     return websockets
+
+
+def _suspend_time() -> float:
+    """An OS clock including suspend; fall back without guessing from wall time."""
+    name = "CLOCK_MONOTONIC_RAW" if sys.platform == "darwin" else "CLOCK_BOOTTIME"
+    clock = getattr(time, name, None)
+    if clock is not None:
+        try:
+            return time.clock_gettime(clock)
+        except OSError:
+            pass
+    return time.monotonic()
+
+
+class _SystemResumed(ConnectionError):
+    def __init__(self, gap: float) -> None:
+        super().__init__("System resumed; rebuild relay connection")
+        self.suspended_ms = round(gap * 1000)
+
+
+async def _watch_resume() -> None:
+    offset = _suspend_time() - time.monotonic()
+    while True:
+        await asyncio.sleep(_RESUME_CHECK_INTERVAL)
+        current = _suspend_time() - time.monotonic()
+        if current - offset > _RESUME_GAP:
+            raise _SystemResumed(current - offset)
+        offset = current
+
+
+@dataclass
+class _Attempt:
+    lane: str
+    number: int
+    started: float
+    opened: float | None = None
+    ready: float | None = None
+    received: float | None = None
+    failed: float | None = None
+
+    def fields(self, socket=None, error: Exception | None = None) -> dict:
+        now = time.monotonic()
+        fields = {
+            "lane": self.lane,
+            "attempt": self.number,
+            "stage": "active" if self.ready is not None else "registering" if self.opened is not None else "opening",
+            "duration_ms": round((now - self.started) * 1000),
+        }
+        if self.opened is not None:
+            fields["open_ms"] = round((self.opened - self.started) * 1000)
+        if self.ready is not None:
+            fields["ready_ms"] = round((self.ready - self.started) * 1000)
+        if self.received is not None:
+            fields["last_frame_age_ms"] = round((now - self.received) * 1000)
+        if self.failed is not None:
+            fields["close_wait_ms"] = round((now - self.failed) * 1000)
+        latency = getattr(socket, "latency", 0)
+        if isinstance(latency, (int, float)) and 0 < latency < float("inf"):
+            fields["ping_rtt_ms"] = round(latency * 1000)
+        if error is not None:
+            fields["error_type"] = type(error).__name__
+            if isinstance(error, _SystemResumed):
+                fields["failure_kind"] = "system_resume"
+                fields["suspended_ms"] = error.suspended_ms
+            for name in ("sent", "rcvd"):
+                close = getattr(error, name, None)
+                if close is not None:
+                    fields[f"{name}_code"] = close.code
+            if getattr(getattr(error, "sent", None), "reason", "") == "keepalive ping timeout":
+                fields["failure_kind"] = "heartbeat_timeout"
+        return fields
 
 
 class RelayClient:
@@ -78,6 +156,20 @@ class RelayClient:
         self._bulk_attached = asyncio.Event()
         self._bulk_task: asyncio.Task | None = None
         self._receipt_handler = None  # 由推送层注册：(push_id, receipt_dict) -> None
+        self._attempt_numbers = {"interaction": 0, "bulk": 0}
+
+    def _begin_attempt(self, lane: str) -> _Attempt:
+        self._attempt_numbers[lane] += 1
+        attempt = _Attempt(lane, self._attempt_numbers[lane], time.monotonic())
+        observe.event("remote_relay_attempt", **attempt.fields())
+        return attempt
+
+    async def _retry(self, stop: asyncio.Event, backoff: float, attempt: _Attempt) -> float:
+        delay = min(backoff, _MAX_BACKOFF) * (0.8 + random.random() * 0.4)
+        observe.event("remote_relay_retry_scheduled", **attempt.fields(), retry_ms=round(delay * 1000))
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+        return min(backoff * 2, _MAX_BACKOFF)
 
     @property
     def url(self) -> str:
@@ -102,6 +194,8 @@ class RelayClient:
         backoff = _INITIAL_BACKOFF
         self._loop = asyncio.get_running_loop()
         while not stop.is_set():
+            attempt = self._begin_attempt("interaction")
+            socket = None
             try:
                 async with websockets.connect(
                     self.url,
@@ -109,38 +203,36 @@ class RelayClient:
                     subprotocols=[protocol.SUBPROTOCOL],
                     ping_interval=_PING_INTERVAL,
                     ping_timeout=_PING_TIMEOUT,
+                    open_timeout=_OPEN_TIMEOUT,
+                    close_timeout=_CLOSE_TIMEOUT,
                     max_size=8 * 1024 * 1024,
                 ) as socket:
                     self._socket = socket
-                    self._connected.set()
-                    self.connected_at = time.time()
-                    self.last_error = ""
-                    backoff = _INITIAL_BACKOFF
-                    observe.event("remote_relay_connected", url=self.url)
-                    remote_config.clear_host_prev_key()
-                    await self._pump(socket, stop, on_registered=lambda: self._maybe_start_bulk(stop))
+                    attempt.opened = time.monotonic()
+                    observe.event("remote_relay_connected", url=self.url, **attempt.fields(socket))
+                    await self._pump(
+                        socket, stop, attempt=attempt, on_registered=lambda: self._maybe_start_bulk(stop)
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.last_error = str(exc)
-                observe.event("remote_relay_disconnected", error=str(exc))
+                observe.event("remote_relay_disconnected", error=str(exc), **attempt.fields(socket, exc))
             finally:
+                self._connected.clear()
+                self.connected_at = None
                 await self._stop_bulk_task()
                 await self._close_bulk()
                 self._socket = None
-                self._connected.clear()
-                self.connected_at = None
                 self._registration_generation = 0
                 self._registration_node = ""
                 self._host_lane_attach = False
                 self._drop_channels()
             if stop.is_set():
                 break
-            # 抖动避免大量开发机在中继重启后同一秒回来
-            delay = min(backoff, _MAX_BACKOFF) * (0.8 + random.random() * 0.4)
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=delay)
-            backoff = min(backoff * 2, _MAX_BACKOFF)
+            if attempt.ready is not None:
+                backoff = _INITIAL_BACKOFF
+            backoff = await self._retry(stop, backoff, attempt)
 
     def _maybe_start_bulk(self, stop: asyncio.Event) -> None:
         if not self._host_lane_attach or self._registration_generation <= 0:
@@ -162,28 +254,38 @@ class RelayClient:
         if self.bulk_lane_attached or not self._host_lane_attach:
             return
         websockets = _websockets()
-        try:
-            async with websockets.connect(
-                self.attach_url,
-                additional_headers=self._attach_headers(protocol.LANE_BULK),
-                subprotocols=[protocol.SUBPROTOCOL],
-                ping_interval=_PING_INTERVAL,
-                ping_timeout=_PING_TIMEOUT,
-                max_size=8 * 1024 * 1024,
-            ) as socket:
-                self._bulk_socket = socket
-                observe.event(
-                    "remote_relay_bulk_attached",
-                    generation=self._registration_generation,
-                    node=self._registration_node,
-                )
-                await self._pump(socket, stop, bulk=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            observe.event("remote_relay_bulk_disconnected", error=str(exc))
-        finally:
-            await self._close_bulk()
+        primary = self._socket
+        generation = self._registration_generation
+        backoff = _INITIAL_BACKOFF
+        while not stop.is_set() and self._socket is primary and self._registration_generation == generation:
+            attempt = self._begin_attempt("bulk")
+            socket = None
+            try:
+                async with websockets.connect(
+                    self.attach_url,
+                    additional_headers=self._attach_headers(protocol.LANE_BULK),
+                    subprotocols=[protocol.SUBPROTOCOL],
+                    ping_interval=_PING_INTERVAL,
+                    ping_timeout=_PING_TIMEOUT,
+                    open_timeout=_OPEN_TIMEOUT,
+                    close_timeout=_CLOSE_TIMEOUT,
+                    max_size=8 * 1024 * 1024,
+                ) as socket:
+                    self._bulk_socket = socket
+                    attempt.opened = time.monotonic()
+                    observe.event("remote_relay_bulk_attached", generation=generation, **attempt.fields(socket))
+                    await self._pump(socket, stop, bulk=True, attempt=attempt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                observe.event("remote_relay_bulk_disconnected", error=str(exc), **attempt.fields(socket, exc))
+            finally:
+                await self._close_bulk()
+            if stop.is_set() or self._socket is not primary or self._registration_generation != generation:
+                break
+            if attempt.ready is not None:
+                backoff = _INITIAL_BACKOFF
+            backoff = await self._retry(stop, backoff, attempt)
 
     async def _close_bulk(self) -> None:
         self._bulk_attached.clear()
@@ -191,6 +293,11 @@ class RelayClient:
         self._bulk_socket = None
         if socket is None:
             return
+        # A channel's encrypted counter cannot migrate to a replacement socket.
+        # Tell its client to rebind immediately, even if no history frame is due.
+        for cid, pinned in list(self._lanes.items()):
+            if pinned is socket:
+                self._close_channel(cid)
         with contextlib.suppress(Exception):
             await socket.close()
 
@@ -238,21 +345,62 @@ class RelayClient:
             "X-Corral-Lane-Attach": attach,
         }
 
-    async def _pump(self, socket, stop: asyncio.Event, *, bulk: bool = False, on_registered=None) -> None:
+    async def _pump(
+        self, socket, stop: asyncio.Event, *, bulk: bool = False, on_registered=None, attempt: _Attempt
+    ) -> None:
         stopper = asyncio.create_task(stop.wait())
+        resume = asyncio.create_task(_watch_resume())
+        receiver = None
         try:
             while not stop.is_set():
                 receiver = asyncio.create_task(socket.recv())
-                done, _ = await asyncio.wait({receiver, stopper}, return_when=asyncio.FIRST_COMPLETED)
-                if receiver not in done:
-                    receiver.cancel()
+                timeout = None
+                if attempt.ready is None:
+                    timeout = max(0, attempt.opened + _ACK_TIMEOUT - time.monotonic())
+                done, _ = await asyncio.wait(
+                    {receiver, stopper, resume}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+                )
+                if stopper in done:
                     return
+                if resume in done:
+                    resume.result()
+                if receiver not in done:
+                    raise TimeoutError("Relay protocol acknowledgement timed out")
                 raw = receiver.result()
+                attempt.received = time.monotonic()
                 if isinstance(raw, str):
                     continue  # 中继的文本消息只用于人读的诊断，业务一律走二进制
                 self._on_frame(raw, bulk=bulk, on_registered=on_registered)
+                expected = protocol.FRAME_LANE_ATTACHED if bulk else protocol.FRAME_REGISTERED
+                try:
+                    kind = protocol.decode_frame(raw)[0]
+                except protocol.ProtocolError:
+                    continue
+                if attempt.ready is None and kind == expected:
+                    attempt.ready = time.monotonic()
+                    if not bulk:
+                        self._connected.set()
+                        self.connected_at = time.time()
+                        self.last_error = ""
+                        remote_config.clear_host_prev_key()
+                    observe.event(
+                        "remote_relay_ready", generation=self._registration_generation,
+                        node=self._registration_node, **attempt.fields(socket)
+                    )
+        except Exception as exc:
+            attempt.failed = time.monotonic()
+            observe.event("remote_relay_receive_failed", **attempt.fields(socket, exc))
+            raise
         finally:
-            stopper.cancel()
+            tasks = [task for task in (receiver, stopper, resume) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if bulk:
+                await self._close_bulk()
+            else:
+                self._connected.clear()
+                self.connected_at = None
 
     def set_receipt_handler(self, handler) -> None:
         """注册推送回执回调（PushNotifier.set_sender 在识别到本客户端时自动调用，
