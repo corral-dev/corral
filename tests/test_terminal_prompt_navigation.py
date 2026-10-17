@@ -285,6 +285,8 @@ class RetainedBufferTests(unittest.TestCase):
             [*self.argv, "capture-pane", "-p", "-t", "fixture", "-S", str(-offset), "-E", str(9 - offset)], text=True
         )
         self.assertIn("边界宽字符测试", capture.replace("\n", ""))
+        # Owner rule: the matched prompt row is the viewport's first row.
+        self.assertIn("边界", capture.splitlines()[0])
 
     def test_missing_or_repeated_text_is_not_acknowledged(self):
         subprocess.run([*self.argv, "send-keys", "-t", "fixture", "-l", "duplicate\nduplicate\n"], check=True)

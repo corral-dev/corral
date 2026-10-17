@@ -123,7 +123,7 @@ class SilentFailureApp(App, HudControllerMixin):
             self.worker_ran.set()
             return store.session
 
-        self.store = SimpleNamespace(find_session=find_session)
+        self.store = SimpleNamespace(find_session=find_session, hosted_name_for=lambda key: None)
 
     def notify(self, message, *args, **kwargs):  # type: ignore[override]
         self.notified.append(message)
@@ -145,6 +145,48 @@ class SilentFailureTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(1.0)
             await pilot.pause()
             self.assertEqual(app.notified, [])
+
+
+class HostedJumpApp(App, HudControllerMixin):
+    """Freshly hosted session: the scan snapshot has no keepalive_name yet."""
+
+    embed_ok = False
+
+    def __init__(self):
+        super().__init__()
+        self.pane = SimpleNamespace(
+            session_name="corral-claude-x",
+            history_offset=0,
+            _uses_detail_window=lambda: False,
+            _request_immediate_capture=lambda: None,
+        )
+        self.cell = SimpleNamespace(
+            spec=SimpleNamespace(session_key="claude:x"),
+            embed_pane=lambda: self.pane,
+        )
+        session = {"source": "claude", "id": "x"}
+        self.store = SimpleNamespace(
+            find_session=lambda key: session,
+            get_conversation=lambda session: [ConversationMessage("user", "定位到这条消息的顶部")],
+            hosted_name_for=lambda key: "corral-claude-x",
+            peek_conversation=lambda *args, **kwargs: None,
+        )
+
+
+class HostedJumpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hosted_map_supplies_name_before_liveness_annotation(self):
+        app = HostedJumpApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("corral.ui.terminal_prompt_navigation.buffer_offset", return_value=23) as resolve:
+                app.jump_to_terminal_prompt("claude:x", "定位到这条消息的顶部", app.cell)
+                deadline = time.monotonic() + 10
+                while app.pane.history_offset == 0 and time.monotonic() < deadline:
+                    await asyncio.sleep(0.02)
+            self.assertEqual(app.pane.history_offset, 23)
+            resolve.assert_called_once_with(
+                "corral-claude-x", "定位到这条消息的顶部", occurrence=0, total=1,
+            )
 
 
 class PreviewScreen(Screen, HudControllerMixin):
@@ -187,7 +229,7 @@ class PreviewNavigationTests(unittest.IsolatedAsyncioTestCase):
         messages = [ConversationMessage("user", "继续"),
                     ConversationMessage("assistant", "First answer\n\n" + "long paragraph " * 400),
                     ConversationMessage("user", "继续"),
-                    ConversationMessage("assistant", "Second answer\n\n" + "last paragraph " * 100)]
+                    ConversationMessage("assistant", "Second answer\n\n" + "last paragraph " * 400)]
         app = PreviewApp(messages)
         with mock.patch("corral.ui.terminal_prompt_navigation.navigate_native") as native:
             async with app.run_test(size=(100, 30)) as pilot:
@@ -207,6 +249,9 @@ class PreviewNavigationTests(unittest.IsolatedAsyncioTestCase):
                 visible = "\n".join(pane.render_line(y).text for y in range(pane.size.height))
                 self.assertIn("Second answer", visible)
                 self.assertNotIn("First answer", visible)
+                # Owner rule: the chosen prompt's header is the first visible row.
+                from corral.i18n import t
+                self.assertEqual(pane.render_line(0).text.strip(), t("preview.you"))
                 self.assertTrue(hud.expanded)
                 self.assertIsNone(pane.session_name)
                 old_offset = pane.detail_offset

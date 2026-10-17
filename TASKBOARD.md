@@ -18,3 +18,7 @@
 | Question card polish + blocked-send gate UI (opencode) | Review | apple Shared AnswerOptionsView/ChatView/SessionDetailView/MessageBubbleView + fixture; cli remote/questions blocks_input (ships in next CLI patch) | 2026-10-12 | 2026-10-12 | Touches SessionDetailView/ConversationStore shared with stop-button work; Mac Debug + sim captures done, owner signed off |
 
 | Codex handoff delivery follow-up (Codex) | Fixing CI fixture | tests/test_remote_state_latency.py, codex_proxy Unicode roots, docs and release 0.24.317 | 2026-10-16 | 2026-10-16 | Cloud probe-count assertion depends on scheduling; retain count and verify while scan blocked |
+
+| Direct prompt navigation (Codex primary) | Implementing | Local buffer jumps, read-only history fallback, no native page/search input; both Apple clients and TUI | 2026-10-17 | 2026-10-17 | Owner rejects visible scrolling and requests immediate navigation; preserve drafts and card |
+
+| Your prompts jump top landing (Claude) | Verifying | TUI buffer/preview top landing + tests; Apple chat/SwiftTerm top anchors; docs | 2026-10-17 18:00 | 2026-10-17 18:12 | Owner requires every Your prompts jump to land the selected message at the viewport top; integrates with Direct prompt navigation (Codex primary); Mac Debug passes, GUI slot released; TUI real-path acceptance running |

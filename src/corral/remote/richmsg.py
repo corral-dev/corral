@@ -1330,11 +1330,19 @@ def _parse_claude_legacy(reader: RichReader) -> list[RichMessage]:
 
         if entry_type != "assistant" or not isinstance(content, list):
             continue
-        # Non-empty thinking reads as reply text, matching Claude Code's inline display.
+        # Official Claude thinking reads as reply text, matching Claude Code's
+        # inline progress notes. Third-party Anthropic-compatible providers
+        # (DeepSeek, Kimi, ...) stream their full reasoning into thinking
+        # blocks; those stay hidden instead of flooding the client as replies.
+        thinking_visible = _is_official_claude_model(message.get("model"))
         texts = [
             text
             for part in content
-            if isinstance(part, dict) and part.get("type") in ("text", "thinking")
+            if isinstance(part, dict)
+            and (
+                part.get("type") == "text"
+                or (part.get("type") == "thinking" and thinking_visible)
+            )
             for text in [(part.get("text") or part.get("thinking") or "").strip()]
             if text
         ]
@@ -1849,6 +1857,30 @@ def _codex_tool_card(event: object) -> ToolCall:
     )
 
 
+def _event_model(event: object) -> str | None:
+    """Native model id attached to a typed event's Usage, when SessKit has it."""
+    usage = getattr(event, "usage", None)
+    model = getattr(usage, "model", None)
+    return model if isinstance(model, str) else None
+
+
+def _is_official_claude_model(model: object) -> bool:
+    """Official Anthropic Claude ids, including Bedrock/Vertex/aggregator forms.
+
+    Third-party Anthropic-compatible providers (DeepSeek, Kimi, GLM, ...) use
+    their own ids; their thinking blocks carry the full chain of thought and
+    must not be projected as reply text.
+    """
+    if not isinstance(model, str):
+        return False
+    name = model.strip().lower()
+    return bool(name) and (
+        name.startswith("claude-")
+        or "anthropic.claude" in name
+        or "/claude-" in name
+    )
+
+
 def _feed_typed_event(
     reader: RichReader,
     event: object,
@@ -1869,9 +1901,13 @@ def _feed_typed_event(
     """
     etype = getattr(event, "type", "")
     if etype == "thinking" and runtime == "claude":
-        # Claude Code stores some visible progress notes as thinking blocks and
-        # renders them inline; the phone shows them exactly like reply text.
-        # Empty / redacted thinking carries no text and stays hidden.
+        # Official Claude Code stores visible progress notes as thinking blocks
+        # and renders them inline; clients show those exactly like reply text.
+        # Third-party compatible providers write their whole chain of thought
+        # into the same blocks, so only official Anthropic models qualify.
+        # Empty / redacted thinking and unknown model evidence stay hidden.
+        if not _is_official_claude_model(_event_model(event)):
+            return None, False
         etype = "assistant_message"
     ts = getattr(event, "ts", None)
     key = _typed_group_key(event, runtime)

@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-10-15.1"  # publish hidden question settlement on retained cards
+PARSER_VERSION = "2026-10-17.1"  # hide third-party chain-of-thought thinking as reply text
 _SCHEMA_VERSION = 1
 
 

@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from corral.remote import richmsg
 
@@ -773,7 +774,7 @@ class RichmsgIncrementalTests(unittest.TestCase):
             self.assertIn("hi", second[0].tools[0].output)
 
     def test_claude_visible_thinking_is_shown_as_reply_text(self) -> None:
-        """Claude Code renders non-empty thinking inline; the phone must too."""
+        """Official Claude progress notes stay visible as reply text."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "claude.jsonl"
             _write_jsonl(
@@ -790,6 +791,7 @@ class RichmsgIncrementalTests(unittest.TestCase):
                         "message": {
                             "id": "msg_1",
                             "role": "assistant",
+                            "model": "claude-opus-5-5",
                             "content": [{"type": "thinking", "thinking": "", "signature": "x"}],
                         },
                     },
@@ -800,6 +802,7 @@ class RichmsgIncrementalTests(unittest.TestCase):
                         "message": {
                             "id": "msg_1",
                             "role": "assistant",
+                            "model": "claude-opus-5-5",
                             "content": [
                                 {"type": "thinking", "thinking": "Glad the picture showed up.", "signature": "y"}
                             ],
@@ -812,17 +815,73 @@ class RichmsgIncrementalTests(unittest.TestCase):
                         "message": {
                             "id": "msg_2",
                             "role": "assistant",
+                            "model": "claude-opus-5-5",
                             "content": [{"type": "text", "text": "The diff touches no layout."}],
                         },
                     },
                 ],
             )
-            messages = richmsg.RichReader(_session("claude", path)).read_all()
-        texts = [message.text for message in messages if message.role == "assistant"]
-        joined = "\n".join(texts)
-        self.assertIn("Glad the picture showed up.", joined)
-        self.assertIn("The diff touches no layout.", joined)
-        self.assertNotIn("", [text.strip() for text in texts])
+            for typed in (True, False):
+                with self.subTest(typed=typed), mock.patch.object(
+                    richmsg, "_sesskit_reader_available", lambda _runtime, _typed=typed: _typed
+                ):
+                    messages = richmsg.RichReader(_session("claude", path)).read_all()
+                    texts = [message.text for message in messages if message.role == "assistant"]
+                    joined = "\n".join(texts)
+                    self.assertIn("Glad the picture showed up.", joined)
+                    self.assertIn("The diff touches no layout.", joined)
+                    self.assertNotIn("", [text.strip() for text in texts])
+
+    def test_claude_third_party_thinking_stays_hidden(self) -> None:
+        """DeepSeek-style providers store full chain-of-thought; hide it."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "user",
+                        "uuid": "u1",
+                        "message": {"role": "user", "content": "why"},
+                    },
+                    {
+                        "type": "assistant",
+                        "uuid": "a1",
+                        "message": {
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "model": "deepseek-flash",
+                            "content": [
+                                {
+                                    "type": "thinking",
+                                    "thinking": "The user asks why. Weigh every option first.",
+                                    "signature": "x",
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "type": "assistant",
+                        "uuid": "a2",
+                        "parentUuid": "a1",
+                        "message": {
+                            "id": "msg_2",
+                            "role": "assistant",
+                            "model": "deepseek-flash",
+                            "content": [{"type": "text", "text": "Because the window is fixed."}],
+                        },
+                    },
+                ],
+            )
+            for typed in (True, False):
+                with self.subTest(typed=typed), mock.patch.object(
+                    richmsg, "_sesskit_reader_available", lambda _runtime, _typed=typed: _typed
+                ):
+                    messages = richmsg.RichReader(_session("claude", path)).read_all()
+                    texts = [message.text for message in messages if message.role == "assistant"]
+                    joined = "\n".join(texts)
+                    self.assertNotIn("Weigh every option first.", joined)
+                    self.assertIn("Because the window is fixed.", joined)
 
     def test_claude_tool_result_is_reemitted_on_poll(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

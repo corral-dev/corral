@@ -135,7 +135,10 @@ class HudControllerMixin:
 
         try:
             session = self.store.find_session(key)
-            name = str((session or {}).get("keepalive_name") or "")
+            # This window can be hosting the session before the next liveness
+            # scan annotates it; ask the store's hosted map first, including
+            # placeholder→real identity hops.
+            name = str(self.store.hosted_name_for(key) or (session or {}).get("keepalive_name") or "")
             if not name or cell.spec.session_key != key:
                 raise PromptNavigationError("prompt_unavailable")
             messages = self.store.get_conversation(session)
@@ -157,7 +160,7 @@ class HudControllerMixin:
                                 messages=messages, selected=targets[0],
                                 is_current=lambda: revision == self._prompt_navigation_revision
                                 and cell.spec.session_key == key
-                                and (self.store.find_session(key) or {}).get("keepalive_name") == name)
+                                and self.store.hosted_name_for(key) == name)
                 offset = 0
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
         except PromptNavigationError:

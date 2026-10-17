@@ -1317,8 +1317,8 @@ class EmbedPane(Widget):
             if self.exit_report is not None:
                 return _startup_failure_text(self.exit_report)
             return Text(t("detail.session_ended"))
-        if self._detail_renderer is not None:
-            rendered = self._detail_renderer()
+        if (renderer := self._detail_renderer) is not None:
+            rendered = renderer()
             return Text(rendered) if isinstance(rendered, str) else rendered
         if self.session_name is None:
             return Text(t("detail.pick_session"))

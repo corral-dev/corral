@@ -121,6 +121,14 @@ The owner requested completing the researched feature across corral-tui, Mac and
 - The primary model owns every UI and native-navigation interaction, implementation and acceptance. The authorized OpenCode worker owns only the independent, read-only terminal text-location/data kernel and its tests. It must not send agent input or modify any UI.
 - Verify actual target arrival and draft preservation with disposable real-runtime/tmux histories, then the TUI click path and installed Mac/iPhone terminal prompt path. Test duplicate prompts, Chinese/wrapped text, unavailable targets and rapidly superseded requests; report platform/device limits separately. Required whole-workspace release/install remains coordinator-owned.
 
+### Direct navigation correction (2026-10-17)
+
+Owner correction (2026-10-17): the TUI hosted pane must stay the live agent terminal. An intermediate direct-navigation draft replaced an out-of-buffer jump with Corral's rendered conversation history in the same pane, with a return-to-live button; the owner rejected that presentation. That fallback and its button are removed. When the prompt exists in the retained tmux buffer, jump directly to its verified coordinates in one viewport update; otherwise fall back to the runtime's native transcript navigation as before. Static conversation previews for unhosted or ended sessions keep Corral's rendered history. Keep the terminal session, draft, prompt identity, pressed feedback and expanded card.
+
+Jump landing (owner requirement 2026-10-17): every Your prompts jump must land the selected prompt at the top edge of the visible viewport. Retained-buffer navigation computes the scroll offset so the matched line is the first visible row; the static preview opens with the selected message's first row as `detail_offset`; the Apple clients anchor both chat and SwiftTerm reveal to the top, never the center or a third-down position. The only exception is when fewer than one viewport of content follows the target (including the end of the buffer), where the viewport cannot scroll further; do not fabricate trailing blank space or send terminal input to force the top position.
+
+Hosted-name resolution: the TUI jump resolves the pane's tmux name through `SessionStore.hosted_name_for()` (the window's hosted map, including placeholder→real identity hops) before falling back to the scanned session's `keepalive_name`. A session hosted during this process is not annotated by the next liveness scan yet, so reading only the scan snapshot silently no-ops (isolated real-tmux acceptance 2026-10-17).
+
 ### Prompt navigation feasibility (investigation, 2026-10-16)
 
 Historical investigation baseline, before the implementation below. These observations do not establish current client acceptance. The owner requested prompt jumps while keeping the native agent TUI visible.
