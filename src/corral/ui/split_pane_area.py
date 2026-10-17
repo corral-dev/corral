@@ -362,7 +362,7 @@ class PaneCell(Vertical):
         event.stop()
         if self._pooled:
             return
-        self.screen.jump_to_terminal_prompt(self.spec.session_key, event.body, self)
+        self.screen.jump_to_terminal_prompt(self.spec.session_key, event.body, self, event.message_index, event.token)
 
     def on_mount(self) -> None:
         # 格池闲置格挂上时不启动会话；真正绑定走 rebind → _start_session。

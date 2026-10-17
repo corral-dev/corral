@@ -20,6 +20,27 @@ from corral.ui import terminal_prompt_navigation as nav
 
 
 class QueryIdentityTests(unittest.TestCase):
+    def test_find_without_matches_still_owns_the_composer(self):
+        self.assertTrue(nav._codex_find("› draft\nFind: 文字不对\nNo matches · full transcript · esc cancel\n"))
+
+    def test_quoted_search_chrome_in_a_draft_never_triggers_escape(self):
+        screens = {
+            "codex": "Find: quoted\nenter accept · full transcript · esc cancel\n› composer draft\n? for shortcuts",
+            "claude": "Showing detailed transcript (ctrl+o)\n❯ composer draft\nshortcuts",
+        }
+        with mock.patch.object(embed, "send_key") as keys:
+            for runtime, screen in screens.items():
+                self.assertFalse(nav.restore_composer("fixture", runtime, screen=screen))
+            keys.assert_not_called()
+
+    def test_repeated_short_prompt_keeps_its_selected_occurrence(self):
+        first = ConversationMessage("user", "继续")
+        quote = ConversationMessage("assistant", "you said 继续")
+        target = ConversationMessage("user", "继续")
+        resolved = nav.prompt_target([first, quote, target], target)
+        self.assertEqual((resolved.query, resolved.occurrence, resolved.total), ("继续", 2, 3))
+        self.assertEqual(resolved.anchor, "you said 继续")
+
     def test_repeated_prompt_and_assistant_quotation_are_ambiguous(self):
         target = ConversationMessage("user", "continue")
         for other in [ConversationMessage("user", "continue"), ConversationMessage("assistant", "you said continue")]:
@@ -33,6 +54,18 @@ class QueryIdentityTests(unittest.TestCase):
         self.assertIn(query, target.text)
         self.assertNotIn(query, other.text)
         self.assertLessEqual(nav.text_width(query), 24)
+
+    def test_native_anchor_never_joins_source_lines(self):
+        first = ConversationMessage("user", "继续")
+        answer = ConversationMessage("assistant", "Unique reply heading\nShared response body")
+        target = ConversationMessage("user", "继续")
+        resolved = nav.prompt_target([first, answer, target], target)
+        self.assertEqual(resolved.anchor, "Unique reply heading")
+
+    def test_overlapping_occurrences_cannot_masquerade_as_unique(self):
+        target = ConversationMessage("user", "a" * 25)
+        with self.assertRaisesRegex(nav.PromptNavigationError, "ambiguous"):
+            nav.prompt_query([target], target)
 
     def test_terminal_control_bytes_never_become_search_input(self):
         target = ConversationMessage("user", "hello\x1b[2J")
@@ -48,7 +81,7 @@ class QueryIdentityTests(unittest.TestCase):
         ):
             with self.assertRaises(nav.PromptNavigationError):
                 nav.navigate_native("fixture", "codex", "private query")
-        keys.assert_called_once_with("fixture", "F3")
+        keys.assert_not_called()
         literal.assert_not_called()
 
     def test_input_transaction_prevents_query_and_typing_interleaving(self):
@@ -72,20 +105,57 @@ class QueryIdentityTests(unittest.TestCase):
         thread.join(1)
         self.assertTrue(sent.is_set())
 
-    def test_superseded_request_does_not_type_into_recognized_search(self):
+    def test_user_input_cancels_navigation_before_waiting_for_its_lock(self):
+        entered, cancelled, sent = threading.Event(), threading.Event(), threading.Event()
+
+        def navigate():
+            with embed.navigation_transaction("fixture-reading") as current:
+                entered.set()
+                deadline = time.monotonic() + 2
+                while current() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                if not current():
+                    cancelled.set()
+
+        thread = threading.Thread(target=navigate)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        with (mock.patch.object(embed, "_active_channel", return_value=None),
+              mock.patch.object(embed, "_send", side_effect=lambda *_: sent.set() or True)):
+            embed.send_bytes("fixture-reading", b"actual user input")
+        thread.join(2)
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(sent.is_set())
+        self.assertFalse(thread.is_alive())
+
+    def test_superseded_request_never_sends_navigation_keys(self):
         with (
-            mock.patch.object(nav, "_screen", return_value="Find: full transcript esc cancel"),
+            mock.patch.object(nav, "_screen", return_value="old output\n› composer draft\nmodel status"),
             mock.patch.object(nav, "_await_screen"),
             mock.patch.object(embed, "send_key") as keys,
             mock.patch.object(embed, "send_literal") as literal,
         ):
-            # Current at admission; superseded while the search opens.
             states = iter([True, False])
             with self.assertRaisesRegex(nav.PromptNavigationError, "stale"):
-                with mock.patch.object(nav, "_screen", side_effect=["composer", "Find: esc cancel"]):
-                    nav.navigate_native("fixture", "codex", "query", is_current=lambda: next(states))
+                nav.navigate_native("fixture", "codex", "query", is_current=lambda: next(states))
         literal.assert_not_called()
-        self.assertEqual(keys.call_args_list, [mock.call("fixture", "F3"), mock.call("fixture", "Escape")])
+        keys.assert_not_called()
+
+    def test_high_level_send_restores_legacy_codex_find_before_typing(self):
+        trapped = "old output\n› unsent draft\nFind: 文字不对\nenter accept · full transcript · esc cancel"
+        normal = "latest output\n› unsent draft\nmodel status"
+        with (mock.patch.object(nav, "_screen", return_value=normal),
+              mock.patch.object(embed, "send_key") as keys,
+              mock.patch.object(embed, "send_literal") as literal):
+            self.assertTrue(nav.restore_composer("fixture", "codex", screen=trapped))
+        keys.assert_called_once_with("fixture", "Escape")
+        literal.assert_not_called()
+
+    def test_cancelled_wait_stops_before_another_capture(self):
+        with mock.patch.object(nav, "_screen") as capture:
+            with self.assertRaisesRegex(nav.PromptNavigationError, "stale"):
+                nav._await_screen("fixture", lambda _: True, is_current=lambda: False)
+        capture.assert_not_called()
 
 
 class HostIdentityTests(unittest.TestCase):
@@ -121,6 +191,24 @@ class HostIdentityTests(unittest.TestCase):
         service.hub.terminal_prompt.assert_not_called()
         service._terminal_prompt(connection, {"key": "codex:a", "seq": 7, "generation": 9})
         service.hub.terminal_prompt.assert_called_once_with("codex:a", 7, 9, native=False)
+
+    def test_later_selection_and_detach_retire_native_input(self):
+        service = object.__new__(RemoteService)
+        service.hub = mock.Mock()
+        service._unsubscribe = lambda *_: False
+        connection = Connection("ab" * 32, lambda value: None)
+        params = {"key": "codex:a", "seq": 7, "generation": 9, "navigation": "first"}
+        service._terminal_prompt(connection, params)
+        first_current = service.hub.terminal_prompt.call_args.kwargs["is_current"]
+        self.assertTrue(first_current())
+        service._terminal_prompt(connection, {**params, "navigation": "second"})
+        self.assertFalse(first_current())
+        with self.assertRaises(ActionError):
+            service._terminal_prompt(connection, {**params, "native": True})
+        current = service.hub.terminal_prompt.call_args.kwargs["is_current"]
+        self.assertTrue(current())
+        service._terminal_detach(connection, {"key": "codex:a"})
+        self.assertFalse(current())
 
     def test_resolve_does_not_send_input(self):
         with (
@@ -180,3 +268,17 @@ class RetainedBufferTests(unittest.TestCase):
         time.sleep(0.1)
         self.assertIsNone(nav.buffer_offset("fixture", "missing"))
         self.assertIsNone(nav.buffer_offset("fixture", "duplicate"))
+
+    def test_repeated_buffer_target_requires_complete_occurrence_evidence(self):
+        content = "\n".join(["first 继续", *[f"line {i}" for i in range(20)], "second 继续", "tail\n"])
+        subprocess.run([*self.argv, "send-keys", "-t", "fixture", "-l", content], check=True)
+        deadline = time.monotonic() + 3
+        offsets = (None, None)
+        while time.monotonic() < deadline:
+            offsets = tuple(nav.buffer_offset("fixture", "继续", occurrence=i, total=2) for i in range(2))
+            if all(value is not None for value in offsets):
+                break
+            time.sleep(0.02)
+        self.assertTrue(all(value is not None for value in offsets))
+        self.assertGreater(offsets[0], offsets[1])
+        self.assertIsNone(nav.buffer_offset("fixture", "继续", occurrence=1, total=3))

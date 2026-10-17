@@ -1983,12 +1983,13 @@ class SessionHub:
     def terminal_resync(self, key: str) -> None:
         self._terminal(key).request_snapshot()
 
-    def terminal_prompt(self, key: str, seq: int, generation: int, *, native: bool = False) -> dict:
+    def terminal_prompt(self, key: str, seq: int, generation: int, *, native: bool = False,
+                        is_current=lambda: True) -> dict:
         from corral.ui.terminal_prompt_navigation import (
             PromptNavigationError,
             buffer_offset,
             navigate_native,
-            prompt_query,
+            prompt_target,
         )
 
         session = self.require_session(key)
@@ -2009,15 +2010,22 @@ class SessionHub:
         if target is None:
             raise ActionError("not_found", t("remote.err.prompt_unavailable"))
         try:
-            query = prompt_query(messages, target)
+            resolved = prompt_target(messages, target)
+            query = resolved.query
             if native:
-                if self._hosted_name(key) != name:
+                if self._hosted_name(key) != name or not is_current():
                     raise PromptNavigationError("prompt_stale")
                 navigate_native(name, str(session.get("source") or ""), query,
-                                is_current=lambda: self._hosted_name(key) == name
+                                occurrence=resolved.occurrence, total=resolved.total,
+                                target=resolved,
+                                messages=messages, selected=target,
+                                is_current=lambda: is_current() and self._hosted_name(key) == name
+                                and self._transcripts.get(key, transcript) is transcript
                                 and transcript.generation == generation)
                 return {"query": query, "native": True}
-            return {"query": query, "offset": buffer_offset(name, query), "native": False}
+            return {"query": query, "occurrence": resolved.occurrence, "total": resolved.total,
+                    "offset": buffer_offset(name, query, occurrence=resolved.occurrence, total=resolved.total),
+                    "native": False}
         except PromptNavigationError as exc:
             raise ActionError("unavailable", t(f"remote.err.{exc}")) from exc
 
@@ -2481,9 +2489,17 @@ class SessionHub:
             # Just native-resumed: Enter sent while the assistant is still
             # starting is dropped and the text stays in the composer.
             self._wait_pane_settled(name)
-        if text and submit and (cause := _blocked_input_cause(embed.capture(name, 0, 0))):
-            # Nothing injected yet: a certain, retryable rejection.
-            raise ActionError("unavailable", cause)
+        if text and submit:
+            from corral.ui.terminal_prompt_navigation import PromptNavigationError, restore_composer
+            snapshot = embed.capture(name, 0, 0)
+            try:
+                if restore_composer(name, str(session.get("source") or ""), screen=_plain_pane_text(snapshot)):
+                    snapshot = embed.capture(name, 0, 0)
+            except PromptNavigationError as exc:
+                raise ActionError("unavailable", t("remote.err.prompt_unavailable")) from exc
+            if cause := _blocked_input_cause(snapshot):
+                # Nothing injected yet: a certain, retryable rejection.
+                raise ActionError("unavailable", cause)
         pasted = False
         if text:
             name, session = self._attempt_with_recovery(

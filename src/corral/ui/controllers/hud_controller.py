@@ -99,19 +99,38 @@ class HudControllerMixin:
         self._hud_expanded = not self._hud_expanded
         self._sync_hud()
 
-    def jump_to_terminal_prompt(self, key: str, body: str, cell) -> None:
+    def jump_to_terminal_prompt(self, key: str, body: str, cell, message_index: int | None = None,
+                                token: str | None = None) -> None:
         self._prompt_navigation_revision = getattr(self, "_prompt_navigation_revision", 0) + 1
         revision = self._prompt_navigation_revision
-        self._navigate_terminal_prompt(key, body, cell, revision)
+        pane = cell.embed_pane() if hasattr(cell, "embed_pane") else None
+        if pane is not None and pane._uses_detail_window():
+            from corral.ui.session_hud import _one_line, prompt_identity
+
+            session = self.store.find_session(key)
+            if session is None or cell.spec.session_key != key:
+                return
+            messages = self.store.peek_conversation(session, stale_ok=True)
+            if messages is None or message_index is None or not 0 <= message_index < len(messages):
+                return
+            selected = messages[message_index]
+            if selected.role != "user" or _one_line(selected.text) != body:
+                return
+            if token is not None and prompt_identity(messages, message_index) != token:
+                return
+            pane.reveal_detail_prompt(message_index)
+            return
+        self._navigate_terminal_prompt(key, body, cell, revision, message_index, token)
 
     @work(thread=True, group="prompt-navigation")
-    def _navigate_terminal_prompt(self, key: str, body: str, cell, revision: int) -> None:
-        from corral.ui.session_hud import _one_line
+    def _navigate_terminal_prompt(self, key: str, body: str, cell, revision: int,
+                                  message_index: int | None = None, token: str | None = None) -> None:
+        from corral.ui.session_hud import _one_line, prompt_identity
         from corral.ui.terminal_prompt_navigation import (
             PromptNavigationError,
             buffer_offset,
             navigate_native,
-            prompt_query,
+            prompt_target,
         )
 
         try:
@@ -120,17 +139,25 @@ class HudControllerMixin:
             if not name or cell.spec.session_key != key:
                 raise PromptNavigationError("prompt_unavailable")
             messages = self.store.get_conversation(session)
-            targets = [m for m in messages if m.role == "user" and _one_line(m.text) == body]
+            targets = [m for index, m in enumerate(messages) if m.role == "user" and _one_line(m.text) == body
+                       and (message_index is None or index == message_index)]
             if len(targets) != 1:
                 raise PromptNavigationError("prompt_ambiguous")
-            query = prompt_query(messages, targets[0])
+            if token is not None and (message_index is None or prompt_identity(messages, message_index) != token):
+                raise PromptNavigationError("prompt_stale")
+            target = prompt_target(messages, targets[0])
+            query = target.query
             if revision != self._prompt_navigation_revision:
                 return
-            offset = buffer_offset(name, query)
+            offset = buffer_offset(name, query, occurrence=target.occurrence, total=target.total)
             if offset is None:
                 navigate_native(name, str(session.get("source") or ""), query,
+                                occurrence=target.occurrence, total=target.total,
+                                target=target,
+                                messages=messages, selected=targets[0],
                                 is_current=lambda: revision == self._prompt_navigation_revision
-                                and cell.spec.session_key == key)
+                                and cell.spec.session_key == key
+                                and (self.store.find_session(key) or {}).get("keepalive_name") == name)
                 offset = 0
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
         except PromptNavigationError:
@@ -146,5 +173,4 @@ class HudControllerMixin:
             return
         pane.history_offset = offset
         pane._request_immediate_capture()
-        self._hud_expanded = False
         self._sync_hud()

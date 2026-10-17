@@ -1472,7 +1472,8 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 with mock.patch("corral.liveness.is_alive", return_value=True):
                     area.show_hosted_group(
                         "/tmp",
-                        [(provisional, kname, lambda: "")],
+                        [(provisional, kname, lambda: ""),
+                         (companion, companion["keepalive_name"], lambda: "")],
                         focus_key=old_key,
                     )
                     list_view = app.screen.query_one(SessionListView)
@@ -1492,7 +1493,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                         corral.session_key(list_view.selected_session()), new_key,
                         "占位卡转成真实卡后仍应选中同一份运行中会话",
                     )
-                    self.assertEqual(area.ordered_session_keys(), [new_key])
+                    self.assertEqual(area.ordered_session_keys(), [new_key, companion_key])
 
     async def test_pi_provisional_refresh_keeps_split_group_without_duplicate(self) -> None:
         """Pi 历史落盘后占位卡转正：分屏组跟上新键，侧边栏不得在组外再挂一张。"""
@@ -10680,8 +10681,8 @@ class SessionHudSummaryTests(unittest.TestCase):
         self.assertFalse(data)
         self.assertEqual(data.count, 0)
 
-    def test_consecutive_duplicate_prompts_collapse(self) -> None:
-        """相邻同一句只留一条；隔了一轮再发同一句是真人重复，要留下。"""
+    def test_consecutive_duplicate_prompts_retain_identity(self) -> None:
+        """Every normalized user turn remains individually selectable."""
         from corral.ui.session_hud import summarize_user_messages
 
         data = summarize_user_messages([
@@ -10691,11 +10692,13 @@ class SessionHudSummaryTests(unittest.TestCase):
             corral.ConversationMessage("user", "下一句"),
             corral.ConversationMessage("user", "同一句"),
         ])
-        self.assertEqual(data.count, 3)
+        self.assertEqual(data.count, 4)
         self.assertEqual(
             [body for _stamp, body in data.entries],
-            ["同一句", "下一句", "同一句"],
+            ["同一句", "同一句", "下一句", "同一句"],
         )
+        self.assertEqual(data.message_indices, (0, 1, 3, 4))
+        self.assertEqual(len(set(data.message_tokens)), 4)
 
 
 class SessionHudRenderTests(unittest.TestCase):

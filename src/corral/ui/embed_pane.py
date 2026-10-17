@@ -1398,6 +1398,23 @@ class EmbedPane(Widget):
             self.refresh()
         return True
 
+    def reveal_detail_prompt(self, message_index: int) -> bool:
+        """Resolve the actual rendered message header, including Markdown layout."""
+        if not self._uses_detail_window():
+            return False
+        full = self._detail_full_strips()
+        for row, strip in enumerate(full):
+            if any(segment.style is not None
+                   and segment.style.meta.get("corral_message_index") == message_index
+                   for segment in strip):
+                self._detail_stick_bottom = False
+                self.detail_offset = min(row, self._detail_max_offset(len(full)))
+                self._static_key = None
+                self._static_strips_cache = None
+                self.refresh()
+                return True
+        return False
+
     def scroll_detail_end(self) -> bool:
         if not self._uses_detail_window():
             return False

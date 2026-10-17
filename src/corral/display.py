@@ -228,6 +228,7 @@ def _preview_blocks(
     时间戳还会被挤到抬头行末折下来；正文整段套品牌色读长对话很刺眼；消息之间
     用空行分隔在长对话里几乎看不出边界，换成角色色的横线才一眼分得清谁在说话。
     """
+    from rich.style import Style
     from rich.text import Text
 
     from corral.i18n import t
@@ -237,7 +238,7 @@ def _preview_blocks(
         return [Text(t("detail.empty_preview"), style="dim")]
 
     blocks: list[object] = []
-    for message in messages:
+    for message_index, message in enumerate(messages):
         if message.role == "user":
             role, role_style = t("preview.you"), user_style
         else:
@@ -247,6 +248,7 @@ def _preview_blocks(
         head = Text(fit_cell(role, content_width).rstrip(), style=role_style)
         if message.timestamp:
             head.append(f"  · {format_message_time(message.timestamp)}", style="dim")
+        head.stylize(Style(meta={"corral_message_index": message_index}))
         blocks.append(head)
         blocks.append(_markdown_renderable(_clean_preview_text(message.text), content_width))
     # 三行尾：空行 → 居中 ── END ── → 空行。`content_width` 是面板内容宽；

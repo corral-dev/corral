@@ -203,6 +203,7 @@ class Connection:
         # Per-process client instance (`ci` on every request). Empty for legacy clients.
         self.instance_id = ""
         self.attached_at = 0.0
+        self.terminal_prompt_requests: dict[str, str] = {}
 
     def emit(self, message: dict, *, data: bool = False) -> None:
         """按平面发一帧。数据面未附着或 ``data=False`` 时走控制面。"""
@@ -1019,6 +1020,7 @@ class RemoteService:
 
     def _terminal_detach(self, connection: Connection, params: dict):
         key = _key(params)
+        connection.terminal_prompt_requests.pop(key, None)
         if self._unsubscribe(connection, protocol.terminal_channel(key)):
             self.hub.terminal_detach(key, _terminal_viewer(connection))
         return {"ok": True}
@@ -1029,10 +1031,21 @@ class RemoteService:
             raise ActionError(protocol.E_USAGE, t("remote.err.prompt_unavailable"))
         if native and connection.access == "readonly":
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
+        key = _key(params)
+        request = params.get("navigation")
+        if request is not None and (not isinstance(request, str) or not 1 <= len(request) <= 128):
+            raise ActionError(protocol.E_USAGE, t("remote.err.prompt_unavailable"))
+        if request is not None:
+            if native and connection.terminal_prompt_requests.get(key) != request:
+                raise ActionError("stale", t("remote.err.prompt_stale"))
+            connection.terminal_prompt_requests[key] = request
+        def current():
+            return not connection.closed and connection.terminal_prompt_requests.get(key) == request
         return self.hub.terminal_prompt(
-            _key(params), _int_param(params, "seq", 0, max_value=1_000_000_000),
+            key, _int_param(params, "seq", 0, max_value=1_000_000_000),
             _int_param(params, "generation", 0, max_value=1_000_000_000_000_000_000),
             native=native,
+            **({"is_current": current} if request is not None else {}),
         )
 
     def _terminal_peek(self, connection: Connection, params: dict):

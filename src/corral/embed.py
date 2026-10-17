@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import weakref
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -787,6 +788,40 @@ def resize(name: str, width: int, height: int) -> None:
 # Keep a lock alive while an operation owns it, without retaining ended sessions.
 _input_locks: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _input_locks_guard = threading.Lock()
+_navigation_inputs: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+_navigation_local = threading.local()
+
+
+class _NavigationInput:
+    def __init__(self):
+        self.cancelled = threading.Event()
+
+
+def cancel_navigation(name: str) -> None:
+    with _input_locks_guard:
+        active = _navigation_inputs.get(name)
+        if active is not None:
+            active.cancelled.set()
+
+
+@contextmanager
+def navigation_transaction(name: str):
+    state = _NavigationInput()
+    with _input_locks_guard:
+        previous = _navigation_inputs.get(name)
+        if previous is not None:
+            previous.cancelled.set()
+        _navigation_inputs[name] = state
+    with input_transaction(name):
+        previous_names = getattr(_navigation_local, "names", frozenset())
+        _navigation_local.names = previous_names | {name}
+        try:
+            def current():
+                with _input_locks_guard:
+                    return not state.cancelled.is_set() and _navigation_inputs.get(name) is state
+            yield current
+        finally:
+            _navigation_local.names = previous_names
 
 
 def input_transaction(name: str):
@@ -799,6 +834,8 @@ def _serialized_input(function):
 
     @wraps(function)
     def serialized(name, *args, **kwargs):
+        if name not in getattr(_navigation_local, "names", ()):
+            cancel_navigation(name)
         with input_transaction(name):
             return function(name, *args, **kwargs)
     return serialized

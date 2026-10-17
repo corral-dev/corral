@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -115,6 +116,8 @@ class HudData:
 
     count: int
     entries: tuple[tuple[str, str], ...] = ()
+    message_indices: tuple[int, ...] = ()
+    message_tokens: tuple[str, ...] = ()
 
     @property
     def oldest(self) -> tuple[str, str] | None:
@@ -190,6 +193,22 @@ def _hud_stripe_color(background: TextualColor, accent: TextualColor) -> Textual
     return background.blend(accent, _STRIPE_BLEND)
 
 
+def prompt_identity(messages, index: int) -> str:
+    return _prompt_identities(messages)[index]
+
+
+def _prompt_identities(messages) -> list[str]:
+    digest = hashlib.blake2b(digest_size=16)
+    identities = []
+    for message in messages:
+        for value in (message.role, message.text, message.timestamp):
+            encoded = str(value).encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        identities.append(digest.hexdigest())
+    return identities
+
+
 def summarize_user_messages(messages: list[ConversationMessage]) -> HudData:
     """从会话对话里挑出真人提问，按从旧到新整理成小窗摘要。
 
@@ -199,26 +218,16 @@ def summarize_user_messages(messages: list[ConversationMessage]) -> HudData:
     `load_conversation`，必须在这里再滤一次。corral 自己的跨运行时接力提示词
     视作真人提问，不在这里过滤。
 
-    相邻且压成一行后正文相同的提问只留先到的那条：新版 Codex 同一句会各写
-    一遍 `response_item` 和 `event_msg`，扫描层已按原文去重，这里再按展示
-    正文兜一层。不相邻的重复（人过一会又发同一句）照常保留。
+    Native duplicate records are normalized upstream. Every actual user turn,
+    including consecutive identical prompts, retains its own navigation identity.
 
     过滤后的提问**全部**进入 `entries`；遮挡面积只靠展开态高度上限 + 滚动控制，
     禁止砍中间。
     """
     users = [
-        m for m in messages
+        (index, m) for index, m in enumerate(messages)
         if m.role == "user" and _one_line(m.text) and not is_injected_user_prompt(m.text)
     ]
-    # Codex 等运行时同一句提问会在对话里连写两遍；小窗按相邻正文折叠，
-    # 人连发两句一模一样的也只留一条——Your prompts 要的是脉络不是回声。
-    collapsed: list[ConversationMessage] = []
-    for message in users:
-        body = _one_line(message.text)
-        if collapsed and _one_line(collapsed[-1].text) == body:
-            continue
-        collapsed.append(message)
-    users = collapsed
     if not users:
         return HudData(0, ())
 
@@ -226,7 +235,9 @@ def summarize_user_messages(messages: list[ConversationMessage]) -> HudData:
         stamp = _short_time(message.timestamp) if message.timestamp else ""
         return stamp, _one_line(message.text)
 
-    return HudData(len(users), tuple(_entry(m) for m in users))
+    identities = _prompt_identities(messages)
+    return HudData(len(users), tuple(_entry(m) for _, m in users), tuple(i for i, _ in users),
+                   tuple(identities[i] for i, _ in users))
 
 
 def _plural(key: str, count: int, **kwargs: object) -> str:
@@ -240,12 +251,15 @@ class SessionHud(Widget):
     """右上角悬浮小窗本体。数据与展开状态都由 `MainScreen` 统一喂，自己不查 store。"""
 
     class PromptSelected(Message):
-        def __init__(self, body: str) -> None:
+        def __init__(self, body: str, message_index: int | None = None, token: str | None = None) -> None:
             super().__init__()
             self.body = body
+            self.message_index = message_index
+            self.token = token
 
     ALLOW_SELECT = False
     can_focus = False
+    COMPONENT_CLASSES = {"session-hud--pressed"}
 
     # 底色用分栏激活条那个变量：小窗本来就是「当前这一格」的附属信息，视觉上跟着
     # 该格的高亮条走，一眼看出是 corral 的浮层而不是助手自己画的。
@@ -273,12 +287,18 @@ class SessionHud(Widget):
     SessionHud:hover {
         background: $primary-muted;
     }
+    SessionHud > .session-hud--pressed {
+        background: $primary;
+        color: $text;
+    }
     """
 
     def __init__(self, on_toggle: Callable[[], None] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = HudData(0, ())
         self._expanded = False
+        self._pressed_entry: int | None = None
+        self._press_timer = None
         self._on_toggle = on_toggle
         # 展开态正文的滚动位置（行）。`lines()` 每次按实际可见高度重算上限并夹紧，
         # 所以窗口变小、内容变少都不会滚出界。默认钉在最底（最新提问）；用户上滚
@@ -292,6 +312,8 @@ class SessionHud(Widget):
     def update_data(self, data: HudData | None, *, expanded: bool) -> None:
         """喂新数据；data 为空（没有提问）时整个小窗不出现。"""
         changed = (data or HudData(0, ())) != self._data or expanded != self._expanded
+        if changed:
+            self._pressed_entry = None
         if expanded != self._expanded:
             # 每次重新展开都钉在最新；沿用上次的上滚位置会让人以为最新提问丢了。
             self._stick_bottom = True
@@ -406,10 +428,12 @@ class SessionHud(Widget):
         out: list[Text] = []
         for index, (stamp, body) in enumerate(self._data.entries):
             paint = stripe_on if index % 2 else ""
-            out.extend(
+            for line in self._entry_lines(stamp, body, width):
                 self._paint_stripe(line, paint)
-                for line in self._entry_lines(stamp, body, width)
-            )
+                if index == self._pressed_entry:
+                    line.pad_right(max(0, width - text_width(line.plain)))
+                    line.stylize(self.get_component_rich_style("session-hud--pressed"))
+                out.append(line)
         return out
 
     def lines(self, width: int, max_height: int | None = None) -> list[Text]:
@@ -509,18 +533,57 @@ class SessionHud(Widget):
 
     # ---- Interaction: rows navigate; header/footer collapse without taking focus. ----
 
+    def _entry_at(self, y: int) -> int | None:
+        if not self._expanded:
+            return None
+        local_y = y - self.styles.padding.top
+        if not 0 < local_y < self.content_size.height - 1:
+            return None
+        width = self.content_size.width or self._inner_width(self.container_size.width)
+        self.lines(width, self.content_size.height or None)
+        row = local_y - 1 + self._scroll
+        for index, (stamp, body) in enumerate(self._data.entries):
+            count = len(self._entry_lines(stamp, body, width))
+            if 0 <= row < count:
+                return index
+            row -= count
+        return None
+
+    def _clear_pressed(self) -> None:
+        self._pressed_entry = None
+        self.refresh()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        event.stop()
+        event.prevent_default()
+        if event.button == 1:
+            if self._press_timer is not None:
+                self._press_timer.stop()
+            self._pressed_entry = self._entry_at(event.y)
+            self.refresh()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if event.button == 1:
+            self._press_timer = self.set_timer(0.2, self._clear_pressed)
+
+    def on_leave(self, event: events.Leave) -> None:
+        self._clear_pressed()
+
     def on_click(self, event: events.Click) -> None:
         event.stop()
-        if self._expanded:
-            width = self.content_size.width or self._inner_width(self.container_size.width)
-            self.lines(width, self.content_size.height or None)
-            row = event.y - self.styles.padding.top - 1 + self._scroll
-            for stamp, body in self._data.entries:
-                count = len(self._entry_lines(stamp, body, width))
-                if 0 <= row < count and 0 < event.y - self.styles.padding.top < self.content_size.height - 1:
-                    self.post_message(self.PromptSelected(body))
-                    return
-                row -= count
+        if event.button != 1:
+            return
+        index = self._entry_at(event.y)
+        if index is not None:
+            self._pressed_entry = index
+            if self._press_timer is not None:
+                self._press_timer.stop()
+            self._press_timer = self.set_timer(0.2, self._clear_pressed)
+            self.refresh()
+            identity = self._data.message_indices[index] if self._data.message_indices else None
+            token = self._data.message_tokens[index] if self._data.message_tokens else None
+            self.post_message(self.PromptSelected(self._data.entries[index][1], identity, token))
+            return
         if self._on_toggle is not None:
             self._on_toggle()
 

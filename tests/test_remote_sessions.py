@@ -1070,6 +1070,29 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("claude:a", "")
         self.assertEqual(events, [])
 
+    def test_send_text_restores_native_composer_before_admission_and_paste(self) -> None:
+        from corral.ui import terminal_prompt_navigation
+
+        session = _session(source="codex", sid="find")
+        session["keepalive_name"] = "pane-find"
+        self.hub.store.sessions = {"codex": [session]}
+        order = []
+        trapped, composer = object(), object()
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", side_effect=[trapped, composer]),
+            mock.patch.object(remote_sessions, "_plain_pane_text", return_value="Find: fixture"),
+            mock.patch.object(terminal_prompt_navigation, "restore_composer",
+                              side_effect=lambda *args, **kwargs: order.append("restore") or True),
+            mock.patch.object(remote_sessions, "_blocked_input_cause",
+                              side_effect=lambda snapshot: order.append(("admit", snapshot))),
+            mock.patch.object(remote_sessions.embed, "paste_detailed",
+                              side_effect=lambda *args: order.append("paste") or InjectionResult(True)),
+            mock.patch.object(self.hub, "_submit_enter", return_value=InjectionResult(True)),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("codex:find", "next message")
+        self.assertEqual(order, ["restore", ("admit", composer), "paste"])
+
     def test_send_text_resumes_when_session_not_hosted(self) -> None:
         session = _session(sid="ended")
         self.hub.store.sessions = {"claude": [session]}
