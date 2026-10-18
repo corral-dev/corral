@@ -109,6 +109,24 @@ class BarrierTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(self.events[1]["data"]), b"after")
         self.assertEqual((self.events[0]["cols"], self.events[0]["rows"]), (120, 30))
 
+    def test_oversized_optional_history_does_not_break_live_sequence_or_output(self) -> None:
+        self.stream._snapshot()
+        self._feed(1, b"pending ordinary output")
+        self.stream.request_snapshot(history_lines=10_000)
+        self.channel.capture_lines = ["\x1b[38;2;120;140;160m" + "x" * 360] * 10_000
+        self.stream._snapshot()
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.stream._history_lines, ts.HISTORY_LINES)
+        self.assertEqual(self.stream._barrier, 0)
+        self.stream._flush()
+        self._feed(2, b"next normal output")
+        self.stream._flush()
+        self.assertEqual([event["seq"] for event in self.events], [1, 2, 3])
+        self.assertEqual(base64.b64decode(self.events[1]["data"]), b"pending ordinary output")
+        self.assertEqual(base64.b64decode(self.events[2]["data"]), b"next normal output")
+        for event in self.events:
+            protocol.dumps(protocol.event("term:claude:a", event))
+
     def test_sequence_numbers_are_consecutive_across_kinds(self) -> None:
         self.stream._snapshot()
         for seq in range(1, 4):

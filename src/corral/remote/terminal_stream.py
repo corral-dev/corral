@@ -42,6 +42,8 @@ from corral import embed
 
 HISTORY_LINES = 1500
 MAX_HISTORY_LINES = 10_000
+# Base64 plus the JSON envelope must fit the existing 4 MiB wire limit.
+_MAX_EXTENDED_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _COALESCE_SECONDS = 0.012
 _TICK_SECONDS = 1.0
 _MAX_EVENT_BYTES = 256 * 1024
@@ -463,6 +465,15 @@ class TerminalStream:
                 self._need_snapshot.set()
                 return
             state, main, alt, barrier = captured
+            data = build_snapshot(state, main, alt)
+            if self._history_lines > HISTORY_LINES and len(data) > _MAX_EXTENDED_SNAPSHOT_BYTES:
+                # Navigation is optional. Keep the prior barrier/sequence and
+                # pending live bytes intact rather than publishing an invalid
+                # frame that would break every viewer of this stream.
+                with self._buf_lock:
+                    self._history_lines = HISTORY_LINES
+                self._wake.set()
+                return
             with self._buf_lock:
                 kept = [(seq, data) for seq, data in self._pending if seq > barrier]
                 self._pending = kept
@@ -475,7 +486,7 @@ class TerminalStream:
                 "seq": self._seq,
                 "cols": state.cols,
                 "rows": state.rows,
-                "data": base64.b64encode(build_snapshot(state, main, alt)).decode("ascii"),
+                "data": base64.b64encode(data).decode("ascii"),
             })
         self._wake.set()
 
