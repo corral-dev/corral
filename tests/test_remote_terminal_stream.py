@@ -86,6 +86,17 @@ class BarrierTests(unittest.TestCase):
         self.channel.output_seq = seq
         self.stream._on_data("%1", data, seq)
 
+    def test_requested_retention_is_bounded_and_does_not_shrink_on_reconnect(self) -> None:
+        self.stream.request_snapshot(history_lines=100_000)
+        self.assertEqual(self.stream._history_lines, 10_000)
+        self.stream.request_snapshot()
+        self.assertEqual(self.stream._history_lines, 10_000)
+        with mock.patch.object(self.channel, "request_ordered", wraps=self.channel.request_ordered) as commands:
+            self.stream._snapshot()
+        capture = next(call.args for call in commands.call_args_list if call.args[0] == "capture-pane")
+        self.assertIn("-J", capture)
+        self.assertIn("-10000", capture)
+
     def test_output_already_in_the_capture_is_not_sent_again(self) -> None:
         self._feed(1, b"before")
         self._feed(2, b"also-before")
@@ -133,8 +144,8 @@ class _TerminalHub:
         self.calls.append(("resize", key, cols, rows, vote))
         return {"cols": cols, "rows": rows}
 
-    def terminal_resync(self, key):
-        self.calls.append(("resync", key))
+    def terminal_resync(self, key, **kwargs):
+        self.calls.append(("resync", key, kwargs) if kwargs else ("resync", key))
 
     def terminal_theme(self, key, report):
         self.calls.append(("theme", key, report))
@@ -227,6 +238,16 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse([c for c in self.hub.calls if c[0] == "theme"])
         blocked = self._call(connection, protocol.M_TERMINAL_THEME, {"key": "codex:a", "background": "#ffffff"})
         self.assertEqual(blocked["e"]["code"], protocol.E_UNAUTHORIZED)
+
+    def test_readonly_can_request_retained_text_without_input_or_a_size_vote(self) -> None:
+        connection = self._paired(mode="readonly")
+        reply = self._call(connection, protocol.M_TERMINAL_RESYNC, {"key": "codex:a", "history": 10_000})
+        self.assertTrue(reply["ok"])
+        self.assertIn(("resync", "codex:a", {"history_lines": 10_000}), self.hub.calls)
+        bad = self._call(connection, protocol.M_TERMINAL_RESYNC, {"key": "codex:a", "history": 10_001})
+        self.assertTrue(bad["ok"])
+        self.assertEqual(self.hub.calls[-1], ("resync", "codex:a", {"history_lines": 10_000}))
+        self.assertFalse([c for c in self.hub.calls if c[0] in {"input", "resize", "attach"}])
 
     def test_bad_size_is_a_usage_error(self) -> None:
         connection = self._paired()

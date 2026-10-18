@@ -174,6 +174,27 @@ class HostedJumpApp(App, HudControllerMixin):
 
 
 class HostedJumpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_or_broken_buffer_never_drives_native_input_or_crashes_ui(self):
+        from textual.worker import WorkerState
+
+        for outcome in [None, RuntimeError("capture failed")]:
+            app = HostedJumpApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                kwargs = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
+                with (mock.patch("corral.ui.terminal_prompt_navigation.buffer_offset", **kwargs) as capture,
+                      mock.patch("corral.ui.terminal_prompt_navigation.navigate_native") as native):
+                    app.jump_to_terminal_prompt("claude:x", "定位到这条消息的顶部", app.cell)
+                    deadline = time.monotonic() + 5
+                    while not capture.called and time.monotonic() < deadline:
+                        await asyncio.sleep(0.02)
+                    await pilot.pause()
+                    self.assertTrue(capture.called)
+                    native.assert_not_called()
+                    self.assertFalse(any(worker.state == WorkerState.ERROR for worker in app.workers))
+                    self.assertEqual(app.pane.history_offset, 0)
+                    await pilot.press("a", "enter")
+
     async def test_hosted_map_supplies_name_before_liveness_annotation(self):
         app = HostedJumpApp()
         async with app.run_test() as pilot:
