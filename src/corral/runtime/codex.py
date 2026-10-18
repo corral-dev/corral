@@ -21,6 +21,20 @@ class CodexRuntime(BaseRuntime):
     )
     auto_approve_args = ("--dangerously-bypass-approvals-and-sandbox",)
 
+    def composer_region(self, screen: str) -> str | None:
+        # The bottommost `›` line starts the composer; popups and pending
+        # steers render above it, the footer follows its last blank line
+        # (0.163.0).
+        lines = screen.splitlines()
+        starts = [i for i, line in enumerate(lines) if line.lstrip().startswith("›")]
+        if not starts:
+            return None
+        body = lines[starts[-1]:]
+        while body and not body[-1].strip():
+            body.pop()
+        blanks = [i for i, line in enumerate(body) if not line.strip()]
+        return "\n".join(body[: blanks[-1]] if blanks else body)
+
     def scan_signature(self) -> object | None:
         from corral.codex_identity import claim_signature
 

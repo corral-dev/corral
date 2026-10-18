@@ -53,6 +53,18 @@ class OpenCodeRuntime(BaseRuntime):
     # 认 --auto 的子命令（其余子命令带上它会用法错误退出），见 compose_passthrough_argv。
     _AUTO_APPROVE_SUBCOMMANDS = ("run",)
 
+    def composer_region(self, screen: str) -> str | None:
+        # The bottommost run of `┃` lines; completion popups render below it
+        # (2.0.32).
+        lines = screen.splitlines()
+        marked = [i for i, line in enumerate(lines) if line.lstrip().startswith("┃")]
+        if not marked:
+            return None
+        start = end = marked[-1]
+        while start > 0 and lines[start - 1].lstrip().startswith("┃"):
+            start -= 1
+        return "\n".join(lines[start : end + 1])
+
     def scan_signature(self) -> object | None:
         return scan_opencode.scan_signature()
 

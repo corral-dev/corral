@@ -1,6 +1,6 @@
 [package]
 name = "corral-native"
-version = "0.24.323"
+version = "0.24.325"
 edition = "2021"
 build = "rust/build.rs"
 description = "Native hot-path accelerator for corral"

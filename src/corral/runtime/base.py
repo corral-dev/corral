@@ -43,6 +43,23 @@ def normalize_fork_title(title: str | None) -> str:
     return f"{stripped}{t('session.title.copy_suffix')}"
 
 
+def composer_between_rules(screen: str) -> str | None:
+    """Input box drawn between the last two full-width rules (Claude Code, Pi).
+
+    Completion popups and transcript output sit outside the two rules.
+    """
+    lines = screen.splitlines()
+    rules = [i for i, line in enumerate(lines) if _is_rule(line)]
+    if len(rules) < 2:
+        return None
+    return "\n".join(lines[rules[-2] + 1 : rules[-1]])
+
+
+def _is_rule(line: str) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= 20 and stripped.count("─") >= 0.9 * len(stripped)
+
+
 def usable_cwd(cwd: str | None) -> str | None:
     """只返回当前机器真实存在的工作目录。"""
     return cwd if cwd and os.path.isdir(cwd) else None
@@ -79,6 +96,15 @@ class BaseRuntime(ABC):
     # The TUI's own key for stopping a running turn, one tmux key name per press.
     # Presses are sent as separate writes (remote session.interrupt).
     interrupt_keys: tuple[str, ...] = ("Escape",)
+
+    def composer_region(self, screen: str) -> str | None:
+        """The TUI's own input box on a plain-text pane capture.
+
+        Remote sends use it to confirm Enter submitted the prompt. None when
+        this runtime has no rule or the box is not on screen; the send is then
+        unverified.
+        """
+        return None
 
     def is_available(self) -> bool:
         return any(

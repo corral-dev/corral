@@ -36,6 +36,17 @@ class CursorRuntime(BaseRuntime):
     # for a second press before exiting (2026.10.01 bundle).
     interrupt_keys = ("C-c",)
 
+    def composer_region(self, screen: str) -> str | None:
+        # Composer follows the last `→`; while a turn runs it shows the
+        # follow-up placeholder, so a submitted prompt has left it.
+        idx = screen.rfind("→")
+        if idx < 0:
+            idx = screen.rfind("->")
+        if idx < 0:
+            return None
+        window = screen[idx : idx + 1600]
+        return "" if "Add a follow-up" in window else window
+
     def scan_signature(self) -> object | None:
         return scan_cursor.scan_signature()
 

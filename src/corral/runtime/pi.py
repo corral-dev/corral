@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
-from corral.runtime.base import BaseRuntime, usable_cwd
+from corral.runtime.base import BaseRuntime, composer_between_rules, usable_cwd
 from corral.scan import pi as scan_pi
 
 # 与 `--session` / `--continue` / `--resume` / `--no-session` 互斥；`--fork` 可以一起用。
@@ -41,6 +41,10 @@ class PiRuntime(BaseRuntime):
     executable = "pi"
     history_reading_hint = "Pi coding agent JSONL；首行 session header，沿 message entry 的 parentId 回溯当前活动分支。"
     auto_approve_args = ("--approve",)
+
+    def composer_region(self, screen: str) -> str | None:
+        # Editor between the last two rules, footer below.
+        return composer_between_rules(screen)
 
     def scan_signature(self) -> object | None:
         return scan_pi.scan_signature()

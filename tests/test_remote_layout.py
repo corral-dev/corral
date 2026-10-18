@@ -140,6 +140,13 @@ class FulltextSearchTests(unittest.TestCase):
         self.assertTrue(match["lines"])
         self.assertIn("timeout", match["lines"][0]["text"].lower())
         self.assertTrue(match["lines"][0]["spans"])
+        # Desktop rows reuse the sessions.list summary for assistant, project and time.
+        summary = match["session"]
+        self.assertEqual(summary["key"], "claude:body")
+        self.assertEqual(summary["runtime"], "claude")
+        self.assertEqual(summary["cwd"], session["cwd"])
+        self.assertEqual(summary["mtime"], float(session["mtime"]))
+        self.assertEqual(summary["title"], "Relay work")
 
     def test_fulltext_is_readonly(self) -> None:
         from corral.remote.service import _READONLY_METHODS

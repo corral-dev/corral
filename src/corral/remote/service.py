@@ -993,7 +993,11 @@ class RemoteService:
         )
 
     def _terminal_resync(self, connection: Connection, params: dict):
-        self.hub.terminal_resync(_key(params))
+        history = _int_param(params, "history", 1500, max_value=10_000)
+        if "history" in params:
+            self.hub.terminal_resync(_key(params), history_lines=history)
+        else:
+            self.hub.terminal_resync(_key(params))
         return {"ok": True}
 
     def _terminal_input(self, connection: Connection, params: dict):

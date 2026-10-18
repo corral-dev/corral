@@ -102,6 +102,12 @@ _RESUME_SETTLE_QUIET = 1.0
 _RESUME_SETTLE_TIMEOUT = 20.0
 _TURN_SUBMIT_PAUSE = 0.25
 _TURN_SUBMIT_RETRIES = 3
+# Enter sent before the composer took the paste is dropped or becomes a newline;
+# an Enter that lands on a completion popup (`@path` in Codex/OpenCode) picks
+# the item instead of submitting. Poll the composer before and after Enter.
+_COMPOSER_POLL = 0.05
+_PASTE_VISIBLE_POLLS = 20
+_SUBMIT_CONFIRM_POLLS = 24
 _TURN_IMAGE_GAP = 0.15
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b."
@@ -205,26 +211,27 @@ def _pane_accepts_input(plain: str) -> bool:
     return True
 
 
-def _composer_still_holds(plain: str, needle: str) -> bool:
-    """True when ``needle`` still sits in the bottom composer after ``→``."""
-    marker = (needle or "").strip().splitlines()[0].strip()
-    if not marker:
-        return False
-    # Keep the marker short — long prompt first lines may wrap in the pane.
-    marker = marker[:48]
-    idx = plain.rfind("→")
-    if idx < 0:
-        idx = plain.rfind("->")
-    if idx < 0:
-        return False
-    window = plain[idx : idx + 1600]
-    if marker not in window:
-        return False
-    # Submitted turns move the prompt into history; the composer becomes the
-    # follow-up placeholder while the agent runs.
-    if "Add a follow-up" in window:
-        return False
-    return True
+# Large pastes collapse into a placeholder: Claude `[Pasted text #1 +39 lines]`,
+# Codex `[Pasted Content 1469 chars]`, Pi `[paste #1 +40 lines]`.
+_PASTE_PLACEHOLDER_RE = re.compile(r"\[(?:pasted|paste)\b[^\]]*\]", re.IGNORECASE)
+# Tail of the prompt matched in the composer; letters/digits only so wrapping,
+# box borders and `@` mentions rewritten by the composer do not matter.
+_COMPOSER_MARKER_CHARS = 24
+
+
+def _alnum(text: str) -> str:
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _composer_holds(runtime, raw: str | None, text: str) -> bool | None:
+    """Whether the runtime's input box still shows ``text``; None when unknowable."""
+    marker = _alnum(text or "")[-_COMPOSER_MARKER_CHARS:]
+    if runtime is None or not marker:
+        return None
+    region = runtime.composer_region(_plain_pane_text(raw))
+    if region is None:
+        return None
+    return marker in _alnum(region) or bool(_PASTE_PLACEHOLDER_RE.search(region))
 
 
 @dataclass
@@ -1800,6 +1807,9 @@ class SessionHub:
                     "key": match.key,
                     "title": match.title,
                     "total_hits": match.total_hits,
+                    # Same summary as sessions.list: desktop rows show the
+                    # assistant, project and time (2026-10-18).
+                    "session": self.session_payload(match.session),
                     "lines": [
                         {
                             "role": line.role,
@@ -1980,8 +1990,8 @@ class SessionHub:
             self._terminal(key), viewer, cols, rows, vote=vote, active=active, snapshot=False,
         )
 
-    def terminal_resync(self, key: str) -> None:
-        self._terminal(key).request_snapshot()
+    def terminal_resync(self, key: str, *, history_lines: int = 1500) -> None:
+        self._terminal(key).request_snapshot(history_lines=history_lines)
 
     def terminal_prompt(self, key: str, seq: int, generation: int, *, native: bool = False,
                         is_current=lambda: True) -> dict:
@@ -2507,7 +2517,8 @@ class SessionHub:
             )
             pasted = True
         if submit:
-            time.sleep(0.05)  # 给目标程序一点时间收完粘贴，避免回车抢在正文前面
+            runtime = self._runtime_or_none(session)
+            verifiable = pasted and self._await_composer_holds(name, runtime, text)
             res = self._submit_enter(name, session)
             if res.uncertain or (not res.ok and pasted):
                 raise PartialInjectionError(t("remote.err.inject_partial"))
@@ -2518,6 +2529,8 @@ class SessionHub:
                 name, session = self._attempt_with_recovery(
                     key, name, lambda pane: embed.send_key_detailed(pane, "Enter")
                 )
+            if verifiable:
+                self._ensure_turn_submitted(name, session, runtime, text)
             if text:
                 self._emit_provisional_working(key)
         # Only a submitted turn is a user message. Unsubmitted text is live
@@ -2667,7 +2680,8 @@ class SessionHub:
                 if pasted or paths:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
-            self._ensure_turn_submitted(name, session, text)
+            if text:
+                self._ensure_turn_submitted(name, session, self._runtime_or_none(session), text)
             self._emit_provisional_working(key)
 
         if text:
@@ -2738,22 +2752,53 @@ class SessionHub:
             embed.send_key_detailed(name, "Enter")
         return res
 
-    def _ensure_turn_submitted(self, name: str, session: dict, text: str) -> None:
-        """Retry Enter while the prompt is still sitting in the composer."""
-        marker = (text or "").strip()
-        if not marker:
-            return
-        for _ in range(_TURN_SUBMIT_RETRIES):
-            time.sleep(_TURN_SUBMIT_PAUSE)
-            plain = _plain_pane_text(embed.capture(name, 0, 0))
-            if not _composer_still_holds(plain, marker):
+    def _runtime_or_none(self, session: dict):
+        try:
+            return self.registry.get(str(session.get("source") or ""))
+        except Exception:
+            return None
+
+    def _await_composer_holds(self, name: str, runtime, text: str) -> bool:
+        """Wait until the composer shows the pasted text; True when it does.
+
+        False when this runtime's composer cannot be read or never showed the
+        text in time: Enter then goes out unverified, as before.
+        """
+        holds = _composer_holds(runtime, embed.capture(name, 0, 0), text)
+        if holds is None:
+            time.sleep(_COMPOSER_POLL)
+            return False
+        for _ in range(_PASTE_VISIBLE_POLLS):
+            if holds:
+                return True
+            time.sleep(_COMPOSER_POLL)
+            holds = _composer_holds(runtime, embed.capture(name, 0, 0), text)
+        return bool(holds)
+
+    def _composer_keeps(self, name: str, runtime, text: str) -> bool:
+        """True when the composer still holds ``text`` for the whole confirm window."""
+        for _ in range(_SUBMIT_CONFIRM_POLLS):
+            time.sleep(_COMPOSER_POLL)
+            if not _composer_holds(runtime, embed.capture(name, 0, 0), text):
+                return False
+        return True
+
+    def _ensure_turn_submitted(self, name: str, session: dict, runtime, text: str) -> None:
+        """Press Enter again while the prompt is still sitting in the composer.
+
+        A repeat Enter submits after a dropped Enter, a newline-absorbed Enter
+        and an Enter that only confirmed a completion popup. Never Escape: with
+        no popup open it interrupts the running turn.
+        """
+        for attempt in range(_TURN_SUBMIT_RETRIES + 1):
+            if not self._composer_keeps(name, runtime, text):
                 return
+            if attempt == _TURN_SUBMIT_RETRIES:
+                break
             res = self._submit_enter(name, session)
             if res.uncertain or not res.ok:
                 raise PartialInjectionError(t("remote.err.inject_partial"))
-        plain = _plain_pane_text(embed.capture(name, 0, 0))
-        if _composer_still_holds(plain, marker):
-            raise PartialInjectionError(t("remote.err.inject_partial"))
+        raise PartialInjectionError(t("remote.err.inject_partial"))
 
     # -- 会话动作 ---------------------------------------------------------
 

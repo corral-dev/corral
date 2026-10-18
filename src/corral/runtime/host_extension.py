@@ -193,6 +193,19 @@ def split_handoff_text(text: str | None) -> tuple[str | None, str]:
     return None, peeled
 
 
+def handoff_task(text: str | None) -> str | None:
+    """The inherited task of a Corral handoff prompt; None for other text.
+
+    Search indexes only this task: the prompt's excerpt repeats another
+    session's conversation, which already has its own hits.
+    """
+    raw = str(text or "")
+    if not any(marker in raw for marker in _HANDOFF_INTRO_MARKERS):
+        return None
+    inherited, _digest = split_handoff_text(raw)
+    return inherited or ""
+
+
 def peel_handoff_text(text: str | None) -> str:
     """Apply Corral's handoff transform: digest-first text for excerpts."""
     raw = str(text or "")

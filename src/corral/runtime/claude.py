@@ -6,7 +6,7 @@ import json
 import os
 
 from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
-from corral.runtime.base import BaseRuntime, usable_cwd
+from corral.runtime.base import BaseRuntime, composer_between_rules, usable_cwd
 from corral.scan import claude as scan_claude
 
 
@@ -87,6 +87,10 @@ class ClaudeRuntime(BaseRuntime):
         },
         separators=(",", ":"),
     )
+
+    def composer_region(self, screen: str) -> str | None:
+        # `❯` box between two rules; popups render above it (2.1.302).
+        return composer_between_rules(screen)
 
     @property
     def auto_approve_args(self) -> tuple[str, ...]:  # type: ignore[override]

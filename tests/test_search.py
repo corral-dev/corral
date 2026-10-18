@@ -111,6 +111,36 @@ class ConversationIndexTests(unittest.TestCase):
         start, end = line.spans[0]
         self.assertEqual(line.text[start:end], "全文搜索")
 
+    def test_markdown_markup_is_not_indexed(self) -> None:
+        self.conversations["a"] = [
+            ConversationMessage(
+                "assistant",
+                "## 结论\n**可以合盖后读取桌面**，见 [文档](https://example.com)\n"
+                "```swift\nlet 虚拟 = `__init__`\n```\n| 方案 | 虚拟显示器 |\n|---|---|\n"
+                "- [x] 已核对 `虚拟` 机\n> 引用里的虚拟\n>=3.10 保留",
+                1.0,
+            ),
+        ]
+        self.index.refresh(self.store)
+        texts = [line.text for line in self.index.search(self.sessions, "合盖", max_lines=9)[0].lines]
+        self.assertEqual(texts, ["可以合盖后读取桌面，见 文档"])
+        texts = [line.text for line in self.index.search(self.sessions, "虚拟", max_lines=9)[0].lines]
+        self.assertEqual(texts, ["let 虚拟 = __init__", "方案 · 虚拟显示器", "已核对 虚拟 机", "引用里的虚拟"])
+        self.assertEqual(self.index.search(self.sessions, "3.10")[0].lines[0].text, ">=3.10 保留")
+
+    def test_handoff_prompt_indexes_only_its_task(self) -> None:
+        from corral.models import Handoff
+
+        prompt = Handoff(
+            "codex", "Codex", "上架 App Store", "/x/h.jsonl", "/cwd", "hint",
+            "[Original request]准备上架\n[Recent conversation]\nAssistant: 基础隔离检查已通过",
+        ).render_prompt()
+        self.conversations["a"] = [ConversationMessage("user", prompt, 1.0)]
+        self.index.refresh(self.store)
+        self.assertEqual(self.index.search(self.sessions, "隔离检查").matches, ())
+        line = self.index.search(self.sessions, "上架")[0].lines[0]
+        self.assertEqual(line.text, "上架 App Store")
+
     def test_blank_query_returns_nothing(self) -> None:
         self.index.refresh(self.store)
         self.assertEqual(list(self.index.search(self.sessions, "   ")), [])

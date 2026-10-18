@@ -41,6 +41,7 @@ from collections.abc import Callable
 from corral import embed
 
 HISTORY_LINES = 1500
+MAX_HISTORY_LINES = 10_000
 _COALESCE_SECONDS = 0.012
 _TICK_SECONDS = 1.0
 _MAX_EVENT_BYTES = 256 * 1024
@@ -131,8 +132,9 @@ class PaneState:
 def build_snapshot(state: PaneState, main_lines: list[str], alt_lines: list[str] | None) -> bytes:
     """Bytes that redraw the captured pane on a freshly reset emulator.
 
-    ``main_lines`` are history plus the visible normal screen (capture-pane
-    keeps blank lines, so the last ``rows`` lines are the screen). With the
+    ``main_lines`` are logical lines from capture-pane -J: soft wraps remain
+    continuous so the receiving emulator recreates their wrap flags. Explicit
+    line breaks remain CRLF; wide characters reflow at the real pane width. With the
     alternate screen on, ``main_lines`` is the saved normal screen and
     ``alt_lines`` what is visible.
     """
@@ -186,15 +188,15 @@ def peek_snapshot(name: str) -> tuple[int, int, bytes] | None:
         except (ValueError, IndexError):
             return None
         if state.alternate:
-            main = _peek_run(argv, env, ["capture-pane", "-p", "-e", "-a", "-q", "-t", name])
-            alt = _peek_run(argv, env, ["capture-pane", "-p", "-e", "-t", name])
+            main = _peek_run(argv, env, ["capture-pane", "-p", "-e", "-J", "-a", "-q", "-t", name])
+            alt = _peek_run(argv, env, ["capture-pane", "-p", "-e", "-J", "-t", name])
             if main is None or alt is None:
                 continue
             alt_lines: list[str] | None = alt
         else:
             main = _peek_run(
                 argv, env,
-                ["capture-pane", "-p", "-e", "-S", f"-{HISTORY_LINES}", "-t", name],
+                ["capture-pane", "-p", "-e", "-J", "-S", f"-{HISTORY_LINES}", "-t", name],
             )
             if main is None:
                 continue
@@ -226,6 +228,7 @@ class TerminalStream:
         self._barrier = 0
         self._snap_lock = threading.Lock()
         self._seq = 0
+        self._history_lines = HISTORY_LINES
         self._votes: dict[str, tuple[int, int]] = {}
         # Per viewer: last user action (time.time()), resent with every renewal.
         self._used: dict[str, float] = {}
@@ -312,7 +315,9 @@ class TerminalStream:
         for viewer in viewers:
             embed.release_host_view(self.name, viewer)
 
-    def request_snapshot(self) -> None:
+    def request_snapshot(self, *, history_lines: int = HISTORY_LINES) -> None:
+        with self._buf_lock:
+            self._history_lines = max(self._history_lines, min(MAX_HISTORY_LINES, history_lines))
         self._need_snapshot.set()
         self._wake.set()
 
@@ -486,11 +491,11 @@ class TerminalStream:
             except ValueError:
                 return None
             if state.alternate:
-                main = channel.request_ordered("capture-pane", "-p", "-e", "-a", "-q", "-t", name)
-                alt = channel.request_ordered("capture-pane", "-p", "-e", "-t", name)
+                main = channel.request_ordered("capture-pane", "-p", "-e", "-J", "-a", "-q", "-t", name)
+                alt = channel.request_ordered("capture-pane", "-p", "-e", "-J", "-t", name)
             else:
                 main = channel.request_ordered(
-                    "capture-pane", "-p", "-e", "-S", f"-{HISTORY_LINES}", "-t", name,
+                    "capture-pane", "-p", "-e", "-J", "-S", f"-{self._history_lines}", "-t", name,
                 )
                 alt = None
             after = channel.request_ordered("display-message", "-p", "-t", name, _STATE_FORMAT)

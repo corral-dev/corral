@@ -14,6 +14,7 @@ TUI / 远程服务切换时直接恢复，不必重新解析全部历史。
 from __future__ import annotations
 
 import json
+import re
 import threading
 import unicodedata
 import zlib
@@ -22,11 +23,27 @@ from dataclasses import dataclass
 from corral.cache import get_cache, history_signature
 from corral.models import session_key
 from corral.projects import session_project_label
+from corral.runtime.host_extension import handoff_task
 
 # 单条命中行最多保留多少字符；更长的行按命中位置开窗，只给关键词附近的上下文。
 _MAX_LINE_CHARS = 200
 # 开窗时命中词前面保留多少字符，让用户看得到这句话是从哪儿说起的。
 _WINDOW_LEAD = 20
+# Format of the persisted search text. Bump whenever indexed text changes
+# (cleaning rules, handoff peeling) so cached entries are rebuilt.
+_ENTRY_FORMAT = 2
+
+# Markdown structure that only adds noise to a hit line. Whole-line rules
+# drop code fences, horizontal rules and table separators; prefixes remove
+# heading, quote, list and task markers; inline rules keep the wrapped text.
+_MD_DROP_LINE = re.compile(r"^(?:```|~~~)|^(?:[-*_]\s*){3,}$|^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?$")
+_MD_PREFIX = re.compile(r"^(?:#{1,6}\s+|(?:>(?:\s+|$))+|[-*+]\s+(?:\[[ xX]\]\s+)?)")
+_MD_INLINE = (
+    (re.compile(r"!?\[([^\]]*)\]\([^)\s]*\)"), r"\1"),
+    (re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*"), r"\1"),
+    (re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"), r"\1"),
+    (re.compile(r"`([^`]+)`"), r"\1"),
+)
 # 每个会话默认最多展示几条命中行。
 DEFAULT_MAX_LINES = 3
 
@@ -125,6 +142,27 @@ _CLEAN_MAP = _CleanMap()
 def _clean(text: str) -> str:
     """去掉会把 TUI 画崩的控制字符，并把制表符摊平。"""
     return text.translate(_CLEAN_MAP)
+
+
+def _plain_line(line: str) -> str:
+    """One stripped conversation line without Markdown markup; "" to drop it."""
+    if _MD_DROP_LINE.match(line):
+        return ""
+    text = _MD_PREFIX.sub("", line, count=1)
+    if text.startswith("|") and text.endswith("|") and len(text) > 1:
+        text = " · ".join(cell.strip() for cell in text[1:-1].split("|") if cell.strip())
+    for pattern, replacement in _MD_INLINE:
+        text = pattern.sub(replacement, text)
+    return text.strip()
+
+
+def _indexed_text(role: str, text: str) -> str:
+    """Text a message contributes to search: handoff prompts keep their task only."""
+    if role == "user":
+        task = handoff_task(text)
+        if task is not None:
+            return task
+    return text
 
 
 def _signature(session: dict) -> tuple:
@@ -230,7 +268,7 @@ class ConversationIndex:
                 if cached is not None and cached.signature == signature:
                     fresh[key] = cached
                 else:
-                    encoded_signature = json.dumps([1, signature], separators=(",", ":"))
+                    encoded_signature = json.dumps([_ENTRY_FORMAT, signature], separators=(",", ":"))
                     restored = _restore_entry(persisted.get(key), encoded_signature, signature)
                     entry = restored or _build_entry(store, session, signature)
                     fresh[key] = entry
@@ -311,8 +349,8 @@ def _build_entry(store, session: dict, signature: tuple) -> _Entry:
         return _Entry((), (), "")
     lines: list[tuple[str, str, float | None]] = []
     for message in messages:
-        for raw in _clean(message.text or "").splitlines():
-            stripped = raw.strip()
+        for raw in _clean(_indexed_text(message.role, message.text or "")).splitlines():
+            stripped = _plain_line(raw.strip())
             if stripped:
                 lines.append((message.role, stripped, message.timestamp))
     blob = "\n".join(line[1] for line in lines).lower()

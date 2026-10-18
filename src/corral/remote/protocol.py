@@ -304,7 +304,8 @@ M_SHELL_CLOSE = "shell.close"    # {key} → {ok}
 M_PROJECTS_LIST = "projects.list"
 M_SEARCH = "search"
 # Full-text conversation search (the TUI's Ctrl+F index) for desktop clients:
-# {q, top?} → {total, matches:[{key, title, total_hits, lines:[{role, text, spans, ts}]}]}.
+# {q, top?} → {total, matches:[{key, title, total_hits, session, lines:[{role, text, spans, ts}]}]};
+# ``session`` is the sessions.list summary (absent from hosts before 2026-10-18).
 M_SEARCH_FULLTEXT = "search.fulltext"
 M_RUNTIMES_LIST = "runtimes.list"
 

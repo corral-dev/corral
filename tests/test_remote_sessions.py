@@ -1078,8 +1078,10 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.hub.store.sessions = {"codex": [session]}
         order = []
         trapped, composer = object(), object()
+        captures = iter([trapped, composer])
         with (
-            mock.patch.object(remote_sessions.embed, "capture", side_effect=[trapped, composer]),
+            mock.patch.object(remote_sessions.embed, "capture",
+                              side_effect=lambda *args: next(captures, composer)),
             mock.patch.object(remote_sessions, "_plain_pane_text", return_value="Find: fixture"),
             mock.patch.object(terminal_prompt_navigation, "restore_composer",
                               side_effect=lambda *args, **kwargs: order.append("restore") or True),
@@ -1563,6 +1565,88 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("cursor:c2", "选 A")
             send_key.assert_called_once_with("pane-cursor", "Enter")
 
+    def _codex_pane_clearing_after(self, enters_needed: int, *, paste_lag: int = 0):
+        """Fake Codex pane: shows the paste after ``paste_lag`` captures and
+        clears the composer only once ``enters_needed`` Enters arrived."""
+        state = {"enters": 0, "captures": 0, "events": []}
+        held = "› fix the bug in @src/app/main.py\n\n  GPT-6.1 · Context 2% used"
+        empty = "› Ask Codex to do anything\n\n  GPT-6.1 · Context 2% used"
+
+        def capture(*_args):
+            state["captures"] += 1
+            if state["enters"] >= enters_needed:
+                screen = empty
+            elif state["captures"] <= 1 + paste_lag:
+                screen = empty
+            else:
+                screen = held
+            state["events"].append(("capture", screen is held))
+            return screen
+
+        def send_key(_name, key):
+            state["enters"] += 1
+            state["events"].append(("key", key))
+            return InjectionResult(True)
+
+        return state, capture, send_key
+
+    def _send_to_codex_pane(self, enters_needed: int, *, paste_lag: int = 0):
+        session = _session(source="codex", sid="popup")
+        session["keepalive_name"] = "pane-popup"
+        self.hub.store.sessions = {"codex": [session]}
+        state, capture, send_key = self._codex_pane_clearing_after(
+            enters_needed, paste_lag=paste_lag
+        )
+        events: list = []
+        self.hub._on_event = lambda channel, data: events.append(data)
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", side_effect=capture),
+            mock.patch.object(remote_sessions.embed, "paste_detailed",
+                              return_value=InjectionResult(True)),
+            mock.patch.object(remote_sessions.embed, "send_key_detailed", side_effect=send_key),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            try:
+                self.hub.send_text("codex:popup", "fix the bug in @src/app/main.py")
+            finally:
+                state["echoes"] = [e for e in events if e.get("kind") == "echo"]
+        return state
+
+    def test_send_text_presses_enter_again_when_popup_swallowed_the_first(self) -> None:
+        """Owner report 2026-10-18: `@path` opened a completion popup, Enter
+        picked the item and the prompt stayed in the composer as delivered."""
+        state = self._send_to_codex_pane(enters_needed=2)
+        self.assertEqual(state["enters"], 2)
+        self.assertEqual(len(state["echoes"]), 1)
+
+    def test_send_text_single_enter_when_composer_clears(self) -> None:
+        state = self._send_to_codex_pane(enters_needed=1)
+        self.assertEqual(state["enters"], 1)
+
+    def test_send_text_waits_for_paste_in_composer_before_enter(self) -> None:
+        state = self._send_to_codex_pane(enters_needed=1, paste_lag=3)
+        first_key = state["events"].index(("key", "Enter"))
+        self.assertIn(("capture", True), state["events"][:first_key])
+
+    def test_send_text_still_held_after_retries_is_not_delivered(self) -> None:
+        session = _session(source="codex", sid="stuck")
+        session["keepalive_name"] = "pane-stuck"
+        self.hub.store.sessions = {"codex": [session]}
+        state, capture, send_key = self._codex_pane_clearing_after(99)
+        events: list = []
+        self.hub._on_event = lambda channel, data: events.append(data)
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", side_effect=capture),
+            mock.patch.object(remote_sessions.embed, "paste_detailed",
+                              return_value=InjectionResult(True)),
+            mock.patch.object(remote_sessions.embed, "send_key_detailed", side_effect=send_key),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(remote_sessions.PartialInjectionError):
+                self.hub.send_text("codex:stuck", "fix the bug in @src/app/main.py")
+        self.assertEqual(state["enters"], 1 + remote_sessions._TURN_SUBMIT_RETRIES)
+        self.assertNotIn("echo", [e.get("kind") for e in events])
+
     def test_send_turn_waits_pastes_images_text_and_submits(self) -> None:
         session = _session(source="cursor", sid="turn1", attention="none")
         session["keepalive_name"] = "pane-turn"
@@ -1589,7 +1673,7 @@ class SessionHubPayloadTests(unittest.TestCase):
             mock.patch.object(remote_sessions.time, "sleep"),
             mock.patch.object(
                 remote_sessions,
-                "_composer_still_holds",
+                "_composer_holds",
                 return_value=False,
             ),
         ):
@@ -1613,7 +1697,8 @@ class SessionHubPayloadTests(unittest.TestCase):
         session = _session(source="cursor", sid="stuck", attention="none")
         session["keepalive_name"] = "pane-stuck"
         self.hub.store.sessions = {"cursor": [session]}
-        hold_checks = [True, False]
+        # Held through the first confirm window, then cleared after the retry.
+        hold_checks = [True] * remote_sessions._SUBMIT_CONFIRM_POLLS + [False]
 
         with (
             mock.patch.object(
@@ -1629,8 +1714,8 @@ class SessionHubPayloadTests(unittest.TestCase):
             mock.patch.object(remote_sessions.time, "sleep"),
             mock.patch.object(
                 remote_sessions,
-                "_composer_still_holds",
-                side_effect=lambda _plain, _needle: hold_checks.pop(0),
+                "_composer_holds",
+                side_effect=lambda _runtime, _raw, _text: hold_checks.pop(0),
             ),
         ):
             self.hub.send_turn("cursor:stuck", "改成叫Item888", images=None)
