@@ -2023,10 +2023,14 @@ class SessionHub:
             try:
                 resolved = prompt_target(messages, target)
             except PromptNavigationError:
-                if not native:
-                    raise
+                # TUI already falls back to ordinal/context navigation when the
+                # text query is unavailable; the remote resolve phase must do the
+                # same instead of failing the first call. Otherwise Apple
+                # clients never reach the native call below.
                 resolved = None
             query = resolved.query if resolved is not None else (target.text or "").strip()
+            if not query:
+                raise PromptNavigationError("prompt_unavailable")
             if native:
                 if self._hosted_name(key) != name or not is_current():
                     raise PromptNavigationError("prompt_stale")
@@ -2040,6 +2044,11 @@ class SessionHub:
                                 and transcript.generation == generation,
                                 allow_escape=session.get("attention_kind") not in {"working", "waiting"})
                 return {"query": query, "native": True}
+            if resolved is None:
+                # No verified text identity: force the client's native path
+                # instead of guessing a retained-buffer offset.
+                return {"query": query, "occurrence": 0, "total": 1,
+                        "offset": None, "native": False}
             return {"query": query, "occurrence": resolved.occurrence, "total": resolved.total,
                     "offset": buffer_offset(name, query, occurrence=resolved.occurrence, total=resolved.total),
                     "native": False}

@@ -256,6 +256,26 @@ class HostIdentityTests(unittest.TestCase):
         self.assertEqual(result["offset"], 42)
         move.assert_not_called()
 
+    def test_resolve_fallback_returns_native_path_when_text_query_unavailable(self):
+        with (mock.patch.object(nav, "prompt_target",
+                                side_effect=nav.PromptNavigationError("prompt_unavailable")),
+              mock.patch.object(nav, "buffer_offset") as resolve,
+              mock.patch.object(nav, "navigate_native") as move):
+            result = self.hub.terminal_prompt("codex:a", 7, 9)
+        self.assertFalse(result["native"])
+        self.assertIsNone(result["offset"])
+        self.assertEqual(result["query"], "unique target prompt")
+        self.assertEqual((result["occurrence"], result["total"]), (0, 1))
+        resolve.assert_not_called()
+        move.assert_not_called()
+
+    def test_resolve_empty_text_still_unavailable(self):
+        self.target.text = "   "
+        with mock.patch.object(nav, "prompt_target",
+                               side_effect=nav.PromptNavigationError("prompt_unavailable")):
+            with self.assertRaises(ActionError):
+                self.hub.terminal_prompt("codex:a", 7, 9)
+
     def test_incomplete_history_never_claims_query_is_unique(self):
         self.transcript.reader.has_earlier = lambda: True
         with mock.patch.object(nav, "buffer_offset") as resolve:
