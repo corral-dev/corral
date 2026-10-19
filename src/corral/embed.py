@@ -808,7 +808,7 @@ def cancel_navigation(name: str) -> None:
 
 
 @contextmanager
-def navigation_transaction(name: str):
+def navigation_transaction(name: str, timeout: float = 5.0):
     from corral import terminal_navigation_state as navigation
 
     state = _NavigationInput()
@@ -819,7 +819,7 @@ def navigation_transaction(name: str):
         _navigation_inputs[name] = state
     with input_transaction(name, require_process_lock=True):
         cancelled_at = navigation.cancellation_revision(name)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + timeout
         navigation.publish(name, active=True)
         previous_names = getattr(_navigation_local, "names", frozenset())
         _navigation_local.names = previous_names | {name}

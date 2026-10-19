@@ -133,6 +133,9 @@ class HudControllerMixin:
             prompt_target,
         )
 
+        started = time.monotonic()
+        stage = "session"
+        session = None
         try:
             session = self.store.find_session(key)
             # This window can be hosting the session before the next liveness
@@ -141,6 +144,7 @@ class HudControllerMixin:
             name = str(self.store.hosted_name_for(key) or (session or {}).get("keepalive_name") or "")
             if not name or cell.spec.session_key != key:
                 raise PromptNavigationError("prompt_unavailable")
+            stage = "identity"
             messages = self.store.get_conversation(session)
             targets = [m for index, m in enumerate(messages) if m.role == "user" and _one_line(m.text) == body
                        and (message_index is None or index == message_index)]
@@ -148,23 +152,32 @@ class HudControllerMixin:
                 raise PromptNavigationError("prompt_ambiguous")
             if token is not None and (message_index is None or prompt_identity(messages, message_index) != token):
                 raise PromptNavigationError("prompt_stale")
+            stage = "query"
             target = prompt_target(messages, targets[0])
             query = target.query
             if revision != self._prompt_navigation_revision:
                 return
+            stage = "buffer"
             offset = buffer_offset(name, query, occurrence=target.occurrence, total=target.total)
             if offset is None:
+                stage = "native"
                 navigate_native(name, str(session.get("source") or ""), query,
                                 occurrence=target.occurrence, total=target.total,
                                 target=target, messages=messages, selected=targets[0],
                                 is_current=lambda: revision == self._prompt_navigation_revision
                                 and cell.spec.session_key == key)
                 offset = 0
+            stage = "presentation"
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
-        except Exception:
+        except Exception as exc:
             # Contain internal resolution/capture failures at this optional UI boundary.
             # Owner requirement: prompt jumps never surface anything visible,
-            # on success or on failure. A miss is a silent no-op by design.
+            # on success or on failure. Keep only content-free failure metadata.
+            from corral import observe
+
+            reason = str(exc) if isinstance(exc, PromptNavigationError) else type(exc).__name__
+            observe.event("prompt_navigation_failed", runtime=str((session or {}).get("source") or ""),
+                          stage=stage, reason=reason, duration_ms=round((time.monotonic() - started) * 1000))
             return
 
     def _apply_prompt_jump(self, key: str, name: str, cell, revision: int, offset: int) -> None:

@@ -45,7 +45,14 @@ def fixture(directory: Path, session_id: str) -> Path:
             "type": "task_started", "turn_id": str(uuid.uuid4()), "model_context_window": 200000,
         }})
         prompt = "继续" if number in (7, 17, 27) else f"CODEX_PROMPT_{number:03d} synthetic question"
-        answer = f"CODEX_ANSWER_{number:03d}\n" + "\n".join(f"Synthetic line {i}" for i in range(5))
+        if number == 18:
+            prompt = "CODEX_PROMPT_018 多行中文问题，验证原生换行之后仍能定位。\n第二行保留用户原文。"
+        opening = (f"## CODEX_ANSWER_{number:03d} A unique opening that spans native display rows; "
+                   "the full source line remains one search query while the terminal wraps its English and 中文内容。")
+        answer = opening + "\n" + "\n".join(
+            f"Synthetic line {i}: **styled reply** with `code` and 中文上下文"
+            for i in range(160 if number in (7, 17, 27) else 5)
+        )
         for role, content in (("user", prompt), ("assistant", answer)):
             rows.append({"timestamp": stamp, "type": "event_msg", "payload": {
                 "type": "user_message" if role == "user" else "agent_message", "message": content,
@@ -55,6 +62,18 @@ def fixture(directory: Path, session_id: str) -> Path:
                     "type": "input_text" if role == "user" else "output_text", "text": content,
                 }],
             }})
+        if number in (7, 17, 27):
+            # Separate commentary cells model a working turn containing many
+            # tool results between its opening reply and the next user entry.
+            for step in range(40):
+                text = f"INTERMEDIATE_{number:03d}_{step:03d}\n" + "Synthetic output\n" * 5
+                rows.append({"timestamp": stamp, "type": "event_msg", "payload": {
+                    "type": "agent_message", "message": text, "phase": "commentary",
+                }})
+                rows.append({"timestamp": stamp, "type": "response_item", "payload": {
+                    "type": "message", "role": "assistant", "phase": "commentary",
+                    "content": [{"type": "output_text", "text": text}],
+                }})
     history = native / "sessions/2026/10/16" / f"rollout-2026-10-16T12-00-00-{session_id}.jsonl"
     history.parent.mkdir(parents=True)
     history.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
@@ -107,14 +126,18 @@ async def exercise(directory, session_id, history, tmux, rows, columns):
         pane.focus()  # Initial setup only. Never repair focus after a card click.
         await pilot.pause(.05)
         hud = cells[0].query_one(SessionHud)
-        for number in (17, 7, 27):
-            hud._scroll_by(number - hud._scroll)
+        for number in (17, 7, 27, 18):
+            width = hud.content_size.width
+            hud._stick_bottom = False
+            hud._scroll = sum(len(hud._entry_lines(stamp, body, width))
+                              for stamp, body in hud.data.entries[:number])
             hud.refresh()
             await pilot.pause(.05)
+            y = next(y for y in range(1, hud.content_size.height - 1) if hud._entry_at(y) == number)
             before = pane.render().plain
             app.save_screenshot(path=str(directory), filename=f"{number}-before.svg")
             started = time.monotonic()
-            await pilot.click(hud, offset=(3, 1))
+            await pilot.click(hud, offset=(3, y))
             frames = []
             for _ in range(500):
                 await pilot.pause(.01)
