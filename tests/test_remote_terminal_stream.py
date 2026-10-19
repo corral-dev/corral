@@ -16,6 +16,7 @@ from corral import embed
 from corral.remote import protocol, ratelimit
 from corral.remote import terminal_stream as ts
 from corral.remote.service import _READONLY_METHODS, Connection, RemoteService
+from corral.terminal_navigation_state import NavigationFrame
 
 _STATE = "120|30|4|7|1|0|1|0|1|0|0|1|0|0|1|0|29|bar|1"
 
@@ -108,6 +109,36 @@ class BarrierTests(unittest.TestCase):
         self.assertEqual(kinds, [("snapshot", 1), ("output", 2)])
         self.assertEqual(base64.b64decode(self.events[1]["data"]), b"after")
         self.assertEqual((self.events[0]["cols"], self.events[0]["rows"]), (120, 30))
+
+    def test_native_navigation_holds_frames_then_discards_intermediate_bytes(self) -> None:
+        self.stream._snapshot()
+        before = list(self.events)
+        self._feed(1, b"intermediate native Find editor")
+        with mock.patch.object(ts, "frame_state", return_value=NavigationFrame("search", True)):
+            self.stream._flush()
+            self.stream._snapshot()
+        self.assertEqual(self.events, before)
+        self.assertEqual(self.stream._barrier, 0)
+        self.channel.capture_lines = ["selected native prompt", "draft preserved"]
+        with mock.patch.object(ts, "frame_state", return_value=NavigationFrame("finished", False)):
+            self.stream._flush()
+            self.assertEqual(self.events, before)
+            self.stream._snapshot()
+            self._feed(2, b"ordinary next output")
+            self.stream._flush()
+        self.assertEqual([event["seq"] for event in self.events], [1, 2, 3])
+        self.assertIn(b"selected native prompt", base64.b64decode(self.events[1]["data"]))
+        self.assertNotIn(b"Find editor", b"".join(base64.b64decode(e["data"]) for e in self.events))
+        self.assertEqual(base64.b64decode(self.events[2]["data"]), b"ordinary next output")
+
+    def test_capture_straddling_a_navigation_epoch_is_never_published(self) -> None:
+        self.stream._snapshot()
+        self._feed(1, b"pending native search")
+        with mock.patch.object(ts, "frame_state", side_effect=[NavigationFrame(), NavigationFrame("search", True)]):
+            self.stream._snapshot()
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.stream._barrier, 0)
+        self.assertTrue(self.stream._need_snapshot.is_set())
 
     def test_oversized_optional_history_does_not_break_live_sequence_or_output(self) -> None:
         self.stream._snapshot()

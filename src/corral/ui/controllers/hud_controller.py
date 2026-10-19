@@ -129,6 +129,7 @@ class HudControllerMixin:
         from corral.ui.terminal_prompt_navigation import (
             PromptNavigationError,
             buffer_offset,
+            navigate_native,
             prompt_target,
         )
 
@@ -153,9 +154,12 @@ class HudControllerMixin:
                 return
             offset = buffer_offset(name, query, occurrence=target.occurrence, total=target.total)
             if offset is None:
-                # Missing retained text cannot be recovered without taking the
-                # agent's input. This optional action must leave it alone.
-                return
+                navigate_native(name, str(session.get("source") or ""), query,
+                                occurrence=target.occurrence, total=target.total,
+                                target=target, messages=messages, selected=targets[0],
+                                is_current=lambda: revision == self._prompt_navigation_revision
+                                and cell.spec.session_key == key)
+                offset = 0
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
         except Exception:
             # Contain internal resolution/capture failures at this optional UI boundary.

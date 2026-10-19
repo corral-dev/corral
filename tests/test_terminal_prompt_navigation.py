@@ -307,3 +307,48 @@ class RetainedBufferTests(unittest.TestCase):
         self.assertTrue(all(value is not None for value in offsets))
         self.assertGreater(offsets[0], offsets[1])
         self.assertIsNone(nav.buffer_offset("fixture", "继续", occurrence=1, total=3))
+
+
+class NativePromptDispatchTests(unittest.TestCase):
+    def test_optional_native_wait_never_occupies_connection_reader_or_normal_input_budget(self):
+        service = RemoteService(mock.Mock())
+        replies = []
+        connection = Connection("ab" * 32, replies.append)
+        release = threading.Event()
+        entered = threading.Condition()
+        count = 0
+
+        def invoke(_connection, method, _params):
+            nonlocal count
+            if method == "terminal.prompt":
+                with entered:
+                    count += 1
+                    entered.notify_all()
+                if not release.wait(3):
+                    raise AssertionError("Native fixture was never released")
+            return {"ok": True}
+
+        with mock.patch.object(service, "_invoke", side_effect=invoke):
+            try:
+                for request_id in range(1, 5):
+                    service.handle(connection, {"t": "req", "id": request_id, "m": "terminal.prompt",
+                                                "p": {"native": True}})
+                with entered:
+                    self.assertTrue(entered.wait_for(lambda: count == 4, timeout=1))
+                self.assertEqual(replies, [])
+                service.handle(connection, {"t": "req", "id": 5, "m": "terminal.prompt", "p": {"native": True}})
+                self.assertFalse(replies[-1]["ok"])
+                self.assertEqual(replies[-1]["id"], 5)
+                # All navigation workers are blocked, but ordinary input on
+                # this same connection still completes before they finish.
+                service.handle(connection, {"t": "req", "id": 6, "m": "terminal.input", "p": {}})
+                self.assertEqual(replies[-1]["id"], 6)
+                self.assertTrue(replies[-1]["ok"])
+                self.assertTrue(service._input_slots.acquire(blocking=False))
+                service._input_slots.release()
+            finally:
+                release.set()
+                deadline = time.monotonic() + 2
+                while len(replies) < 6 and time.monotonic() < deadline:
+                    time.sleep(.01)
+        self.assertEqual(sorted(reply["id"] for reply in replies), [1, 2, 3, 4, 5, 6])

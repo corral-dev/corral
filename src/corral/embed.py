@@ -798,6 +798,9 @@ class _NavigationInput:
 
 
 def cancel_navigation(name: str) -> None:
+    from corral import terminal_navigation_state as navigation
+
+    navigation.cancel(name)
     with _input_locks_guard:
         active = _navigation_inputs.get(name)
         if active is not None:
@@ -806,27 +809,50 @@ def cancel_navigation(name: str) -> None:
 
 @contextmanager
 def navigation_transaction(name: str):
+    from corral import terminal_navigation_state as navigation
+
     state = _NavigationInput()
     with _input_locks_guard:
         previous = _navigation_inputs.get(name)
         if previous is not None:
             previous.cancelled.set()
         _navigation_inputs[name] = state
-    with input_transaction(name):
+    with input_transaction(name, require_process_lock=True):
+        cancelled_at = navigation.cancellation_revision(name)
+        deadline = time.monotonic() + 5
+        navigation.publish(name, active=True)
         previous_names = getattr(_navigation_local, "names", frozenset())
         _navigation_local.names = previous_names | {name}
         try:
             def current():
                 with _input_locks_guard:
-                    return not state.cancelled.is_set() and _navigation_inputs.get(name) is state
+                    return (not state.cancelled.is_set() and _navigation_inputs.get(name) is state
+                            and time.monotonic() < deadline
+                            and navigation.cancellation_revision(name) == cancelled_at)
             yield current
         finally:
-            _navigation_local.names = previous_names
+            try:
+                navigation.publish(name, active=False)
+            finally:
+                _navigation_local.names = previous_names
 
 
-def input_transaction(name: str):
+def input_transaction(name: str, *, require_process_lock: bool = False):
+    from corral.terminal_navigation_state import InputLock
+
     with _input_locks_guard:
-        return _input_locks.setdefault(name, threading.RLock())
+        current = _input_locks.get(name)
+        if current is None:
+            try:
+                current = InputLock(name)
+            except OSError:
+                if require_process_lock:
+                    raise
+                current = threading.RLock()
+            _input_locks[name] = current
+        if require_process_lock and not isinstance(current, InputLock):
+            raise OSError("Native navigation input ownership is unavailable")
+        return current
 
 
 def _serialized_input(function):

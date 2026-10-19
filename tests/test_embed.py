@@ -365,15 +365,17 @@ class SessionIoTests(unittest.TestCase):
 
         def _one(target: str, text: str) -> None:
             barrier.wait()
-            with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect):
-                self.assertTrue(embed.paste(target, text))
+            self.assertTrue(embed.paste(target, text))
 
         first = _threading.Thread(target=_one, args=("pane-a", "text-for-A"))
         second = _threading.Thread(target=_one, args=("pane-b", "text-for-B"))
-        first.start()
-        second.start()
-        first.join()
-        second.join()
+        # One process-global patch owns both threads. Per-thread patches can
+        # restore another thread's mock and leak it into later real tmux tests.
+        with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect):
+            first.start()
+            second.start()
+            first.join()
+            second.join()
         self.assertEqual(len(seen), 2)
         self.assertEqual(set(seen.values()), {"text-for-A", "text-for-B"})
 

@@ -39,6 +39,7 @@ import time
 from collections.abc import Callable
 
 from corral import embed
+from corral.terminal_navigation_state import frame_state
 
 HISTORY_LINES = 1500
 MAX_HISTORY_LINES = 10_000
@@ -240,6 +241,8 @@ class TerminalStream:
         self._theme: bytes | None = None
         self._theme_pending = False
         self._ended = False
+        self._navigation_revision = frame_state(name).revision
+        self._navigation_waiting = False
         self._need_snapshot = threading.Event()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -340,7 +343,7 @@ class TerminalStream:
         boost_ui_worker()
         next_tick = 0.0
         while not self._stop.is_set():
-            self._wake.wait(_TICK_SECONDS)
+            self._wake.wait(0.02 if self._navigation_waiting else _TICK_SECONDS)
             self._wake.clear()
             if self._stop.is_set():
                 break
@@ -440,6 +443,15 @@ class TerminalStream:
 
     def _flush(self) -> None:
         with self._snap_lock:
+            navigation = frame_state(self.name)
+            if navigation.active:
+                self._navigation_waiting = True
+                return
+            if navigation.revision != self._navigation_revision:
+                self._navigation_waiting = True
+                self._need_snapshot.set()
+                self._wake.set()
+                return
             with self._buf_lock:
                 chunks = [data for seq, data in self._pending if seq > self._barrier]
                 self._pending.clear()
@@ -460,11 +472,21 @@ class TerminalStream:
         if channel is None:
             return
         with self._snap_lock:
+            navigation = frame_state(self.name)
+            if navigation.active:
+                self._navigation_waiting = True
+                self._need_snapshot.set()
+                return
             captured = self._capture(channel)
             if captured is None:
                 self._need_snapshot.set()
                 return
             state, main, alt, barrier = captured
+            if frame_state(self.name) != navigation:
+                self._navigation_waiting = True
+                self._need_snapshot.set()
+                self._wake.set()
+                return
             data = build_snapshot(state, main, alt)
             if self._history_lines > HISTORY_LINES and len(data) > _MAX_EXTENDED_SNAPSHOT_BYTES:
                 # Navigation is optional. Keep the prior barrier/sequence and
@@ -480,6 +502,8 @@ class TerminalStream:
                 self._pending_bytes = sum(len(data) for _, data in kept)
                 self._barrier = barrier
             self._size = (state.cols, state.rows)
+            self._navigation_revision = navigation.revision
+            self._navigation_waiting = False
             self._seq += 1
             self._emit({
                 "kind": "snapshot",

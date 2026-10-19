@@ -272,6 +272,7 @@ class RemoteService:
         self.host_run_id = new_host_run_id()
         self.receipts = CommandReceiptStore(self.host_run_id)
         self._input_slots = threading.BoundedSemaphore(32)
+        self._prompt_slots = threading.BoundedSemaphore(4)
         self._input_targets: set[str] = set()
         self._input_lock = threading.Lock()
         self._input_target_free = threading.Condition(self._input_lock)
@@ -602,6 +603,29 @@ class RemoteService:
     # -- 消息处理 ---------------------------------------------------------
 
     def handle(self, connection: Connection, message: dict, *, reply=None) -> None:
+        params = message.get("p")
+        if (message.get("t") == "req" and message.get("m") == protocol.M_TERMINAL_PROMPT
+                and isinstance(params, dict) and params.get("native") is True):
+            inbound = reply if reply is not None else connection.send
+            if not self._prompt_slots.acquire(blocking=False):
+                inbound(protocol.error(int(message.get("id") or 0), "unavailable", t("remote.err.prompt_unavailable")))
+                return
+
+            def locate():
+                try:
+                    self._handle_request(connection, message, reply=inbound)
+                finally:
+                    self._prompt_slots.release()
+
+            try:
+                threading.Thread(target=locate, daemon=True, name="terminal-prompt").start()
+            except RuntimeError:
+                self._prompt_slots.release()
+                inbound(protocol.error(int(message.get("id") or 0), "unavailable", t("remote.err.prompt_unavailable")))
+            return
+        self._handle_request(connection, message, reply=reply)
+
+    def _handle_request(self, connection: Connection, message: dict, *, reply=None) -> None:
         inbound = reply if reply is not None else connection.send
         if message.get("t") != "req":
             return
@@ -795,6 +819,7 @@ class RemoteService:
                 protocol.CAPABILITY_DESKTOP_LAYOUT: True,
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
                 protocol.CAPABILITY_TERMINAL_PROMPT: True,
+                protocol.CAPABILITY_TERMINAL_PROMPT_DIRECT: True,
                 protocol.CAPABILITY_USER_PROMPTS: True,
                 protocol.CAPABILITY_PROJECT_SHELL: True,
             },

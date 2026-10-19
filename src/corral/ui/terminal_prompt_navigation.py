@@ -126,7 +126,11 @@ def buffer_offset(name: str, query: str, *, occurrence: int = 0, total: int = 1)
     fmt = "#{pane_id}:#{history_size}:#{pane_width}:#{pane_height}:#{alternate_on}"
     before = _tmux(name, "display-message", "-p", "-t", name, fmt).strip()
     _, history, cols, _, alternate = before.split(":")
-    # Alternate screens contain only their current viewport, no older history.
+    if alternate == "1":
+        # Fullscreen programs own message history and the viewport's native
+        # pinned prompt header is not the message itself. A local text hit
+        # cannot establish that the selected user entry was actually revealed.
+        return None
     raw = _tmux(name, "capture-pane", "-p", "-S", "-", "-t", name)
     if before != _tmux(name, "display-message", "-p", "-t", name, fmt).strip():
         return None
@@ -160,7 +164,7 @@ def buffer_offset(name: str, query: str, *, occurrence: int = 0, total: int = 1)
     target = origins[candidate.start_line][candidate.start_column]
     if before != _tmux(name, "display-message", "-p", "-t", name, fmt).strip():
         return None
-    return 0 if alternate == "1" else max(0, int(history) - target)
+    return max(0, int(history) - target)
 
 
 def _screen(name: str) -> str:
@@ -318,6 +322,101 @@ def restore_composer(name: str, runtime: str, *, screen: str | None = None) -> b
         return changed
 
 
+def _codex_direct_anchor(messages: Sequence, selected) -> tuple[str, bool]:
+    """An immediate following entry proves the pinned header's user identity."""
+    index = next((i for i, message in enumerate(messages) if message is selected), -1)
+    if index < 0:
+        raise PromptNavigationError("prompt_stale")
+    following = []
+    for message in messages[index + 1:]:
+        following.append(message)
+        if message.role == "user":
+            break
+    # User text is rendered literally; prefer it over styled assistant Markdown.
+    for message in sorted(following, key=lambda message: message.role != "user"):
+        try:
+            return _query_for_text(messages, message.text), message.role == "user"
+        except PromptNavigationError:
+            continue
+    raise PromptNavigationError("prompt_ambiguous")
+
+
+def _navigate_codex_direct(name: str, messages: Sequence, selected,
+                           is_current: Callable[[], bool]) -> None:
+    """Search, then activate Codex's existing pinned prompt header.
+
+    Cancel restores the old viewport; accepting Find retains ownership of
+    Enter. The native header is the public interaction that leaves Find and
+    jumps to its exact user entry without taking the ordinary composer.
+    """
+    proof, next_user = _codex_direct_anchor(messages, selected)
+    prefix = " ".join((selected.text or "").split())
+    if not prefix:
+        raise PromptNavigationError("prompt_unavailable")
+
+    def check():
+        if not is_current():
+            raise PromptNavigationError("prompt_stale")
+
+    initial = _screen(name)
+    if _codex_find(initial) or not _transcript_area("codex", initial):
+        raise PromptNavigationError("prompt_unavailable")
+    try:
+        check()
+        embed.send_key(name, "F3")
+        _await_screen(name, _codex_find, is_current=is_current)
+        check()
+        embed.send_literal(name, proof)
+        screen = _await_screen(name, lambda value: proof in " ".join(_transcript_area("codex", value).split())
+                               and "Searching…" not in value.splitlines()[-1], is_current=is_current)
+        # Find adds only a small context margin. Move at most one viewport,
+        # never traverse the session page by page.
+        for _ in range(max(1, len(screen.splitlines()))):
+            check()
+            lines = _transcript_area("codex", screen).splitlines()
+            header = lines[0].strip() if lines else ""
+            label = header.removeprefix("›").strip().removesuffix("…").rstrip()
+            normalized = [" ".join(line.split()) for line in lines]
+            proof_row = next((i for i, line in enumerate(normalized) if proof in line), None)
+            before = ([line for line in normalized[1:proof_row + 1] if line.startswith("› ")]
+                      if proof_row is not None else [])
+            belongs = (len(before) == 1 and proof in before[0]) if next_user else not before
+            body_started = any(line.strip() for line in lines[1:3])
+            if (header.startswith("› ") and label and prefix.startswith(label)
+                    and proof_row is not None and belongs and body_started):
+                check()
+                # SGR input is delivered to the existing native header, not
+                # the system pointer or the message composer. No Enter is sent.
+                embed.send_bytes(name, b"\x1b[<0;2;1M\x1b[<0;2;1m")
+                try:
+                    candidate = _await_screen(name, lambda value: not _codex_find(value),
+                                              timeout=0.12, is_current=is_current)
+                except PromptNavigationError as exc:
+                    if str(exc) != "prompt_unavailable":
+                        raise
+                    # A real user row can also occupy row zero on a tall
+                    # viewport. It has no header action; advance the bounded
+                    # search context until the actual pinned header exists.
+                    candidate = _screen(name)
+                if not _codex_find(candidate):
+                    area = _transcript_area("codex", candidate)
+                    first = next((line.strip() for line in area.splitlines() if line.strip()), "")
+                    if first.startswith("› ") and prefix.startswith(first[1:].strip().removesuffix("…").rstrip()):
+                        return
+                    raise PromptNavigationError("prompt_unavailable")
+                screen = candidate
+            check()
+            previous = screen
+            embed.send_bytes(name, b"\x1b[<65;2;2M")
+            screen = _await_screen(name, lambda value, old=previous: value != old, is_current=is_current)
+        raise PromptNavigationError("prompt_unavailable")
+    finally:
+        # Cancel only the search this operation actually opened. Waiting
+        # ordinary input owns the lock next, after its editor has been restored.
+        if _codex_find(_screen(name)):
+            embed.send_key(name, "Escape")
+
+
 def _navigate_opencode(name: str, messages: Sequence, target, is_current: Callable[[], bool]) -> None:
     """Use the inspected v2 timeline's message-ID selection, without submitting.
 
@@ -397,8 +496,8 @@ def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0,
         is_current = operation_current
         if not is_current():
             raise PromptNavigationError("prompt_stale")
-        if runtime in {"codex", "claude"}:
-            _navigate_scrollback(name, runtime, target or PromptTarget(query, occurrence, total), messages, is_current)
+        if runtime == "codex":
+            _navigate_codex_direct(name, messages, selected, is_current)
             return
         if runtime == "opencode":
             _navigate_opencode(name, messages, selected, is_current)

@@ -293,6 +293,7 @@ M_TERMINAL_DETACH = "terminal.detach"   # {key}
 M_TERMINAL_PEEK = "terminal.peek"
 M_TERMINAL_PROMPT = "terminal.prompt"
 CAPABILITY_TERMINAL_PROMPT = "terminal_prompt"
+CAPABILITY_TERMINAL_PROMPT_DIRECT = "terminal_prompt_direct"
 # {key, background, foreground?} (#rrggbb): the viewer's terminal colours, answered to the
 # agent's OSC 10/11 queries; attach accepts the same two fields.
 M_TERMINAL_THEME = "terminal.theme"

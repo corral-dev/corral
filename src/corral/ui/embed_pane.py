@@ -930,12 +930,18 @@ class EmbedPane(Widget):
 
     def _apply_capture_delivery(
         self, generation: int, name: str, frame_key: tuple, grid, cursor, state,
+        navigation_revision: str | None = None,
     ) -> None:
         """主线程只消费仍是最新的那一帧，释放名额后立即补看最新快照。"""
         try:
             with self._capture_delivery_lock:
                 still_latest = self._latest_capture_key == frame_key
-            if still_latest:
+            from corral.terminal_navigation_state import frame_state
+
+            navigation = frame_state(name)
+            if still_latest and not navigation.active and (
+                navigation_revision is None or navigation.revision == navigation_revision
+            ):
                 self._apply_capture(generation, name, grid, cursor, state)
         finally:
             self._release_capture_delivery()
@@ -959,6 +965,12 @@ class EmbedPane(Widget):
             try:
                 state_refresh_delay: float | None = None
                 name = self.session_name
+                from corral.terminal_navigation_state import frame_state
+
+                navigation = frame_state(name or "")
+                if navigation.active:
+                    self._stop.wait(0.02)
+                    continue
                 generation = self._capture_generation
                 history_offset = self.history_offset
                 if generation != last_generation:
@@ -1055,6 +1067,7 @@ class EmbedPane(Widget):
                                     grid,
                                     cursor,
                                     state,
+                                    navigation.revision,
                                 )
                             except Exception:
                                 # 解析异常时没有回写会替我们释放名额；本轮必须自己
