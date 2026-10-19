@@ -371,6 +371,17 @@ search crawl 2026-09-30):
   shipped preset name), and `CORRAL_INSPECTION_SETTINGS_IMAGE` with
   `-CorralInspectSettings` exports the opened Settings pane as an app-rendered
   bitmap when screen capture is unavailable.
+- Delivery (2026-10-19): source `b909c1a`. 408 portable Core tests pass; the
+  Mac Debug Settings pane and an isolated-host iPhone simulator Settings
+  screen (English and Chinese) were inspected; the generic-device iPhone
+  Release build adds no warnings and bundles the three CAFs in both the app
+  and the extension. iPhone 1.0.184 (194) is on the personal install shelf
+  (release 283) because the phone was unavailable for direct installation;
+  hearing the presets on a real locked/unlocked phone remains outstanding.
+  The Mac ships in 0.3.135 (139), whose source `16fe0b6` contains this change;
+  the separately prepared 0.3.134 was not published so the two public
+  releases would not race. The TUI raises no system notifications (its bell
+  only marks errors), so it has no notification sound to change.
 
 ## 4. 可选增强（不进首版，留口子）
 
