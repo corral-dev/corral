@@ -897,6 +897,16 @@ def _keepalive_server_report() -> dict | None:
         return None
 
 
+def _tcc_identity_report() -> dict | None:
+    """macOS TCC 身份归因（跳板/解释器/tmux/责任链）；失败或非 darwin 返回 None。"""
+    try:
+        from corral import tcc
+
+        return tcc.identity_report()
+    except Exception:  # noqa: BLE001 - diagnose must never fail on this probe
+        return None
+
+
 def cmd_diagnose(args, registry) -> dict:
     """只读诊断：缓存路径、日志是否存在、runtime 配色自检、tmux 版本。不启动 TUI。"""
     import corral
@@ -915,6 +925,7 @@ def cmd_diagnose(args, registry) -> dict:
         "TUI 长卡顿看 events.log 的 tui_stall/tui_stall_recovered，并按 stall_id 对照 stacks.log",
         "日志轮转后上一段保留在对应的 .1 文件",
         "TUI 内按 F12 导出当前截图到 screenshots_dir",
+        "macOS 权限弹窗显示 Python/tmux 而非 corral 时：corral tcc status 看归因，corral tcc wrap 装稳定跳板",
         "开发机请用 bash scripts/dev-install.sh（editable），勿只信 python3 -c import",
     ]
     hints.extend(install.get("hints") or [])
@@ -934,6 +945,7 @@ def cmd_diagnose(args, registry) -> dict:
         "runtime_label_style_claude": corral.runtime_label_style("claude"),
         "tmux_version": tmux_version,
         "keepalive_server": _keepalive_server_report(),
+        "tcc_identity": _tcc_identity_report(),
         "version": install["version"],
         "package_file": install["package_file"],
         "python": install["python"],
@@ -1191,6 +1203,7 @@ COMMANDS = [
             "debug": "当前是否开启 CORRAL_DEBUG",
             "runtime_label_style_claude": "配色自检样例（应为 bold #D97757）",
             "tmux_version": "探测到的 tmux 版本三元组或 null",
+            "tcc_identity": "macOS TCC 身份归因（跳板/解释器/tmux/责任链）；非 darwin 为 null",
             "keepalive_server": (
                 "保活 tmux server 调度档：running/pid/priority/interactive_job/clamped；"
                 "clamped=true 表示托管助手被系统限流，需重启一次 server"

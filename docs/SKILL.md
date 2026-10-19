@@ -61,7 +61,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 | `corral context <会话>` | 生成接续该会话所需的上下文数据包 |
 | `corral plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
 | `corral describe [command]` | 查看命令 / 参数 / 输出字段说明 |
-| `corral diagnose` | 只读诊断：当前及上一段 events/embed-error 日志、stacks.log、`last_error`、截图目录、tmux、保活 server 调度档（`keepalive_server`）、配色自检和**安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
+| `corral diagnose` | 只读诊断：当前及上一段 events/embed-error 日志、stacks.log、`last_error`、截图目录、tmux、保活 server 调度档（`keepalive_server`）、TCC 身份归因（`tcc_identity`，macOS 弹窗署名问题先看它）、配色自检和**安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
 
 
 ### 会话标识（`<会话>` 参数）

@@ -81,6 +81,11 @@ def main() -> None:
         from corral.cursor_observer import cli_main as observer_main
 
         raise SystemExit(observer_main(argv[1:]))
+    if argv[:1] == ["tcc"]:
+        # macOS TCC 稳定身份：只碰跳板/探针，不碰扫描器、Textual 与 tmux。
+        from corral.tcc import cli_main as tcc_main
+
+        raise SystemExit(tcc_main(argv[1:]))
     # 命令拦截默认关闭：只有用户显式 `corral shim install` 才写 shell 配置。
     # 交互启动仍可补齐旧 Pi 历史；Agent 只读接口、管道和版本查询不碰迁移。
     if sys.stdin.isatty() and sys.stdout.isatty():

@@ -123,6 +123,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/OBSERVABILITY_KNOWLEDGE_BASE.md](docs/OBSERVABILITY_KNOWLEDGE_BASE.md): Local diagnostics, event logs and error evidence.
 - [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md): Development, CI, dependency pins, installation and release verification.
 - [docs/REMOTE_KNOWLEDGE_BASE.md](docs/REMOTE_KNOWLEDGE_BASE.md): Pairing, encrypted remote protocol, delivery, relay boundaries and remote acceptance.
+- [docs/TCC_KNOWLEDGE_BASE.md](docs/TCC_KNOWLEDGE_BASE.md): macOS permission attribution (Python/tmux vs corral), `corral tcc` launcher scope and limits.
 - [docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live-data isolation, pagination and recovery.
 - [docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md](docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md): 实现、评审或联调 iOS 会话页右上菜单的复制（`session.copy`，新增）与接力（`session.handoff`，服务端已有）前必读.
 - [docs/SKILL.md](docs/SKILL.md): 修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）.
