@@ -217,6 +217,12 @@ class HudControllerMixin:
             stage = "presentation"
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
             self.app.call_from_thread(self._finish_prompt_status, revision, None)
+            # Content-free success record, so real-use success rate and latency
+            # can be compared with `prompt_navigation_failed`.
+            from corral import observe
+
+            observe.event("prompt_navigation_done", runtime=str((session or {}).get("source") or ""),
+                          native=offset == 0, duration_ms=round((time.monotonic() - started) * 1000))
         except Exception as exc:
             # Contain internal failures at this optional UI boundary. The clicked
             # row shows a brief reason (owner decision 2026-10-19); never a popup,

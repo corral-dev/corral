@@ -741,7 +741,7 @@ def _scroll_prompt_rows(profile: _ScrollProfile, screen: str) -> list[tuple[int,
     """Prompt rows of a fullscreen transcript: first line, whitespace-free.
 
     Only the first line is used: the pinned header is a single row, and the
-    indented rows below it belong to the turn, not to the prompt.
+    indented rows below a prompt can be its command output, not its text.
     """
     return [(row, "".join(line[len(profile.marker):].split()).removesuffix("…"))
             for row, line in enumerate(_transcript_area(profile.runtime, screen).splitlines())
@@ -885,12 +885,29 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
                 raise
             return screen
 
-    def land(screen: str, own: int | None) -> None:
-        """Put the target at the top: scroll it just above the view, then click its header."""
+    clicks = [True]
+
+    def land(screen: str, own: int | None) -> str | None:
+        """Put the target at the top: scroll it just above the view, then click its header.
+
+        Returns None when landed, or the current screen when a header click
+        jumped elsewhere (Claude can mis-measure compacted transcripts); the
+        search then resumes from there without header clicks.
+        """
         half = max(1, len(_transcript_area(profile.runtime, screen).splitlines()) // 2)
         for _ in range(4 * half + 8):
             rows = _scroll_prompt_rows(profile, screen)
             top_is_target = bool(rows) and rows[0][0] == 0 and _claude_matches(rows[0][1], messages[prompts[target]])
+            if own == target and not clicks[0]:
+                # Without header clicks: page up until the target row is visible.
+                before = screen
+                check()
+                embed.send_key(name, "PageUp")
+                screen = settle(screen)
+                if screen == before:
+                    raise PromptNavigationError("prompt_unavailable")
+                own = owner(screen, target)
+                continue
             if own == target and top_is_target:
                 clicked = click_header(screen)
                 rows_after = _scroll_prompt_rows(profile, clicked)
@@ -900,9 +917,9 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
                         proven = _codex_visible_prompts(clicked, messages, prompts)
                         if not proven or proven.get(min(proven)) != target:
                             raise PromptNavigationError("prompt_ambiguous")
-                    return  # Landed, or the prompt row itself was already at the top.
-                screen, own = clicked, owner(clicked, target)
-                continue
+                    return None  # Landed, or the prompt row itself was already at the top.
+                clicks[0] = False
+                return clicked
             if own == target:
                 # The target is just above the view but the header still names
                 # an older prompt; bring the target's own row down to the top.
@@ -925,6 +942,8 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
                     own = owner(screen, target)
                     continue
                 raise PromptNavigationError("prompt_unavailable")
+            if not clicks[0] and row <= 1:
+                return None  # Top row, or just below the pinned header drawn over row 0.
             before = screen
             if row > half + 1:
                 # PgDn moves exactly half the viewport.
@@ -934,7 +953,7 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
             else:
                 screen = tick(65, screen)
             if screen == before:
-                return  # The conversation end cannot scroll further; the prompt stays visible.
+                return None  # The conversation end cannot scroll further; the prompt stays visible.
             own = owner(screen, target)
         raise PromptNavigationError("prompt_unavailable")
 
@@ -963,19 +982,27 @@ def _scroll_search(profile, name, messages, prompts, target, is_current, settle,
         raise PromptNavigationError("prompt_unavailable")
     own = owner(screen, len(prompts) - 1)
     if target_row(screen, own) is not None:
-        land(screen, own)
-        return
+        lost = land(screen, own)
+        if lost is None:
+            return
+        screen = lost
     # Leave live follow so the header appears.
     check()
     embed.send_key(name, "PageUp")
     screen = settle(screen)
     position, own = -1, owner(screen, len(prompts) - 1)
     above = below = None  # Positions known to be past / before the target.
+    oldest = own if own is not None and own >= 0 else None
     step = 1
     for _ in range(40):
         if own == target or target_row(screen, own) is not None:
-            land(screen, own)
-            return
+            lost = land(screen, own)
+            if lost is None:
+                return
+            # A header click jumped elsewhere: search again from there.
+            screen, position, above, below, step = lost, 0, None, None, 1
+            own = owner(screen, target)
+            continue
         if own is None:
             # Large tool cells may hide the pinned header for many pages. Keep
             # galloping until known user cells bracket the target.
@@ -1003,10 +1030,15 @@ def _scroll_search(profile, name, messages, prompts, target, is_current, settle,
         position += delta
         new_owner = owner(screen, target if own is None else own)
         own = new_owner
-        if at_top(screen):
+        if own is not None and own >= 0:
+            oldest = own if oldest is None else min(oldest, own)
+        if at_top(screen) or (screen == before and delta < 0):
             if own is None or own > target:
-                # The top of the rendered conversation is newer than the target.
-                raise PromptNavigationError("prompt_absent")
+                # The oldest rendered prompt is newer than the target, e.g. a
+                # resumed process that only shows prompts after a compaction.
+                if oldest is None or oldest > target:
+                    raise PromptNavigationError("prompt_absent")
+                raise PromptNavigationError("prompt_unavailable")
             # Bursts may stop at the top; restart bounds from this known edge.
             position, above, below, step = 0, None, 0, 1
         elif screen == before:

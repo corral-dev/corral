@@ -86,7 +86,7 @@ class HeaderlessScrollTests(unittest.TestCase):
 
         with mock.patch.object(nav, "_screen", side_effect=lambda _name: screen()), \
                 mock.patch.object(embed, "send_key", side_effect=lambda _name, *values: keys.append(values)):
-            land = mock.Mock()
+            land = mock.Mock(return_value=None)  # None: landed (non-None: header click jumped elsewhere)
             nav._scroll_search(nav._SCROLL_PROFILES["codex"], "fixture", [], [0], 0, lambda: True,
                                settle, owner, lambda _s, _o: None, land, lambda _s: False, lambda: None)
         land.assert_called_once()

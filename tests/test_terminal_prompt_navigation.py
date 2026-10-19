@@ -386,3 +386,23 @@ class NativePromptDispatchTests(unittest.TestCase):
                 while len(replies) < 6 and time.monotonic() < deadline:
                     time.sleep(.01)
         self.assertEqual(sorted(reply["id"] for reply in replies), [1, 2, 3, 4, 5, 6])
+
+
+class ScrollLandingFallbackTests(unittest.TestCase):
+    def test_header_click_that_jumps_elsewhere_resumes_the_search(self):
+        # Observed on compacted Claude sessions: a header click can land away
+        # from the prompt; the search must continue rather than give up.
+        screens = iter(["lost frame\n› composer"])
+        calls = []
+
+        def land(screen, own):
+            calls.append(screen)
+            return next(screens, None)
+
+        with mock.patch.object(nav, "_screen", return_value="start\n› composer"), \
+                mock.patch.object(embed, "send_key"):
+            nav._scroll_search(nav._SCROLL_PROFILES["codex"], "fixture", [], [0], 0, lambda: True,
+                               lambda before: before, lambda _s, _n: 0, lambda _s, _o: None, land,
+                               lambda _s: False, lambda: None)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], "lost frame\n› composer")
