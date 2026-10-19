@@ -331,6 +331,47 @@ search crawl 2026-09-30):
   旧开发机（无 `id`）与旧中继（无 `0x09`）互通：旧端忽略未知字段/帧；
   新开发机对旧中继按回执超时重试（有界），旧中继永不被当成功。
 
+### 3.5 Notification sound presets (owner requirement, 2026-10-19)
+
+- Corral notifications never use the system default sound. The Apple clients
+  ship three original presets (Chime, Marimba, Soft Tap), generated
+  reproducibly by `apple/scripts/notification-sounds/generate.py` into
+  `apple/Shared/Resources/Sounds/corral-<preset>.caf` (IMA4 CAF, under 2 s).
+  Chime is the default. All notification kinds (waiting, completed, aborted)
+  use the one selected preset; there is no per-kind sound and no extra
+  silent option (the system's own notification settings already cover that).
+- The choice is device-local and client-only: the host, push payload and relay
+  protocol are unchanged. Settings shows it under Notifications as a native
+  picker; choosing a preset (including re-choosing the current one) plays a
+  preview through AudioToolbox system sounds, so it follows the ringer/silent
+  switch like a real notification.
+- iPhone: the notification service extension cannot read the app's
+  `UserDefaults` (no App Group), so the choice is mirrored into the existing
+  shared Keychain access group (`AfterFirstUnlock`, readable while locked).
+  The extension sets the sound on the best-attempt content before decrypting,
+  so decrypt failure and extension timeout still use the selected preset;
+  unreadable Keychain falls back to Chime. The sound files are bundled in
+  both the app and the extension. The relay's plaintext `aps.sound` remains
+  `default` and only applies if the extension never runs; changing it would
+  require a relay deployment for no observed path.
+- Mac: local notifications set the same preset. macOS Notification Center did
+  not resolve sounds that exist only inside a non-sandboxed app bundle in
+  [NovarixHQ/Telar#1257](https://github.com/NovarixHQ/Telar/pull/1257), which
+  also observed that a missed name keeps its fallback cached; files in
+  `~/Library/Sounds` played there. Apple documents the app container's
+  `Library/Sounds` as a lookup location, which for the non-sandboxed Corral
+  Mac app is `~/Library/Sounds`. The Mac app therefore copies the three
+  `corral-*.caf` files there at launch (rewriting only changed bytes).
+  Consequence: they also appear in System Settings' alert-sound list.
+- Acceptance limits (2026-10-19): this Mac's alert volume is 0, so
+  `NotificationCenter` logs `Not playing sound … isMuted: true` before sound
+  lookup; Mac audible playback was not observed and the owner's sound
+  settings were left unchanged. Debug-only aids: `CORRAL_INSPECTION_NOTIFICATION_SOUND`
+  overrides the delivered name (use a throwaway name for lookup probes, never a
+  shipped preset name), and `CORRAL_INSPECTION_SETTINGS_IMAGE` with
+  `-CorralInspectSettings` exports the opened Settings pane as an app-rendered
+  bitmap when screen capture is unavailable.
+
 ## 4. 可选增强（不进首版，留口子）
 
 1. **官方钩子做早唤醒**：Claude `Stop` hook / Codex `notify`
