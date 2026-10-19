@@ -207,6 +207,12 @@ class HostIdentityTests(unittest.TestCase):
         self.assertIs(move.call_args.kwargs["selected"], self.target)
         self.assertIsNone(move.call_args.kwargs["target"])
 
+    def test_absent_prompt_reports_its_own_error_code(self):
+        with mock.patch.object(nav, "navigate_native", side_effect=nav.PromptNavigationError("prompt_absent")):
+            with self.assertRaises(ActionError) as caught:
+                self.hub.terminal_prompt("codex:a", 7, 9, native=True)
+        self.assertEqual(caught.exception.code, "absent")
+
     def test_known_working_remote_session_disables_escape_navigation(self):
         self.hub.require_session = lambda key: {"source": "codex", "attention_kind": "working"}
         with mock.patch.object(nav, "navigate_native") as move:
@@ -406,3 +412,25 @@ class ScrollLandingFallbackTests(unittest.TestCase):
                                lambda _s: False, lambda: None)
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1], "lost frame\n› composer")
+
+
+class OpenCodeScreenTests(unittest.TestCase):
+    """Narrow panes drop footer hints; wide panes add a sidebar beside the transcript."""
+
+    def test_narrow_composer_without_hint_is_ready(self):
+        screen = "  ┃  reply\n  ┃  Build · Model · xhigh\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  ~/Codes   175.6K (17%) · $0.05\n"
+        self.assertIsNotNone(nav._OPENCODE_COMPOSER.search(screen))
+        self.assertIsNone(nav._OPENCODE_DIALOG.search(screen))
+        self.assertIsNotNone(nav._OPENCODE_DIALOG.search(screen + "     Timeline                            esc\n"))
+
+    def test_top_rows_ignore_sidebar_and_tab_bar(self):
+        screen = ("‹18    Pi 会   执行结果解读\n  ┃\n"
+                  "  ┃  执行结果解读：                       排查 Corral TUI 间歇性卡死\n"
+                  "  ┃     ┌────────┬────┐                         Context\n")
+        self.assertTrue(nav._opencode_top(screen).startswith("执行结果解读：┌"))
+
+    def test_opening_requires_a_unique_first_line(self):
+        users = [ConversationMessage("user", "doc-update"), ConversationMessage("user", "doc-update"),
+                 ConversationMessage("user", "执行结果解读：\n| a | b |")]
+        self.assertIsNone(nav._opencode_opening(users, users[0]))
+        self.assertEqual(nav._opencode_opening(users, users[2]), "执行结果解读：")

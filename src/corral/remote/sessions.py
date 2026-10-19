@@ -2053,7 +2053,9 @@ class SessionHub:
                     "offset": buffer_offset(name, query, occurrence=resolved.occurrence, total=resolved.total),
                     "native": False}
         except PromptNavigationError as exc:
-            raise ActionError("unavailable", t(f"remote.err.{exc}")) from exc
+            # Clients show a short row reason from the code (absent vs other).
+            code = {"prompt_absent": "absent", "prompt_stale": "stale"}.get(str(exc), "unavailable")
+            raise ActionError(code, t(f"remote.err.{exc}")) from exc
 
     def terminal_peek(self, key: str) -> dict:
         """One-shot raw screen without a size vote or subscription (cold reveal).

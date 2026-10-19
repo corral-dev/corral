@@ -654,30 +654,73 @@ def _navigate_codex_direct(name: str, messages: Sequence, selected,
     _navigate_by_scroll(_SCROLL_PROFILES["codex"], name, messages, selected, is_current)
 
 
+_OPENCODE_COMPOSER = re.compile(r"^\s*╹▀{8,}\s*$", re.MULTILINE)
+_OPENCODE_DIALOG = re.compile(r"^\s*\S.*\s{2,}esc\s*$", re.MULTILINE)
+
+
+def _opencode_first_line(message) -> str:
+    return next(("".join(line.split()) for line in (message.text or "").splitlines() if line.strip()), "")
+
+
+def _opencode_opening(users: Sequence, message) -> str | None:
+    """Shortest first-line opening that no other prompt's first line shares."""
+    text = _opencode_first_line(message)
+    others = [_opencode_first_line(user) for user in users if user is not message]
+    for size in (16, 32, 64):
+        opening = text[:size]
+        if opening and not any(other.startswith(opening) for other in others):
+            return opening
+    return None
+
+
+def _opencode_top(screen: str, rows: int = 8) -> str:
+    """Whitespace-free transcript text of the rows where a jumped-to prompt starts.
+
+    Each row keeps only its left column: wide panes put the session sidebar
+    to the right after a wide gap, and the tab bar starts with "‹".
+    """
+    left = [re.split(r"\s{3,}", line.replace("┃", " ").strip())[0]
+            for line in screen.splitlines()[:rows] if not line.lstrip().startswith("‹")]
+    return "".join("".join(left).split())
+
+
 def _navigate_opencode(name: str, messages: Sequence, target, is_current: Callable[[], bool]) -> None:
     """Use the inspected v2 timeline's message-ID selection, without submitting.
 
     First-message navigation loads all native pages. Timeline rows are newest
-    first; without filtering there is no fuzzy-sort ambiguity for repeated text.
-    A unique following message proves that the chosen row is the selected turn.
+    first; moving the selection scrolls the selected prompt to the top, and
+    Escape keeps that position. The dialog backdrop drops wide characters, so
+    arrival is proven only after it closes: a prompt opening no other prompt
+    shares at the top, or else the turn's unique reply anywhere on screen.
     """
     users = [message for message in messages if message.role == "user" and (message.text or "").strip()]
     index = next((i for i, message in enumerate(users) if message is target), None)
     if index is None:
         raise PromptNavigationError("prompt_unavailable")
     target_index = next(i for i, message in enumerate(messages) if message is target)
+    opening = _opencode_opening(users, target)
+    first = _opencode_first_line(users[0])[:16]
 
-    def following_proof(start):
-        for message in messages[start:]:
+    def following_proof():
+        for message in messages[target_index + 1:]:
             if message.role == "user":
                 break
             if message.role == "assistant" and (message.text or "").strip():
-                return _query_for_text(messages, message.text)
-        raise PromptNavigationError("prompt_unavailable")
+                try:
+                    # Replies render as Markdown and wrap at the pane width.
+                    return "".join(_query_for_text(messages, _codex_plain_segments(message.text)).split())
+                except PromptNavigationError:
+                    return None
+        return None
 
-    first_index = next(i for i, message in enumerate(messages) if message is users[0])
-    first_proof = following_proof(first_index + 1)
-    proof = following_proof(target_index + 1)
+    proof = None if opening else following_proof()
+    if not opening and not proof:
+        raise PromptNavigationError("prompt_ambiguous")
+
+    def arrived(screen):
+        if opening:
+            return opening in _opencode_top(screen)
+        return proof in "".join(screen.split())
 
     def wait(predicate):
         return _await_screen(name, predicate, timeout=15, is_current=is_current)
@@ -687,11 +730,13 @@ def _navigate_opencode(name: str, messages: Sequence, target, is_current: Callab
             raise PromptNavigationError("prompt_stale")
         embed.send_key(name, value)
 
+    # Narrow panes drop the "ctrl+p commands" hint; the composer's bottom edge
+    # stays. Any open dialog (title row ending in "esc") must not be disturbed.
     initial = _screen(name)
-    if not re.search(r"ctrl\+p commands\s*$", initial, re.MULTILINE):
+    if not _OPENCODE_COMPOSER.search(initial) or _OPENCODE_DIALOG.search(initial):
         raise PromptNavigationError("prompt_unavailable")
     key("C-g")
-    wait(lambda s: first_proof in s)
+    wait(lambda s: first in _opencode_top(s))
     key("C-p")
     wait(lambda s: re.search(r"Commands\s+esc", s) is not None and "Search" in s)
     try:
@@ -702,16 +747,21 @@ def _navigate_opencode(name: str, messages: Sequence, target, is_current: Callab
         key("Enter")
         wait(lambda s: re.search(r"Timeline\s+esc", s) is not None and "Search" in s)
         key("Home")
-        if not is_current():
-            raise PromptNavigationError("prompt_stale")
+        before = _await_settled(name, is_current)
         # Batched public keys keep long timelines practical. Final arrival is
-        # verified by the following message, not by assuming key delivery.
+        # verified after the dialog closes, not by assuming key delivery.
         steps = len(users) - 1 - index
         if steps:
+            if not is_current():
+                raise PromptNavigationError("prompt_stale")
             embed.send_key(name, *(["Down"] * steps))
-        wait(lambda s: proof in s)
+            _await_settled(name, is_current, before=before)
         key("Escape")
-        wait(lambda s: re.search(r"Timeline\s+esc", s) is None and proof in s)
+        screen = wait(lambda s: _OPENCODE_DIALOG.search(s) is None)
+        if not arrived(screen):
+            screen = _await_settled(name, is_current, before=screen)
+            if not arrived(screen):
+                raise PromptNavigationError("prompt_unavailable")
     except PromptNavigationError:
         screen = _screen(name)
         if re.search(r"(?:Commands|Timeline)\s+esc", screen):
@@ -1062,7 +1112,7 @@ def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0,
         raise PromptNavigationError("prompt_unavailable")
     # Codex Find scans long tool output between hits; any user input still
     # cancels at once, so its bound only limits an abandoned search.
-    with embed.navigation_transaction(name, timeout=_NATIVE_LIMIT if runtime in ("codex", "claude")
+    with embed.navigation_transaction(name, timeout=_NATIVE_LIMIT if runtime in ("codex", "claude", "opencode")
                                       else 5.0) as owns_input:
         selected_current = is_current
         def operation_current():
