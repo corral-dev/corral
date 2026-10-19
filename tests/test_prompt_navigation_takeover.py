@@ -77,7 +77,7 @@ class HeaderlessScrollTests(unittest.TestCase):
         def screen():
             return f"frame {frame[0]}\n› composer"
 
-        def settle(_before):
+        def settle(_before, _wait=3.0):
             frame[0] += 1
             return screen()
 
@@ -91,6 +91,30 @@ class HeaderlessScrollTests(unittest.TestCase):
                                settle, owner, lambda _s, _o: None, land, lambda _s: False, lambda: None)
         land.assert_called_once()
         self.assertGreaterEqual(max(len(values) for values in keys), 8)
+
+
+class PacedPagingTests(unittest.TestCase):
+    def test_bursts_stay_small_and_stop_when_the_view_does_not_move(self):
+        keys = []
+        frames = iter(["a\n› c", "b\n› c", "b\n› c changed composer"])
+        with mock.patch.object(embed, "send_key", side_effect=lambda _name, *values: keys.append(values)):
+            screen, moved = nav._page(nav._SCROLL_PROFILES["codex"], "fixture", -100, "start\n› c",
+                                      lambda _before, _wait: next(frames), lambda: None)
+        # Earlier bursts moved the view; reaching an end still counts as moved.
+        self.assertTrue(moved)
+        self.assertTrue(all(len(values) <= nav._PAGE_BURST for values in keys))
+        # The third burst changed only the composer row, which is not movement;
+        # no burst follows it although 4 half-pages remain.
+        self.assertEqual(len(keys), 3)
+        still, moved = nav._page(nav._SCROLL_PROFILES["codex"], "fixture", 3, "x\n› c",
+                                 lambda before, _wait: before, lambda: None)
+        self.assertFalse(moved)
+
+    def test_claude_view_ignores_composer_and_status_rows(self):
+        profile = nav._SCROLL_PROFILES["claude"]
+        one = "❯ prompt\n reply\n" + "─" * 10 + "\n❯ \n" + "─" * 10 + "\n  ctx 46% used"
+        two = one.replace("46%", "47%").replace("❯ \n", "❯ draft\n")
+        self.assertEqual(nav._scroll_view(profile, one), nav._scroll_view(profile, two))
 
 
 class NavigationLeaseTests(unittest.TestCase):

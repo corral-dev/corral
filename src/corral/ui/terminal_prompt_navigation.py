@@ -779,10 +779,16 @@ class _ScrollProfile:
     marker: str        # Prompt row prefix, also used by the pinned header.
     banner: str        # Visible only at the start of the rendered conversation.
     header_column: int  # 1-based SGR column of a click on the pinned header row.
+    # Key that returns a scrolled view to the live bottom, keeping a draft, and
+    # texts shown only while scrolled ("Jump to bottom", or "N new messages"
+    # once output arrives). The search runs upward from there.
+    bottom_key: str | None = None
+    scrolled_hints: tuple[str, ...] = ()
 
 
 _SCROLL_PROFILES = {
-    "claude": _ScrollProfile("claude", "❯ ", "Claude Code v", 3),
+    "claude": _ScrollProfile("claude", "❯ ", "Claude Code v", 3, "C-End",
+                             ("Jump to bottom", "new message")),
     "codex": _ScrollProfile("codex", "› ", ">_ OpenAI Codex", 2),
 }
 
@@ -822,6 +828,55 @@ def _navigate_claude(name: str, messages: Sequence, selected, is_current: Callab
     _navigate_by_scroll(_SCROLL_PROFILES["claude"], name, messages, selected, is_current, keep=set(prompts))
 
 
+# Keys per PageUp/PageDown burst. A TUI that falls behind leaves keys queued
+# in the pty; once its small input buffer fills, escape sequences arrive split
+# and their tails ("5~", "6~") are typed into the composer (observed on a busy
+# Claude session, 2026-10-19). Each burst therefore stays small and the next is
+# sent only after the previous one visibly moved the view.
+_PAGE_BURST = 32
+
+
+def _scroll_view(profile: _ScrollProfile, screen: str) -> str:
+    """Conversation rows only, without the composer and status rows below them.
+
+    Their spinner, timers and usage figures change on their own and would
+    otherwise read as scrolling (never settling, or a false "moved").
+    """
+    lines = screen.splitlines()
+    if profile.runtime == "claude":
+        borders = [i for i, line in enumerate(lines) if line.strip() and set(line.strip()) == {"─"}]
+        cut = borders[-2] if len(borders) >= 2 else None
+    else:
+        rows = [i for i, line in enumerate(lines) if line.startswith(profile.marker)]
+        cut = rows[-1] if rows else None
+    return "\n".join(lines[:cut]) if cut is not None else screen
+
+
+def _page(profile: _ScrollProfile, name: str, delta: int, screen: str, settle, check) -> tuple[str, bool]:
+    """PageUp/PageDown by `delta` half-pages in small bursts; whether the view moved at all.
+
+    Sending stops at the first burst that did not move the view (an end of
+    the conversation, or a TUI that is not consuming keys).
+    """
+    key = "PageUp" if delta < 0 else "PageDown"
+    remaining, moved, wait = abs(delta), False, 3.0
+    while remaining:
+        count = min(_PAGE_BURST, remaining)
+        check()
+        before = screen
+        started = time.monotonic()
+        embed.send_key(name, *[key] * count)
+        screen = settle(before, wait)
+        if _scroll_view(profile, screen) == _scroll_view(profile, before):
+            break
+        moved = True
+        remaining -= count
+        # A TUI that just answered quickly need not be given the full wait to
+        # show that the next burst hit an end of the conversation.
+        wait = min(3.0, max(1.0, 2 * (time.monotonic() - started)))
+    return screen, moved
+
+
 def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, selected,
                         is_current: Callable[[], bool], keep: set[int] | None = None) -> None:
     """Reach a prompt in a fullscreen view and click its pinned prompt header.
@@ -848,25 +903,27 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
         if not is_current():
             raise PromptNavigationError("prompt_stale")
 
-    def settle(before: str) -> str:
+    def settle(before: str, wait: float = 3.0) -> str:
         """Claude applies key bursts asynchronously and lags on heavy turns.
 
-        Wait up to 3 s for the first change, then for 200 ms without change.
+        Wait up to `wait` s for the first change, then for 200 ms without change.
         """
+        view = _scroll_view(profile, before)
         try:
-            screen = _await_screen(name, lambda value: value != before, timeout=3.0, is_current=is_current)
+            screen = _await_screen(name, lambda value: _scroll_view(profile, value) != view, timeout=wait,
+                                   is_current=is_current)
         except PromptNavigationError as exc:
             if str(exc) != "prompt_unavailable":
                 raise
             return _screen(name)
-        quiet = time.monotonic()
+        quiet, view = time.monotonic(), _scroll_view(profile, screen)
         deadline = quiet + 3.0
         while time.monotonic() < deadline:
             time.sleep(0.03)
             check()
             value = _screen(name)
-            if value != screen:
-                screen, quiet = value, time.monotonic()
+            if _scroll_view(profile, value) != view:
+                screen, view, quiet = value, _scroll_view(profile, value), time.monotonic()
             elif time.monotonic() - quiet >= 0.2:
                 break
         return screen
@@ -1015,11 +1072,11 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
         if _screen(name) == initial:
             raise
         # Return to the latest output; PageDown works with a draft as well.
-        for _ in range(12):
-            before = _screen(name)
-            embed.send_key(name, *["PageDown"] * 20)
+        for _ in range(30):
+            view = _scroll_view(profile, _screen(name))
+            embed.send_key(name, *["PageDown"] * _PAGE_BURST)
             try:
-                _await_screen(name, lambda value, old=before: value != old, timeout=0.5)
+                _await_screen(name, lambda value, old=view: _scroll_view(profile, value) != old, timeout=1.5)
             except PromptNavigationError:
                 break
         raise
@@ -1036,6 +1093,13 @@ def _scroll_search(profile, name, messages, prompts, target, is_current, settle,
         if lost is None:
             return
         screen = lost
+    if (profile.bottom_key and any(hint in screen for hint in profile.scrolled_hints)
+            and (own is None or own < target)):
+        # Left above the target (an earlier jump or reading): paging down
+        # through a long session is slow; restart from the live bottom.
+        check()
+        embed.send_key(name, profile.bottom_key)
+        screen = settle(screen)
     # Leave live follow so the header appears.
     check()
     embed.send_key(name, "PageUp")
@@ -1073,16 +1137,13 @@ def _scroll_search(profile, name, messages, prompts, target, is_current, settle,
             # Half a page apart the target row was on screen at `below`; it was
             # not recognised (attachments, commands), so it cannot be verified.
             raise PromptNavigationError("prompt_unavailable")
-        check()
-        before = screen
-        embed.send_key(name, *(["PageUp"] * -delta if delta < 0 else ["PageDown"] * delta))
-        screen = settle(before)
+        screen, moved = _page(profile, name, delta, screen, settle, check)
         position += delta
         new_owner = owner(screen, target if own is None else own)
         own = new_owner
         if own is not None and own >= 0:
             oldest = own if oldest is None else min(oldest, own)
-        if at_top(screen) or (screen == before and delta < 0):
+        if at_top(screen) or (not moved and delta < 0):
             if own is None or own > target:
                 # The oldest rendered prompt is newer than the target, e.g. a
                 # resumed process that only shows prompts after a compaction.
@@ -1091,7 +1152,7 @@ def _scroll_search(profile, name, messages, prompts, target, is_current, settle,
                 raise PromptNavigationError("prompt_unavailable")
             # Bursts may stop at the top; restart bounds from this known edge.
             position, above, below, step = 0, None, 0, 1
-        elif screen == before:
+        elif not moved:
             raise PromptNavigationError("prompt_unavailable")
     raise PromptNavigationError("prompt_unavailable")
 
