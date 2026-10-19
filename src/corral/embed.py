@@ -820,7 +820,7 @@ def navigation_transaction(name: str, timeout: float = 5.0):
     with input_transaction(name, require_process_lock=True):
         cancelled_at = navigation.cancellation_revision(name)
         deadline = time.monotonic() + timeout
-        navigation.publish(name, active=True)
+        navigation.publish(name, active=True, lease_seconds=timeout + 10.0)
         previous_names = getattr(_navigation_local, "names", frozenset())
         _navigation_local.names = previous_names | {name}
         try:

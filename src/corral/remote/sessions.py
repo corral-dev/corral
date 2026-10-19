@@ -2020,18 +2020,25 @@ class SessionHub:
         if target is None:
             raise ActionError("not_found", t("remote.err.prompt_unavailable"))
         try:
-            resolved = prompt_target(messages, target)
-            query = resolved.query
+            try:
+                resolved = prompt_target(messages, target)
+            except PromptNavigationError:
+                if not native:
+                    raise
+                resolved = None
+            query = resolved.query if resolved is not None else (target.text or "").strip()
             if native:
                 if self._hosted_name(key) != name or not is_current():
                     raise PromptNavigationError("prompt_stale")
                 navigate_native(name, str(session.get("source") or ""), query,
-                                occurrence=resolved.occurrence, total=resolved.total,
+                                occurrence=resolved.occurrence if resolved is not None else 0,
+                                total=resolved.total if resolved is not None else 1,
                                 target=resolved,
                                 messages=messages, selected=target,
                                 is_current=lambda: is_current() and self._hosted_name(key) == name
                                 and self._transcripts.get(key, transcript) is transcript
-                                and transcript.generation == generation)
+                                and transcript.generation == generation,
+                                allow_escape=session.get("attention_kind") not in {"working", "waiting"})
                 return {"query": query, "native": True}
             return {"query": query, "occurrence": resolved.occurrence, "total": resolved.total,
                     "offset": buffer_offset(name, query, occurrence=resolved.occurrence, total=resolved.total),

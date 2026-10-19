@@ -29,7 +29,7 @@ class NavigationFrame:
 def frame_state(name: str) -> NavigationFrame:
     try:
         data = json.loads(_path(name, ".json").read_text())
-        active = bool(data["active"]) and 0 <= time.time() - data["started"] < 10
+        active = bool(data["active"]) and 0 <= time.time() - data["started"] < data.get("lease_seconds", 10)
         if active:
             try:
                 os.kill(data["pid"], 0)
@@ -40,13 +40,15 @@ def frame_state(name: str) -> NavigationFrame:
         return NavigationFrame()
 
 
-def publish(name: str, *, active: bool) -> None:
+def publish(name: str, *, active: bool, lease_seconds: float = 10.0) -> None:
     path = _path(name, ".json")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_suffix("." + uuid.uuid4().hex + ".tmp")
     try:
-        temporary.write_text(json.dumps(dict(revision=uuid.uuid4().hex, active=active,
-                                             pid=os.getpid(), started=time.time())))
+        payload = dict(revision=uuid.uuid4().hex, active=active, pid=os.getpid(), started=time.time())
+        if lease_seconds != 10.0:
+            payload["lease_seconds"] = lease_seconds
+        temporary.write_text(json.dumps(payload))
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)

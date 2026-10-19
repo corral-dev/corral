@@ -337,28 +337,6 @@ def _codex_plain_segments(text: str) -> str:
     return "\n".join(long or [part for part in segments if part])
 
 
-def _codex_landing(messages: Sequence, selected) -> list:
-    """Consecutive native user cells from the selected one to a pinnable one.
-
-    Codex pins only the prompt preceding the first visible non-user cell, so a
-    prompt directly followed by another prompt never gets a header. Land on
-    the last prompt of that run, which owns a reply, then reveal upward.
-    """
-    from corral.ui.session_hud import is_injected_user_prompt
-
-    index = next((i for i, message in enumerate(messages) if message is selected), -1)
-    if index < 0:
-        raise PromptNavigationError("prompt_stale")
-    run = [selected]
-    for message in messages[index + 1:]:
-        if message.role != "user":
-            return run
-        if not is_injected_user_prompt(message.text):
-            run.append(message)
-    # No reply follows the run yet; keep the immediate user-context fallback.
-    return [selected]
-
-
 def _codex_cell_is(cell: str, message) -> bool:
     want = "".join((message.text or "").split())
     return bool(want) and (cell == want or (cell.startswith(">") and cell.endswith(want))
@@ -379,249 +357,301 @@ def _codex_user_cells(area: str) -> list[tuple[int, str]]:
     return [(row, "".join("".join(parts).split())) for row, parts in cells]
 
 
-def _codex_reveal_run(name: str, run: list, is_current: Callable[[], bool]) -> None:
-    """Scroll the ordinary transcript up from the landed prompt to the selected one.
+_ANSI = re.compile(r"\x1b\[[0-9;:?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
-    Bounded to the run's own short cells; every visible prompt must appear in
-    the run's order, so a repeated text elsewhere cannot satisfy the check.
+
+def _visible_all_dim(line: str) -> bool:
+    """Use the terminal renderer's SGR parser, including extended colors."""
+    cells = embed.parse_screen(line, max(1, text_width(_ANSI.sub("", line))), 1)[0]
+    return all(cell.dim for cell in cells if cell.ch.strip())
+
+
+def _codex_backtrack_ready(styled: str) -> bool:
+    """Codex is idle with an empty composer, so Escape cannot interrupt or edit.
+
+    Escape interrupts a running turn, and backtracking requires an empty
+    composer. Require positive evidence of both: the composer row shows only
+    its dim placeholder, and no spinner or interrupt/queue hint is visible.
     """
-    for _ in range(16 * len(run)):
-        if not is_current():
-            raise PromptNavigationError("prompt_stale")
-        screen = _screen(name)
-        if _codex_find(screen):
-            raise PromptNavigationError("prompt_unavailable")
-        cells = _codex_user_cells(_transcript_area("codex", screen))
-        # Later prompts may follow the run on screen, and the run's tail may
-        # be below the viewport; compare only the overlapping prefix.
-        if (cells and _codex_cell_is(cells[0][1], run[0])
-                and all(_codex_cell_is(cell, message)
-                        for (_, cell), message in zip(cells, run, strict=False))):
-            return
-        embed.send_bytes(name, b"\x1b[<64;2;2M")
-        _await_screen(name, lambda value, old=screen: value != old, timeout=0.3, is_current=is_current)
-    raise PromptNavigationError("prompt_unavailable")
-
-
-def _codex_direct_anchor(messages: Sequence, selected) -> tuple[str, bool]:
-    """An immediate following entry proves the pinned header's user identity."""
-    index = next((i for i, message in enumerate(messages) if message is selected), -1)
-    if index < 0:
-        raise PromptNavigationError("prompt_stale")
-    from corral.ui.session_hud import is_injected_user_prompt
-
-    following = []
-    for message in messages[index + 1:]:
-        # Injected turns (skills, aborts) have no native user cell or reply.
-        if message.role == "user" and is_injected_user_prompt(message.text):
-            continue
-        following.append(message)
-        if message.role == "user":
-            break
-    # The first reply stays near its user header. A later user may be
-    # separated by thousands of rendered rows and is not a local anchor.
-    for message in following:
-        if message.role == "user":
-            break
-        try:
-            return _query_for_text(messages, _codex_plain_segments(message.text), max_width=240), False
-        except PromptNavigationError:
-            continue
-    # Consecutive user messages can have no intervening assistant entry.
-    # In that case only use the immediately following native user as context.
-    if following and following[-1].role == "user":
-        return _query_for_text(messages, following[-1].text), True
-    raise PromptNavigationError("prompt_ambiguous")
-
-
-def _codex_proof_row(lines: list[str], proof: str) -> int | None:
-    # Native fullscreen wrapping is performed by the application; tmux -J
-    # cannot recover those source lines. Ignore display whitespace for proof.
-    needle = "".join(proof.split())
-    for row, line in enumerate(lines):
-        if needle[:8] in "".join(line.split()) and needle in "".join("".join(lines[row:row + 8]).split()):
-            return row
-    return None
-
-
-def _codex_hit_settled(screen: str, proof: str) -> bool:
-    """Find holds the complete pasted query and is not scanning.
-
-    The editor may show either end of a long query, or none of it, so compare
-    any visible query as a whitespace-free substring. Settling does not prove the hit:
-    native hits inside collapsed tool output show no proof on screen.
-    """
-    lines = [line.strip() for line in screen.splitlines() if line.strip()]
-    if (len(lines) < 2 or not lines[-2].startswith("Find:") or "Searching" in lines[-1]
-            or lines[-1].startswith("Type to find")):
+    lines = [_ANSI.sub("", line) for line in styled.splitlines()]
+    composers = [row for row, line in enumerate(lines) if re.match(r"^\s*›", line)]
+    if not composers:
         return False
-    # A narrow editor can scroll the pasted query out of its single row.
-    shown = "".join(lines[-2].removeprefix("Find:").split()).strip("…")
-    return not shown or shown in "".join(proof.split())
+    row = composers[-1]
+    styled_rows = styled.splitlines()
+    if not _visible_all_dim(styled_rows[row].split("›", 1)[-1]):
+        return False
+    # A multi-line draft continues directly below; the status line follows a blank row.
+    if row + 1 < len(lines) and lines[row + 1].strip():
+        return False
+    footer = "\n".join(lines[row + 1:])
+    if re.search(r"[\u2800-\u28ff]|interrupt|tab to queue|Find|Browsing|esc again", footer, re.IGNORECASE):
+        return False
+    # The running status row sits just above the composer: "• Working (12s • esc …)".
+    above = "\n".join(lines[max(0, row - 3):row])
+    if re.search(r"\(\d+[smh]\b|esc[^\n]*\binterrupt\b|[\u2800-\u28ff]", above, re.IGNORECASE):
+        return False
+    return not _codex_find("\n".join(lines))
 
 
-def _codex_exhausted(screen: str) -> bool:
+def _codex_footer(screen: str) -> str:
     lines = [line.strip() for line in screen.splitlines() if line.strip()]
-    return bool(lines) and re.search(r"\bNo (more )?matches\b", lines[-1]) is not None
+    return lines[-1] if lines else ""
 
 
-_CODEX_SEARCH_LIMIT = 15.0
-
-
-def _await_codex_hit(name: str, proof: str, previous: str, is_current: Callable[[], bool]) -> str:
-    """Wait for the next settled native hit, observed twice unchanged.
-
-    Two hits in one viewport differ only by highlight, which plain capture
-    omits; an unchanged settled screen is accepted after a short grace.
-    """
-    started = time.monotonic()
-    deadline = started + 5.0
-    last = None
+def _await_settled(name: str, is_current: Callable[[], bool], timeout: float = 5.0,
+                   before: str | None = None) -> str:
+    """Wait for the screen to stop changing, after it first differs from `before`."""
+    deadline = time.monotonic() + timeout
+    if before is not None:
+        try:
+            _await_screen(name, lambda value: value != before, timeout=1.0, is_current=is_current)
+        except PromptNavigationError as exc:
+            if str(exc) != "prompt_unavailable":
+                raise
+    last, stable = None, 0
     while time.monotonic() < deadline:
         if not is_current():
             raise PromptNavigationError("prompt_stale")
         screen = _screen(name)
-        # Find scans a bounded chunk per frame, so long tool output after the
-        # target takes seconds. Keep waiting only while Codex reports progress.
-        if "Searching" in (screen.rstrip().splitlines() or [""])[-1]:
-            deadline = min(started + _CODEX_SEARCH_LIMIT, max(deadline, time.monotonic() + 1.0))
-        if (screen == last and _codex_hit_settled(screen, proof)
-                and (screen != previous or time.monotonic() - started >= 0.4)):
+        stable = stable + 1 if screen == last else 0
+        if stable >= 3:
             return screen
-        if _codex_exhausted(screen) and screen == last:
-            raise PromptNavigationError("prompt_unavailable")
         last = screen
-        time.sleep(0.015)
+        time.sleep(0.025)
     raise PromptNavigationError("prompt_unavailable")
 
 
-def _codex_top_user_cell(area: str) -> str | None:
-    """Whitespace-free text of the user cell at the top of the transcript area.
+def _codex_visible_prompts(screen: str, messages: Sequence, prompts: list[int]) -> dict[int, int]:
+    """Map native user rows only when their ordered history alignment is unique."""
+    area = _transcript_area("codex", screen)
+    cells = _codex_user_cells(area)
+    if not cells:
+        return {}
+    starts = [start for start in range(len(prompts) - len(cells) + 1)
+              if all(_codex_cell_is(cell, messages[prompts[start + offset]])
+                     for offset, (_, cell) in enumerate(cells))]
+    if len(starts) > 1:
+        lines = area.splitlines()
+        proved = []
+        for start in starts:
+            for offset, (row, _) in enumerate(cells):
+                ordinal = start + offset
+                end = prompts[ordinal + 1] if ordinal + 1 < len(prompts) else len(messages)
+                replies = [message for message in messages[prompts[ordinal] + 1:end]
+                           if message.role == "assistant" and message.text.strip()]
+                stop_row = cells[offset + 1][0] if offset + 1 < len(cells) else len(lines)
+                block = lines[row + 1:stop_row]
+                if any((proof := "".join(segment.split())[:40]) and len(proof) >= 8
+                       and any(line.startswith("• ") and proof[:8] in "".join(line.split())
+                               and proof in "".join("".join(block[at:at + 8]).split())
+                               for at, line in enumerate(block))
+                       for reply in replies for segment in _codex_plain_segments(reply.text).splitlines()[:1]):
+                    proved.append(start)
+                    break
+        starts = proved or starts
+    if len(starts) != 1:
+        return {}
+    return {row: starts[0] + offset for offset, (row, _) in enumerate(cells)}
 
-    A question-reply cell renders `> question` and its answer on separate
-    rows, while the pinned header joins them; compare without whitespace.
+
+def _codex_prompt_row(screen: str, messages: Sequence, prompts: list[int], ordinal: int) -> int | None:
+    """Return a requested row only after ruling out other repeated occurrences."""
+    return next((row for row, found in _codex_visible_prompts(screen, messages, prompts).items()
+                 if found == ordinal), None)
+
+
+def _codex_bring_to_top(name: str, screen: str, messages: Sequence, prompts: list[int], ordinal: int,
+                        is_current: Callable[[], bool]) -> bool:
+    """Scroll a visible prompt to the top one transcript row at a time.
+
+    Returns False when the prompt is not provably visible. At the end of the
+    conversation the view cannot scroll further; the visible prompt is kept.
     """
-    lines = area.splitlines()
-    start = next((row for row, line in enumerate(lines) if line.strip()), None)
-    if start is None or not lines[start].startswith("› "):
-        return None
-    cell = [lines[start][2:]]
-    for line in lines[start + 1:]:
-        if line and not line.startswith(" "):
-            break
-        cell.append(line)
-    return "".join("".join(cell).split())
+    for _ in range(screen.count("\n") + 2):
+        row = _codex_prompt_row(screen, messages, prompts, ordinal)
+        if row is None:
+            return False
+        area = _transcript_area("codex", screen).splitlines()
+        if row == next((index for index, line in enumerate(area) if line.strip()), row):
+            return True
+        if not is_current():
+            raise PromptNavigationError("prompt_stale")
+        embed.send_bytes(name, b"\x1b[<65;2;2M")
+        try:
+            screen = _await_screen(name, lambda value, old=screen: value != old,
+                                   timeout=0.3, is_current=is_current)
+        except PromptNavigationError as exc:
+            if str(exc) != "prompt_unavailable":
+                raise
+            return True
+    return False
 
 
-def _codex_label_matches(prefix: str, label: str) -> bool:
-    return bool(label and (prefix.startswith(label)
-                          or (label.startswith("> ") and label.endswith(" " + prefix))))
+def _codex_close_modes(name: str) -> None:
+    """Leave no native browsing, primed Escape or Find behind, then show the latest output.
 
-
-def _navigate_codex_direct(name: str, messages: Sequence, selected,
-                           is_current: Callable[[], bool]) -> None:
-    """Search, then activate Codex's existing pinned prompt header.
-
-    Cancel restores the old viewport; accepting Find retains ownership of
-    Enter. The native header is the public interaction that leaves Find and
-    jumps to its exact user entry without taking the ordinary composer.
+    Runs before input ownership returns to the user, ignoring cancellation:
+    keys already sent may not be drawn yet, so wait until the screen settles.
     """
-    run = _codex_landing(messages, selected)
-    proof, proof_is_user = _codex_direct_anchor(messages, run[-1])
-    prefix = " ".join((run[-1].text or "").split())
-    if not prefix:
-        raise PromptNavigationError("prompt_unavailable")
+    deadline = time.monotonic() + 1.5
+    last, stable = None, 0
+    while time.monotonic() < deadline:
+        screen = _screen(name)
+        footer = _codex_footer(screen)
+        if "Browsing" in footer or _codex_find(screen):
+            embed.send_key(name, "Escape")  # Restores the origin; never Enter.
+            last, stable = None, 0
+        elif "esc again" in footer:
+            embed.send_key(name, "C-End")  # Any other key cancels the primed Escape.
+            last, stable = None, 0
+        else:
+            stable = stable + 1 if screen == last else 0
+            if stable >= 3:
+                break
+            last = screen
+        time.sleep(0.04)
+    embed.send_key(name, "C-End")
+
+
+def _navigate_codex_backtrack(name: str, messages: Sequence, selected,
+                              is_current: Callable[[], bool]) -> bool:
+    """Select the prompt by ordinal in Codex's native prompt browsing.
+
+    Browsing steps between rendered user prompts without scanning tool output,
+    so its cost does not grow with session size. `q` closes browsing and keeps
+    the selected prompt at the top; Escape restores the origin, and Enter would
+    rewind, so Enter is never sent. Returns False when preconditions fail
+    before any input, so the caller can use ordinary scrolling instead.
+    """
+    from corral.ui.session_hud import summarize_user_messages
+
+    prompts = list(summarize_user_messages(list(messages)).message_indices)
+    index = next((i for i, message in enumerate(messages) if message is selected), -1)
+    if index not in prompts:
+        return False
+    target = prompts.index(index)
+    try:
+        styled = _tmux(name, "capture-pane", "-p", "-e", "-t", name)
+    except PromptNavigationError:
+        return False
+    if not _codex_backtrack_ready(styled):
+        return False
 
     def check():
         if not is_current():
             raise PromptNavigationError("prompt_stale")
 
-    initial = _screen(name)
-    if _codex_find(initial) or not _transcript_area("codex", initial):
-        raise PromptNavigationError("prompt_unavailable")
+    def step(count: int) -> str:
+        before = _screen(name)
+        keys = ["Left" if count > 0 else "Right"] * abs(count)
+        for start in range(0, len(keys), 64):
+            check()
+            embed.send_key(name, *keys[start:start + 64])
+        return _await_settled(name, is_current, before=before)
+
+    def locate(screen: str) -> int:
+        """Prove the top prompt using the same unique alignment as visible shortcuts."""
+        area = _transcript_area("codex", screen)
+        cells = _codex_user_cells(area)
+        lines = area.splitlines()
+        first = next((row for row, line in enumerate(lines) if line.strip()), None)
+        banner = cells and ">_ OpenAI Codex" in "\n".join(lines[:cells[0][0]]) and not any(
+            line.startswith(("• ", "› ")) for line in lines[:cells[0][0]])
+        if not cells or (cells[0][0] != first and not banner):
+            raise PromptNavigationError("prompt_unavailable")
+        found = _codex_visible_prompts(screen, messages, prompts).get(cells[0][0])
+        if found is None:
+            raise PromptNavigationError("prompt_ambiguous")
+        return found
+
+    def visible_row(screen: str, ordinal: int) -> int | None:
+        return _codex_prompt_row(screen, messages, prompts, ordinal)
+
     try:
         check()
-        embed.send_key(name, "F3")
-        _await_screen(name, _codex_find, is_current=is_current)
+        # Load every older page first: selection pauses at the oldest loaded
+        # prompt while a page loads and drops the rest of a key burst.
+        embed.send_key(name, "C-Home")
+        try:
+            _await_screen(name, lambda value: "Earlier messages" not in value
+                          and "Loading" not in _codex_footer(value), timeout=3.0, is_current=is_current)
+        except PromptNavigationError as exc:
+            if str(exc) != "prompt_unavailable":
+                raise
         check()
-        # One bracketed paste starts one scan. Typed characters each restart
-        # Find, and long histories reload older pages for every restart.
-        embed.send_bytes(name, b"\x1b[200~" + proof.encode() + b"\x1b[201~")
-        screen = _await_codex_hit(name, proof, "", is_current)
-        # Native Find also searches tool output and handoff quotations, which
-        # are absent from the normalized conversation used to choose the query.
-        # A wrong native hit must advance to the next match, never page forward.
-        for _match in range(32):
-            for _ in range(max(1, len(screen.splitlines()))):
-                check()
-                lines = _transcript_area("codex", screen).splitlines()
-                header = lines[0].strip() if lines else ""
-                label = header.removeprefix("›").strip().removesuffix("…").rstrip()
-                proof_row = _codex_proof_row(lines, proof)
-                # Native assistant cells start at the transcript gutter. A
-                # matching string inside a quoted user/tool cell is not proof.
-                native_proof = False
-                visible_users = []
-                if proof_row is not None:
-                    native_proof = (lines[proof_row].startswith("› ") if proof_is_user else
-                                    any(lines[row].startswith("• ")
-                                        for row in range(max(0, proof_row - 4), proof_row + 1)))
-                    visible_users = [line[1:].strip() for line in lines[1:proof_row + (not proof_is_user)]
-                                     if line.startswith("› ")]
-                visible_target = bool(visible_users and _codex_label_matches(prefix, visible_users[-1]))
-                if header.startswith("› ") and label and not _codex_label_matches(prefix, label) and not visible_target:
-                    break
-                if proof_row is None or not native_proof:
-                    break
-                if visible_users and not visible_target:
-                    break
-                body_started = any(line.strip() for line in lines[1:3])
-                complete_label = label == prefix or header.endswith("…") or label.startswith("> ")
-                if (header.startswith("› ") and _codex_label_matches(prefix, label)
-                        and body_started and complete_label):
-                    check()
-                    embed.send_bytes(name, b"\x1b[<0;2;1M\x1b[<0;2;1m")
-                    try:
-                        candidate = _await_screen(name, lambda value: not _codex_find(value),
-                                                  timeout=0.12, is_current=is_current)
-                    except PromptNavigationError as exc:
-                        if str(exc) != "prompt_unavailable":
-                            raise
-                        candidate = _screen(name)
-                    if not _codex_find(candidate):
-                        # The header and its proof were verified above. Tool
-                        # cells can push the reply below the viewport, so the
-                        # landing proof is the header's own user cell on top.
-                        cell = _codex_top_user_cell(_transcript_area("codex", candidate))
-                        if cell and cell.startswith("".join(label.split())):
-                            if len(run) > 1:
-                                _codex_reveal_run(name, run, is_current)
-                            return
-                        raise PromptNavigationError("prompt_unavailable")
-                    screen = candidate
-                check()
-                previous = screen
-                steps = min(4, max(1, proof_row - 1))
-                embed.send_bytes(name, b"\x1b[<65;2;2M" * steps)
-                try:
-                    screen = _await_screen(name, lambda value, old=previous: value != old,
-                                           timeout=0.15, is_current=is_current)
-                except PromptNavigationError as exc:
-                    if str(exc) != "prompt_unavailable":
-                        raise
-                    break
-            check()
-            previous = _screen(name)
-            if _codex_exhausted(previous):
-                raise PromptNavigationError("prompt_unavailable")
-            embed.send_key(name, "C-p")
-            screen = _await_codex_hit(name, proof, previous, is_current)
-        raise PromptNavigationError("prompt_unavailable")
-    finally:
-        # Cancel only the search this operation actually opened. Waiting
-        # ordinary input owns the lock next, after its editor has been restored.
-        if _codex_find(_screen(name)):
+        embed.send_key(name, "Escape")
+        _await_screen(name, lambda value: "esc again" in _codex_footer(value), timeout=0.8, is_current=is_current)
+        check()
+        embed.send_key(name, "Escape")
+        _await_screen(name, lambda value: "Browsing" in _codex_footer(value), timeout=1.5, is_current=is_current)
+        current = len(prompts) - 1
+        screen = step(current - target) if current != target else _await_settled(name, is_current)
+        for _ in range(3):
+            try:
+                current = locate(screen)
+            except PromptNavigationError as exc:
+                # A selected prompt already on screen is not scrolled to the top.
+                if str(exc) != "prompt_unavailable" or visible_row(screen, target) is None:
+                    raise
+                break
+            if current == target:
+                break
+            if current > target:
+                # Dropped keys leave the selection newer; older steps scroll it to the top.
+                screen = step(current - target)
+                continue
+            # Newer steps do not scroll a visible prompt to the top. Restart
+            # browsing from the latest prompt instead.
             embed.send_key(name, "Escape")
+            _await_screen(name, lambda value: "Browsing" not in _codex_footer(value),
+                          timeout=1.0, is_current=is_current)
+            embed.send_key(name, "Escape")
+            _await_screen(name, lambda value: "esc again" in _codex_footer(value), timeout=0.8, is_current=is_current)
+            embed.send_key(name, "Escape")
+            _await_screen(name, lambda value: "Browsing" in _codex_footer(value), timeout=1.5, is_current=is_current)
+            screen = step(len(prompts) - 1 - target)
+        else:
+            raise PromptNavigationError("prompt_unavailable")
+        check()
+        embed.send_key(name, "q")
+        screen = _await_screen(name, lambda value: "Browsing" not in _codex_footer(value),
+                               timeout=1.0, is_current=is_current)
+        screen = _await_settled(name, is_current)
+        try:
+            if locate(screen) == target:
+                return True
+        except PromptNavigationError as exc:
+            if str(exc) != "prompt_unavailable":
+                raise
+        if _codex_bring_to_top(name, screen, messages, prompts, target, is_current):
+            return True
+        raise PromptNavigationError("prompt_unavailable")
+    except BaseException:
+        _codex_close_modes(name)
+        raise
+
+
+def _navigate_codex_direct(name: str, messages: Sequence, selected,
+                           is_current: Callable[[], bool], allow_escape: bool = True) -> None:
+    """Reach a Codex prompt without opening Find.
+
+    Owner rule (2026-10-19): native Find must never appear. A visible prompt
+    needs no input; an idle agent with an empty composer uses prompt browsing;
+    otherwise ordinary scrolling and the pinned prompt header are used, which
+    leave drafts and running turns untouched.
+    """
+    from corral.ui.session_hud import summarize_user_messages
+
+    prompts = list(summarize_user_messages(list(messages)).message_indices)
+    index = next((i for i, message in enumerate(messages) if message is selected), -1)
+    initial = _screen(name)
+    if (index in prompts and not _codex_find(initial)
+            and _codex_bring_to_top(name, initial, messages, prompts, prompts.index(index), is_current)):
+        return
+    if allow_escape and _navigate_codex_backtrack(name, messages, selected, is_current):
+        return
+    _navigate_by_scroll(_SCROLL_PROFILES["codex"], name, messages, selected, is_current)
 
 
 def _navigate_opencode(name: str, messages: Sequence, target, is_current: Callable[[], bool]) -> None:
@@ -689,16 +719,319 @@ def _navigate_opencode(name: str, messages: Sequence, target, is_current: Callab
         raise
 
 
+_CLAUDE_COMPACT = "This session is being continued from a previous conversation"
+
+
+@dataclass(frozen=True)
+class _ScrollProfile:
+    """What the scroll navigator needs to know about one fullscreen runtime."""
+    runtime: str
+    marker: str        # Prompt row prefix, also used by the pinned header.
+    banner: str        # Visible only at the start of the rendered conversation.
+    header_column: int  # 1-based SGR column of a click on the pinned header row.
+
+
+_SCROLL_PROFILES = {
+    "claude": _ScrollProfile("claude", "❯ ", "Claude Code v", 3),
+    "codex": _ScrollProfile("codex", "› ", ">_ OpenAI Codex", 2),
+}
+
+
+def _scroll_prompt_rows(profile: _ScrollProfile, screen: str) -> list[tuple[int, str]]:
+    """Prompt rows of a fullscreen transcript: first line, whitespace-free.
+
+    Only the first line is used: the pinned header is a single row, and the
+    indented rows below it belong to the turn, not to the prompt.
+    """
+    return [(row, "".join(line[len(profile.marker):].split()).removesuffix("…"))
+            for row, line in enumerate(_transcript_area(profile.runtime, screen).splitlines())
+            if line.startswith(profile.marker)]
+
+
+def _scroll_at_top(profile: _ScrollProfile, screen: str) -> bool:
+    """Recognize native startup chrome, never its quotation inside a tool cell."""
+    lines = _transcript_area(profile.runtime, screen).splitlines()[:3]
+    if profile.runtime == "codex":
+        return any(re.match(r"^ {0,2}>_ OpenAI Codex \(v[0-9.]", line) for line in lines)
+    return any(re.match(r"^(?: {0,2}|╭─+ )Claude Code v[0-9.]", line) for line in lines)
+
+
+def _claude_prompt_rows(screen: str) -> list[tuple[int, str]]:
+    return _scroll_prompt_rows(_SCROLL_PROFILES["claude"], screen)
+
+
+def _claude_matches(cell: str, message) -> bool:
+    want = "".join((message.text or "").split())
+    # Slash commands render as "/command args" while history keeps only the args.
+    return bool(cell and want) and (cell == want or (len(cell) >= 4 and want.startswith(cell))
+                                    or (cell.startswith("/") and cell.endswith(want)))
+
+
+def _navigate_claude(name: str, messages: Sequence, selected, is_current: Callable[[], bool]) -> None:
+    prompts = [i for i, message in enumerate(messages) if not (message.text or "").startswith(_CLAUDE_COMPACT)]
+    _navigate_by_scroll(_SCROLL_PROFILES["claude"], name, messages, selected, is_current, keep=set(prompts))
+
+
+def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, selected,
+                        is_current: Callable[[], bool], keep: set[int] | None = None) -> None:
+    """Reach a prompt in a fullscreen view and click its pinned prompt header.
+
+    The top row names the prompt that owns the viewport: either the dim header
+    of the latest prompt above the view, or a prompt row itself. Ownership is
+    monotonic in scroll position, so a galloping search with PgUp/PgDn bursts
+    finds the target's turn; clicking the header lands its prompt at the top.
+    No Escape, Enter or transcript mode is used, so drafts and running turns are
+    unaffected. Resumed processes omit prompts before a compaction: reaching the
+    top without the target reports prompt_absent.
+    """
+    from corral.ui.session_hud import summarize_user_messages
+
+    if not is_current():
+        raise PromptNavigationError("prompt_stale")
+    prompts = [i for i in summarize_user_messages(list(messages)).message_indices if keep is None or i in keep]
+    index = next((i for i, message in enumerate(messages) if message is selected), -1)
+    if index not in prompts:
+        raise PromptNavigationError("prompt_unavailable")
+    target = prompts.index(index)
+
+    def check():
+        if not is_current():
+            raise PromptNavigationError("prompt_stale")
+
+    def settle(before: str) -> str:
+        """Claude applies key bursts asynchronously and lags on heavy turns.
+
+        Wait up to 3 s for the first change, then for 200 ms without change.
+        """
+        try:
+            screen = _await_screen(name, lambda value: value != before, timeout=3.0, is_current=is_current)
+        except PromptNavigationError as exc:
+            if str(exc) != "prompt_unavailable":
+                raise
+            return _screen(name)
+        quiet = time.monotonic()
+        deadline = quiet + 3.0
+        while time.monotonic() < deadline:
+            time.sleep(0.03)
+            check()
+            value = _screen(name)
+            if value != screen:
+                screen, quiet = value, time.monotonic()
+            elif time.monotonic() - quiet >= 0.2:
+                break
+        return screen
+
+    def at_top(screen: str) -> bool:
+        return _scroll_at_top(profile, screen)
+
+    def layout(screen: str, near: int) -> tuple[int | None, dict[int, int]]:
+        """The viewport owner and the ordinal of each visible recognised prompt row.
+
+        Row 0 is the pinned header (latest prompt above the view) or a prompt
+        row at the top; the recognised rows below it must then be the next
+        prompts in order. Rows outside the list (slash commands, attachments)
+        are skipped. When the header lags the content and no consistent
+        reading exists, the visible rows alone decide.
+        """
+        rows = _scroll_prompt_rows(profile, screen)
+        known = [(row, cell) for row, cell in rows
+                 if any(_claude_matches(cell, messages[i]) for i in prompts)]
+        below = [(row, cell) for row, cell in known if row > 0]
+
+        def follows(start: int) -> bool:
+            return all(start + k < len(prompts) and _claude_matches(cell, messages[prompts[start + k]])
+                       for k, (_, cell) in enumerate(below))
+
+        options: list[int] = []
+        if known and known[0][0] == 0:
+            options = [h for h in range(len(prompts)) if _claude_matches(known[0][1], messages[prompts[h]])
+                       and follows(h + 1)]
+        if not options and below:
+            options = [v - 1 for v in range(len(prompts)) if follows(v)]
+        if not options:
+            return (-1 if at_top(screen) else None), {}
+        own = min(options, key=lambda o: abs(o - near))
+        if len(options) > 1:
+            return own, {}
+        mapping = {row: own + 1 + k for k, (row, _) in enumerate(below)}
+        if known and known[0][0] == 0:
+            mapping[0] = own
+        return own, mapping
+
+    def owner(screen: str, near: int) -> int | None:
+        return layout(screen, near)[0]
+
+    def target_row(screen: str, own: int | None) -> int | None:
+        _, mapping = layout(screen, target if own is None else own)
+        return next((row for row, ordinal in mapping.items() if ordinal == target and row > 0), None)
+
+    def click_header(screen: str) -> str:
+        check()
+        embed.send_bytes(name, f"\x1b[<0;{profile.header_column};1M\x1b[<0;{profile.header_column};1m".encode())
+        clicked = settle(screen)
+        if not _scroll_prompt_rows(profile, clicked):
+            # Claude can redraw a jumped viewport again once it measures rows.
+            clicked = settle(clicked)
+        return clicked
+
+    def tick(button: int, screen: str) -> str:
+        """One wheel line. Claude accelerates fast spins, so lines are sent singly."""
+        check()
+        embed.send_bytes(name, f"\x1b[<{button};3;3M".encode())
+        try:
+            return _await_screen(name, lambda value: value != screen, timeout=0.4, is_current=is_current)
+        except PromptNavigationError as exc:
+            if str(exc) != "prompt_unavailable":
+                raise
+            return screen
+
+    def land(screen: str, own: int | None) -> None:
+        """Put the target at the top: scroll it just above the view, then click its header."""
+        half = max(1, len(_transcript_area(profile.runtime, screen).splitlines()) // 2)
+        for _ in range(4 * half + 8):
+            rows = _scroll_prompt_rows(profile, screen)
+            top_is_target = bool(rows) and rows[0][0] == 0 and _claude_matches(rows[0][1], messages[prompts[target]])
+            if own == target and top_is_target:
+                clicked = click_header(screen)
+                rows_after = _scroll_prompt_rows(profile, clicked)
+                if clicked == screen or (rows_after and rows_after[0][0] == 0
+                                         and _claude_matches(rows_after[0][1], messages[prompts[target]])):
+                    if profile.runtime == "codex":
+                        proven = _codex_visible_prompts(clicked, messages, prompts)
+                        if not proven or proven.get(min(proven)) != target:
+                            raise PromptNavigationError("prompt_ambiguous")
+                    return  # Landed, or the prompt row itself was already at the top.
+                screen, own = clicked, owner(clicked, target)
+                continue
+            if own == target:
+                # The target is just above the view but the header still names
+                # an older prompt; bring the target's own row down to the top.
+                screen = tick(64, screen)
+                own = owner(screen, target)
+                continue
+            row = target_row(screen, own)
+            if row is None:
+                if own is not None and own > target:
+                    screen = tick(64, screen)  # Overshot; come back one line.
+                    own = owner(screen, target)
+                    continue
+                if own is not None and own < target:
+                    # The header row is drawn over row 0 and can hide the
+                    # target there; one more line moves it under the header.
+                    before = screen
+                    screen = tick(65, screen)
+                    if screen == before:
+                        raise PromptNavigationError("prompt_unavailable")
+                    own = owner(screen, target)
+                    continue
+                raise PromptNavigationError("prompt_unavailable")
+            before = screen
+            if row > half + 1:
+                # PgDn moves exactly half the viewport.
+                check()
+                embed.send_key(name, "PageDown")
+                screen = settle(screen)
+            else:
+                screen = tick(65, screen)
+            if screen == before:
+                return  # The conversation end cannot scroll further; the prompt stays visible.
+            own = owner(screen, target)
+        raise PromptNavigationError("prompt_unavailable")
+
+    initial = _screen(name)
+    try:
+        _scroll_search(profile, name, messages, prompts, target, is_current, settle, owner, target_row,
+                       land, at_top, check)
+    except BaseException:
+        if _screen(name) == initial:
+            raise
+        # Return to the latest output; PageDown works with a draft as well.
+        for _ in range(12):
+            before = _screen(name)
+            embed.send_key(name, *["PageDown"] * 20)
+            try:
+                _await_screen(name, lambda value, old=before: value != old, timeout=0.5)
+            except PromptNavigationError:
+                break
+        raise
+
+
+def _scroll_search(profile, name, messages, prompts, target, is_current, settle, owner, target_row,
+                   land, at_top, check) -> None:
+    screen = _screen(name)
+    if not _transcript_area(profile.runtime, screen):
+        raise PromptNavigationError("prompt_unavailable")
+    own = owner(screen, len(prompts) - 1)
+    if target_row(screen, own) is not None:
+        land(screen, own)
+        return
+    # Leave live follow so the header appears.
+    check()
+    embed.send_key(name, "PageUp")
+    screen = settle(screen)
+    position, own = -1, owner(screen, len(prompts) - 1)
+    above = below = None  # Positions known to be past / before the target.
+    step = 1
+    for _ in range(40):
+        if own == target or target_row(screen, own) is not None:
+            land(screen, own)
+            return
+        if own is None:
+            # Large tool cells may hide the pinned header for many pages. Keep
+            # galloping until known user cells bracket the target.
+            delta = -step if below is None else (below - position) // 2 or -1
+            if below is None:
+                step *= 2
+        elif own > target:
+            above = position
+            delta = -step if below is None else (below - position) // 2 or -1
+            if below is None:
+                step *= 2
+        else:
+            below = position
+            delta = step if above is None else (above - position) // 2 or 1
+            if above is None:
+                step *= 2
+        if above is not None and below is not None and above - below <= 1:
+            # Half a page apart the target row was on screen at `below`; it was
+            # not recognised (attachments, commands), so it cannot be verified.
+            raise PromptNavigationError("prompt_unavailable")
+        check()
+        before = screen
+        embed.send_key(name, *(["PageUp"] * -delta if delta < 0 else ["PageDown"] * delta))
+        screen = settle(before)
+        position += delta
+        new_owner = owner(screen, target if own is None else own)
+        own = new_owner
+        if at_top(screen):
+            if own is None or own > target:
+                # The top of the rendered conversation is newer than the target.
+                raise PromptNavigationError("prompt_absent")
+            # Bursts may stop at the top; restart bounds from this known edge.
+            position, above, below, step = 0, None, 0, 1
+        elif screen == before:
+            raise PromptNavigationError("prompt_unavailable")
+    raise PromptNavigationError("prompt_unavailable")
+
+
+_NATIVE_LIMIT = 15.0
+
+
 def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0, total: int = 1,
                     target: PromptTarget | None = None,
                     messages: Sequence = (), selected=None,
-                    is_current: Callable[[], bool] = lambda: True) -> None:
-    """Navigate only the existing native viewport; never submit user input."""
+                    is_current: Callable[[], bool] = lambda: True, allow_escape: bool = True) -> None:
+    """Navigate only the existing native viewport; never submit user input.
+
+    `allow_escape=False` reports that the caller knows the agent is working or
+    waiting; Escape-based native paths are then skipped entirely.
+    """
     if not query or total < 1 or not 0 <= occurrence < total:
         raise PromptNavigationError("prompt_unavailable")
     # Codex Find scans long tool output between hits; any user input still
     # cancels at once, so its bound only limits an abandoned search.
-    with embed.navigation_transaction(name, timeout=_CODEX_SEARCH_LIMIT if runtime == "codex" else 5.0) as owns_input:
+    with embed.navigation_transaction(name, timeout=_NATIVE_LIMIT if runtime in ("codex", "claude")
+                                      else 5.0) as owns_input:
         selected_current = is_current
         def operation_current():
             return owns_input() and selected_current()
@@ -706,10 +1039,13 @@ def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0,
         if not is_current():
             raise PromptNavigationError("prompt_stale")
         if runtime == "codex":
-            _navigate_codex_direct(name, messages, selected, is_current)
+            _navigate_codex_direct(name, messages, selected, is_current, allow_escape)
             return
         if runtime == "opencode":
             _navigate_opencode(name, messages, selected, is_current)
+            return
+        if runtime == "claude":
+            _navigate_claude(name, messages, selected, is_current)
             return
         if runtime != "pi":
             raise PromptNavigationError("prompt_unavailable")

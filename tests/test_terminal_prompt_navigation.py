@@ -85,144 +85,6 @@ class QueryIdentityTests(unittest.TestCase):
         resolved = nav.prompt_target([first, answer, target], target)
         self.assertEqual(resolved.anchor, "Unique reply heading")
 
-    def test_codex_anchor_stays_before_long_reply_instead_of_next_question(self):
-        selected = ConversationMessage("user", "继续")
-        reply = ConversationMessage("assistant", "Immediate unique reply\n" + "long body\n" * 500)
-        following = ConversationMessage("user", "A unique later question")
-        messages = [ConversationMessage("user", "继续"), selected, reply, following]
-        proof, next_user = nav._codex_direct_anchor(messages, selected)
-        self.assertEqual(proof, "Immediate unique reply")
-        self.assertFalse(next_user)
-
-    def test_codex_skips_a_native_tool_quotation_without_scrolling_that_turn(self):
-        selected = ConversationMessage("user", "Selected question")
-        reply = ConversationMessage("assistant", "Unique reply opening")
-        footer = "\n› unsent draft\nFind: Unique reply opening\nenter accept · full transcript · esc cancel"
-        # A hit inside collapsed tool output shows no proof on screen at all.
-        hidden = "› Later question\n• Ran fixture\n  + 44 lines (⌃t to expand)" + footer
-        quoted = "› Different question\n$ fixture command\nUnique reply opening" + footer
-        correct = "› Selected question\n• Unique reply opening\nanswer body" + footer
-        final = "\n› Selected question\n\n• Unique reply opening\n› unsent draft\n? for shortcuts"
-        hits = iter([quoted, correct])
-        state = {"screen": "Latest output\n› unsent draft\n? for shortcuts"}
-
-        def key(_name, value):
-            state["screen"] = hidden if value == "F3" else next(hits)
-
-        def raw(_name, value):
-            if value.startswith(b"\x1b[200~"):
-                self.assertEqual(value, b"\x1b[200~Unique reply opening\x1b[201~")
-                return True
-            self.assertEqual(value, b"\x1b[<0;2;1M\x1b[<0;2;1m")
-            state["screen"] = final
-            return True
-
-        with (mock.patch.object(nav, "_screen", side_effect=lambda _: state["screen"]),
-              mock.patch.object(embed, "send_key", side_effect=key) as keys,
-              mock.patch.object(embed, "send_literal") as literal,
-              mock.patch.object(embed, "send_bytes", side_effect=raw)):
-            nav._navigate_codex_direct("fixture", [selected, reply], selected, lambda: True)
-        self.assertEqual([call.args[1] for call in keys.call_args_list], ["F3", "C-p", "C-p"])
-        literal.assert_not_called()
-
-    def test_codex_hit_settles_only_on_complete_idle_query(self):
-        proof = "An exact source line containing English and 中文内容 across a native display wrap"
-        screen = ("› Selected question\n• Unrelated visible text\n› draft\n"
-                  "Find: across a native display wrap\nenter accept · full transcript · esc cancel")
-        self.assertTrue(nav._codex_hit_settled(screen, proof))
-        head = screen.replace("Find: across a native display wrap", "Find: An exact source line")
-        self.assertTrue(nav._codex_hit_settled(head, proof))
-        self.assertFalse(nav._codex_hit_settled(screen.replace("enter accept", "Searching…"), proof))
-        self.assertFalse(nav._codex_hit_settled(screen.replace("Find: across", "Find: other"), proof))
-        self.assertTrue(nav._codex_exhausted("Find: x\nNo more matches · enter accept · esc cancel"))
-
-    def test_codex_consecutive_user_context_and_question_reply_label(self):
-        selected = ConversationMessage("user", "First queued question")
-        following = ConversationMessage("user", "Second queued question")
-        proof, is_user = nav._codex_direct_anchor([selected, following], selected)
-        self.assertEqual(proof, following.text)
-        self.assertTrue(is_user)
-        self.assertTrue(nav._codex_label_matches("corral-tui 的内嵌 Codex",
-                                                "> Which surface? corral-tui 的内嵌 Codex"))
-        self.assertFalse(nav._codex_label_matches("继续", "继续分析验证"))
-
-    def test_codex_question_reply_lands_with_tool_cells_before_reply(self):
-        # Observed on a real transcript: the selected answer to a question card
-        # renders on two rows and many tool cells precede the reply proof.
-        selected = ConversationMessage("user", "corral-tui 的内嵌 Codex")
-        reply = ConversationMessage("assistant", "Unique reply opening")
-        footer = "\n› unsent draft\nFind: Unique reply opening\nenter accept · full transcript · esc cancel"
-        found = ("› > Which surface? corral-tui 的内嵌 Codex\n\n• Ran fixture\n  └ output\n\n"
-                 "• Unique reply opening" + footer)
-        final = ("› > Which surface?\n\n  corral-tui 的内嵌 Codex\n\n\n"
-                 "• Ran fixture\n  └ output\n› unsent draft\nesc latest")
-        state = {"screen": "Latest output\n› unsent draft\n? for shortcuts"}
-
-        def key(_name, value):
-            state["screen"] = found if value == "F3" else state["screen"]
-
-        def click(_name, value):
-            if not value.startswith(b"\x1b[200~"):
-                state["screen"] = final
-            return True
-
-        with (mock.patch.object(nav, "_screen", side_effect=lambda _: state["screen"]),
-              mock.patch.object(embed, "send_key", side_effect=key) as keys,
-              mock.patch.object(embed, "send_bytes", side_effect=click)):
-            nav._navigate_codex_direct("fixture", [selected, reply], selected, lambda: True)
-        self.assertEqual([call.args[1] for call in keys.call_args_list], ["F3"])
-
-    def test_codex_anchor_avoids_markdown_syntax_absent_from_rendered_text(self):
-        # Observed: a reply opening with bold text had no native Find match.
-        selected = ConversationMessage("user", "有什么阶段性的发现没有？")
-        reply = ConversationMessage("assistant", "有，**方向可行，而且现有实现已经具备一部分基础**：\n- `code` item")
-        proof, _ = nav._codex_direct_anchor([selected, reply], selected)
-        self.assertEqual(proof, "方向可行，而且现有实现已经具备一部分基础")
-
-    def test_codex_anchor_skips_injected_turns_without_native_cells(self):
-        selected = ConversationMessage("user", "$opencode-delegate 完成实现")
-        injected = ConversationMessage("user", "<skill>\n<name>opencode-delegate</name>\n</skill>")
-        reply = ConversationMessage("assistant", "Delegation finished with a unique reply")
-        proof, is_user = nav._codex_direct_anchor([selected, injected, reply], selected)
-        self.assertEqual((proof, is_user), ("Delegation finished with a unique reply", False))
-
-    def test_codex_consecutive_prompt_lands_on_pinnable_prompt_then_reveals_upward(self):
-        # Observed: a prompt directly followed by other prompts has no native
-        # pinned header. Land on the run's last prompt, then scroll up.
-        target = ConversationMessage("user", "First queued question")
-        middle = ConversationMessage("user", "Second queued question")
-        last = ConversationMessage("user", "Third question")
-        reply = ConversationMessage("assistant", "Unique reply opening")
-        messages = [target, middle, last, reply]
-        self.assertEqual(nav._codex_landing(messages, target), [target, middle, last])
-        self.assertEqual(nav._codex_landing([target, middle], target), [target])
-        footer = "\n› unsent draft\nFind: Unique reply opening\nenter accept · full transcript · esc cancel"
-        found = "› Third question\n\n• Unique reply opening" + footer
-        frames = iter([
-            "› Third question\n\n• Unique reply opening\n› unsent draft\nesc latest",
-            "› Second queued question\n\n› Third question\n› unsent draft\nesc latest",
-            "› First queued question\n\n› Second queued question\n\n› Third question\n› unsent draft\nesc latest",
-        ])
-        state = {"screen": "Latest output\n› unsent draft\n? for shortcuts"}
-
-        def key(_name, value):
-            state["screen"] = found
-
-        def raw(_name, value):
-            if value.startswith((b"\x1b[<0;", b"\x1b[<64;")):
-                state["screen"] = next(frames)
-            return True
-
-        with (mock.patch.object(nav, "_screen", side_effect=lambda _: state["screen"]),
-              mock.patch.object(embed, "send_key", side_effect=key),
-              mock.patch.object(embed, "send_bytes", side_effect=raw) as sent):
-            nav._navigate_codex_direct("fixture", messages, target, lambda: True)
-        self.assertEqual(sum(call.args[1] == b"\x1b[<64;2;2M" for call in sent.call_args_list), 2)
-
-    def test_codex_landing_rejects_a_different_top_user_cell(self):
-        self.assertEqual(nav._codex_top_user_cell("› > Q?\n\n  answer\n\n• Ran x"), ">Q?answer")
-        self.assertIsNone(nav._codex_top_user_cell("• reply\n› later"))
-
     def test_overlapping_occurrences_cannot_masquerade_as_unique(self):
         target = ConversationMessage("user", "a" * 25)
         with self.assertRaisesRegex(nav.PromptNavigationError, "ambiguous"):
@@ -336,6 +198,20 @@ class HostIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(ActionError, "history|历史"):
                 self.hub.terminal_prompt("codex:a", 7, 8, native=True)
         move.assert_not_called()
+
+    def test_native_ordinal_path_does_not_require_a_unique_text_query(self):
+        with (mock.patch.object(nav, "prompt_target", side_effect=nav.PromptNavigationError("prompt_ambiguous")),
+              mock.patch.object(nav, "navigate_native") as move):
+            result = self.hub.terminal_prompt("codex:a", 7, 9, native=True)
+        self.assertTrue(result["native"])
+        self.assertIs(move.call_args.kwargs["selected"], self.target)
+        self.assertIsNone(move.call_args.kwargs["target"])
+
+    def test_known_working_remote_session_disables_escape_navigation(self):
+        self.hub.require_session = lambda key: {"source": "codex", "attention_kind": "working"}
+        with mock.patch.object(nav, "navigate_native") as move:
+            self.hub.terminal_prompt("codex:a", 7, 9, native=True)
+        self.assertFalse(move.call_args.kwargs["allow_escape"])
 
     def test_unhosted_selection_never_resumes(self):
         self.hub._hosted_name = lambda key: ""

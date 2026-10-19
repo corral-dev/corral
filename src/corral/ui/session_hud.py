@@ -59,6 +59,8 @@ _MAX_EXPANDED_HEIGHT = 20
 _SCROLL_STEP = 3
 # 展开态每条提问最多占几行；再长末行加省略号。收起态本来就是一行截断。
 _MAX_PROMPT_LINES = 4
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_FAILURE_SECONDS = 2.0
 # 条纹叠在**当前**浮层底上：选中格是 `$pane-active-background`，没选中是
 # `$panel`（抬离助手画布）。叠 `$primary`，不要叠 `$foreground`
 # （那是灰，会把激活条的蓝洗成泥灰）。40% 才能在蓝底上看得出一块更亮的
@@ -73,6 +75,18 @@ _IMAGE_WRAP_RE = re.compile(r"<image\b[^>]*>\s*</image>\s*", re.IGNORECASE | re.
 # 这种用户自己敲的技能快捷方式。
 _INJECTED_PREFIXES = (
     "<turn_aborted>",
+    # Codex context it injects as user input but never renders as a prompt
+    # (verified on real 0.163.0 sessions, 2026-10-19). Native prompt
+    # browsing counts rendered prompts, so these also shift its ordinals.
+    "<codex_internal_context",
+    "<recommended_plugins>",
+    "<external_codex_apps_open_page>",
+    "<user_shell_command>",
+    "<user_action>",
+    "<codex_delegation>",
+    "<in-app-browser-context",
+    # Claude compaction summary, rendered as a summary, not as a prompt.
+    "This session is being continued from a previous conversation",
     "<subagent_notification>",
     "<skill>",
     "<local-command",
@@ -259,7 +273,7 @@ class SessionHud(Widget):
 
     ALLOW_SELECT = False
     can_focus = False
-    COMPONENT_CLASSES = {"session-hud--pressed"}
+    COMPONENT_CLASSES = {"session-hud--pressed", "session-hud--status"}
 
     # 底色用分栏激活条那个变量：小窗本来就是「当前这一格」的附属信息，视觉上跟着
     # 该格的高亮条走，一眼看出是 corral 的浮层而不是助手自己画的。
@@ -291,6 +305,9 @@ class SessionHud(Widget):
         background: $primary;
         color: $text;
     }
+    SessionHud > .session-hud--status {
+        text-style: bold;
+    }
     """
 
     def __init__(self, on_toggle: Callable[[], None] | None = None, **kwargs) -> None:
@@ -299,6 +316,12 @@ class SessionHud(Widget):
         self._expanded = False
         self._pressed_entry: int | None = None
         self._press_timer = None
+        # Clicked-row navigation status keyed by source message index:
+        # ("locating", "") or ("failed", reason text).
+        self._status: dict[int, tuple[str, str]] = {}
+        self._spinner_frame = 0
+        self._spinner_timer = None
+        self._status_timers: dict[int, object] = {}
         self._on_toggle = on_toggle
         # 展开态正文的滚动位置（行）。`lines()` 每次按实际可见高度重算上限并夹紧，
         # 所以窗口变小、内容变少都不会滚出界。默认钉在最底（最新提问）；用户上滚
@@ -395,7 +418,7 @@ class SessionHud(Widget):
         line.append(fit_cell(body, max(1, width - text_width(prefix)), ellipsis=True))
         return line
 
-    def _entry_lines(self, stamp: str, body: str, width: int) -> list[Text]:
+    def _entry_lines(self, stamp: str, body: str, width: int, status: tuple[str, str] | None = None) -> list[Text]:
         """展开态的一条提问：最多 `_MAX_PROMPT_LINES` 行，超出末行加 `...`。
 
         续行缩进到与首行正文对齐。时间列固定 5 格 + 2 格间距，续行前缀用等宽
@@ -407,6 +430,14 @@ class SessionHud(Widget):
         indent = " " * text_width(prefix)
         body_width = max(1, width - text_width(prefix))
         wrapped = wrap_preview_text(body, body_width) or [""]
+        if status is not None:
+            # The status replaces the time column. Wrap with the ordinary
+            # prefix so the row keeps its height and rows never shift under
+            # the pointer; only the first line is shortened to fit.
+            kind, reason = status
+            label = (f"{_SPINNER[self._spinner_frame % len(_SPINNER)]} {t('hud.locating')}"
+                     if kind == "locating" else reason)
+            prefix = f"{label}  "
         truncated = len(wrapped) > _MAX_PROMPT_LINES
         if truncated:
             wrapped = wrapped[:_MAX_PROMPT_LINES]
@@ -414,12 +445,13 @@ class SessionHud(Widget):
         last = len(wrapped) - 1
         for index, part in enumerate(wrapped):
             line = Text(no_wrap=True)
-            line.append(prefix if index == 0 else indent, style="dim")
-            line.append(fit_cell(
-                part if not (truncated and index == last) else f"{part}...",
-                body_width,
-                ellipsis=truncated and index == last,
-            ))
+            text = part if not (truncated and index == last) else f"{part}..."
+            if index == 0 and status is not None:
+                line.append(prefix, style=self._status_style())
+                line.append(fit_cell(text, max(1, width - text_width(prefix)), ellipsis=True))
+            else:
+                line.append(prefix if index == 0 else indent, style="dim")
+                line.append(fit_cell(text, body_width, ellipsis=truncated and index == last))
             out.append(line)
         return out
 
@@ -428,9 +460,10 @@ class SessionHud(Widget):
         out: list[Text] = []
         for index, (stamp, body) in enumerate(self._data.entries):
             paint = stripe_on if index % 2 else ""
-            for line in self._entry_lines(stamp, body, width):
+            status = self._entry_status(index)
+            for line in self._entry_lines(stamp, body, width, status):
                 self._paint_stripe(line, paint)
-                if index == self._pressed_entry:
+                if index == self._pressed_entry or (status is not None and status[0] == "locating"):
                     line.pad_right(max(0, width - text_width(line.plain)))
                     line.stylize(self.get_component_rich_style("session-hud--pressed"))
                 out.append(line)
@@ -548,6 +581,49 @@ class SessionHud(Widget):
                 return index
             row -= count
         return None
+
+    def _status_style(self):
+        try:
+            return self.get_component_rich_style("session-hud--status")
+        except Exception:
+            return "bold"  # Component styles exist only once the widget is mounted.
+
+    def _entry_status(self, index: int) -> tuple[str, str] | None:
+        if not self._data.message_indices or index >= len(self._data.message_indices):
+            return None
+        return self._status.get(self._data.message_indices[index])
+
+    def set_prompt_status(self, message_index: int, kind: str | None, reason: str = "") -> None:
+        """Show a clicked row's navigation state in its time column.
+
+        `kind` is "locating", "failed" (cleared after a short delay) or None.
+        Rows keep their height in every state.
+        """
+        timer = self._status_timers.pop(message_index, None)
+        if timer is not None:
+            timer.stop()
+        if kind is None:
+            self._status.pop(message_index, None)
+        else:
+            self._status[message_index] = (kind, reason)
+            if kind == "failed":
+                self._status_timers[message_index] = self.set_timer(
+                    _FAILURE_SECONDS, lambda: self.set_prompt_status(message_index, None))
+        locating = any(value[0] == "locating" for value in self._status.values())
+        if locating and self._spinner_timer is None:
+            self._spinner_timer = self.set_interval(0.1, self._advance_spinner)
+        elif not locating and self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        self.refresh()
+
+    def prompt_status(self, message_index: int) -> str | None:
+        status = self._status.get(message_index)
+        return status[0] if status else None
+
+    def _advance_spinner(self) -> None:
+        self._spinner_frame += 1
+        self.refresh()
 
     def _clear_pressed(self) -> None:
         self._pressed_entry = None

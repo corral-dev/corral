@@ -101,6 +101,10 @@ class HudControllerMixin:
 
     def jump_to_terminal_prompt(self, key: str, body: str, cell, message_index: int | None = None,
                                 token: str | None = None) -> None:
+        hud = self._cell_hud(cell)
+        if hud is not None and message_index is not None and hud.prompt_status(message_index) == "locating":
+            # The same row is already locating; a repeated click must not restart it.
+            return
         self._prompt_navigation_revision = getattr(self, "_prompt_navigation_revision", 0) + 1
         revision = self._prompt_navigation_revision
         pane = cell.embed_pane() if hasattr(cell, "embed_pane") else None
@@ -120,7 +124,38 @@ class HudControllerMixin:
                 return
             pane.reveal_detail_prompt(message_index)
             return
+        previous = getattr(self, "_prompt_navigation_row", None)
+        if previous is not None and previous[0] is not None:
+            # A newer selection supersedes the earlier row without a failure message.
+            previous[0].set_prompt_status(previous[1], None)
+        self._prompt_navigation_row = (hud, message_index) if message_index is not None else None
+        if hud is not None and message_index is not None:
+            hud.set_prompt_status(message_index, "locating")
         self._navigate_terminal_prompt(key, body, cell, revision, message_index, token)
+
+    @staticmethod
+    def _cell_hud(cell):
+        from corral.ui.session_hud import SessionHud
+
+        try:
+            return cell.query_one(SessionHud)
+        except Exception:
+            return None
+
+    def _finish_prompt_status(self, revision: int, reason: str | None) -> None:
+        """Clear the clicked row, or show a brief failure reason for the current selection."""
+        from corral.i18n import t
+
+        row = getattr(self, "_prompt_navigation_row", None)
+        if row is None or row[0] is None or revision != self._prompt_navigation_revision:
+            return
+        hud, index = row
+        self._prompt_navigation_row = None
+        if reason is None or reason == "prompt_stale":
+            hud.set_prompt_status(index, None)
+        else:
+            hud.set_prompt_status(index, "failed", t("hud.not_in_terminal" if reason == "prompt_absent"
+                                                     else "hud.locate_failed"))
 
     @work(thread=True, group="prompt-navigation")
     def _navigate_terminal_prompt(self, key: str, body: str, cell, revision: int,
@@ -153,31 +188,48 @@ class HudControllerMixin:
             if token is not None and (message_index is None or prompt_identity(messages, message_index) != token):
                 raise PromptNavigationError("prompt_stale")
             stage = "query"
-            target = prompt_target(messages, targets[0])
-            query = target.query
+            try:
+                target = prompt_target(messages, targets[0])
+            except PromptNavigationError:
+                # Fullscreen native paths locate by ordinal and context; only
+                # the retained-buffer lookup needs a text query.
+                target = None
             if revision != self._prompt_navigation_revision:
                 return
             stage = "buffer"
-            offset = buffer_offset(name, query, occurrence=target.occurrence, total=target.total)
+            offset = (buffer_offset(name, target.query, occurrence=target.occurrence, total=target.total)
+                      if target is not None else None)
             if offset is None:
                 stage = "native"
-                navigate_native(name, str(session.get("source") or ""), query,
-                                occurrence=target.occurrence, total=target.total,
+                # Escape interrupts a working agent; never use Escape-based
+                # native navigation while this session is working or asking.
+                try:
+                    busy = self.store.attention_for(key).kind in ("working", "waiting")
+                except Exception:
+                    busy = False  # Screen evidence still gates Escape-based paths.
+                navigate_native(name, str(session.get("source") or ""), target.query if target else body,
+                                occurrence=target.occurrence if target else 0,
+                                total=target.total if target else 1,
                                 target=target, messages=messages, selected=targets[0],
                                 is_current=lambda: revision == self._prompt_navigation_revision
-                                and cell.spec.session_key == key)
+                                and cell.spec.session_key == key, allow_escape=not busy)
                 offset = 0
             stage = "presentation"
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)
+            self.app.call_from_thread(self._finish_prompt_status, revision, None)
         except Exception as exc:
-            # Contain internal resolution/capture failures at this optional UI boundary.
-            # Owner requirement: prompt jumps never surface anything visible,
-            # on success or on failure. Keep only content-free failure metadata.
+            # Contain internal failures at this optional UI boundary. The clicked
+            # row shows a brief reason (owner decision 2026-10-19); never a popup,
+            # focus change or input impact. Diagnostics stay content-free.
             from corral import observe
 
             reason = str(exc) if isinstance(exc, PromptNavigationError) else type(exc).__name__
             observe.event("prompt_navigation_failed", runtime=str((session or {}).get("source") or ""),
                           stage=stage, reason=reason, duration_ms=round((time.monotonic() - started) * 1000))
+            try:
+                self.app.call_from_thread(self._finish_prompt_status, revision, reason)
+            except Exception:
+                pass
             return
 
     def _apply_prompt_jump(self, key: str, name: str, cell, revision: int, offset: int) -> None:

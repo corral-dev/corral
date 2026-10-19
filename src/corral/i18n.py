@@ -114,6 +114,24 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Session history changed. Reopen Your prompts and try again.",
         "zh": "会话历史已变化，请重新打开提示词列表再试。",
     },
+    # Clicked prompt row status (owner decision 2026-10-19): shown in the
+    # row's time column only; keep them short.
+    "hud.locating": {
+        "en": "Locating",
+        "zh": "定位中",
+    },
+    "hud.not_in_terminal": {
+        "en": "Not in terminal",
+        "zh": "已不在终端中",
+    },
+    "hud.locate_failed": {
+        "en": "Not located",
+        "zh": "未能定位",
+    },
+    "remote.err.prompt_absent": {
+        "en": "This prompt is no longer in the agent's terminal.",
+        "zh": "这条提问已不在助手终端中。",
+    },
     "hud.collapse_hint": {
         "en": "Click to collapse",
         "zh": "点击收起",
