@@ -1037,7 +1037,8 @@ class RemoteService:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content")) from exc
         if len(data) > _TERMINAL_INPUT_MAX:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
-        self.hub.terminal_input(_key(params), data, _terminal_viewer(connection))
+        self.hub.terminal_input(_key(params), data, _terminal_viewer(connection),
+                                passive=params.get("passive") is True)
         return {"ok": True}
 
     def _terminal_theme(self, connection: Connection, params: dict):

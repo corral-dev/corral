@@ -1995,6 +1995,7 @@ class SessionHub:
 
     def terminal_prompt(self, key: str, seq: int, generation: int, *, native: bool = False,
                         is_current=lambda: True) -> dict:
+        from corral import observe
         from corral.ui.terminal_prompt_navigation import (
             PromptNavigationError,
             buffer_offset,
@@ -2012,13 +2013,20 @@ class SessionHub:
         transcript = self._ensure_transcript(session)
         with self._lock:
             if generation <= 0 or generation != transcript.generation:
+                observe.event("prompt_navigation_failed", runtime=str(session.get("source") or ""),
+                              stage="generation", reason="prompt_stale", client="remote")
                 raise ActionError("stale", t("remote.err.prompt_stale"))
             if transcript.reader.has_earlier():
+                observe.event("prompt_navigation_failed", runtime=str(session.get("source") or ""),
+                              stage="history", reason="prompt_unavailable", client="remote")
                 raise ActionError("unavailable", t("remote.err.prompt_unavailable"))
             messages = list(transcript.messages)
         target = next((m for m in messages if m.seq == seq and m.role == "user"), None)
         if target is None:
             raise ActionError("not_found", t("remote.err.prompt_unavailable"))
+        started = time.monotonic()
+        runtime = str(session.get("source") or "")
+        stage = "native" if native else "resolve"
         try:
             try:
                 resolved = prompt_target(messages, target)
@@ -2043,6 +2051,9 @@ class SessionHub:
                                 and self._transcripts.get(key, transcript) is transcript
                                 and transcript.generation == generation,
                                 allow_escape=session.get("attention_kind") not in {"working", "waiting"})
+                # Content-free, like the TUI's events, so remote clicks are countable.
+                observe.event("prompt_navigation_done", runtime=runtime, native=True, client="remote",
+                              duration_ms=int((time.monotonic() - started) * 1000))
                 return {"query": query, "native": True}
             if resolved is None:
                 # No verified text identity: force the client's native path
@@ -2055,6 +2066,8 @@ class SessionHub:
         except PromptNavigationError as exc:
             # Clients show a short row reason from the code (absent vs other).
             code = {"prompt_absent": "absent", "prompt_stale": "stale"}.get(str(exc), "unavailable")
+            observe.event("prompt_navigation_failed", runtime=runtime, stage=stage, reason=str(exc),
+                          client="remote", duration_ms=int((time.monotonic() - started) * 1000))
             raise ActionError(code, t(f"remote.err.{exc}")) from exc
 
     def terminal_peek(self, key: str) -> dict:
@@ -2082,15 +2095,18 @@ class SessionHub:
     def terminal_theme(self, key: str, report: bytes) -> None:
         self._terminal(key).set_theme(report)
 
-    def terminal_input(self, key: str, data: bytes, viewer: str = "") -> None:
+    def terminal_input(self, key: str, data: bytes, viewer: str = "", *, passive: bool = False) -> None:
+        """`passive`: the viewer's emulator answered the program by itself (no
+        key, click or paste), so it neither claims the size nor cancels navigation."""
         if not data:
             raise ActionError("usage_error", t("remote.err.no_content"))
+        passive = passive or embed.is_focus_report(data)
         with self._lock:
             entry = self._terminals.get(key)
-        if entry is not None and viewer:
+        if entry is not None and viewer and not passive:
             entry[0].activate(viewer)  # typing makes this viewer the pane's size source
         name = entry[0].name if entry is not None else self._keepalive_name(key)
-        if not embed.send_bytes(name, data):
+        if not embed.send_bytes(name, data, passive=passive):
             raise ActionError("unavailable", t("remote.err.session_not_running"))
 
     def terminal_detach(self, key: str, viewer: str) -> None:

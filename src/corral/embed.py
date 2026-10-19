@@ -855,11 +855,27 @@ def input_transaction(name: str, *, require_process_lock: bool = False):
         return current
 
 
+# A viewer's terminal reports focus changes (DECSET 1004) when, for example,
+# a Your prompts click moves focus off the terminal. They are not user input:
+# they must not cancel a navigation in progress (Mac report 2026-10-19).
+_FOCUS_REPORTS = re.compile(rb"(?:\x1b\[[IO])+")
+
+
+def is_focus_report(data) -> bool:
+    return isinstance(data, (bytes, bytearray)) and _FOCUS_REPORTS.fullmatch(data) is not None
+
+
 def _serialized_input(function):
     from functools import wraps
 
     @wraps(function)
-    def serialized(name, *args, **kwargs):
+    def serialized(name, *args, passive: bool = False, **kwargs):
+        # `passive`: an emulator's own reply to the program, not user input.
+        passive = passive or bool(args and is_focus_report(args[0]))
+        if passive:
+            # Never queue behind a navigation: typing sent after it must still
+            # reach the host promptly and cancel that navigation.
+            return function(name, *args, **kwargs)
         if name not in getattr(_navigation_local, "names", ()):
             cancel_navigation(name)
         with input_transaction(name):

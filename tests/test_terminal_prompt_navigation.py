@@ -151,6 +151,21 @@ class QueryIdentityTests(unittest.TestCase):
         self.assertTrue(sent.is_set())
         self.assertFalse(thread.is_alive())
 
+    def test_emulator_replies_neither_cancel_nor_wait_for_navigation(self):
+        with embed.navigation_transaction("fixture-passive") as current:
+            sent = []
+            with (mock.patch.object(embed, "_active_channel", return_value=None),
+                  mock.patch.object(embed, "_send", side_effect=lambda *a: sent.append(a) or True)):
+                done = threading.Event()
+                def reply():
+                    embed.send_bytes("fixture-passive", b"\x1b[O")
+                    embed.send_bytes("fixture-passive", b"\x1b]11;rgb:0/0/0\x07", passive=True)
+                    done.set()
+                threading.Thread(target=reply).start()
+                self.assertTrue(done.wait(1))
+            self.assertEqual(len(sent), 2)
+            self.assertTrue(current())
+
     def test_superseded_request_never_sends_navigation_keys(self):
         with (
             mock.patch.object(nav, "_screen", return_value="old output\n› composer draft\nmodel status"),

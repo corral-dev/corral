@@ -40,7 +40,7 @@ class _ShellHub:
         self.calls.append(("attach", key, vote))
         return {"cols": cols, "rows": rows}
 
-    def terminal_input(self, key, data, viewer=""):
+    def terminal_input(self, key, data, viewer="", *, passive=False):
         self.calls.append(("input", key, data, viewer))
 
     def terminal_detach(self, key, viewer):
