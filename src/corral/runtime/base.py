@@ -160,6 +160,24 @@ class BaseRuntime(ABC):
         """
         raise LaunchError(t("launch.no_continue", id=self.id))
 
+    model_flag: str | None = None
+
+    def with_model(self, plan: LaunchPlan, model: str) -> LaunchPlan:
+        """Explicit per-launch override, never a change to runtime defaults."""
+        if self.model_flag is None:
+            raise LaunchError(f"{self.id} does not support an explicit launch model")
+        if not model or model.startswith("-") or any(ord(c) < 32 for c in model):
+            raise LaunchError("Model must be a nonempty identifier without control characters")
+        return LaunchPlan((*plan.argv, self.model_flag, model), plan.cwd)
+
+    session_id_flag: str | None = None
+
+    def with_session_id(self, plan: LaunchPlan, native_id: str) -> LaunchPlan | None:
+        """Preassign the native session id of a fresh launch when the runtime accepts one."""
+        if self.session_id_flag is None:
+            return None
+        return LaunchPlan((*plan.argv, self.session_id_flag, native_id), plan.cwd)
+
     @abstractmethod
     def build_new_plan(self, handoff: Handoff) -> LaunchPlan:
         """构造读取其他运行时历史的新会话计划。"""

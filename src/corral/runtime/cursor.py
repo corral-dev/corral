@@ -113,6 +113,8 @@ class CursorRuntime(BaseRuntime):
             cwd=usable_cwd(handoff.original_cwd),
         )
 
+    model_flag = "--model"
+
     def build_new_session_plan(self, cwd: str | None) -> LaunchPlan:
         return LaunchPlan(
             argv=(self.executable, *self.auto_approve_args),

@@ -8,6 +8,8 @@ import sys
 from corral import __version__
 
 _AGENT_ROOTS = {"list", "search", "show", "export", "share", "context", "plan", "describe", "diagnose"}
+if os.environ.get("CORRAL_CONTROL_PREVIEW") == "1":  # pre-acceptance gate; remove at release
+    _AGENT_ROOTS |= {"run", "skills"}
 
 
 def _fast_version() -> None:

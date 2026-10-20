@@ -365,6 +365,14 @@ bounded wait/events/result.
 
 ## 5. Proposed architecture and durability
 
+Implementation slice (2026-10-20): use detached local supervisors per run, with
+SQLite intent/events/audit and process-owned per-run/per-target advisory locks.
+This provides the local controller responsibilities without adding a listening
+socket or enabling the remote daemon. Explicit recovery reacquires ownership and
+observes recorded work; it never replays a possibly submitted prompt. Reuse
+SessionHub's library control methods, independent of remote transport. Read-only
+status/events/result/describe never start a supervisor or repair state.
+
 ```mermaid
 flowchart LR
     A[Agent CLI] --> B[Local controller]
@@ -562,3 +570,27 @@ capability-based and scoped to the five active runtimes. Ship the corresponding
 skills with that complete behavior. Full A2A transport, a distributed workflow
 engine, an automatic task planner and an embedding service remain future options,
 not necessary dependencies of the requested scenario.
+
+## 9. Review corrections and implementation decisions (2026-10-20)
+
+An independent Claude Code review (`claude-opus-5-5`, report kept outside the
+repository under `~/.config/corral/development/`) returned "needs revision, bounded".
+The implementation adopts these decisions; they supersede conflicting text above.
+
+| Finding | Decision |
+|---|---|
+| F1 composer residue / human draft | Before typing into an already-hosted terminal, read its composer. Visible draft content blocks dispatch with `composer_not_empty` (never cleared, appended or submitted). Freshly launched or freshly resumed panes are empty by construction. An unreadable composer is recorded as `composer_check: unknown`. Recovery from `dispatching` never re-types; the run becomes `delivery: unknown` until the marker appears in history. |
+| F2 restart without run id | Idempotency is scoped to the OS user's key alone; the actor is recorded, not part of uniqueness. `submit` rejects (`duplicate_active_run`, exit 5) when an unsettled run on the same target carries the same brief digest, unless `--allow-concurrent`. `run list --target <ref>` finds in-flight runs. |
+| F3 cross-process input/resume | `SessionHub.send_text` holds the pane's `InputLock` for paste → Enter → verification, so TUI/remote/controller primitives cannot interleave. `SessionHub.resume_session` takes a per-session file lock and re-checks tmux for an existing host before launching. |
+| F4 finality | Native turn evidence settles immediately. Inferred evidence settles only after history and the hosted screen are quiet for 8 s, Corral's working signal is not active and the last record is an assistant reply. Results state `finality: native` or `inferred`. |
+| F5 questions | `run answer` alone answers native questions through the existing structured path; `run message` (steer) is rejected while a question is pending. A question asked in prose ends the run; reply with a new run. |
+| F6 fresh identity | Claude launches with a preassigned `--session-id`, Pi with its existing ident; both bind by exact id. Codex binds by its exact claim. OpenCode and Cursor use the store's hosted binding; a second unbound create for the same runtime and project is rejected (`concurrent_unbound_create`). |
+| F7 model | `--model` is a launch flag for Claude, Codex, Cursor and Pi; OpenCode reports `model_selection_unsupported`. The model is verified only after the first turn from usage evidence: `model_check` is `match`, `alias_match`, `mismatch` or `unobserved`. A mismatch blocks further steering but cannot undo the first turn. |
+| F8 upgrades | Supervisors import their modules at start and record their version; reads report `supervisor_lost` when the owner lock is free and offer `run recover`. |
+| F9 topology | Detached per-run supervisors, no socket daemon. Runs on one session dispatch in submit order (the oldest unsettled run owns the session lock); at most 8 supervisors run at once. Queued runs expire after `--queue-timeout` (default 3600 s) as `queue_expired` without touching the target. |
+| F10 skills | Superseded by the owner: skill installation is unrelated to AgentSync (see the [bundled skills design](BUNDLED_AGENT_SKILLS_DESIGN.md#paths)). |
+| P2 items | Run versions fingerprint execution/delivery/pending questions only; `search --project` filters by exact project path; `wait` exits 0 on any actionable state and carries run snapshots in `error.details` on timeout; reclaim treats hosts of unsettled runs as protected; `run create` rejects `/`, the home root, Desktop and Documents. |
+
+Resolved owner-level defaults: delegation queues on a busy target (`--on-busy
+queue`), while phone sends keep steering. The visible correlation marker
+`[Corral run=<run_id> message=<id>]` stays in the target's conversation.

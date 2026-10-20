@@ -191,6 +191,9 @@ class ClaudeRuntime(BaseRuntime):
             cwd=usable_cwd(handoff.original_cwd),
         )
 
+    model_flag = "--model"
+    session_id_flag = "--session-id"
+
     def build_new_session_plan(self, cwd: str | None) -> LaunchPlan:
         return LaunchPlan(
             argv=(

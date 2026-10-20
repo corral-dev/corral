@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -20,10 +22,11 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sesskit import titles as sesskit_titles
 
-from corral import embed, keepalive, titles
+from corral import embed, keepalive, liveness, titles
 from corral.activity_board import resolve_active_marker
 from corral.cache import history_signature
 from corral.i18n import t
@@ -121,6 +124,26 @@ _INJECT_CAUSE_MESSAGE_KEYS = {
     "tmux_unavailable": "remote.err.inject_cause_tmux_unavailable",
     "uncertain": "remote.err.inject_cause_uncertain",
 }
+
+
+@contextlib.contextmanager
+def _resume_process_lock(canonical: str):
+    """Serialize native resume of one session across Corral processes."""
+    from corral.cache import cache_dir
+
+    folder = Path(cache_dir()) / "resume-locks"
+    try:
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        handle = open(folder / (hashlib.sha1(canonical.encode()).hexdigest()[:24] + ".lock"), "a+")
+    except OSError:
+        yield  # no lock directory: in-process serialization still applies
+        return
+    with handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class ActionError(RuntimeError):
@@ -2884,8 +2907,8 @@ class SessionHub:
             except Exception:
                 pass
 
-    def _host(self, plan, runtime_id: str, title: str, cwd: str | None) -> dict:
-        ident = keepalive.new_session_ident()
+    def _host(self, plan, runtime_id: str, title: str, cwd: str | None, *, ident: str | None = None) -> dict:
+        ident = ident or keepalive.new_session_ident()
         width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
         try:
             name = embed.host_session(plan, runtime_id, ident, width, height)
@@ -2900,6 +2923,16 @@ class SessionHub:
             ident=ident,
         )
         return self.session_payload(session, self._layout())
+
+    def host_planned_session(self, plan, runtime_id: str, title: str, cwd: str, *, ident: str) -> dict:
+        """Host a prepared launch under a caller-chosen ident (Agent delegation).
+
+        A repeated ident reuses the existing pane, so a recovering supervisor
+        never launches a second assistant for the same run.
+        """
+        if not embed.available():
+            raise ActionError("unavailable", t("remote.err.tmux_missing_start"))
+        return self._host(plan, runtime_id, title, cwd, ident=ident)
 
     def new_session(
         self, runtime_id: str, cwd: str | None, *, whitelist: list[str] | None = None
@@ -2969,8 +3002,19 @@ class SessionHub:
         canonical = session_key(session)
         # Resume, explicit restart and failure-triggered input recovery share
         # one lock. Recovery already holds it when it calls us, hence RLock.
-        with self._restart_lock_for(canonical):
+        with self._restart_lock_for(canonical), _resume_process_lock(canonical):
             return self._resume_locked(canonical)
+
+    @staticmethod
+    def _adopt_foreign_host(session: dict) -> str | None:
+        """A live hosted pane for this session started by another process, if any."""
+        probe = {k: v for k, v in session.items() if k not in {"keepalive_name", "live", "pid"}}
+        try:
+            liveness.annotate([probe])
+        except Exception:  # noqa: BLE001 - an unreadable probe falls back to hosting
+            return None
+        name = str(probe.get("keepalive_name") or "")
+        return name if name and embed.pane_liveness(name) == "alive" else None
 
     def _resume_locked(self, canonical: str) -> dict:
         session = self.require_session(canonical)
@@ -2994,6 +3038,13 @@ class SessionHub:
             plan = runtime.build_resume_plan(session)
         except LaunchError as exc:
             raise ActionError("unavailable", t("remote.err.cannot_native_resume", error=exc)) from exc
+        adopted = self._adopt_foreign_host(session)
+        if adopted:
+            # Another process (TUI, phone service or a delegation supervisor)
+            # already resumed it: reuse that pane, never start a second one.
+            self.store.mark_hosted(canonical, adopted)
+            refreshed = self.store.find_session(canonical) or session
+            return self.session_payload(refreshed, self._layout())
         ident = keepalive.new_session_ident()
         width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
         try:

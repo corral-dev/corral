@@ -83,5 +83,7 @@ class PiRuntime(BaseRuntime):
             usable_cwd(handoff.original_cwd),
         )
 
+    model_flag = "--model"
+
     def build_new_session_plan(self, cwd: str | None) -> LaunchPlan:
         return LaunchPlan((self.executable, *self.auto_approve_args), usable_cwd(cwd))

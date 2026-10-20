@@ -244,6 +244,21 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIsNone(store.find_session("codex:a"))
         self.assertNotIn("codex:a", store.hosted)
 
+    def test_restart_pane_of_existing_session_is_not_adopted_as_provisional(self):
+        """Codex restart reuses the id prefix; the claim lags, so no ghost card (2026-10-20)."""
+        store = SessionStore(limit=20)
+        formal = {"source": "codex", "id": "019a7c2e-1111-2222-3333-444455556666",
+                  "title": "Existing", "cwd": "/tmp/proj"}
+        restarted = {"name": "corral-codex-019a7c2e", "runtime_id": "codex", "ident": "019a7c2e",
+                     "cwd": "/tmp/proj", "created_at": time.time()}
+        fresh = {"name": "corral-codex-5f3d9a1b", "runtime_id": "codex", "ident": "5f3d9a1b",
+                 "cwd": "/tmp/proj", "created_at": time.time()}
+        with mock.patch.object(liveness, "list_managed_hosts", return_value=[restarted, fresh]):
+            store._adopt_foreign_hosted([formal])
+        self.assertIsNone(store.find_session("codex:019a7c2e"))
+        self.assertIsNotNone(store.find_session("codex:5f3d9a1b"))
+        self.assertNotIn("keepalive_name", formal)
+
     def test_adoption_and_probe_preserve_real_creation_timestamp(self):
         store = SessionStore(limit=20)
         host = {"name": "corral-codex-a", "runtime_id": "codex", "ident": "a", "cwd": None,

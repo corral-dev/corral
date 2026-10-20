@@ -1220,10 +1220,12 @@ class SplitPaneArea(Vertical):
             return t("shell.pane_title")
         runtime = self.store.registry.get(source)
         title = self.store.get_title(session)
+        from corral.projects import session_project_label
+
+        project = session_project_label(session)
         if self.title_with_project:
-            project = str(session.get("cwd_display") or t("project.unknown"))
             return f"{project} · {title}"
-        return f"{runtime.display_name} · {title}"
+        return f"{runtime.display_name} · {project} · {title}"
 
     def _sync_leading_cells(self) -> None:
         """可见格里最左一格去左边距；闲置格不参与 :first-child，故用手写标记。"""

@@ -2205,6 +2205,9 @@ class MainScreen(
         # 用户看到的是旧画面静止，而不是整格闪成空白 + 整机冻住。
         if pane is not None:
             pane.mark_restarting()
+        else:
+            # No visible pane carries the header cue; say so where the user looks.
+            self.notify(t("modal.restart_started", title=title))
         area.set_restarting(key, True)
         width, height = area.host_pane_size()
         self._host_pending += 1
@@ -2277,7 +2280,7 @@ class MainScreen(
             )
             corral._log_embed_error("重启会话生成启动计划", exc)
             self.app.call_from_thread(
-                self._on_restart_failed, session_key, keepalive_name,
+                self._on_restart_failed, session_key, keepalive_name, str(exc),
             )
             return
         except Exception as exc:  # noqa: BLE001 非预期异常同样收尾，不留僵尸占位
@@ -2289,7 +2292,7 @@ class MainScreen(
             )
             corral._log_embed_error("重启会话生成启动计划", exc)
             self.app.call_from_thread(
-                self._on_restart_failed, session_key, keepalive_name,
+                self._on_restart_failed, session_key, keepalive_name, str(exc),
             )
             return
         # 重启是同会话恢复：沿用原会话 id 做 ident（`bind_hosted_ident`
@@ -2313,7 +2316,7 @@ class MainScreen(
             )
             corral._log_embed_error("重启会话内嵌启动线程", exc)
             self.app.call_from_thread(
-                self._on_restart_failed, session_key, keepalive_name,
+                self._on_restart_failed, session_key, keepalive_name, str(exc),
             )
             return
         try:
@@ -2331,13 +2334,16 @@ class MainScreen(
             session_key, title,
         )
 
-    def _on_restart_failed(self, session_key: str, keepalive_name: str) -> None:
+    def _on_restart_failed(
+        self, session_key: str, keepalive_name: str, error: str = "",
+    ) -> None:
         """后台重启失败收尾：清占位和计数，格子恢复旧绑定，不留僵尸态。"""
         self._host_pending = max(0, self._host_pending - 1)
         try:
             self._split_area().set_restarting(session_key, False)
         except Exception:  # noqa: BLE001 右栏中间态缺失不该盖掉失败提示
             pass
+        self.notify(t("modal.restart_failed", error=error or "?"), severity="error")
         self.app.bell()
 
     def _on_restart_hosted(
@@ -2390,6 +2396,7 @@ class MainScreen(
             area.set_restarting(session_key, False)
         except Exception:  # noqa: BLE001 右栏中间态缺失不该拦住收尾
             pass
+        self.notify(t("modal.restart_done", title=title))
 
     @work
     async def action_kill_keepalive(self) -> None:

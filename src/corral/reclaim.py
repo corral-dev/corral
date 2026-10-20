@@ -558,12 +558,16 @@ def _build_context(
     """
     from corral import embed, split_layout
     from corral.attention import AttentionStore
+    from corral.control_store import RunStore
 
     busy = AttentionStore().busy_pairs()
     viewed = embed.live_host_viewer_names()
     pinned = split_layout.pinned_keys_effective()
-    if busy is None or viewed is None or pinned is None:
+    # Hosts of unsettled Agent delegation runs are leased like viewed ones.
+    delegated = RunStore().active_hosts()
+    if busy is None or viewed is None or pinned is None or delegated is None:
         return None
+    viewed = set(viewed) | delegated
     background = _background_state(hosted, history or {})
     if background is None:
         return None

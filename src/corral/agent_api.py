@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""corral 的机器可读数据接口：面向大模型 Agent 的只读命令集合。
+"""corral 的机器可读数据接口：面向大模型 Agent 的命令集合。
 
-corral 只负责把本地会话数据结构化地交出来（列表 / 搜索 / 详情 / 接续上下文 / 分享 transcript），
-不负责决定"拿到数据之后做什么"——不新增自动拉起、后台执行等副作用命令。
+查询命令（list / search / show / export / share / context / plan continue / describe / diagnose）
+只读，不启动会话、不提交指令。`run …` 是独立的委派控制命令族（corral.control_cli）：
+续跑精确历史会话或新建会话、注入提示词并持续观察结果；`skills …` 管理随包 skill。
 所有命令输出统一 JSON envelope：{ok, data, error, meta}。
 
-退出码：0 成功、1 一般失败、2 用法错误、3 会话不存在、5 会话标识有歧义。
+退出码：0 成功、1 一般失败、2 用法错误、3 不存在、5 冲突/歧义/状态不满足、6 等待超时。
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ DEFAULT_LIST_FIELDS = (
 )
 # search 的精简字段集在 list 基础上额外保留命中方式、命中字段和相关性得分，方便调用方理解排序
 DEFAULT_SEARCH_FIELDS = DEFAULT_LIST_FIELDS + ("matched_via", "matched_fields", "score")
-DEFAULT_SHOW_FIELDS = DEFAULT_LIST_FIELDS + ("messages", "message_count_shown", "message_count_total")
+DEFAULT_SHOW_FIELDS = DEFAULT_LIST_FIELDS + ("messages", "message_count_shown", "message_count_total", "control")
 
 _SUMMARY_TRIM_LEN = 120  # last_user/last_agent 摘要的硬截断长度
 
@@ -69,13 +70,14 @@ def _trim(text: str | None, limit: int = _SUMMARY_TRIM_LEN) -> str:
 class ApiError(Exception):
     """携带退出码和结构化提示的命令级错误，由 dispatch 统一转成 JSON envelope。"""
 
-    def __init__(self, code, message, exit_code=EXIT_ERROR, hint=None, next_commands=None):
+    def __init__(self, code, message, exit_code=EXIT_ERROR, hint=None, next_commands=None, details=None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.exit_code = exit_code
         self.hint = hint
         self.next_commands = next_commands or []
+        self.details = details
 
 
 class JSONArgumentParser(argparse.ArgumentParser):
@@ -160,7 +162,7 @@ _SESSION_FIELD_NAMES = frozenset({
     "live", "keepalive", "attention", "pid", "last_user", "last_agent",
 })
 _SEARCH_EXTRA_FIELDS = frozenset({"score", "matched_via", "matched_fields", "snippet"})
-_SHOW_EXTRA_FIELDS = frozenset({"messages", "message_count_shown", "message_count_total"})
+_SHOW_EXTRA_FIELDS = frozenset({"messages", "message_count_shown", "message_count_total", "control"})
 
 
 def _check_fields(fields: list[str] | None, valid: frozenset, command: str) -> None:
@@ -203,17 +205,15 @@ def _ok(data) -> dict:
 
 
 def _err(exc: ApiError) -> dict:
-    return {
-        "ok": False,
-        "data": None,
-        "error": {
-            "code": exc.code,
-            "message": exc.message,
-            "hint": exc.hint,
-            "next_commands": exc.next_commands,
-        },
-        "meta": {"version": AGENT_API_VERSION},
+    error = {
+        "code": exc.code,
+        "message": exc.message,
+        "hint": exc.hint,
+        "next_commands": exc.next_commands,
     }
+    if exc.details is not None:
+        error["details"] = exc.details
+    return {"ok": False, "data": None, "error": error, "meta": {"version": AGENT_API_VERSION}}
 
 
 def _format_resume_command(argv: tuple[str, ...]) -> str:
@@ -482,8 +482,50 @@ def cmd_list(args, registry) -> dict:
     return _ok(data)
 
 
+def _under_project(session: dict, project: str) -> bool:
+    cwd = os.path.realpath(str(session.get("cwd") or "")) if session.get("cwd") else ""
+    return bool(cwd) and (cwd == project or cwd.startswith(project.rstrip(os.sep) + os.sep))
+
+
+def _activity_text(event) -> str:
+    parts = [event.text or "", event.name or ""]
+    for raw in (event.raw_input, event.raw_output):
+        if raw is None:
+            continue
+        try:
+            parts.append(raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            continue
+    return "\n".join(parts)
+
+
+def _activity_match(session: dict, keywords: list[str]) -> str | None:
+    """Search normalized tool calls/results too (SessKit activity), e.g. edited paths and commands."""
+    try:
+        import sesskit
+
+        events = sesskit.load_activity(session).events
+    except Exception:  # noqa: BLE001 - an unreadable history is a non-match, reported via coverage
+        return None
+    texts = [_activity_text(e) for e in events]
+    if not all(any(kw in t.lower() for t in texts) for kw in keywords):
+        return None
+    for text in texts:
+        low = text.lower()
+        index = low.find(keywords[0])
+        if index >= 0:
+            start = max(0, index - 60)
+            return text[start:index + len(keywords[0]) + 100].replace("\n", " ")
+    return None
+
+
 def cmd_search(args, registry) -> dict:
     keywords = [k.lower() for k in args.keywords]
+    scope = getattr(args, "scope", None) if isinstance(getattr(args, "scope", None), str) else "conversation"
+    raw_project = getattr(args, "project", None)
+    project = os.path.realpath(os.path.expanduser(raw_project)) if isinstance(raw_project, str) else None
+    if scope == "activity" and not args.deep:
+        raise ApiError("usage_error", "--scope activity requires --deep", EXIT_USAGE)
     compact = getattr(args, "compact", False)
     top = getattr(args, "top", None)
     fields = _parse_fields(getattr(args, "fields", None), DEFAULT_SEARCH_FIELDS if compact else None)
@@ -505,6 +547,8 @@ def cmd_search(args, registry) -> dict:
             if getattr(args, "live", None) is True and not session.get("live"):
                 continue
             if getattr(args, "keepalive", None) is True and not session.get("keepalive_name"):
+                continue
+            if project and not _under_project(session, project):
                 continue
             title, _ = titles.resolve_initial_title(session, cache)
             quick_parts = [
@@ -530,6 +574,11 @@ def cmd_search(args, registry) -> dict:
                     score += 10
                     snippet = _find_snippet(messages, keywords)
                     results.append((score, "deep", matched_fields, runtime, session, snippet))
+                elif scope == "activity":
+                    snippet = _activity_match(session, keywords)
+                    if snippet is not None:
+                        score, matched_fields = _score_quick_match(session, title, keywords)
+                        results.append((score + 8, "deep", matched_fields + ["activity"], runtime, session, snippet))
 
     results.sort(key=lambda item: (item[0], item[4].get("mtime") or 0), reverse=True)
     matched = len(results)
@@ -548,6 +597,8 @@ def cmd_search(args, registry) -> dict:
     data = {
         "query": args.keywords,
         "deep": args.deep,
+        "scope": scope,
+        "project": project,
         "count": len(sessions),
         "scan_limit": args.limit,
         "top": top,
@@ -557,6 +608,15 @@ def cmd_search(args, registry) -> dict:
     }
     data.update(coverage)
     return _ok(data)
+
+
+def _control_target(session: dict) -> dict | None:
+    """Exact target and version token for `run submit` (only when control is enabled)."""
+    if os.environ.get("CORRAL_CONTROL_PREVIEW") != "1":
+        return None
+    from corral.control import target_payload
+
+    return target_payload(session)
 
 
 def cmd_show(args, registry) -> dict:
@@ -585,6 +645,9 @@ def cmd_show(args, registry) -> dict:
     ]
     payload["message_count_shown"] = len(payload["messages"])
     payload["message_count_total"] = total_messages
+    control = _control_target(session)
+    if control is not None:
+        payload["control"] = control
 
     if out:
         envelope = _ok(payload)
@@ -1039,6 +1102,8 @@ COMMANDS = [
             {"flags": ["keywords"], "kwargs": {"nargs": "+", "help": "关键词（多个关键词为 AND 关系）"}},
             {"flags": ["--deep"], "kwargs": {"action": "store_true", "help": "对未命中的会话额外读取完整对话内容再搜一遍（较慢）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--runtime"], "kwargs": {"help": "只搜指定运行时"}},
+            {"flags": ["--project"], "kwargs": {"help": "Only sessions whose cwd is this absolute project directory or below it"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--scope"], "kwargs": {"choices": ["conversation", "activity"], "default": "conversation", "help": "With --deep: conversation text only, or also normalized tool calls/results (paths, commands, patches)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条参与搜索"}},
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
@@ -1050,6 +1115,8 @@ COMMANDS = [
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
         ],
         "fields": {
+            "scope": "conversation or activity (activity also matched normalized tool records)",
+            "project": "Resolved --project filter or null",
             "...": "与 list 命令的字段相同（含 live / keepalive / attention / pid / last_user / last_agent）",
             "score": "相关性分数；分数越高排序越靠前，同分按 mtime 倒序",
             "matched_via": "quick（元数据命中）或 deep（全文命中），兼容旧调用方",
@@ -1077,6 +1144,7 @@ COMMANDS = [
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段（覆盖 --compact 的默认字段集）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         ],
         "fields": {
+            "control": "Delegation target: session_ref, control (hosted / resume / external), version for run submit --if-version",  # noqa: E501 - COMMANDS 数据表
             "...": "与 list 命令的字段相同",
             "messages": "[{role: user|assistant, text, time, mtime}]，按时间顺序的用户消息和每轮最终答复；time 为人类可读发送时间、mtime 为对应 Unix 时间戳，历史格式解析不出时间时两者均为 null；Monitor/task-notification 等系统注入事件已过滤，不出现在这里",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
             "message_count_shown": "本次实际返回的消息条数",
@@ -1175,6 +1243,226 @@ COMMANDS = [
         },
     },
     {
+        "name": "run submit",
+        "help": "Send a brief to an exact existing session (resumed if stopped) and return a durable run handle",
+        "risk": "write_local",
+        "args": [
+            {"flags": ["target"], "kwargs": {"help": "Complete runtime:id from search/show (prefixes are rejected)"}},
+            {"flags": ["--prompt"], "kwargs": {"help": "Brief text (use --prompt-file for long or multiline briefs)"}},
+            {"flags": ["--prompt-file"], "kwargs": {"help": "Read the brief from a UTF-8 file, or - for piped stdin"}},
+            {"flags": ["--if-version"], "kwargs": {"help": "target.version from a fresh --dry-run of this exact target"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "queue", "help": "Busy target: queue until idle (default), steer into the active turn, or reject"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued brief may wait for a busy target before expiring undispatched (0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--allow-concurrent"], "kwargs": {"action": "store_true", "help": "Allow another unsettled run with the same brief on this session"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--task-ref"], "kwargs": {"help": "Optional caller task reference stored with the run"}},
+            {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Validate and show the target/version without writing state or starting anything"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {
+            "run_id": "Durable handle for this delegation; keep it across restarts",
+            "version": "Run version token for --if-version on message/answer/interrupt",
+            "delivery": "accepted / dispatching / input_submitted / native_recorded / rejected / unknown",
+            "execution": "queued / starting / running / waiting_input / completed / failed / interrupted / unknown",
+            "acceptance": "Always unverified: completed means the turn ended, not that the work is correct",
+            "settled": "true once execution is completed/failed/interrupted/unknown",
+            "questions": "Pending native questions (request_id, question_id, options) while waiting_input",
+            "requested_model": "Model passed to run create; null inherits the runtime default",
+            "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
+            "attribution": "correlated, or mixed when other input shares the bound turn",
+            "model_check": "match / alias_match / mismatch / unobserved after the first turn (run create --model)",
+            "finality": "native (runtime recorded completion) or inferred (quiet history/screen and no working signal)",
+            "supervisor": "Detached owner process: alive / pid / heartbeat_at",
+            "target": "Resolved target with control mode (hosted / resume / external / create) and version",
+        },
+    },
+    {
+        "name": "run create",
+        "help": "Create a fresh hosted session on an explicit runtime (optional model), send the first brief, return a run",  # noqa: E501 - COMMANDS 数据表
+        "risk": "write_local",
+        "args": [
+            {"flags": ["--runtime"], "kwargs": {"required": True, "choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Runtime to launch"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--cwd"], "kwargs": {"required": True, "help": "Absolute project directory for the new session"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--model"], "kwargs": {"help": "Model for this launch only; omitted inherits the runtime default. Unsupported runtimes fail instead of ignoring it"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--prompt"], "kwargs": {"help": "Brief text (use --prompt-file for long or multiline briefs)"}},
+            {"flags": ["--prompt-file"], "kwargs": {"help": "Read the brief from a UTF-8 file, or - for piped stdin"}},
+            {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--task-ref"], "kwargs": {"help": "Optional caller task reference stored with the run"}},
+            {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Validate runtime/cwd/model and show the launch without writing state or starting anything"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {
+            "run_id": "Durable handle for this delegation; keep it across restarts",
+            "version": "Run version token for --if-version on message/answer/interrupt",
+            "delivery": "accepted / dispatching / input_submitted / native_recorded / rejected / unknown",
+            "execution": "queued / starting / running / waiting_input / completed / failed / interrupted / unknown",
+            "acceptance": "Always unverified: completed means the turn ended, not that the work is correct",
+            "settled": "true once execution is completed/failed/interrupted/unknown",
+            "questions": "Pending native questions (request_id, question_id, options) while waiting_input",
+            "requested_model": "Model passed to run create; null inherits the runtime default",
+            "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
+            "attribution": "correlated, or mixed when other input shares the bound turn",
+            "model_check": "match / alias_match / mismatch / unobserved after the first turn (run create --model)",
+            "finality": "native (runtime recorded completion) or inferred (quiet history/screen and no working signal)",
+            "supervisor": "Detached owner process: alive / pid / heartbeat_at",
+            "target": "Resolved target with control mode (hosted / resume / external / create) and version",
+        },
+    },
+    {
+        "name": "run status",
+        "help": "Read one or more runs (read-only; never starts or repairs supervision)",
+        "risk": "read",
+        "args": [
+            {"flags": ["run_ids"], "kwargs": {"nargs": "+", "help": "One or more run ids"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON and fewer fields"}},
+        ],
+        "fields": {
+            "run_id": "Durable handle for this delegation; keep it across restarts",
+            "version": "Run version token for --if-version on message/answer/interrupt",
+            "delivery": "accepted / dispatching / input_submitted / native_recorded / rejected / unknown",
+            "execution": "queued / starting / running / waiting_input / completed / failed / interrupted / unknown",
+            "acceptance": "Always unverified: completed means the turn ended, not that the work is correct",
+            "settled": "true once execution is completed/failed/interrupted/unknown",
+            "questions": "Pending native questions (request_id, question_id, options) while waiting_input",
+            "requested_model": "Model passed to run create; null inherits the runtime default",
+            "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
+            "attribution": "correlated, or mixed when other input shares the bound turn",
+            "model_check": "match / alias_match / mismatch / unobserved after the first turn (run create --model)",
+            "finality": "native (runtime recorded completion) or inferred (quiet history/screen and no working signal)",
+            "supervisor": "Detached owner process: alive / pid / heartbeat_at",
+            "target": "Resolved target with control mode (hosted / resume / external / create) and version",
+        },
+    },
+    {
+        "name": "run events",
+        "help": "Read run events after a cursor: state changes, messages, and the run's own normalized activity",
+        "risk": "read",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--after"], "kwargs": {"type": int, "default": 0, "help": "Return events with seq greater than this cursor (use next_cursor)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "Maximum events per page (1-500)"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"events": "seq-ordered records: kind=state/message/activity", "next_cursor": "Pass to --after next time", "has_more": "More events are available now"},  # noqa: E501 - COMMANDS 数据表
+    },
+    {
+        "name": "run wait",
+        "help": "Block up to --timeout seconds until any listed run settles, needs input, or loses its supervisor",
+        "risk": "read",
+        "args": [
+            {"flags": ["run_ids"], "kwargs": {"nargs": "+", "help": "One or more run ids"}},
+            {"flags": ["--timeout"], "kwargs": {"type": int, "default": 60, "help": "Seconds (max 600); exit 6 on deadline, the work keeps running"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--until"], "kwargs": {"choices": ["actionable", "settled"], "default": "actionable", "help": "actionable also returns on waiting_input/rejected/supervisor_stopped"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"ready": "run_id -> reason it became actionable", "runs": "Compact run views"},
+    },
+    {
+        "name": "run result",
+        "help": "Correlated result of a settled run: final response, tools, errors, usage and observed model",
+        "risk": "read",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"result": "final_response / tool_calls / tools_used / errors / usage / observed_models / attribution / acceptance"},  # noqa: E501 - COMMANDS 数据表
+    },
+    {
+        "name": "run message",
+        "help": "Steer an active run with an additional brief (typed into the same session)",
+        "risk": "write_local",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--prompt"], "kwargs": {"help": "Brief text (use --prompt-file for long or multiline briefs)"}},
+            {"flags": ["--prompt-file"], "kwargs": {"help": "Read the brief from a UTF-8 file, or - for piped stdin"}},
+            {"flags": ["--if-version"], "kwargs": {"help": "Run version from a fresh run status"}},
+            {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"message": "message_id / action / state (queued, input_submitted, rejected, unknown)"},
+    },
+    {
+        "name": "run answer",
+        "help": "Answer a pending native question of a run waiting_input",
+        "risk": "write_local",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--request-id"], "kwargs": {"required": True, "help": "questions[].request_id from run status"}},
+            {"flags": ["--answers-json"], "kwargs": {"required": True, "help": 'JSON list: [{"question_id": "...", "selected": ["<option id>"], "text": "..."}]'}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--if-version"], "kwargs": {"help": "Run version from a fresh run status"}},
+            {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"message": "message_id / action / state"},
+    },
+    {
+        "name": "run interrupt",
+        "help": "Interrupt this run's active turn (or cancel it before dispatch); never other sessions",
+        "risk": "write_local",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--if-version"], "kwargs": {"help": "Run version from a fresh run status"}},
+            {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"message": "message_id / action / state"},
+    },
+    {
+        "name": "run list",
+        "help": "Recent runs, newest first (read-only)",
+        "risk": "read",
+        "args": [
+            {"flags": ["--top"], "kwargs": {"type": int, "default": 20, "help": "Maximum runs to return (1-200)"}},
+            {"flags": ["--mine"], "kwargs": {"action": "store_true", "help": "Only runs created by the calling actor"}},
+            {"flags": ["--target"], "kwargs": {"help": "Only runs on this runtime:id (find in-flight work after losing a run id)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--active"], "kwargs": {"action": "store_true", "help": "Only unsettled runs"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"runs": "Compact run views", "actor_filter": "Actor used by --mine"},
+    },
+    {
+        "name": "run recover",
+        "help": "Restart supervision of an unsettled run whose supervisor stopped; never re-sends a possibly typed brief",  # noqa: E501 - COMMANDS 数据表
+        "risk": "write_local",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"status": "recovered / unchanged / settled"},
+    },
+    {
+        "name": "skills status",
+        "help": "Bundled corral-search/corral-delegate skills per installed runtime (read-only)",
+        "risk": "read",
+        "args": [
+            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"targets": "Unique physical skill roots with the runtimes that read them and per-skill state (current / outdated / missing / modified / conflict)"},  # noqa: E501 - COMMANDS 数据表
+    },
+    {
+        "name": "skills install",
+        "help": "Install or update the bundled skills into each installed runtime's skill root; never overwrites foreign or edited skills",  # noqa: E501 - COMMANDS 数据表
+        "risk": "write_local",
+        "args": [
+            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Show planned actions without writing"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"actions": "create / update / unchanged / conflict per skill path", "conflicts": "Same-name skills Corral left untouched"},  # noqa: E501 - COMMANDS 数据表
+    },
+    {
+        "name": "skills uninstall",
+        "help": "Remove bundled skills Corral installed and that are unchanged; edited copies are kept",
+        "risk": "write_local",
+        "args": [
+            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Show planned actions without writing"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"actions": "remove / forget / keep_modified per skill path"},
+    },
+    {
         "name": "describe",
         "help": "查看命令列表或某个命令的完整参数 / 输出字段说明",
         "risk": "read",
@@ -1220,6 +1508,11 @@ COMMANDS = [
     },
 ]
 
+# Pre-acceptance gate (2026-10-20): the run command family stays hidden from
+# parsing, describe and dispatch until its acceptance passes. Remove at release.
+if os.environ.get("CORRAL_CONTROL_PREVIEW") != "1":
+    COMMANDS = [spec for spec in COMMANDS if not spec["name"].startswith(("run ", "skills "))]
+
 HANDLERS = {
     "list": cmd_list,
     "search": cmd_search,
@@ -1231,38 +1524,56 @@ HANDLERS = {
     "describe": cmd_describe,
     "diagnose": cmd_diagnose,
 }
+for _name in [spec["name"] for spec in COMMANDS if spec["name"].startswith("run ")]:
+    HANDLERS[_name] = (lambda name: lambda args, registry: _control_dispatch(name, args, registry))(_name)
+
+
+def _skills_handler(verb: str):
+    def handler(args, registry) -> dict:
+        from corral import skill_bundle
+
+        if verb == "status":
+            return _ok(skill_bundle.status(args.runtime))
+        action = skill_bundle.install if verb == "install" else skill_bundle.uninstall
+        return _ok(action(dry_run=args.dry_run, runtime=args.runtime))
+    return handler
+
+
+for _verb in ("status", "install", "uninstall"):
+    if any(spec["name"] == f"skills {_verb}" for spec in COMMANDS):
+        HANDLERS[f"skills {_verb}"] = _skills_handler(_verb)
 
 COMMAND_NAMES = tuple(spec["name"] for spec in COMMANDS)
 COMMAND_ROOT_NAMES = tuple(dict.fromkeys(spec["name"].split()[0] for spec in COMMANDS))
 
 
+def _control_dispatch(name: str, args, registry) -> dict:
+    # Lazy: query commands never import the control layer or SessionHub.
+    from corral.control_cli import dispatch as control_dispatch
+
+    return control_dispatch(name, args, registry)
+
+
 def build_parser() -> JSONArgumentParser:
     parser = JSONArgumentParser(
         prog="corral",
-        description="corral 的机器可读数据接口：只读，供大模型 Agent 查询本地会话。",
+        description="corral 的机器可读数据接口：查询本地会话（只读），以及 run 委派控制命令族。",
     )
     sub = parser.add_subparsers(dest="command")
-    parents = {}
+    parents: dict[tuple[str, ...], argparse.ArgumentParser] = {}
+    groups: dict[tuple[str, ...], argparse._SubParsersAction] = {(): sub}
     for spec in COMMANDS:
         parts = spec["name"].split()
-        current_sub = sub
-        path = []
-        for part in parts:
-            path.append(part)
-            key = tuple(path)
+        for depth in range(1, len(parts) + 1):
+            key = tuple(parts[:depth])
+            leaf = depth == len(parts)
             sp = parents.get(key)
             if sp is None:
-                sp = current_sub.add_parser(part, help=spec["help"] if len(path) == len(parts) else None)
+                sp = groups[key[:-1]].add_parser(key[-1], help=spec["help"] if leaf else None)
                 parents[key] = sp
-                if len(path) < len(parts):
-                    sp.set_defaults(command=" ".join(path))
-                    current_sub = sp.add_subparsers(dest=f"command_part_{len(path)}")
-                else:
-                    sp.set_defaults(command=spec["name"])
-            elif len(path) < len(parts):
-                current_sub = sp.add_subparsers(dest=f"command_part_{len(path)}")
-            else:
-                sp.set_defaults(command=spec["name"])
+            sp.set_defaults(command=spec["name"] if leaf else " ".join(key))
+            if not leaf and key not in groups:
+                groups[key] = sp.add_subparsers(dest=f"command_part_{depth}")
         for arg in spec.get("args", []):
             sp.add_argument(*arg["flags"], **arg["kwargs"])
     return parser

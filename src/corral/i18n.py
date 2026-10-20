@@ -531,6 +531,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Could not fork session: {error}",
         "zh": "无法分叉会话：{error}",
     },
+    "modal.restart_started": {
+        "en": "Restarting {title}…",
+        "zh": "正在重启 {title}…",
+    },
+    "modal.restart_done": {
+        "en": "Restarted {title}",
+        "zh": "已重启 {title}",
+    },
+    "modal.restart_failed": {
+        "en": "Could not restart session: {error}",
+        "zh": "无法重启会话：{error}",
+    },
     "modal.restart_session": {
         "en": "Restart session",
         "zh": "重启会话",

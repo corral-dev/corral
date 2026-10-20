@@ -149,6 +149,22 @@ def _session_matches_keepalive_ident(session: dict, name: str) -> bool:
     return liveness._name_matches_session(name, session)
 
 
+def _restarts_known_session(name: str, runtime_id: str, sessions: list[dict]) -> bool:
+    """Whether a managed pane name points at an already listed formal session.
+
+    Restart and native resume host under the session id's first eight chars, so
+    such a pane belongs to an existing card even before its claim lands. This
+    only suppresses a duplicate placeholder; it never binds history (Codex
+    binding still needs a claim, pid or full resume UUID).
+    """
+    return any(
+        str(session.get("source") or "") == runtime_id
+        and not session.get("provisional")
+        and liveness._name_matches_session(name, session)
+        for session in sessions
+    )
+
+
 class SessionStore:
     """持有所有已注册运行时的会话列表与标题缓存。
 
@@ -981,6 +997,7 @@ class SessionStore:
         from corral.i18n import t
 
         claimed: set[str] = set()
+        known_sessions = list(annotated)
         for session in annotated:
             name = session.get("keepalive_name")
             if name:
@@ -993,6 +1010,7 @@ class SessionStore:
                     claimed.add(str(name))
             for bucket in self.sessions.values():
                 for session in bucket:
+                    known_sessions.append(session)
                     name = session.get("keepalive_name")
                     if name:
                         claimed.add(str(name))
@@ -1012,6 +1030,11 @@ class SessionStore:
                 continue
             if is_ephemeral_agent_cwd(str(host.get("cwd") or "")):
                 continue  # automation / experiment pane; its sessions never list either
+            if _restarts_known_session(name, runtime_id, known_sessions):
+                # Restart/resume reuses the session id as ident: the card already
+                # exists, and Codex needs seconds to claim the new pane. Inventing a
+                # placeholder here flashed an empty card for ~10s (2026-10-20).
+                continue
             key = f"{runtime_id}:{ident}"
             with self.lock:
                 if key in self._provisional or key in self.hosted:

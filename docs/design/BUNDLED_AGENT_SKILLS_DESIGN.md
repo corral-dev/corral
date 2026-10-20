@@ -27,50 +27,45 @@ Installation includes default registration for installed supported runtimes;
 users do not have to author or manually copy the bundled skills. Register/update
 the same packaged assets with Corral upgrades, detect runtimes installed later,
 and expose a read-only status plus an explicit repair path. Preserve user skills
-and existing skill managers. Do not register an unfinished delegation workflow.
+and other tools' files. Do not register an unfinished delegation workflow.
 
-## Paths and existing managers
+## Paths
 
-Reference implementation: AgentSync `cli` at
-`48c094f5dbec7b2d1211e0ee77edbe7f5a0a256a`, inspected
-`internal/agentsync/{paths.go,skills.go,pi_mcp.go}` and its
-[path authority](~/Codes/AgentSync/cli/docs/agent_runtime_global_paths.md).
-AgentSync is a compatibility reference, not a Corral dependency or a reason to
-change its configuration. Its maintained source on a configured machine is
-`~/.config/agentsync/`.
+Owner correction (2026-10-20): **Corral's skill installation is unrelated to
+AgentSync.** Corral does not read AgentSync configuration, canonical sources,
+filters or policies, does not call it, and has no AgentSync-specific branch.
+AgentSync was only a reference for where each runtime reads user skills. A skill
+root is an ordinary directory to Corral, whoever else may also write into it.
 
-| Runtime | Existing AgentSync destination | Corral registration direction |
-|---|---|---|
-| Claude Code | `~/.claude/skills/` | Dedicated global skill directory; preserve a manager-owned directory or root symlink. |
-| Codex | `~/.codex/skills/`, plus discovered shared skills | Preserve existing managed Codex views; current upstream also documents `~/.agents/skills/`. Resolve the actual supported target rather than creating duplicate copies. |
-| OpenCode | `~/.config/opencode/skills/` | Dedicated global directory; validate any configured root override for the installed runtime. |
-| Cursor | `~/.cursor/skills/` | Dedicated global directory; shared discovery is also supported by current documentation. |
-| Pi | Shared `~/.agents/skills/` | Follow the existing shared target when managed. Pi also reads `<agent-dir>/skills/`, default `~/.pi/agent/skills/`; `PI_CODING_AGENT_DIR` overrides its agent directory. |
+| Runtime | User skill root Corral writes |
+|---|---|
+| Claude Code | `~/.claude/skills/` (`CLAUDE_CONFIG_DIR/skills` when set) |
+| Codex | `~/.agents/skills/` when that directory exists (current documented user location, also read by Pi); otherwise `$CODEX_HOME/skills` (default `~/.codex/skills/`) |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/skills/` (default `~/.config/opencode/skills/`) |
+| Cursor | `~/.cursor/skills/` |
+| Pi | `~/.agents/skills/` when it exists; otherwise `$PI_CODING_AGENT_DIR/skills` (default `~/.pi/agent/skills/`) |
 
-Paths are defaults, not proof of discovery in every client/version. Current
-upstream references: [Claude](https://code.claude.com/docs/en/skills),
+Rules:
+
+- Only runtimes whose executable Corral's adapter finds are targeted; Corral never
+  creates a home directory for an absent agent. A missing `skills` subdirectory
+  inside an existing runtime home is created.
+- Roots are resolved (`realpath`) and deduplicated, so one physical directory
+  reached through several runtime roots or symlinks gets exactly one copy; this
+  avoids duplicate-name discovery (Codex lists both copies of a duplicated name).
+- Each skill is written as a real directory (no symlinks, no absolute home paths
+  in content), so it stays valid wherever the directory is copied.
+- Corral manages only `corral-search` and `corral-delegate`. Ownership is proven by
+  the content hash recorded in `~/.config/corral/skills/registrations.json`; an
+  existing same-name directory with unknown content is a conflict that is
+  reported, never overwritten. Uninstall removes only unchanged owned copies.
+
+Paths are defaults, not proof of discovery in every client/version. Upstream
+references: [Claude](https://code.claude.com/docs/en/skills),
 [Codex](https://learn.chatgpt.com/docs/build-skills),
 [OpenCode](https://opencode.ai/docs/skills/),
 [Cursor](https://cursor.com/docs/skills), and
-[Pi skill documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md).
-Honor an override only after verifying that it controls skill discovery, not
-merely MCP or instructions. Detect an installed runtime using Corral's existing
-adapter/executable evidence plus its configured root; a missing `skills` directory
-alone does not mean an absent runtime. Do not create fake homes for absent agents.
-
-The inspected machine has root symlinks for Claude/OpenCode/Cursor/shared skills
-pointing at AgentSync's canonical skills; Codex has a real filtered view. Pi's
-dedicated skill directory is absent and the shared entry supplies its skills.
-Therefore blindly replacing a root, copying independently to every alias, or
-placing a lasting file only in a generated filtered view is incorrect.
-
-Resolve root aliases and deduplicate physical destinations. For an existing
-AgentSync-managed setup, use its canonical source and honor its target filters;
-do not invoke a full MCP/config sync or bypass a deny rule through the shared
-directory. If the existing manager offers no bounded registration interface,
-implement a narrow Corral integration with explicit ownership/status rather than
-rebuilding the manager's entire directory topology. A symlink into a skill manager
-does not by itself grant permission to overwrite unrelated canonical skills.
+[Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md).
 
 ## Package and installer contract
 
@@ -85,7 +80,7 @@ Expose proposed `corral skills status`, `install --dry-run`, `install` and
 targets as the agent CLI. These names are proposals, not current instructions.
 Status and dry-run must not create roots, state, locks, caches or registrations.
 Return per-runtime availability, effective and resolved roots, owner, installed
-bundle/hash, conflicts, filtering and discovery evidence. File presence and a
+bundle/hash, conflicts and discovery evidence. File presence and a
 runtime actually loading the skill are separate verification results.
 
 Default lifecycle:
@@ -147,7 +142,7 @@ existing query documentation while preserving its published contracts; resolve
 
 Acceptance must include clean homes for all five runtimes, configured roots,
 missing skill subdirectories, absent runtimes, root/per-skill symlinks, multiple
-aliases to one directory, manager filters, custom same-name content, edited owned
+aliases to one directory, custom same-name content, edited owned
 content, upgrades/uninstall, interrupted/concurrent registration, read-only files,
 and no-write dry-run/query checks. Inspect the actual packaged wheel and installed
 resources. Verify discovery in a fresh runtime session; copying a valid file is
