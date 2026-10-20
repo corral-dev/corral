@@ -14,6 +14,15 @@ The calling agent must survive disconnection/restart without losing the operatio
 or accidentally issuing the repair twice. A question from the target must be
 observable and answerable through the same workflow.
 
+Owner clarification (2026-10-20): this capability belongs to the Corral middle
+layer and must be decoupled from the coding agents. Corral owns the unified
+control/monitoring contract, hosting, input delivery, queue, operation state and
+result correlation. Do not depend on Claude cross-session messaging, per-vendor
+SDKs, ACP or vendor-specific control APIs for this workflow. Ordinary executable
+launch/resume arguments remain in the existing runtime adapters; observation
+consumes SessKit's normalized history. Runtime-specific readiness/composer/key
+differences remain bounded adapter details, not separate orchestration systems.
+
 This requirement supersedes the former product-wide ban on agent-driven session
 control. Existing query commands remain queries; generating a continuation plan
 does not authorize its automatic execution. Do not silently add execution to
@@ -33,8 +42,6 @@ model when observable, project and source evidence; the caller still reviews the
 
 Shared interpretation constraints remain in the
 [session integration guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md).
-Protocol capability negotiation remains in the
-[ACP knowledge base](~/.config/agentsync/docs/ACP_KNOWLEDGE_BASE.md#capability-evidence-and-unavailable-operations).
 The [existing butler design](WEB_TASK_BUTLER_DESIGN.md) is an adjacent consumer,
 not authorization to build its editor, coordinator, task board or scheduling policy here.
 
@@ -105,23 +112,33 @@ or change the existing mobile receipt's meaning.
 The September butler experiments' “history-confirmed delivery” is historical
 research, not today's input receipt definition. A new operation should expose
 `accepted`, `input_submitted`, `native_recorded` and correlated execution evidence
-separately. Missing evidence stays unknown. Composer disappearance improves the
+separately. Here `native_recorded` means SessKit observed the persisted input,
+not that Corral called a vendor API. Missing evidence stays unknown. Composer disappearance improves the
 terminal path but does not prove that the intended model turn completed.
 
 ## 3. Runtime research and reusable references
 
-These are documented/inspected integration options, not live acceptance of a new
-Corral controller. Feature-detect the installed protocol and bind to the exact
-session owner; official support for loading history does not authorize a second
-process against a session that is already running.
+The chosen transport is Corral's existing hosted terminal input path, shared by
+all five runtimes. Queueing and supervision live in Corral. History observation
+and finality interpretation live in SessKit. No per-vendor live-control backend,
+message bus, SDK, API broker or new agent plugin is proposed for this capability.
 
-| Runtime | Preferred integration direction | Important boundary |
+| Runtime | Corral integration direction | Adapter/evidence boundary |
 |---|---|---|
-| Claude | Native resume; structured print streams for controlled headless runs; evaluate the documented cross-session inbox for existing interactive sessions | `ListAgents`/`SendMessage` already cover live peer communication and idle notices. Inbound messages can be held/refused and do not grant permissions. `--bg --resume` can create a copy when the original is running, so verify returned identity. Do not disable hooks/project context with `--bare` merely to accelerate a historical worker. |
-| Codex | Existing private app-server, `thread/resume`, `turn/start`, `turn/steer`, `turn/completed` | Steer requires `expectedTurnId`. Current Corral proxy admits one TUI connection and only observes identity claims; a second client cannot simply connect. Add a broker/event tap at the owned connection, preserving RPC IDs, notifications, account isolation and the TUI. |
-| OpenCode | Installed V2 API: `/api/session/{sessionID}/prompt`, explicit `delivery:steer|queue`, message identity, `/api/event`, `/api/session/{sessionID}/interrupt` | Inspect exact V2 schema and owner process. Older public server docs describe `/session/:id/prompt_async`; that is not the installed V2 contract. Its wait endpoint is experimental and must not be a mandatory stable dependency. |
-| Cursor | Native resume with structured print output; capability-negotiated ACP `session/load`, `session/prompt`, updates and cancellation for controlled sessions | Installed ACP help and official docs agree on the entry. ACP loading alone does not attach to an arbitrary interactive CLI process. Preserve the existing TUI path until ownership and live-control semantics are proven. |
-| Pi | `--session <path|id>` for native history; RPC prompt/steer/follow-up with IDs; extend the existing owned extension if live TUI control needs it | A prompt response is acceptance, not completion. Current official/installed docs distinguish `agent_end` from `agent_settled`; recovery/compaction/follow-up may continue after the former. `handled` can mean no model run started. RPC is a subprocess mode, not an attach API for an existing TUI. |
+| Claude | Existing hosted terminal, paste/submit and resume plan | Preserve existing composer/startup handling and full conversation identity. Do not route through Claude peer messaging or background-agent management. |
+| Codex | Existing hosted terminal and exact session claim; ordinary resume plan | Reuse the current hosting wrapper as-is. Do not extend its private app-server proxy into an Agent-control API broker. |
+| OpenCode | Existing hosted terminal, paste/submit and resume plan | Preserve session identity and composer verification; do not call the vendor HTTP API for input/queueing/observation. |
+| Cursor | Existing hosted terminal, paste/submit and resume plan | Its input behavior differs while busy. Keep only proven key/readiness differences in the adapter; do not introduce ACP or SDK execution. |
+| Pi | Existing hosted terminal, paste/submit and resume plan | The missing `plan continue` override is not a blocker for a controller that already resumes through `build_resume_plan`. No RPC-mode dependency or additional control extension. |
+
+Vendor mechanisms were researched to understand limitations, then excluded from
+the architecture by the owner's clarification. Findings remain useful background:
+Claude's peer messaging/inbound controls are vendor-owned; Codex has native turn
+IDs; OpenCode's installed V2 API differs from its older server docs; Cursor ACP
+loading is not an arbitrary TUI attach; Pi distinguishes low-level `agent_end`
+from settled execution. These facts do not make those interfaces product
+dependencies. Equivalent native-history interpretation belongs in SessKit when
+the recorded evidence exists; otherwise Corral must report limited/unknown evidence.
 
 Primary sources checked:
 
@@ -190,15 +207,21 @@ execution, arbitrary PID kill, native slash-command injection or history deletio
 
 ### Submit and lifecycle contract
 
-1. A stopped session is resumed natively under the same runtime/session identity
-   and valid original project. A live hosted session reuses its owner. A live
-   external session requires a proven supported control channel; otherwise return
-   `external_session` with a useful next command, without spawning a duplicate.
+1. A stopped session is resumed through the existing adapter under the same
+   runtime/session identity and valid original project. A live hosted session
+   reuses its Corral-owned terminal. A live external session without that terminal
+   returns `external_session` with a useful next command and can be resumed once
+   its original owner ends; do not switch to vendor messaging or spawn a duplicate.
    A timeout means unknown liveness, never stopped.
 2. Proposed default for a busy target: queue after the active work; explicit
    `--on-busy steer` changes the active direction, and `reject` makes the caller
    decide. Phone sends keep their existing steering semantics. Never pretend
    queue and steer are equivalent when an adapter lacks one capability.
+   Corral holds queued briefs itself and dispatches only on positive readiness
+   evidence. Mid-turn delivery uses the existing terminal path; report the actual
+   observed disposition and never promise that it interrupts a running tool or
+   that a vendor consumes it immediately. Uncertain readiness keeps the brief
+   queued or returns a bounded status, rather than relying on a quiet screen.
 3. Existing unanswered permission/question dialogs are not idle task inputs.
    Surface `waiting_input` with the exact interaction identity; a new repair brief
    cannot accidentally approve a permission or answer an unrelated question.
@@ -211,6 +234,12 @@ execution, arbitrary PID kill, native slash-command injection or history deletio
 6. Record caller, target, source generation, baseline event position, native
    message/turn identifiers when available, runtime attempt identity and delivered
    evidence. A later unrelated message must not satisfy this run's completion.
+   Proposed terminal-path correlation: prefix the submitted brief with a compact,
+   visible Corral run/message identity and keep the original brief verbatim inside
+   that envelope. Match only a new normalized user event after the captured
+   baseline in the expected generation. Quoted markers in assistant/tool output
+   are not delivery evidence. If the runtime has not persisted that input yet,
+   expose submitted-but-unobserved rather than inventing a turn association.
 7. When human/other-agent input overlaps and native evidence cannot separate its
    result, expose mixed attribution/unknown, not an exclusive result. Initial
    implementation should serialize independent delegated runs per session while
@@ -257,8 +286,8 @@ flowchart LR
     C[Existing remote service] --> D[Shared session control]
     B --> D
     B --> E[Operation and audit store]
-    D --> F[Runtime adapters and owned channels]
-    F --> G[Native sessions]
+    D --> F[Existing hosting and terminal input]
+    F --> G[Five coding runtimes]
     G --> H[SessKit readers and outcomes]
     H --> B
     B --> I[Status, events and correlated results]
@@ -289,8 +318,9 @@ explicit and observable, never silently relaxed to make a test pass.
 
 There is no atomic transaction spanning SQLite and an arbitrary terminal input.
 Promise durable intent, one controller-owned dispatch and conservative recovery,
-not universal exactly-once execution. Prefer native message IDs/idempotency where
-available. Accepted-but-not-dispatched work can resume safely; possibly injected
+not universal exactly-once execution. Corral's own operation/message IDs and
+input ownership provide the dispatch boundary; there is no dependency on a
+vendor's idempotency API. Accepted-but-not-dispatched work can resume safely; possibly injected
 work reconciles or stays unknown. Keep deduplication tombstones after compacting
 large logs so an old retry cannot become a fresh dispatch.
 
@@ -383,6 +413,6 @@ Development acceptance must include all of the following, not just this baseline
    delivery rules; a design-only commit is not a shipped feature.
 
 Recommended sequence: shared control/ownership and operation store; minimal exact
-resume-submit-observe-result path; runtime-native correlation and five-runtime
+resume-submit-observe-result path; Corral input/history correlation and five-runtime
 acceptance; richer retrieval and companion-skill acceptance. Keep unfinished
 command surfaces hidden until their complete contract can be exercised.
