@@ -290,3 +290,38 @@ transcripts show the reviewer selected search/delegation and the fresh-task
 caller selected delegation through successful skill reads before CLI execution.
 The private acceptance root retains native JSONL, CLI receipts, report and
 assertion output; no real user session was edited.
+
+
+### Installed delivery (v0.24.340)
+
+The release packages were built from committed `cd38c87`; all six downloaded
+packages match `SHA256SUMS` and the built bytes. The five platform wheels and
+source archive are publicly available. Both local pipx and Homebrew installations
+report 0.24.340 with current registered skills. Installed skill files match the
+packaged/source hashes; the registered-copy positive and negative checkpoints
+both passed.
+
+A further native-discovery check used Pi's normal 20-skill catalog without
+`--skill` or `--no-skills`: the unnamed review task read both search/delegation,
+the independent-task request read delegation, and the spelling edit read neither.
+All three completed on GPT-6.1 Sol without native errors. This adds normal-catalog
+evidence to the controlled corpus; it still does not guarantee all-model behavior.
+
+The installed CLI created and completed a new 1308-character brief as
+`run_2058f1f6cbd04e678758553698caf908`, returning the exact expected response
+with `native_recorded` delivery and correlated attribution, without recovery or
+retyping. The Homebrew installation retrieved that same result. The isolated
+Linux x86_64 wheel imported its native extension and correctly matched a long
+trailing marker. All task-created tmux servers/sockets were stopped/removed;
+native histories, reports and receipts remain for inspection.
+
+macOS build and clean installation emitted no warnings. Linux Zig builds retain
+the two previously assessed musl compiler-family probes for
+`x86_64-linux-musl-gcc` and `aarch64-linux-musl-gcc`: the explicit Zig builds
+succeeded, but musl/ARM execution was not measured here. This is the same build
+environment limitation recorded in the delegation authority. Homebrew's
+unrelated tap-trust advisory remains unchanged. A transient HTTP/2 clone failure
+interrupted automatic tap closeout; the maintained formula generator completed
+through HTTP/1.1, and the live tap plus local upgrade were verified separately.
+
+Release: <https://github.com/corral-dev/corral/releases/tag/v0.24.340>.
