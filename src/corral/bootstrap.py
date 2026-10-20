@@ -8,8 +8,7 @@ import sys
 from corral import __version__
 
 _AGENT_ROOTS = {"list", "search", "show", "export", "share", "context", "plan", "describe", "diagnose"}
-if os.environ.get("CORRAL_CONTROL_PREVIEW") == "1":  # pre-acceptance gate; remove at release
-    _AGENT_ROOTS |= {"run", "skills"}
+_AGENT_ROOTS |= {"run", "skills"}
 
 
 def _fast_version() -> None:
@@ -92,6 +91,9 @@ def main() -> None:
     # 交互启动仍可补齐旧 Pi 历史；Agent 只读接口、管道和版本查询不碰迁移。
     if sys.stdin.isatty() and sys.stdout.isatty():
         _migrate_pi_history()
+        from corral.skill_bundle import auto_register
+
+        auto_register()
     from corral.cli import main as cli_main
 
     cli_main()

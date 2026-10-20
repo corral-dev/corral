@@ -1,11 +1,11 @@
-# Agent session delegation: research and proposed contract
+# Agent session delegation
 
-Status: research completed on 2026-10-20; implementation and release pending.
+Status: implemented on 2026-10-20; release acceptance recorded below.
 Expanded research includes fresh-session creation, explicit model selection and
 the [bundled skill distribution contract](BUNDLED_AGENT_SKILLS_DESIGN.md).
 The owner requested research first, followed by development using `agent-friendly-cli`.
-The outcome below is adopted; command names and engineering choices are proposals.
-No command under `corral run` described here exists in 0.24.335.
+The outcome below is adopted. The shipped command authority is `corral describe run`;
+the baseline findings below describe the pre-control 0.24.335 release.
 
 ## 1. Requested outcome and ownership
 
@@ -594,3 +594,116 @@ The implementation adopts these decisions; they supersede conflicting text above
 Resolved owner-level defaults: delegation queues on a busy target (`--on-busy
 queue`), while phone sends keep steering. The visible correlation marker
 `[Corral run=<run_id> message=<id>]` stays in the target's conversation.
+
+
+## Review corrections (2026-10-20)
+
+- Persist every follow-up action as `dispatching` before terminal input. Recovery
+  changes an unfinished dispatch to `unknown`, never replays it. A matching user
+  marker can reconcile prompt delivery.
+- Completion covers all accepted follow-up messages. Queued, dispatching, unknown
+  or not-yet-recorded input blocks settlement; accepting a message and settling a
+  run are serialized in the same store transaction.
+- Interrupting dispatched work requires positively correlated current-turn
+  evidence, with no foreign input after that turn. Cancellation before dispatch
+  is local and remains available while waiting for another run's target lock.
+- Binding a fresh or continued native identity requires its target lock. Lock
+  contention stops control with an explicit uncertain outcome; locks last for the
+  supervisor lifetime and are released on every exit.
+- Identical submit retries return their existing handle before checking mutable
+  target state/version. Different immutable input under the key still conflicts.
+- Search coverage includes per-history conversation/activity read failures; zero
+  matches under incomplete reads cannot establish absence.
+
+These are Corral product control/storage rules; SessKit remains the owner of
+native history interpretation. Reference transaction semantics: [Python sqlite3](https://docs.python.org/3/library/sqlite3.html#transaction-control).
+
+
+Cursor startup acceptance also exposed its separate workspace-trust prompt.
+`--force` approves commands but does not trust a new project. Use the installed
+Cursor CLI's public `--trust` launch flag alongside `--force` for Corral's
+explicitly selected project, including resume. Reuse the adapter's existing
+auto-approval arguments; do not add a terminal dialog parser or global setting.
+The installed CLI help and [official parameters](https://cursor.com/docs/cli/reference/parameters) verify this flag;
+[official changelog](https://cursor.com/docs/cli/changelog) documents interactive
+support. This shared adapter applies to host launches from all clients.
+
+
+## Acceptance evidence (2026-10-20)
+
+The review's five P1 and four P2 cases have regression coverage in
+`tests/test_control.py`. The 45 control tests and the complete 2674-test CLI
+suite passed before release finalization; complete logs live under the maintained
+agent-workflow receipts. The final release repeats checks after command exposure
+and Cursor trust changes. Two existing platform/environment skips remain
+identified by the complete test log. No compiler/lint warning was emitted.
+
+A fresh Pi Agent A, using only the packaged skill instructions and Corral CLI,
+searched the disposable billing project for `review-acceptance-20261020`, selected
+the exact stopped feature-owner `pi:513d5eb7`, dry-ran and submitted a repair to
+that owner, monitored it and retrieved the correlated result. The repair run
+completed as `run_754360c38c474644b88e865aec0e75c2`. Both A and the coordinator
+independently executed `apply_discount(200,10)==180` and
+`apply_discount(100,0)==100`; all assertions passed. A did not edit the function.
+The first owner's terminal was stopped before A started, establishing actual
+native resume rather than steering an already running pane.
+
+Fresh-session prompt/result checks passed for Codex, Pi (explicit model with
+matching usage evidence), OpenCode and Cursor. Cursor was checked on the Linux
+development host after selecting a saved account with remaining quota through
+subswap. Its initial trust-blocked attempt failed; the fresh-project rerun with
+the native trust flag completed and returned `ACCEPT-cursor`. The Mac Claude
+attempt was blocked by its subscription limit and is not a success; the separate
+Linux Claude check is recorded below when terminal evidence is available.
+
+Temporary native histories remain intact. Fixture hosting uses its own tmux
+socket and control store; only test-created panes are cleaned up. This is a local
+Agent CLI feature: iPhone and native Mac clients have no delegation-run surface.
+Their existing input/hosting paths are covered by the shared host regression
+suite; no Apple client artifact changed.
+
+
+A real Pi follow-up test accepted a second marked prompt while the first task
+was running a shell sleep. The run stayed open until that follow-up was recorded
+and ended with `FOLLOWUP-DONE` (native turn 0001), not the initial response.
+
+The first finalization gate correctly rejected missing `run`/`skills` root-help
+entries after feature exposure. Both localized help entries were added and their
+existing discovery test passed. The same gate's dry-run isolation test detected
+the concurrently running acceptance socket as a stray, rather than a dry-run
+write. The test-owned server was closed before repeating the complete gate; no
+isolation assertion was weakened. Existing skips are individually accounted for:
+fish shell parsing cannot run because fish is absent; the zeroconf-missing test
+cannot take its missing-dependency branch because zeroconf is installed.
+
+
+The final candidate gate passed all 2674 discovered tests without failures or
+retries (two documented environment skips). Compiler and Ruff checks emitted no
+warnings. Asyncio debug mode retained slow-callback notices from the existing
+Textual test lane; each distinct coroutine is assessed below. These are
+0.1-second debug thresholds during parallel UI fixtures, not evidence of a
+delegation data-loss or input failure. All associated behavior assertions passed.
+No diagnostic was disabled or threshold changed. Residual risk is timing variance
+under test/host contention; the owning test-environment guide retains the
+observable-event/controlled-clock approach for follow-up fixture work.
+
+| Coroutine origin | Count | Seconds | Assessment |
+|---|---:|---:|---|
+| `App.run_test.<locals>.run_app` | 2 | 0.100–0.106 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_clicking_close_on_unfocused_pane_does_not_switch_to_it` | 1 | 0.100–0.100 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_focused_split_pane_stays_on_remaining_not_closed` | 1 | 0.106–0.106 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_middle_focused_pane_keeps_left_neighbor` | 1 | 0.151–0.151 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_one_split_pane_keeps_sibling_widget` | 1 | 0.105–0.105 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_unfocused_split_pane_keeps_remaining_split` | 1 | 0.141–0.141 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_focusing_split_pane_highlights_matching_sidebar_session` | 1 | 0.125–0.125 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll` | 5 | 0.131–0.158 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_pending_selection_follow_after_close_does_not_open_closed_session` | 1 | 0.113–0.113 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_pi_provisional_refresh_keeps_split_group_without_duplicate` | 1 | 0.114–0.114 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_reconcile_split_keys_after_provisional_becomes_real` | 1 | 0.107–0.107 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_stale_focus_notify_after_close_is_ignored` | 1 | 0.109–0.109 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `MessagePump._process_messages` | 59 | 0.100–0.216 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SessionHudPlacementTests.test_every_live_pane_draws_its_own_hud` | 1 | 0.129–0.129 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SessionHudPlacementTests.test_hud_background_follows_pane_chrome` | 1 | 0.127–0.127 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SidebarResizeTests.test_narrow_screen_caps_width_for_right_pane` | 1 | 0.129–0.129 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group` | 1 | 0.135–0.135 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `Timer._run_timer` | 7 | 0.105–0.151 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |

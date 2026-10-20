@@ -141,3 +141,19 @@ The state loop regression must prove at least four additional probes while the f
 Exercise the actual Your prompts row action in both a hosted native runtime and a static ended-session preview. Repeated short prompts and assistant quotations must resolve by message identity, not the first matching string. Keep the TUI/Mac floating card expanded after selection. Inspect pressed and released frames (including wrapped rows) in light/dark themes. For native-runtime navigation, submit the next synthetic message through the production input path and count exactly one matching native user record; draft preservation alone cannot detect accepted search modes that still own Enter. Include legacy Find with zero results as well as matching results. Concurrent probes must have independent native session IDs and history files, in addition to separate tmux sockets; shared Codex history can correctly produce its “open in another app” lock instead of testing navigation.
 
 Synthetic uniform histories missed every real-structure failure found on 2026-10-19: tool output quoting the conversation, injected user-role context, long duplicate prompts, compaction and Claude render lag. Prompt-navigation acceptance must also run copies of real owner sessions in isolated runtime homes, across the session sizes, prompt counts and composer states (empty, draft, working) in use. The current private harness and its isolation recipe are described in [Current navigation design](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md#current-navigation-design-2026-10-19-no-native-find).
+
+
+## Watcher debounce contract
+
+A fixed number of file writes does not establish a fixed number of native file
+event batches or callbacks. The parallel gate observed three callbacks from the
+five-write fixture without controlling notification arrival times.
+Test the debounce boundary with an injected monotonic clock and explicit event
+signals; retain the separate native file-write wakeup test for backend coverage.
+Do not increase callback limits, enlarge sleeps or suppress diagnostics to make
+this assertion pass. Temporary acceptance sockets must be removed after their
+own server is confirmed stopped: `tmux kill-server` alone leaves a socket path,
+which the existing dry-run no-stray assertion correctly reports.
+
+Apple documents non-deterministic notification latency and event coalescing in
+[Using the File System Events API](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html).

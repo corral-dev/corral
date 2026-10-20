@@ -111,6 +111,7 @@ else
 fi
 
 SCRIPTS_DIR="$(python3 -m site --user-base)/bin"
+"${SCRIPTS_DIR}/corral" skills install
 case ":${PATH}:" in
   *":${SCRIPTS_DIR}:"*)
     echo "安装完成，运行 corral 开始使用。"

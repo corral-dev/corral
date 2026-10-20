@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from corral.control import (
     caller_identity,
@@ -132,6 +133,9 @@ def public_run(store: RunStore, record: dict, *, compact: bool = False) -> dict:
         },
     }
     if not compact:
+        messages = store.messages(run_id)
+        view["messages"] = messages[-20:]
+        view["messages_truncated"] = len(messages) > 20
         view["host"] = record.get("host")
         view["history_path"] = record.get("history_path")
     return view
@@ -178,6 +182,17 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
 def cmd_submit(args, registry) -> dict:
     prompt = _read_prompt(args)
     key = _key(args)
+    store = RunStore()
+    caller = caller_identity()
+    existing = store.find(key)
+    if existing is not None:
+        saved = store.get(existing["run_id"], private=True)
+        spec = {**saved["spec"], "session_ref": args.target, "prompt": prompt,
+                "on_busy": args.on_busy, "queue_timeout": max(0, args.queue_timeout), "caller": caller,
+                "task_ref": getattr(args, "task_ref", None)}
+        # Reconcile immutable input before consulting a target that may now be
+        # hosted, missing or executing. A retry is not a fresh authorization.
+        return _admit(store, caller["actor"], key, spec, saved, args, None)
     session = resolve_target(registry, args.target)
     target = target_payload(session)
     caller = caller_identity()
@@ -246,6 +261,16 @@ def cmd_create(args, registry) -> dict:
     if args.runtime not in ACTIVE_RUNTIME_IDS:
         raise ControlError("usage_error", f"Unsupported runtime: {args.runtime}", EXIT_USAGE,
                            hint="Supported runtimes: " + ", ".join(sorted(ACTIVE_RUNTIME_IDS)))
+    store = RunStore()
+    caller = caller_identity()
+    model = (args.model or "").strip() or None
+    existing = store.find(key)
+    if existing is not None:
+        saved = store.get(existing["run_id"], private=True)
+        spec = {**saved["spec"], "runtime": args.runtime, "prompt": prompt, "model": model,
+                "cwd": str(Path(args.cwd).expanduser().resolve()), "caller": caller,
+                "task_ref": getattr(args, "task_ref", None)}
+        return _admit(store, caller["actor"], key, spec, saved, args, None)
     runtime = registry.get(args.runtime)
     if not runtime.is_available():
         raise ControlError("runtime_unavailable", f"{runtime.display_name} is not installed on this machine.",
@@ -332,10 +357,12 @@ def cmd_interrupt(args, registry) -> dict:
 def cmd_recover(args, registry) -> dict:
     store = RunStore()
     record = store.get(args.run_id)
-    if record["execution"] in SETTLED:
+    if record["execution"] in SETTLED and record["execution"] != "unknown":
         return _ok({"status": "settled", "run": public_run(store, record)})
     if _supervisor_alive(store, args.run_id):
         return _ok({"status": "unchanged", "run": public_run(store, record)})
+    if record["execution"] == "unknown":
+        store.update(args.run_id, {"execution": "running"})
     confirmed = _spawn_supervisor(store, args.run_id)
     data = {"status": "recovered", "run": public_run(store, store.get(args.run_id)),
             "next_commands": _next(args.run_id)}
@@ -377,6 +404,8 @@ def _actionable(store: RunStore, record: dict, until: str) -> str | None:
         return None
     if record.get("delivery") == "rejected":
         return "rejected"
+    if any(m["state"] == "unknown" for m in store.messages(record["run_id"])):
+        return "delivery_uncertain"
     if execution == "waiting_input":
         latest = max((m for m in store.messages(record["run_id"]) if m["action"] in {"answer", "steer"}),
                      key=lambda m: m.get("created_at", 0), default=None)

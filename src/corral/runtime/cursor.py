@@ -31,7 +31,7 @@ class CursorRuntime(BaseRuntime):
         "完整对话在 store.db 的 blobs 表里（JSON 消息含 role/content，用户正文常在 "
         "<user_query> 标签中）。请只读打开，不要改写原会话。"
     )
-    auto_approve_args = ("--force",)
+    auto_approve_args = ("--force", "--trust")
     # Running composer hint is "ctrl+c to stop"; an idle first Ctrl+C only asks
     # for a second press before exiting (2026.10.01 bundle).
     interrupt_keys = ("C-c",)

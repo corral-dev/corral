@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "corral"
-version = "0.24.337"
+version = "0.24.338"
 description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -81,7 +81,7 @@ corral = "corral.bootstrap:main"
 python-source = "src"
 module-name = "corral._native"
 features = ["pyo3/abi3-py310"]
-include = ["corral/ui/assets/*.json", "corral/pi_extension/*.ts"]
+include = ["corral/ui/assets/*.json", "corral/pi_extension/*.ts", "corral/skills/*/SKILL.md"]
 
 [tool.ruff]
 line-length = 120

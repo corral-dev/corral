@@ -140,7 +140,7 @@ def _trim(text: str | None, limit: int) -> str | None:
 
 
 def compact_event(event) -> dict:
-    out = {"type": event.type, "seq": event.seq, "ts": event.ts}
+    out = {"type": event.type, "native_seq": event.seq, "ts": event.ts}
     if event.text:
         out["text"] = _trim(event.text, _EVENT_TEXT_LIMIT)
     if event.name:
@@ -186,6 +186,7 @@ def correlate(events: list, turns: list, run_id: str, baseline_seq: int) -> dict
         "outcome_error": _trim(getattr(turn.outcome.error, "message", None), 400) if turn and turn.outcome.error
         else None,
         "attribution": "mixed" if foreign else "correlated",
+        "current_turn": not any(e.type == "user_message" and e.seq > end for e in fresh),
         "pending_interaction": bool(pending),
         "events": selected,
     }

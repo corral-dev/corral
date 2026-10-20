@@ -176,7 +176,7 @@ class RunStore:
         return [r for r in self.unsettled() if r.get("session_ref") == session_ref]
 
     def create(self, actor: str, key: str, spec: dict, initial: dict) -> tuple[dict, bool]:
-        """Insert one run per (actor, key); the same key with another spec conflicts."""
+        """Insert one run per user key; the same key with another spec conflicts."""
         fingerprint = digest(spec)
         with self.connection(write=True) as conn:
             row = conn.execute("SELECT * FROM runs WHERE request_key=?", (key,)).fetchone()
@@ -201,7 +201,7 @@ class RunStore:
         return data, True
 
     def update(self, run_id: str, changes: dict, *, actor: str = SUPERVISOR, expected: str | None = None,
-               allow_settled: bool = False) -> dict:
+               allow_settled: bool = False, settled_messages: set[str] | None = None) -> dict:
         with self.connection(write=True) as conn:
             data = json.loads(self._row(conn, run_id)["data"])
             if expected is not None and run_version(data) != expected:
@@ -210,6 +210,14 @@ class RunStore:
             if data.get("execution") in TERMINAL and not allow_settled:
                 raise ControlError("terminal_run", "A finished run is immutable; submit a new run instead.",
                                    EXIT_CONFLICT)
+            if settled_messages is not None and changes.get("execution") in TERMINAL:
+                messages = conn.execute("SELECT id, body, state FROM messages WHERE run_id=?", (run_id,)).fetchall()
+                for message in messages:
+                    if message["state"] in {"queued", "dispatching", "unknown"} or (
+                        json.loads(message["body"])["action"] == "steer"
+                        and message["state"] != "rejected" and message["id"] not in settled_messages
+                    ):
+                        return {**data, "version": run_version(data)}
             changed = {k: v for k, v in changes.items() if data.get(k) != v}
             if not changed:
                 return {**data, "version": run_version(data)}

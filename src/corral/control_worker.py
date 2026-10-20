@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import re
 import sys
 import time
 from contextlib import contextmanager
@@ -124,6 +125,7 @@ _PLACEHOLDERS = ("Ask anything", "Add a follow-up", "Plan, search, build anythin
 # this directory for this run, and Corral's product default skips permission
 # prompts. Only the exact affirmative option is ever confirmed.
 _TRUST_OPTIONS = {"claude": "Yes, I trust this folder"}
+_LOGIN_PROMPT = re.compile(r"(?i)\b(?:press any key to log ?in|please log ?in|not logged in|sign in to)\b")
 _STARTUP_WAIT = 45.0
 
 
@@ -281,6 +283,11 @@ class Supervisor:
         try:
             baseline = self.hub.prepare_text_delivery(self.key, deadline)
         except ActionError as exc:
+            name = (self.hub.store.find_session(self.key) or {}).get("keepalive_name")
+            if name and _LOGIN_PROMPT.search(_plain(name)):
+                raise ControlError("runtime_login_required",
+                                   f"{self.runtime.display_name} is not logged in on this machine; "
+                                   "log in once in its own terminal, then submit again.") from exc
             raise ControlError("target_unavailable", exc.message) from exc
         self.session = self.hub.require_session(self.key)
         name = self.session.get("keepalive_name")
@@ -328,21 +335,28 @@ class Supervisor:
                         self.update(delivery="rejected", execution="interrupted",
                                     error={"code": "cancelled", "message": "Interrupted before dispatch."})
                         return
-                    if observation and observation.get("attribution") == "mixed":
-                        self.store.message_state(ident, "rejected", "Other input shares this turn; not interrupting.")
+                    if not observation or not observation.get("recorded") or \
+                            observation.get("attribution") != "correlated" or not observation.get("current_turn"):
+                        self.store.message_state(ident, "rejected", "Current execution does not belong to this run.")
                         continue
+                    self.store.message_state(ident, "dispatching")
                     self.hub.interrupt_session(self.key)
                     self.store.message_state(ident, "input_submitted")
                 elif not dispatched:
                     self.store.message_state(ident, "queued", "Waiting for the initial brief to be delivered.")
                     continue
                 elif body["action"] == "answer":
+                    if not observation or not observation.get("recorded") or not observation.get("current_turn"):
+                        self.store.message_state(ident, "rejected", "Question ownership is not proven for this run.")
+                        continue
+                    self.store.message_state(ident, "dispatching")
                     outcome = self.hub.answer_question(self.key, body["request_id"], body["answers"])
                     status = outcome.get("status")
                     self.store.message_state(ident, "input_submitted" if status == "delivered" else "rejected",
                                              outcome.get("detail"))
                 else:
                     name = self.host_name()
+                    self.store.message_state(ident, "dispatching")
                     with embed.input_transaction(name, require_process_lock=True):
                         self.hub.send_text(self.key, wire_prompt(self.run_id, ident, body["prompt"]))
                     self.store.message_state(ident, "input_submitted")
@@ -410,8 +424,28 @@ class Supervisor:
 
         if getattr(self, "_locks", None) is None:
             self._locks = ExitStack()
-        if self.key:
-            self._locks.enter_context(file_lock(self.store, "target:" + self.key))
+            self._locked_targets = {self.spec.get("session_ref")}
+        if self.key and self.key not in self._locked_targets:
+            lock = file_lock(self.store, "target:" + self.key)
+            if not self._locks.enter_context(lock):
+                raise ControlError("target_locked", "Another supervisor owns this native session; control stopped.")
+            self._locked_targets.add(self.key)
+
+    def close(self) -> None:
+        if getattr(self, "_locks", None) is not None:
+            self._locks.close()
+
+    def _recover_messages(self) -> None:
+        for item in self.store.messages(self.run_id):
+            if item["state"] == "dispatching":
+                self.store.message_state(item["message_id"], "unknown",
+                                         "Supervisor stopped during dispatch; input will not be replayed.")
+
+    def _record_messages(self, observation: dict) -> None:
+        recorded = set(observation.get("messages", []))
+        for item in self.store.messages(self.run_id):
+            if item["message_id"] in recorded and item["state"] in {"dispatching", "unknown", "input_submitted"}:
+                self.store.message_state(item["message_id"], "native_recorded")
 
     def observe(self, base_seq: int) -> None:
         import sesskit
@@ -457,6 +491,7 @@ class Supervisor:
                                         cursor=poll.cursor, generation=poll.generation)
             observation = correlate(ordered, list(sesskit.derive_turns(snapshot, runtime=self.runtime.id)),
                                     self.run_id, base_seq)
+            self._record_messages(observation)
             self._process_messages(observation)
             if self.record()["execution"] in SETTLED:
                 return
@@ -469,6 +504,7 @@ class Supervisor:
                 if self.spec["mode"] == "submit" and now - started > 4.0 and now - last_follow >= _BIND_REFRESH:
                     last_follow = now
                     if self._follow_continuation():
+                        self._bind_target_lock()
                         reader, events, published = None, {}, -1
                         base_seq = -1  # the run id in the marker is unique; a new file has no older copy
                 time.sleep(_POLL)
@@ -485,9 +521,10 @@ class Supervisor:
                                                 min(time.monotonic() - quiet_since,
                                                     time.monotonic() - screen_since))
             if changes:
-                self.update(**changes)
-            if changes.get("execution") in SETTLED:
-                return
+                settled = self.store.update(self.run_id, changes,
+                                            settled_messages=set(observation.get("messages", [])))
+                if settled["execution"] in SETTLED:
+                    return
             time.sleep(_POLL)
 
     def _observation_changes(self, record: dict, observation: dict, dead: bool, quiet: float) -> dict:
@@ -503,10 +540,16 @@ class Supervisor:
             changes["execution"] = "running"
             changes["questions"] = []
         final = _FINAL.get(outcome)
+        if not waiting and observation["outcome_evidence"] != "native" and self._interrupt_delivered():
+            # Some runtimes record no native end for an interrupted turn, and their
+            # history tail still reads as working. This run's own delivered
+            # interrupt plus a quiet history and an unchanged screen is the evidence.
+            final = "interrupted"
+            observation = {**observation, "outcome_evidence": "inferred"}
         if final and not waiting:
             last = observation["events"][-1] if observation["events"] else None
             settled = observation["outcome_evidence"] == "native" or dead or (
-                quiet >= _SETTLE_QUIET and phase not in {"working", "waiting"}
+                quiet >= _SETTLE_QUIET and (phase not in {"working", "waiting"} or final == "interrupted")
                 and (final != "completed" or (last is not None and last.type == "assistant_message"))
             )
             if settled:
@@ -524,18 +567,23 @@ class Supervisor:
                                                        "message": "The terminal exited before the turn settled."})
         return changes
 
+    def _interrupt_delivered(self) -> bool:
+        return any(m["action"] == "interrupt" and m["state"] == "input_submitted"
+                   for m in self.store.messages(self.run_id))
+
     def _questions(self) -> list[dict]:
         try:
             prompts = self.hub.prompts(self.key)
         except Exception:  # noqa: BLE001 - questions are evidence, never a crash
             return []
-        keep = ("request_id", "question_id", "question", "header", "options", "option_details",
+        keep = ("request_id", "question_id", "prompt", "header", "options", "option_details",
                 "multi_select", "allow_custom", "custom_needs_choice")
         return [{k: p.get(k) for k in keep if k in p} for p in prompts]
 
     # -- entry -----------------------------------------------------------------------
 
     def run(self) -> None:
+        self._recover_messages()
         record = self.record()
         if record["delivery"] == "accepted":
             if self.spec["mode"] == "create":
@@ -553,7 +601,8 @@ class Supervisor:
             base_seq = int(record.get("baseline_seq", -1))
             if not self.key and record.get("host_ident"):
                 self.key = f"{self.runtime.id}:{record['host_ident']}"
-            self._bind_native()
+            if self._bind_native():
+                self._bind_target_lock()
             self.session = self.hub.store.find_session(self.hub.resolve_session_key(self.key or "")) or {}
         if self.record()["execution"] in SETTLED:
             return
@@ -617,12 +666,18 @@ def main(run_id: str) -> int:
         store.update(run_id, {"supervisor_version": corral.__version__})
         spec = record["spec"]
         target = spec.get("session_ref") or ("run:" + run_id)
+        supervisor = Supervisor(store, run_id, SessionHub())
         try:
             while True:
+                # Cancellation only changes this run and requires no target ownership.
+                if store.get(run_id)["delivery"] == "accepted":
+                    supervisor._process_messages(None)
+                if store.get(run_id)["execution"] in SETTLED:
+                    return 0
                 if not _earlier_runs(store, run_id, target):
                     with file_lock(store, "target:" + target) as owns_target:
                         if owns_target:
-                            Supervisor(store, run_id, SessionHub()).run()
+                            supervisor.run()
                             return 0
                 store.heartbeat(run_id)
                 current = store.get(run_id)
@@ -635,6 +690,8 @@ def main(run_id: str) -> int:
         except Exception as exc:  # noqa: BLE001 - every exit leaves an honest terminal state
             _settle_crash(store, run_id, exc)
             return 1
+        finally:
+            supervisor.close()
 
 
 if __name__ == "__main__":

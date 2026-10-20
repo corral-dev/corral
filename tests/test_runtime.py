@@ -638,7 +638,7 @@ class RuntimeTests(unittest.TestCase):
 
         plan = registry.build_launch_plan(LaunchRequest(session, "cursor", "继续"))
 
-        self.assertEqual(plan.argv, ("agent", "--force", "--resume", "chat-1"))
+        self.assertEqual(plan.argv, ("agent", "--force", "--trust", "--resume", "chat-1"))
         self.assertIsNone(plan.cwd)
 
     def test_default_registry_includes_cursor(self) -> None:
@@ -662,7 +662,7 @@ class RuntimeTests(unittest.TestCase):
     def test_passthrough_pads_force_once_for_cursor(self) -> None:
         reg = default_registry()
         plan = reg.build_passthrough_plan("cursor", ["--model", "auto"])
-        self.assertEqual(plan.argv[:3], ("agent", "--force", "--model"))
+        self.assertEqual(plan.argv[:4], ("agent", "--force", "--trust", "--model"))
         plan2 = reg.build_passthrough_plan("cursor", ["--force", "hi"])
         self.assertEqual(plan2.argv.count("--force"), 1)
 

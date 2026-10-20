@@ -66,8 +66,12 @@ PY=""
 if PY="$(entry_python)"; then
   echo "检测到入口解释器：$PY"
   if is_pipx_python "$PY"; then
-    install_pipx_editable
-    PY="$(entry_python)"
+    # The existing pipx venv already holds the locked dependencies; SessKit is
+    # not on PyPI, so a pipx re-resolve fails (2026-10-20). Swap only corral.
+    if ! "$PY" -m pip install --force-reinstall --no-deps -e "$ROOT"; then
+      install_pipx_editable
+      PY="$(entry_python)"
+    fi
   else
     install_editable "$PY"
   fi
@@ -104,6 +108,8 @@ ok = os.path.samefile(os.path.dirname(path), r'$ROOT/src/corral') or path.starts
 print('  editable指向本仓库:', '是' if ok else '否（请检查上方 pip 输出）')
 raise SystemExit(0 if ok else 1)
 "
+
+"$CHECK_PY" -m corral skills install
 
 if command -v pickup >/dev/null 2>&1 && ! command -v corral >/dev/null 2>&1; then
   echo "警告：PATH 上仍只有旧命令 pickup=$(command -v pickup)，没有 corral。" >&2

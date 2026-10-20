@@ -116,8 +116,8 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/SESSION_SCANNING_KNOWLEDGE_BASE.md](docs/SESSION_SCANNING_KNOWLEDGE_BASE.md): SessKit integration, runtime histories, identity, liveness and completion evidence.
 - [docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md](docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md): Pi/Codex ownership claims, managed identity and legacy migration.
 - [docs/design/WEB_TASK_BUTLER_DESIGN.md](docs/design/WEB_TASK_BUTLER_DESIGN.md): Local Markdown task planning, coordinator/executor responsibilities, boundaries and validation experiments.
-- [Agent session delegation](docs/design/AGENT_SESSION_DELEGATION_DESIGN.md): Verified CLI/control gaps, reference architectures, historical resume and fresh runtime/model creation, prompt delivery, durable monitoring and results; implementation pending.
-- [Bundled agent skills](docs/design/BUNDLED_AGENT_SKILLS_DESIGN.md): Approved corral-* names, runtime skill paths, AgentSync coexistence, default registration, packaging boundaries and discovery acceptance; implementation pending.
+- [Agent session delegation](docs/design/AGENT_SESSION_DELEGATION_DESIGN.md): Verified CLI/control gaps, reference architectures, historical resume and fresh runtime/model creation, prompt delivery, durable monitoring, results, crash recovery and installed acceptance.
+- [Bundled agent skills](docs/design/BUNDLED_AGENT_SKILLS_DESIGN.md): Approved corral-* names, runtime skill paths, AgentSync coexistence, default registration, packaging boundaries, protected ownership and discovery acceptance.
 - [docs/design/WINDOWS_COMPATIBILITY_DESIGN.md](docs/design/WINDOWS_COMPATIBILITY_DESIGN.md): Decision against Windows and dedicated WSL product support.
 - [docs/PERFORMANCE_KNOWLEDGE_BASE.md](docs/PERFORMANCE_KNOWLEDGE_BASE.md): Performance, caching, load, offline data and profiling.
 - [docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md](docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md): Native resume, cross-runtime handoff, launch plans and working directories.

@@ -49,30 +49,21 @@ class HistoryWatcherTests(unittest.TestCase):
             watcher.stop()
 
     def test_debounce_coalesces_bursts(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            fires: list[float] = []
-            watcher = HistoryWatcher(
-                roots=[root],
-                debounce=0.2,
-                on_change=lambda: fires.append(time.monotonic()),
-            )
-            watcher.start()
-            time.sleep(0.25)
-            if watcher.backend == "none":
-                watcher.stop()
-                self.skipTest("no fsevents/inotify on this platform")
-            # One tight burst: no inter-write sleep, so native FS queues must
-            # collapse under the debounce window. Spacing writes (e.g. 20ms)
-            # lets a loaded machine stretch events past the quiet period and
-            # flake the upper bound.
-            for i in range(5):
-                (root / f"burst-{i}.txt").write_text(str(i), encoding="utf-8")
-            self.assertTrue(watcher.wait(timeout=2.0))
-            time.sleep(0.35)
-            self.assertGreaterEqual(len(fires), 1)
-            self.assertLessEqual(len(fires), 2)
-            watcher.stop()
+        fires = []
+        watcher = HistoryWatcher(roots=[], debounce=0.2, on_change=lambda: fires.append("changed"))
+        # Native file batches can straddle the debounce interval under parallel
+        # load. Control event time here; the file-write wakeup test covers the OS.
+        with mock.patch("corral.history_watch.time.monotonic", side_effect=[10, 10.01, 10.05, 10.1, 10.19, 10.21]):
+            watcher._signal()
+            self.assertTrue(watcher.wait(timeout=0))
+            watcher.clear()
+            for _ in range(4):
+                watcher._signal()
+            self.assertFalse(watcher.is_set())
+            self.assertEqual(fires, ["changed"])
+            watcher._signal()
+            self.assertTrue(watcher.wait(timeout=0))
+            self.assertEqual(fires, ["changed", "changed"])
 
     def test_stop_unblocks_wait(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -1,7 +1,7 @@
 # Bundled agent skills
 
-Status: adopted product requirements and proposed implementation, 2026-10-20.
-No bundled installer or delegation command has shipped as part of this research.
+Status: implemented product requirements, 2026-10-20.
+The packaged CLI and bundled registration share the command authority in `corral describe`.
 The control architecture and acceptance are owned by the
 [agent delegation design](AGENT_SESSION_DELEGATION_DESIGN.md).
 
@@ -69,15 +69,15 @@ references: [Claude](https://code.claude.com/docs/en/skills),
 
 ## Package and installer contract
 
-Proposed asset source: `src/corral/skills/<name>/SKILL.md`, included in source
+Asset source: `src/corral/skills/<name>/SKILL.md`, included in source
 archives and wheels. Use packaged resources, not a live download of mutable skill
 text from a separate branch. A bundle manifest records names, content hashes,
 bundle version and required CLI capabilities. Derive command schemas/examples
 from the maintained CLI contract where possible; never duplicate parser logic.
 
-Expose proposed `corral skills status`, `install --dry-run`, `install` and
+Expose `corral skills status`, `install --dry-run`, `install` and
 `uninstall` operations with the same envelope, structured conflicts and exact
-targets as the agent CLI. These names are proposals, not current instructions.
+targets as the agent CLI. These commands are implemented.
 Status and dry-run must not create roots, state, locks, caches or registrations.
 Return per-runtime availability, effective and resolved roots, owner, installed
 bundle/hash, conflicts and discovery evidence. File presence and a
@@ -149,3 +149,19 @@ resources. Verify discovery in a fresh runtime session; copying a valid file is
 not that acceptance. Exercise both delegation paths through skills with real
 returned values and the controller's full acceptance matrix. A separate worker
 evaluation requires explicit authorization; direct evaluation must state its scope.
+
+
+## Ownership and recovery corrections (2026-10-20)
+
+An identical SKILL.md without a prior registration is a name conflict, not proof
+of ownership. Never adopt or delete that directory. Managed updates replace only
+the registered SKILL.md, preserving additional user files. Uninstall deletes only
+an unchanged registered file and removes the directory only if empty; per-skill
+and file symlinks are conflicts. Serialize registration changes, journal intended
+hashes before writes, and reconcile interrupted writes by those hashes.
+
+Official and development installation invoke registration through the exact
+installed binary. Interactive startup is the bounded fallback; version/help/query/
+status/dry-run remain read-only. Newly installed runtimes and incomplete attempts
+are reconciled on later eligible starts, including when the bundle version did
+not change.

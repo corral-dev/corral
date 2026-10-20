@@ -501,12 +501,9 @@ def _activity_text(event) -> str:
 
 def _activity_match(session: dict, keywords: list[str]) -> str | None:
     """Search normalized tool calls/results too (SessKit activity), e.g. edited paths and commands."""
-    try:
-        import sesskit
+    import sesskit
 
-        events = sesskit.load_activity(session).events
-    except Exception:  # noqa: BLE001 - an unreadable history is a non-match, reported via coverage
-        return None
+    events = sesskit.load_activity(session).events
     texts = [_activity_text(e) for e in events]
     if not all(any(kw in t.lower() for t in texts) for kw in keywords):
         return None
@@ -539,6 +536,7 @@ def cmd_search(args, registry) -> dict:
     _attach_attention(flat)
 
     results = []
+    history_failures = []
     for runtime in runtimes:
         for session in scanned[runtime.id]:
             # 用 `is True` 而不是 truthy：AgentApiTests 里的 args 常是裸 mock.Mock()，
@@ -566,7 +564,12 @@ def cmd_search(args, registry) -> dict:
                 score, matched_fields = _score_quick_match(session, title, keywords)
                 results.append((score, "quick", matched_fields, runtime, session, None))
             elif args.deep:
-                messages = _load_conversation(runtime, session)
+                try:
+                    messages = _load_conversation(runtime, session)
+                except Exception as exc:  # noqa: BLE001 - partial search reports each unreadable history
+                    history_failures.append({"session_ref": session_key(session), "scope": "conversation",
+                                             "error": str(exc) or type(exc).__name__})
+                    messages = []
                 full_text = "\n".join(m.text for m in messages).lower()
                 if all(kw in full_text for kw in keywords):
                     score, matched_fields = _score_quick_match(session, title, keywords)
@@ -575,7 +578,12 @@ def cmd_search(args, registry) -> dict:
                     snippet = _find_snippet(messages, keywords)
                     results.append((score, "deep", matched_fields, runtime, session, snippet))
                 elif scope == "activity":
-                    snippet = _activity_match(session, keywords)
+                    try:
+                        snippet = _activity_match(session, keywords)
+                    except Exception as exc:  # noqa: BLE001 - preserve incomplete activity coverage
+                        history_failures.append({"session_ref": session_key(session), "scope": "activity",
+                                                 "error": str(exc) or type(exc).__name__})
+                        snippet = None
                     if snippet is not None:
                         score, matched_fields = _score_quick_match(session, title, keywords)
                         results.append((score + 8, "deep", matched_fields + ["activity"], runtime, session, snippet))
@@ -583,6 +591,11 @@ def cmd_search(args, registry) -> dict:
     results.sort(key=lambda item: (item[0], item[4].get("mtime") or 0), reverse=True)
     matched = len(results)
     coverage = _scan_coverage(scanned, failures, args.limit)
+    coverage["history_read_failures"] = history_failures
+    coverage["potentially_limited"] = coverage["potentially_limited"] or bool(history_failures)
+    for failure in history_failures:
+        runtime_id = failure["session_ref"].split(":", 1)[0]
+        coverage["failed_runtimes"].setdefault(runtime_id, "One or more native histories could not be read.")
     results = _apply_top(results, top)
     sessions = []
     for score, matched_via, matched_fields, runtime, session, snippet in results:
@@ -612,8 +625,6 @@ def cmd_search(args, registry) -> dict:
 
 def _control_target(session: dict) -> dict | None:
     """Exact target and version token for `run submit` (only when control is enabled)."""
-    if os.environ.get("CORRAL_CONTROL_PREVIEW") != "1":
-        return None
     from corral.control import target_payload
 
     return target_payload(session)
@@ -1507,11 +1518,6 @@ COMMANDS = [
         },
     },
 ]
-
-# Pre-acceptance gate (2026-10-20): the run command family stays hidden from
-# parsing, describe and dispatch until its acceptance passes. Remove at release.
-if os.environ.get("CORRAL_CONTROL_PREVIEW") != "1":
-    COMMANDS = [spec for spec in COMMANDS if not spec["name"].startswith(("run ", "skills "))]
 
 HANDLERS = {
     "list": cmd_list,

@@ -7,7 +7,7 @@ description: Query local Claude Code, Codex CLI, OpenCode, Cursor Agent CLI, and
 
 `corral` 扫描本机 `~/.claude/projects/`、`~/.codex/sessions/`、`~/.pi/agent/sessions/`、`~/.cursor/chats/` 和 OpenCode 的
 SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的会话历史，为大模型 Agent
-提供结构化查询命令。**这些命令只读、无副作用**：不会拉起新会话、不会自动接续任务、不会修改
+提供结构化查询命令。**本文中的查询命令只读、无副作用**：不会拉起新会话、不会自动接续任务、不会修改
 任何历史文件。拿到数据之后要做什么（继续任务、汇总给用户、转发给另一个 Agent）由调用方决定。
 
 所有命令输出统一 JSON envelope，写到 stdout：
@@ -128,13 +128,10 @@ corral list --live --status pending --compact # 更进一步：正在跑、且�
 会话内容状态。两者组合判断能不能打扰：`live=true` 且 `status=done` 说明进程还开着但已经把当前
 任务处理完，可以直接接着聊；`live=true` 且 `status=pending` 说明正忙着等你回复，插话前先看
 `last_user`/`last_agent` 摘要搞清楚它在问什么。`live=false` 的会话只能走 `resume_command` 重新
-拉起一个进程，不能"接管"——corral 不提供向运行中进程注入输入的能力（本文档开头即说明：corral 只读、无
-副作用,拿到数据后要做什么由调用方决定）。
+拉起一个进程。需要程序化注入、自动恢复和监控时，使用 `corral run submit`，见文末控制链路；查询命令本身不会执行这些动作。
 
 `keepalive=true` 的会话额外要注意：它的进程挂在 corral 的后台保活层里，`live` 通常也是 `true`，但
-`resume_command` 此时不安全——执行它会另起一个和保活进程抢同一份会话文件的新进程。这种会话只能
-由人类回到 `corral` TUI 按 Enter 接回现场，管家 Agent 判断"能不能直接下指令"时应把 `keepalive=true`
-当作"这条会话已经有人在管，只能提示人类去接，不要建议或代为执行 resume_command"的信号。
+`resume_command` 此时不安全——执行它会另起一个和保活进程抢同一份会话文件的新进程。这种会话可由人类回到 `corral` TUI 按 Enter 接回，或通过 `corral run submit` 向原托管会话派发任务。Agent 不要代为执行 `resume_command`，以免另起进程。
 
 `attention` 是界面关注态，与侧栏圆点同源：`waiting`（等你回话）/ `working`（正在干活）/
 `unread`（有未读新结果）/ `none`。它只描述这条会话此刻的关注信号，**不是**「该不该阻止电脑休眠」
@@ -317,3 +314,31 @@ TUI 卡顿、卡死、按键极慢、侧边栏不刷新、内嵌面板异常时�
 5. 需要细日志时设 `CORRAL_DEBUG=1` 后重启 TUI。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
+
+
+## Agent control workflow
+
+The query commands above remain read-only. `corral run` is a separate explicit
+write surface: search and inspect an exact `runtime:id`, dry-run `run submit`,
+then submit with its `target.version` and a stable idempotency key. Stopped
+sessions are resumed; hosted sessions receive input in their current terminal.
+Alternatively, `run create --runtime <id> --cwd <absolute-project>` starts a fresh
+session with an optional `--model`. OpenCode rejects explicit model selection.
+
+Use `run status`, bounded `run wait`, cursor-based `run events` and `run result`
+to observe the same durable operation. `run message`, `run answer` and
+`run interrupt` require its current version and a message idempotency key. Unknown
+delivery must be reconciled, never blindly resubmitted; `run recover` restarts
+monitoring without retyping uncertain input. `completed` proves the correlated
+agent turn ended; repository tests and acceptance remain independent evidence.
+
+The CLI's `describe run`/`describe search`/`describe skills` output is the command
+authority. The packaged [corral-search](../src/corral/skills/corral-search/SKILL.md)
+and [corral-delegate](../src/corral/skills/corral-delegate/SKILL.md) teach the
+end-to-end flow. `corral skills status` is read-only; `skills install --dry-run`
+previews registration. Official installation registers the bundle, with a bounded
+interactive-start fallback and `CORRAL_SKILLS_AUTO=0` opt-out. Existing unknown
+or modified skills are preserved and reported as conflicts.
+
+Search `history_read_failures` and `potentially_limited` distinguish incomplete
+conversation/activity reads from a proven no-hit result.
