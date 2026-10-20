@@ -332,7 +332,8 @@ delivery must be reconciled, never blindly resubmitted; `run recover` restarts
 monitoring without retyping uncertain input. `completed` proves the correlated
 agent turn ended; repository tests and acceptance remain independent evidence.
 
-The CLI's `describe run`/`describe search`/`describe skills` output is the command
+The CLI's `describe run submit`, `describe run create`, `describe search` and
+`describe skills install` output is the command
 authority. The packaged [corral-search](../src/corral/skills/corral-search/SKILL.md)
 and [corral-delegate](../src/corral/skills/corral-delegate/SKILL.md) teach the
 end-to-end flow. `corral skills status` is read-only; `skills install --dry-run`
