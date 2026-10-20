@@ -5,6 +5,13 @@
 > coordinator agent, the worker agents, or Corral changes made for them.
 > Items marked *Proposed* are unadopted suggestions; §8 records owner decisions.
 
+For the separately requested Agent CLI delegation workflow and current runtime
+contracts, see [Agent session delegation](AGENT_SESSION_DELEGATION_DESIGN.md).
+Its 2026-10-20 research distinguishes the current input-injection receipt from
+native history recording and task completion; the September experiments below
+remain historical evidence, not the current delivery contract. The editor and
+coordinator proposals in this document remain outside that bounded CLI work.
+
 ## 1. Owner requirements (2026-09-29)
 
 1. Use Corral's project discovery to know every local project.
