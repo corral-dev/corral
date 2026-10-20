@@ -27,7 +27,7 @@ def marker(run_id: str, message_id: str) -> str:
 
 def wire_prompt(run_id: str, message_id: str, prompt: str) -> str:
     """The visible envelope lets SessKit evidence prove which run an input belongs to."""
-    return f"{marker(run_id, message_id)}\n{prompt}"
+    return f"{prompt}\n\n{marker(run_id, message_id)}"
 
 
 def validate_prompt(text: str) -> str:

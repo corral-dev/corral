@@ -26,6 +26,34 @@ def _event(seq: int, kind: str, text: str | None = None, **extra) -> ActivityEve
     return ActivityEvent(seq=seq, type=kind, evidence=_EV, text=text, **extra)
 
 
+class FirstTurnFailureTests(unittest.TestCase):
+    def test_claude_failed_first_turn_remains_discoverable(self):
+        from sesskit.parsers import claude
+
+        from corral.runtime.host_extension import corral_host_extension
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "histories" / "project"
+            project.mkdir(parents=True)
+            prompt = "Repair the billing discount formula."
+            wire = control.wire_prompt("run_aabb", "initial", prompt)
+            path = project / "session.jsonl"
+            rows = [
+                {"type": "user", "cwd": str(root), "message": {"content": wire}},
+                {"type": "assistant", "isApiErrorMessage": True, "apiErrorStatus": 401,
+                 "message": {"content": [{"type": "text", "text": "Authentication failed"}]}},
+            ]
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            with mock.patch.object(claude, "PROJECTS_DIR", str(project.parent)), \
+                    mock.patch.object(claude, "_live_session_ids", return_value={}):
+                sessions = claude.scan_sessions(host=corral_host_extension())
+            self.assertEqual([s["id"] for s in sessions], ["session"])
+            self.assertTrue(sessions[0]["fallback_title"].startswith(prompt))
+            self.assertTrue(wire.startswith(prompt))
+            self.assertIn(control.marker("run_aabb", "initial"), wire)
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

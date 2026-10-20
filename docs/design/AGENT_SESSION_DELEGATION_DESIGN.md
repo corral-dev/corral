@@ -301,7 +301,7 @@ to conceal the gap. Sources: [Claude CLI](https://code.claude.com/docs/en/cli-re
 6. Record caller, target, source generation, baseline event position, native
    message/turn identifiers when available, runtime attempt identity and delivered
    evidence. A later unrelated message must not satisfy this run's completion.
-   Proposed terminal-path correlation: prefix the submitted brief with a compact,
+   Terminal-path correlation: append to the submitted brief a compact,
    visible Corral run/message identity and keep the original brief verbatim inside
    that envelope. Match only a new normalized user event after the captured
    baseline in the expected generation. Quoted markers in assistant/tool output
@@ -707,3 +707,30 @@ observable-event/controlled-clock approach for follow-up fixture work.
 | `SidebarResizeTests.test_narrow_screen_caps_width_for_right_pane` | 1 | 0.129–0.129 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
 | `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group` | 1 | 0.135–0.135 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
 | `Timer._run_timer` | 7 | 0.105–0.151 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+
+
+## Native Claude API error correction
+
+The final fresh Claude failure probe exposed a native interpretation gap: an
+assistant record explicitly flagged `isApiErrorMessage: true` with
+`apiErrorStatus: 401` was previously returned as a completed turn with the model
+`<synthetic>`. This supersedes the earlier assumption that the only remaining
+Claude limitation was its unavailable credentials. SessKit owns the correction:
+list/session outcomes are aborted, turn outcomes failed, native HTTP/error
+evidence retained, and a synthetic failure is not model inference evidence.
+Corral consumes the versioned provider fix; no error-string parser is added here.
+Successful Claude inference remains unverified while its available accounts are
+quota/auth blocked, but the failure must be reported as failed rather than done.
+The candidate tag v0.24.338 was pushed before this probe completed and had no
+installable release; the integrated delivery supersedes it as v0.24.339.
+
+The integrated release pins published SessKit 0.2.16 by wheel/source digest; provider-version cache invalidation reparses derived history.
+
+### First-turn failure discovery
+
+The Corral correlation marker follows the unchanged brief. Leading a fresh prompt
+with a bracketed marker made Claude's native-list title filter classify a first
+turn with no successful reply as empty/local-only; the supervisor then could not
+bind and expose its API failure. Keep the user brief first, including for failed
+first turns. Correlation continues to accept either marker position in native
+user events, so previously recorded inputs retain their identity.
