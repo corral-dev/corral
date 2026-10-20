@@ -183,7 +183,16 @@ are reconciled on later eligible starts, including when the bundle version did
 not change.
 
 
-## Implicit selection requirements (2026-10-20)
+## Current description wording (owner correction, 2026-10-20)
+
+Keep each description to a concise statement of its core capability: searching and
+reading other agents' local conversations, or assigning tasks and monitoring their
+progress, questions and results. Keep detailed workflow scenarios and boundaries
+in the skill body instead of extending the frontmatter into a trigger checklist.
+The earlier selection measurements below apply to their recorded descriptions;
+they do not establish the simplified wording's selection reliability.
+
+## Earlier implicit selection requirements (2026-10-20)
 
 The owner approved strengthening the descriptions and evaluating automatic
 selection without naming Corral or either skill in the task. Search must cover
