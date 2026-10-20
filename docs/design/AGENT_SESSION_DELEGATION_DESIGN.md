@@ -244,10 +244,13 @@ The 2026-10-20 help probes confirmed launch `--model` for installed Claude, Code
 Cursor and Pi (Pi also supports provider-qualified identifiers). **OpenCode
 2.0.32 is a concrete compatibility gap:** its installed root help and inspected
 root command schema have no `--model`, while its public CLI page still documents
-one. Its TUI has model-selection state, but that does not establish a supported
-launch flag or a non-persistent selection path. Verify a suitable terminal
-selection before advertising this capability; don't use its HTTP API to conceal
-the gap. Sources: [Claude CLI](https://code.claude.com/docs/en/cli-reference),
+one. A separate `opencode mini --help` probe does expose `--model`; it is a
+candidate ordinary interactive CLI entry, not proof of equivalence to Corral's
+existing hosted mode (readiness, identity, permissions and resume need acceptance).
+The full TUI also has model-selection state, but that does not establish a
+supported root flag or a non-persistent selection path. Verify a suitable ordinary
+launch/terminal path before advertising this capability; don't use its HTTP API
+to conceal the gap. Sources: [Claude CLI](https://code.claude.com/docs/en/cli-reference),
 [Codex CLI](https://learn.chatgpt.com/docs/developer-commands),
 [Cursor CLI](https://cursor.com/docs/cli/reference/parameters),
 [OpenCode CLI](https://opencode.ai/docs/cli/) and inspected OpenCode tag `v2.0.32`
@@ -431,7 +434,7 @@ Review of every `agent-friendly-cli` design-principle item, scoped to this workf
 | P1 size/coverage | Existing scanned/matched/returned/truncated/failures are useful; add history-read coverage, time scope, paging and event byte limits. Preserve full locators. |
 | P1 operation/WAL | Remote input receipts exist; add durable runs and transactional audit rather than treating delivery receipts as a task ledger. |
 | P1 read-before-write | No existing control version. Add stable target/control fingerprints, fresh run versions on message/interrupt, post-write objects/new tokens. Exclude volatile activity timestamps. |
-| P1 companion skill | Existing SKILL is query-only. Extend the same maintained skill with discovery/selection, dry-run, submit, observe, answer, result, unknown-state recovery and trust boundaries. Never expose proposal commands before shipping. |
+| P1 companion skill | Existing SKILL is query-only. Ship the approved corral-search/corral-delegate bundle with discovery/selection, create or resume, dry-run, submit, observe, answer, result and unknown-state recovery. Share one command authority with the existing guide; never expose proposal commands before shipping. |
 | P1 batching | Reads can return many sessions; add batch status/wait with per-run failures and bounded concurrency. Writes always select one target. Piped prompt input is explicit, never guessed JSON. |
 | P1 matching | Prefix ambiguity errors exist; control writes require the canonical full identity and version. Do not auto-pick the highest relevance hit. |
 | P2 transport consistency | No new MCP is required. If added later, share the same controller and response semantics; do not build a separate executor. |
@@ -540,6 +543,14 @@ match no rows. Therefore two-character Chinese terms and short identifiers need
 an explicit literal fallback or another validated tokenizer. All paths must keep
 coverage and latency bounds visible. A rebuilt cache must never make old sessions
 unresolvable or authorize control of a stale/missing native source.
+
+A synthetic in-memory check through the Homebrew SQLite CLI reproduced this:
+`MATCH '权限'` returned zero, literal `LIKE '%权限%'` returned one and the longer
+`MATCH '会话恢复'` returned one on the same row. The initial unpinned `sqlite3`
+resolved to an Android SDK binary without FTS5; that preparation failure was
+corrected by pinning the intended native CLI. Neither probe establishes FTS5
+availability in Corral's packaged Python SQLite build; verify that separately
+before selecting the implementation. No real history or database was mutated.
 
 ### Recommended scope
 
