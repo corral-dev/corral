@@ -89,13 +89,29 @@ Default lifecycle:
    bundled registration command using the exact installed executable. Development
    installation follows the same bounded entry. Report per-runtime failures
    accurately; installing the binary alone is not successful skill registration.
-2. A normal execution entry provides a safe, bounded registration/update fallback
+2. An interactive startup provides a safe, bounded registration/update fallback
    for package managers without a user-level install hook. Keep query/describe/
    version/help/status/dry-run paths read-only and JSON stdout clean. Provide an
    opt-out for automatic registration; explicit install/status remains available.
 3. Reconcile bundle changes and newly installed runtimes on the next eligible
    invocation. Avoid per-command directory sweeps. Serialize concurrent changes
    and retain evidence of incomplete registration so it can resume.
+
+### Registration timing
+
+| Entry or installation channel | Registration/update behavior |
+|---|---|
+| Official `install.sh` and `scripts/dev-install.sh` | Invoke `skills install` through the exact installed executable at the end; inspect per-runtime results |
+| Homebrew, raw pip or pipx package installation/upgrade | Unpack bundled assets; registration is reconciled on the next eligible interactive Corral startup, with both stdin and stdout attached to a TTY |
+| Top-level version/help, agent query/describe/status/dry-run commands and `update` | No automatic registration; these entries do not count as that interactive startup |
+| `corral skills status` | Read-only registration/conflict inspection |
+| `corral skills install` | Explicit registration/repair using the installed bundle; respects ownership conflicts |
+| `CORRAL_SKILLS_AUTO=0` | Disable automatic startup registration; explicit install/status remain available |
+
+Only detected installed runtimes are targeted. A successful package upgrade alone
+therefore does not establish updated registrations through every channel. Open a
+fresh agent session to verify discovery of the updated descriptions; an already
+running agent is not evidence that new metadata has loaded.
 
 Distribution has a real boundary: Python wheel installation unpacks files and
 generates entry points; it does not provide a standard arbitrary per-user
@@ -184,18 +200,12 @@ turn every bug into mandatory delegation. Keep the existing exact-target,
 idempotency, uncertainty and acceptance boundaries in the body. Preserve generic
 five-runtime portability; do not add a vendor-specific invocation requirement.
 
-Prior real repair acceptance explicitly named Corral and the packaged skills.
-It established operational usability, not implicit skill selection. Evaluate
-fresh independent runtime contexts on positive and negative prompts, record the
-first actual skill read/tool action, and keep the original business task free
-of tool/skill names. Include an unprompted original-owner workflow and a fresh
-independent-task workflow. Use isolated fixture data and bounded execution;
-record model/runtime, trigger outcomes and remaining coverage limits. These
-checks complement the CLI suite and do not establish all-model reliability.
-
-References: [description guidance](https://agentskills.io/skill-creation/optimizing-descriptions)
-and [skill specification](https://agentskills.io/specification).
-
+The shared [skill selection/evidence method](~/.config/agentsync/docs/SKILLS_GUIDE.md#321-implicit-selection-and-execution-evidence)
+owns evaluation design and claim limits. Prior Corral repair acceptance explicitly
+named the tool and skills, so it established operational usability only. Corral
+additionally requires unnamed-tool original-owner and fresh-task workflows, with
+isolated fixtures and bounded execution. The observations below complement the
+CLI suite; they do not establish all-model reliability.
 
 Reproduce selection checkpoints with `python3 scripts/evaluate_skill_triggers.py`.
 The default only validates/prints the plan and makes no writes or model calls.
@@ -204,9 +214,9 @@ use `--extension <provider-extension>` only when that provider needs an explicit
 extension. Automatic extension/MCP/context discovery is disabled so unrelated
 agent orchestration cannot participate. Pi's own skill loader supplies the names
 and descriptions from the two packaged skills; no description is pasted into the
-business prompt. Both successful native assistant completion and successful
-SKILL.md read results are required. Native quota/auth errors invalidate a case,
-even when Pi exits zero, and never count as a correct negative result.
+business prompt. The helper requires successful native assistant completion and
+successful SKILL.md read results for expected selections. It rejects native
+quota/auth errors even when Pi exits zero.
 
 <!-- 该文档整理/压缩于 2026-10-20 -->
 

@@ -719,3 +719,10 @@ not bind the input or settle the run. Match the expected run's marker throughout
 the native user text. Retain prefix-marker compatibility and do not let a quoted
 marker for a different run hide the actual trailing marker. Native assistant/tool
 quotes remain excluded by the user-event-only correlation boundary.
+
+The reusable correlation and no-replay boundaries are owned by the shared
+[session integration guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#correlating-delegated-input).
+Corral's regression coverage retains both legacy prefix markers and a long Chinese
+brief quoting another run before its own trailing marker. Recovery settled the
+already completed native turn without another submission; installed 0.24.340 then
+completed a fresh 1308-character brief with correlated output and no recovery.
