@@ -185,12 +185,22 @@ not change.
 
 ## Current description wording (owner correction, 2026-10-20)
 
-Keep each description to a concise statement of its core capability: searching and
+The shared [description guidance](~/.config/agentsync/docs/SKILLS_GUIDE.md#32-descriptionfrontmatter)
+owns the concise capability-first wording and separation of discovery, capability
+answers and execution evidence. Corral's two descriptions now state searching and
 reading other agents' local conversations, or assigning tasks and monitoring their
-progress, questions and results. Keep detailed workflow scenarios and boundaries
-in the skill body instead of extending the frontmatter into a trigger checklist.
+progress, questions and results; the workflow body is unchanged.
 The earlier selection measurements below apply to their recorded descriptions;
 they do not establish the simplified wording's selection reliability.
+
+The 0.24.341 wording passes both frontmatter validators; all registered local
+runtime copies match the committed source. The 2677-test/Ruff gate passed in
+106.2 seconds, with two environment skips and no failures/retries. Existing
+Textual timing notices remain in the unchanged UI fixture lane. Additional
+observed origins were `SidebarResizeTests.test_drag_with_three_split_panes_adapts_all`
+(0.121 s) and `UpdateCheckWorkerTests.test_dismiss_calls_mark_dismissed_and_hides_toast`
+(0.125 s); their assertions passed. Retain these scheduling diagnostics without
+inferring production latency; investigate if a matching real stall is reported.
 
 ## Earlier implicit selection requirements (2026-10-20)
 
