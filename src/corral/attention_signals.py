@@ -286,9 +286,22 @@ def _settle_codex_async_user_text(text: str, pending: dict[str, set[int]]) -> No
 
 def _compact_codex_attention_entry(entry: dict) -> dict | None:
     """Keep lifecycle/question evidence, never large command output or reasoning."""
+    from sesskit.parsers.codex import user_message_text
+
     payload = entry.get("payload")
     if not isinstance(payload, dict):
         return None
+    # Native answers and steering may have only a response_item user row.
+    # Normalize both representations through SessKit before dropping content.
+    if text := user_message_text(entry):
+        return {
+            "type": "event_msg",
+            "timestamp": entry.get("timestamp"),
+            "payload": {
+                "type": "user_message",
+                "message": text if "<send_user_message_question_reply>" in text else "steering",
+            },
+        }
     kind = payload.get("type")
     if kind == "item_completed":
         item = payload.get("item")
@@ -325,11 +338,6 @@ def _compact_codex_attention_entry(entry: dict) -> dict | None:
         from corral.remote.richmsg import _is_async_acceptance_receipt
 
         compact["output"] = {"accepted": _is_async_acceptance_receipt(payload.get("output"))}
-    elif kind == "user_message":
-        text = str(payload.get("message") or "")
-        compact["message"] = (
-            text if "<send_user_message_question_reply>" in text else ("steering" if text.strip() else "")
-        )
     return {"type": entry.get("type"), "timestamp": entry.get("timestamp"), "payload": compact}
 
 
@@ -428,6 +436,8 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
 
 
 def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> AttentionEvidence:
+    from sesskit.parsers.codex import user_message_text
+
     path = str(session.get("path") or "")
     if not entries and "phase" not in state:
         return _evidence(observed_at=_stable_observed_at(session, path))
@@ -450,9 +460,9 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
 
         relevant = False
 
-        if entry.get("type") == "event_msg" and payload_type == "user_message":
+        if text := user_message_text(entry):
             # User text may answer an async question without opening a new turn.
-            _settle_codex_async_user_text(str(payload.get("message") or ""), async_pending)
+            _settle_codex_async_user_text(text, async_pending)
             relevant = True
         elif payload_type == "task_started":
             async_pending.clear()

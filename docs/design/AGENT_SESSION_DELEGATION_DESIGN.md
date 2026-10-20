@@ -1,6 +1,8 @@
 # Agent session delegation: research and proposed contract
 
 Status: research completed on 2026-10-20; implementation and release pending.
+Expanded research includes fresh-session creation, explicit model selection and
+the [bundled skill distribution contract](BUNDLED_AGENT_SKILLS_DESIGN.md).
 The owner requested research first, followed by development using `agent-friendly-cli`.
 The outcome below is adopted; command names and engineering choices are proposals.
 No command under `corral run` described here exists in 0.24.335.
@@ -13,6 +15,14 @@ session, resume it when stopped, and observe the resulting work and final respon
 The calling agent must survive disconnection/restart without losing the operation
 or accidentally issuing the repair twice. A question from the target must be
 observable and answerable through the same workflow.
+
+The owner's additional requirement on 2026-10-20 makes historical discovery
+optional: a caller can also create a fresh session, explicitly select one of the
+five supported runtimes and optionally a model, supply its initial requirement,
+and observe execution and results through the same run contract. Fresh creation
+does not require or fabricate a source session. Both entry paths are first-class
+Corral middleware capabilities; neither depends on runtime-native agent teams,
+subagents, messaging, background-session managers or orchestration APIs.
 
 Owner clarification (2026-10-20): this capability belongs to the Corral middle
 layer and must be decoupled from the coding agents. Corral owns the unified
@@ -39,6 +49,13 @@ Native resume preserves the runtime's stored conversation, subject to its own
 compaction and configuration. It does not restore process memory or guarantee the
 same model/account, unchanged files, or a correct repair. Return the actual runtime,
 model when observable, project and source evidence; the caller still reviews the work.
+
+Explicit model selection is caller-owned. An omitted model inherits the runtime's
+configuration. A supplied model is scoped to that requested fresh launch, never
+written into global runtime defaults or silently replaced with Corral's choice.
+Record requested and observed model separately; a successful process launch does
+not establish the model actually used. This extends the former direct-launch-only
+exception to the owner's default-model rule.
 
 Shared interpretation constraints remain in the
 [session integration guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md).
@@ -71,6 +88,7 @@ The checkout doctor reported ready, no blockers and no warnings. Its explicit
 | Resume with new instruction | `plan continue` returns safe argv/cwd; Claude, Codex, OpenCode and Cursor generated plans in actual read-only probes | External execution only; no operation/supervision; Pi returned `not_resumable` because it inherits the unsupported base method |
 | Reuse a running target | `live`, `keepalive`, `pid`, `attention` are visible | No agent CLI dispatch command; a live hosted Codex still received a successful external continuation plan |
 | Resume and inject | `remote.sessions.SessionHub.send_text`, `resume_session`, dead-pane recovery, startup/composer checks | Internal to the remote service; not an agent command or durable task execution contract |
+| Create a fresh target | `SessionHub.new_session` → runtime `build_new_session_plan` → `_host`; registers a provisional hosted identity before native history exists | No agent CLI create-and-submit transaction, per-run model option, or durable creation receipt |
 | Reconcile input | `CommandReceiptStore`, `RemoteService._run_receipted_input`; persistent command IDs, digest mismatch rejection, ambiguous dispatch on restart | A delivery receipt ends at input delivery, not at model consumption, execution or completion |
 | Observe changes | Remote subscriptions plus SessKit typed activity and incremental readers | Agent CLI has only snapshots; no operation-bound cursor, bounded wait, durable event stream or result retrieval |
 | Establish repair success | Transcript and tool records can supply evidence | A completed turn or a worker saying “fixed” does not prove a P0 repair passed its acceptance criteria |
@@ -158,7 +176,7 @@ Primary sources checked:
 
 | Reference / source snapshot | Reuse conceptually | Do not copy |
 |---|---|---|
-| [coder/agentapi](https://github.com/coder/agentapi/tree/7c468d5b25ec9d3d76c41313cf4e08904ff5968d), `lib/screentracker/pty_conversation.go`: `Send`, `sendMessage`, `isScreenStableLocked` | One controlled input queue, explicit readiness, status/events surface | Screen-stability classification as business completion; a second terminal parser beside SessKit |
+| [coder/agentapi](https://github.com/coder/agentapi/tree/7c468d5b25ec9d3d76c41313cf4e08904ff5968d), `lib/screentracker/pty_conversation.go`: `Send`, `sendMessage`, `isScreenStableLocked` | Historical reference for one controlled input queue, explicit readiness, status/events surface | Archived/deprecated upstream, not a new dependency; screen stability as business completion; a second terminal parser beside SessKit |
 | [claude-session-driver](https://github.com/obra/claude-session-driver/tree/319bb0fe2960ba8f3a7eff2f786f9c57e284eecc), `src/commands/{converse,wait-for-turn}.ts` | Capture a pre-send event boundary, then await and collect a new reply | Waiting for any later stop/session_end without exact operation correlation; returning partial text with success after its finality check expires |
 | Existing Corral remote receipts and recovery | Digest identity, durable intent before injection, rejection vs uncertainty, target input serialization, startup/composer safeguards | Constructing a fake paired device, enabling relay for local CLI control, using per-process receipt locks as cross-process ownership |
 | SessKit 0.2.14, actual installed library | Typed events, turns/outcomes, provenance, incremental readers and generation reset | Re-parsing native JSONL/SQLite in the CLI; equating inferred completion with a native guarantee |
@@ -176,6 +194,8 @@ corral search <keywords...> --deep --cwd <project> --top 5
 corral show <runtime:id> --messages 12
 corral run submit <runtime:id> --prompt-file <brief> --if-version <token> --idempotency-key <key> --dry-run
 corral run submit <runtime:id> --prompt-file <brief> --if-version <token> --idempotency-key <key>
+corral run create --runtime <runtime> --cwd <project> --model <model-id> --prompt-file <brief> --idempotency-key <key> --dry-run
+corral run create --runtime <runtime> --cwd <project> --model <model-id> --prompt-file <brief> --idempotency-key <key>
 corral run status <run-id> [<run-id> ...]
 corral run events <run-id> --after <cursor> --limit 50
 corral run wait <run-id> --timeout 30
@@ -188,6 +208,50 @@ as instructions for the current release. Additional write verbs are
 `run interrupt` (cancel only the correlated active turn). Both require a fresh
 run version and a message/operation idempotency key. Do not expose generic shell
 execution, arbitrary PID kill, native slash-command injection or history deletion.
+
+### Fresh creation and model selection
+
+`run create` and `run submit` have different target preconditions but return the
+same run handle, state axes, events and result shape. Creation requires an explicit
+runtime and project; `--model` is optional. No old-session fingerprint is required
+for a create, but an idempotency key binds the immutable creation specification,
+including runtime, cwd, explicit model and initial brief. Retrying the same
+request must return the same creation attempt, not another agent process.
+
+Persist intent and allocate Corral's hosted identity before launching. Keep
+`run_id`, hosted identity and native session identity separate. Native identity
+may arrive only after the first prompt; bind it using the existing managed
+identity/claim machinery, never by newest file, title, cwd or timestamps alone.
+Return the durable run during `starting`, even before a native session reference
+is available. A crash after launch but before registration must reconcile the
+original hosted identity; uncertain ownership cannot authorize a second launch.
+Verify startup and requested model before initial input where the runtime exposes
+that evidence. Record unresolved identity/model checks explicitly; do not claim
+model compliance from argv alone. An explicit model mismatch must not become a
+successful execution under a different model.
+
+Keep model selection in the runtime adapter: ordinary launch flags or a verified,
+session-scoped terminal interaction. No vendor control API, permanent config edit,
+copied credential, automatic account switch or hard-coded model ranking. A model
+catalog is discovery evidence, not proof of entitlement or actual selection.
+Expose requested identifier, resolved identifier when known, evidence source,
+observation time and selection capability. Reject ambiguous fuzzy selections.
+Unresolved/unsupported selection must return an actionable limitation, never
+ignore `--model` or fall back to another model. Preserve runtime defaults when the
+flag is absent; don't restart an already running historical target to change it.
+
+The 2026-10-20 help probes confirmed launch `--model` for installed Claude, Codex,
+Cursor and Pi (Pi also supports provider-qualified identifiers). **OpenCode
+2.0.32 is a concrete compatibility gap:** its installed root help and inspected
+root command schema have no `--model`, while its public CLI page still documents
+one. Its TUI has model-selection state, but that does not establish a supported
+launch flag or a non-persistent selection path. Verify a suitable terminal
+selection before advertising this capability; don't use its HTTP API to conceal
+the gap. Sources: [Claude CLI](https://code.claude.com/docs/en/cli-reference),
+[Codex CLI](https://learn.chatgpt.com/docs/developer-commands),
+[Cursor CLI](https://cursor.com/docs/cli/reference/parameters),
+[OpenCode CLI](https://opencode.ai/docs/cli/) and inspected OpenCode tag `v2.0.32`
+`packages/cli/src/commands/{commands.ts,handlers/default.ts}`.
 
 ### Target and search contract
 
@@ -266,6 +330,12 @@ started/finished timestamps and elapsed time. Missing usage/cost stays null; no
 estimate is presented as actual billing. A result command can successfully return
 a known failed run; `ok` describes the query, `execution.state` describes the work.
 
+A terminal run remains terminal. A repair follow-up starts a new run on the same
+session and can reference its predecessor; it does not reopen the old run or
+replace its result. Answers/steering within an active run remain messages of that
+run. Preserve separate identities for caller, session, run, delivery message and
+launch attempt. A single session status cannot substitute for all of them.
+
 Events include state changes, message/tool summaries, output, questions, errors,
 correlation and final response, with `seq` plus a generation-aware opaque cursor.
 Read only new events by default. Optional follow mode uses explicitly advertised
@@ -277,6 +347,18 @@ Subscription/cursor setup precedes dispatch so very fast completion cannot be mi
 deadline is an exit-6 `wait_timeout`, with the same run ID and status next command;
 it is not an execution failure. Event reads/status must remain available after
 controller restart even when the underlying runtime is temporarily unreachable.
+
+For several runs, provide one bounded wait over a selected set, returning on the
+first actionable change (`waiting_input`, failure or terminal outcome). Avoid one
+poll loop per worker. Events should be persisted before publication; if durable
+storage fails, report degraded/unavailable observation rather than acknowledge a
+durable cursor that exists only in memory. Report observer heartbeat, last runtime
+output and last normalized progress separately. A healthy observer and a quiet
+terminal prove neither model progress nor a hung worker. A caller may detach and
+later resume from the cursor without stopping the target. Automatic wake-up of a
+caller, if added, must use Corral's own controlled delivery with deduplication and
+cycle bounds, not a runtime-native notification tool; it is not a prerequisite for
+bounded wait/events/result.
 
 ## 5. Proposed architecture and durability
 
@@ -391,6 +473,11 @@ Development acceptance must include all of the following, not just this baseline
 1. A disposable feature-development session holds a fact absent from the calling
    agent's brief. Search finds it; native resume preserves its identity/context;
    the worker performs a repair and the caller retrieves only the new result.
+   Also exercise creation without any history: select runtime/model and project,
+   send the initial brief, observe the first turn, answer a question, retrieve its
+   result, and submit a second run on that new session. Prove creation retries do
+   not produce another hosted/native session. Verify model choice with actual
+   runtime evidence and an unchanged global-default configuration.
 2. Five-runtime matrix: stopped resume, idle hosted send, busy queue, supported
    steering, blocked question, missing login/quota, interruption and malformed
    output. Unsupported capabilities fail explicitly, not by silent mode changes.
@@ -413,6 +500,54 @@ Development acceptance must include all of the following, not just this baseline
    delivery rules; a design-only commit is not a shipped feature.
 
 Recommended sequence: shared control/ownership and operation store; minimal exact
-resume-submit-observe-result path; Corral input/history correlation and five-runtime
-acceptance; richer retrieval and companion-skill acceptance. Keep unfinished
+resume/create-submit-observe-result paths; Corral input/history correlation and
+five-runtime acceptance; richer retrieval and bundled-skill acceptance. Keep unfinished
 command surfaces hidden until their complete contract can be exercised.
+
+## 8. Additional architecture research (2026-10-20)
+
+These are inspected references and Corral recommendations, not dependencies or
+claims that third-party implementations passed Corral's acceptance matrix.
+
+| Reference and inspected source | Useful design direction | Corral boundary / caveat |
+|---|---|---|
+| [Agent Deck](https://github.com/asheshgoplani/agent-deck), snapshot `721f1bf0f530f3e85bf1524a68b927d03b184111`; `internal/sendqueue/{sendqueue,enqueue}.go`, `internal/session/turn_identity.go`, companion CLI reference | Persist a send ID and transcript baseline; distinguish submitted input, recorded input and a new response; queued work can outlive the submitting process | Its native hooks/parsers, runtime-specific control integrations and isolated Pi histories are not Corral's architecture. Use SessKit and existing Corral ownership instead. `EnqueueOnce` reuses a key without checking all payload fields there; retain Corral's stronger immutable-payload conflict rule. |
+| [NTM](https://github.com/Dicklesworthstone/ntm), snapshot `cb3ed0a45a85e0550ab291fa598302ff8acd7109`; `internal/robot/{send_idempotency,operation_idempotency,attention_feed,wait}.go`, `internal/state/runtime_store.go` | Durable operation binding, reclaim only before dispatch, cursor-based attention/replay, bounded wait with actionable changes | Do not import its broad swarm/task/mail/policy product. Its feed can degrade to in-memory events after a store failure; Corral must expose lost durability and cursor retention explicitly. |
+| [A2A task lifecycle](https://a2a-protocol.org/latest/topics/life-of-a-task/) and [CLI specification](https://github.com/a2aproject/a2a-cli/blob/main/specification/SPEC.md) | Separate conversation context, unit of work, messages and result artifacts; terminal tasks stay immutable; asynchronous submission and structured machine output | Borrow the model without requiring runtime A2A support. Corral's initial CLI/Unix socket need no HTTP Agent Card, network discovery or full protocol stack. CLI defaults/envelope remain Corral-owned. |
+| [A2A streaming](https://a2a-protocol.org/latest/topics/streaming-and-async/) | Status and result events, snapshot retrieval, detached monitoring and resubscription | A subscription is not a replay guarantee. Corral adds its own durable cursor/retention contract; webhooks are not needed for local monitoring. |
+| [Temporal failure detection](https://docs.temporal.io/encyclopedia/detecting-activity-failures), [Nexus execution semantics](https://docs.temporal.io/nexus/operations), [Restate durable steps](https://docs.restate.dev/develop/python/durable-steps) | Journal completed steps, separate waiting/cancellation, keep progress checkpoints and explicit retry policies | Neither workflow IDs nor a replay journal make arbitrary terminal input atomic. No automatic retry after uncertain input. A distributed workflow server is not justified for this local single-host capability. |
+| [CASS answer packs](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/main/docs/planning/ANSWER_PACKS_CONTRACT.md), snapshot `8ca04876e0ad7115431c72396e8ee8fa01f049d6`; contract plus `src/search/zero_result_diagnosis.rs`, `source_provenance.rs`, `src/context_pack.rs` | Return compact cited evidence, coverage, freshness and budget omissions instead of a transcript dump; diagnose wrong project filters | Some inspected provenance/context modules explicitly precede serializer/live-candidate wiring. Treat these as concepts, not proven shipped coverage. Do not copy its connectors, embedder downloads or storage authority beside SessKit. |
+
+Current [AgentAPI README](https://github.com/coder/agentapi) explicitly deprecates
+the project; GitHub reports it archived on 2026-09-13. The earlier source inspection
+remains a historical mechanism reference, not an endorsement of a maintained SDK.
+
+### Retrieval recommendation
+
+Start with deterministic keyword retrieval over normalized user/assistant and
+tool activity, then return a small evidence packet for candidate inspection.
+Include stable references, source event positions, match excerpts, scope and
+coverage; a search score is not a probability of authorship. Exact file paths,
+symbols, error messages and Chinese keywords need dedicated cases. Preserve the
+published AND/substring semantics of existing search rather than silently replacing
+them with a token engine's defaults. Optional semantic recall can be considered
+after measured keyword gaps; no model download or LLM query is necessary now.
+
+Benchmark the existing index against a derived SQLite FTS5 candidate. The
+[official trigram specification](https://www.sqlite.org/fts5.html#the_trigram_tokenizer)
+documents a specific trap: full-text queries shorter than three Unicode characters
+match no rows. Therefore two-character Chinese terms and short identifiers need
+an explicit literal fallback or another validated tokenizer. All paths must keep
+coverage and latency bounds visible. A rebuilt cache must never make old sessions
+unresolvable or authorize control of a stale/missing native source.
+
+### Recommended scope
+
+Implement a small local durable controller over Corral's existing terminal
+hosting, backed by operation/audit storage and SessKit observation. Offer two
+entry paths (resume an exact session or create a fresh one), then share delivery,
+wait/events, questions, interrupt and results. Keep runtime/model discovery
+capability-based and scoped to the five active runtimes. Ship the corresponding
+skills with that complete behavior. Full A2A transport, a distributed workflow
+engine, an automatic task planner and an embedding service remain future options,
+not necessary dependencies of the requested scenario.

@@ -255,6 +255,76 @@ class CodexAttentionSignalTests(unittest.TestCase):
                 else:
                     self.assertEqual(prompts, [])
 
+    def test_response_item_answers_settle_on_incremental_and_cold_scans(self) -> None:
+        from corral.attention_signals import _CODEX_ATTENTION_READERS, _inspect_codex_entries
+        from corral.remote.questions import pending_prompts
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            session = _session("codex", path)
+            entries = [{"type": "event_msg", "payload": {
+                "type": "item_completed", "item": {
+                    "type": "AgentMessage", "id": "q1", "delivery": "async",
+                    "questions": [{"title": "First?"}, {"title": "Second?"}],
+                },
+            }}]
+            _write_jsonl(path, entries)
+            self.assertEqual(len(pending_prompts(session, [])), 2)
+            # This is the native shape from the reported session: no matching
+            # event_msg.user_message exists. Preserve unmatched/sibling questions.
+            for call_id, index, remaining in (("other", 0, [0, 1]), ("q1", 0, [1]), ("q1", 1, [])):
+                reply = "<send_user_message_question_reply>" + json.dumps([{
+                    "questionItemId": json.dumps(["request_user_input_async", call_id, index]),
+                    "question": "Question?", "answer": "A",
+                }]) + "</send_user_message_question_reply>"
+                row = {"type": "response_item", "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": reply}],
+                }}
+                entries.append(row)
+                with path.open("a") as file:
+                    file.write(json.dumps(row) + "\n")
+                for cold in (False, True):
+                    with self.subTest(call_id=call_id, index=index, cold=cold):
+                        if cold:
+                            _CODEX_ATTENTION_READERS.pop(str(path), None)
+                        for _ in range(2):
+                            prompts = pending_prompts(session, [])
+                            self.assertEqual([json.loads(p["question_id"])[2] for p in prompts], remaining)
+                            self.assertEqual(inspect_session(session).phase == "waiting", bool(remaining))
+                # The un-compacted fallback must apply the same settlement.
+                self.assertEqual(_inspect_codex_entries(session, entries, {}).phase == "waiting", bool(remaining))
+
+    def test_response_item_steering_settles_but_context_does_not(self) -> None:
+        from corral.attention_signals import _compact_codex_attention_entry
+        from corral.remote.questions import pending_prompts
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            session = _session("codex", path)
+            entries = [{"type": "response_item", "payload": {
+                "type": "function_call", "name": "request_user_input_async", "call_id": "q1",
+                "arguments": '{"questions":[{"title":"Scope?"}]}',
+            }}]
+            _write_jsonl(path, entries)
+            self.assertEqual(len(pending_prompts(session, [])), 1)
+            for text in (
+                "# AGENTS.md instructions for /fixture\nRules",
+                "<environment_context>fixture</environment_context>",
+                "Continue with the chosen scope",
+            ):
+                row = {"type": "response_item", "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                }}
+                entries.append(row)
+                _write_jsonl(path, entries)
+                expected = 0 if text.startswith("Continue") else 1
+                self.assertEqual(len(pending_prompts(session, [])), expected)
+                if not expected:
+                    compact = _compact_codex_attention_entry(row)
+                    self.assertNotIn(text, json.dumps(compact))
+
     def test_async_question_outlives_large_tool_tail_and_incremental_appends(self) -> None:
         from corral.attention_signals import _CODEX_ATTENTION_READERS
         from corral.remote.questions import pending_prompts
