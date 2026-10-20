@@ -118,6 +118,18 @@ Key delivery guards: the picker footer (`Enter to select` / `Ready to submit you
 
 The fix belongs to Corral attention policy: reuse the pinned SessKit `parsers.codex.user_message_text` API before compacting evidence, preserving native reply envelopes and reducing ordinary steering to a marker. No native parser, dependency pin or parsed-message cache format changes are required. Read-only replay of the reported rollout before/after its native answer returned pending counts `1 → 0 → 0` (answer then later steering), consistently on incremental and cold scans; pre-fix counts were `1 → 1 → 1`. Regression coverage includes matching/unknown identities, partial sibling answers, repeat scans and AGENTS/environment context filtering. Apple clients share the host prompt authority; their installed-screen behavior requires separate physical acceptance. The full local gate discovered all 2628 tests (2 environment-dependent skips, no failures), with Ruff and compile checks clean. Five additional real Codex records loaded successfully; a warm first-screen registry scan returned 253 sessions in 8 ms. iPhone Max was unavailable to device tooling and no local Mac client was running, so no physical-screen pass is claimed.
 
+Installed acceptance for CLI **0.24.336**: both pipx and the active Homebrew command
+load the released code with SessKit 0.2.14; the downloaded universal2 wheel matches
+the installed build bytes, GitHub asset digest, `SHA256SUMS`, archive `RECORD`, and
+the committed attention source. Clean installation, `pip check`, and `brew test`
+pass. The restarted host served the encrypted-relay 80-session subscription window
+in 203 ms and a nonempty detail for each active runtime (75–132 ms); the reported
+session returned zero prompts on three consecutive RPC reads. The temporary
+read-only probe was revoked and the two existing pairings were preserved. The real
+iPhone reconnected to the host; that transport evidence does not establish physical
+card rendering. No local Mac client was running and iPhone Max remained unavailable
+to device tooling, so installed-screen acceptance stays unverified.
+
 **Phone.** One compact form above the composer; each question folds after a single choice and opens the next unanswered one; typed answer per question; one Submit, enabled only when every question is answered. Host `session.prompts` is authoritative once it has answered — message-derived prompts are only the offline/old-host fallback, otherwise every incoming message would reset drafts and flash a multi-question form down to its first question.
 
 **Acceptance status (2026-09-29, v0.24.227).** Claude and OpenCode passed over the encrypted relay: `session.new` → `input.text` prompt → `session.prompts` → `input.question` → `delivered`, prompts empty, assistant continued, no extra user message. Codex passed on the real 0.158 TUI through `questions.answer` (typed-only, choice + note, digits) but not yet over the relay (account quota exhausted). The iOS 1.0.60 form has not been inspected on the phone yet. Restart the user's active remote service after parser changes.
