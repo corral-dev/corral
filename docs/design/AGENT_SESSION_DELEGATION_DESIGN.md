@@ -677,7 +677,7 @@ fish shell parsing cannot run because fish is absent; the zeroconf-missing test
 cannot take its missing-dependency branch because zeroconf is installed.
 
 
-The final candidate gate passed all 2674 discovered tests without failures or
+The v0.24.339 gate passed all 2675 discovered tests without failures or
 retries (two documented environment skips). Compiler and Ruff checks emitted no
 warnings. Asyncio debug mode retained slow-callback notices from the existing
 Textual test lane; each distinct coroutine is assessed below. These are
@@ -689,24 +689,23 @@ observable-event/controlled-clock approach for follow-up fixture work.
 
 | Coroutine origin | Count | Seconds | Assessment |
 |---|---:|---:|---|
-| `App.run_test.<locals>.run_app` | 2 | 0.100–0.106 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_clicking_close_on_unfocused_pane_does_not_switch_to_it` | 1 | 0.100–0.100 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_focused_split_pane_stays_on_remaining_not_closed` | 1 | 0.106–0.106 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_middle_focused_pane_keeps_left_neighbor` | 1 | 0.151–0.151 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_one_split_pane_keeps_sibling_widget` | 1 | 0.105–0.105 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_unfocused_split_pane_keeps_remaining_split` | 1 | 0.141–0.141 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_focusing_split_pane_highlights_matching_sidebar_session` | 1 | 0.125–0.125 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll` | 5 | 0.131–0.158 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_pending_selection_follow_after_close_does_not_open_closed_session` | 1 | 0.113–0.113 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_pi_provisional_refresh_keeps_split_group_without_duplicate` | 1 | 0.114–0.114 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_reconcile_split_keys_after_provisional_becomes_real` | 1 | 0.107–0.107 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_stale_focus_notify_after_close_is_ignored` | 1 | 0.109–0.109 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `MessagePump._process_messages` | 59 | 0.100–0.216 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SessionHudPlacementTests.test_every_live_pane_draws_its_own_hud` | 1 | 0.129–0.129 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SessionHudPlacementTests.test_hud_background_follows_pane_chrome` | 1 | 0.127–0.127 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SidebarResizeTests.test_narrow_screen_caps_width_for_right_pane` | 1 | 0.129–0.129 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group` | 1 | 0.135–0.135 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `Timer._run_timer` | 7 | 0.105–0.151 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_clicking_close_on_unfocused_pane_does_not_switch_to_it` | 1 | 0.113–0.113 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_focused_split_pane_stays_on_remaining_not_closed` | 1 | 0.109–0.109 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_middle_focused_pane_keeps_left_neighbor` | 1 | 0.153–0.153 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_one_split_pane_keeps_sibling_widget` | 1 | 0.109–0.109 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_closing_unfocused_split_pane_keeps_remaining_split` | 1 | 0.144–0.144 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_focusing_split_pane_highlights_matching_sidebar_session` | 1 | 0.115–0.115 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll` | 5 | 0.136–0.165 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_pending_selection_follow_after_close_does_not_open_closed_session` | 1 | 0.120–0.120 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_pi_provisional_refresh_keeps_split_group_without_duplicate` | 1 | 0.101–0.101 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_reconcile_split_keys_after_provisional_becomes_real` | 1 | 0.104–0.104 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `AppThemeTests.test_stale_focus_notify_after_close_is_ignored` | 1 | 0.100–0.100 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `MessagePump._process_messages` | 65 | 0.100–0.219 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SessionHudPlacementTests.test_every_live_pane_draws_its_own_hud` | 1 | 0.143–0.143 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SessionHudPlacementTests.test_hud_background_follows_pane_chrome` | 1 | 0.135–0.135 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SidebarResizeTests.test_drag_with_three_split_panes_adapts_all` | 1 | 0.108–0.108 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group` | 1 | 0.175–0.175 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
+| `Timer._run_timer` | 8 | 0.104–0.134 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
 
 
 ## Native Claude API error correction
@@ -734,3 +733,36 @@ turn with no successful reply as empty/local-only; the supervisor then could not
 bind and expose its API failure. Keep the user brief first, including for failed
 first turns. Correlation continues to accept either marker position in native
 user events, so previously recorded inputs retain their identity.
+
+
+### Published artifact verification
+
+Version 0.24.339 shipped from commit `e027f31`. The complete final gate ran 2675
+tests in 106.8 seconds, with no failures or retries and two environment skips
+(fish unavailable; optional zeroconf-absent branch in an environment with zeroconf).
+The 46 control tests include failed-first-turn discovery. Clean installation
+with remote extras succeeded, as did native-extension imports in the installed
+macOS pipx/Homebrew and isolated Linux x86_64 wheel environments.
+
+The installed pipx binary resumed the original billing owner `pi:513d5eb7`,
+recorded the new native input, exposed 12 durable events and returned
+`INSTALLED-339-PASS` for two independently requested billing assertions. The
+Homebrew binary read the same completed, correlated result after its upgrade.
+Fresh Cursor execution on the development host returned `ACCEPT-cursor`.
+The final native Claude HTTP 401 probe bound its exact session and settled as
+`failed`, with native finality, an auth error and no synthetic model usage.
+Successful Claude inference remains blocked by account quota/authentication.
+
+The public release contains five platform wheels, a source archive and
+`SHA256SUMS`; all six package downloads matched both the checksums and built
+bytes. macOS universal2 and Linux glibc/musl x86_64/aarch64 build logs were
+inspected completely. Two musl packaging probes retained warnings about missing
+`x86_64-linux-musl-gcc` / `aarch64-linux-musl-gcc` after successful Zig-backed Rust
+linking; the resulting ELF architectures match their wheel tags. No Rust source
+warning was reported. The unexecuted musl/ARM runtime combinations remain a
+compatibility limit; follow-up build-environment work should supply explicit
+target compiler discovery and execute these wheels on their native targets,
+without suppressing diagnostics. Homebrew's unrelated tap-trust advisory remains
+unchanged; Corral's formula upgrade and installed behavior passed.
+
+Release: <https://github.com/corral-dev/corral/releases/tag/v0.24.339>.
