@@ -1,6 +1,6 @@
 ---
 name: corral-delegate
-description: Hand work to another coding agent through the corral CLI and supervise it - send a brief to the exact past session that built a feature (resumed automatically if stopped), or start a fresh Claude Code, Codex, OpenCode, Cursor or Pi session with an optional model, then watch progress, answer its questions and collect the result. Use when another agent's context makes it the better worker.
+description: Use when a repair is better handled by the original agent with its development context, when an independent task should run in a fresh coding-agent session, or when you need to monitor, steer or collect results from already delegated work. Through Corral, resume the exact past session or create a Claude Code, Codex, OpenCode, Cursor or Pi session with an optional model, submit the brief and supervise progress/questions/results. Applies without the user naming Corral; a small self-contained change does not need delegation.
 ---
 
 # corral-delegate: brief another agent and supervise the run

@@ -17,3 +17,5 @@
 
 
 These entries preserve the product-level routing requirements moved from the inherited navigation. Component guides own their domains; do not duplicate their behavior here.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

@@ -597,24 +597,13 @@ queue`), while phone sends keep steering. The visible correlation marker
 `[Corral run=<run_id> message=<id>]` stays in the target's conversation.
 
 
-## Review corrections (2026-10-20)
+## Review corrections (2026-10-20) — deltas beyond the §9 table
 
-- Persist every follow-up action as `dispatching` before terminal input. Recovery
-  changes an unfinished dispatch to `unknown`, never replays it. A matching user
-  marker can reconcile prompt delivery.
-- Completion covers all accepted follow-up messages. Queued, dispatching, unknown
-  or not-yet-recorded input blocks settlement; accepting a message and settling a
-  run are serialized in the same store transaction.
-- Interrupting dispatched work requires positively correlated current-turn
-  evidence, with no foreign input after that turn. Cancellation before dispatch
-  is local and remains available while waiting for another run's target lock.
-- Binding a fresh or continued native identity requires its target lock. Lock
-  contention stops control with an explicit uncertain outcome; locks last for the
-  supervisor lifetime and are released on every exit.
-- Identical submit retries return their existing handle before checking mutable
-  target state/version. Different immutable input under the key still conflicts.
-- Search coverage includes per-history conversation/activity read failures; zero
-  matches under incomplete reads cannot establish absence.
+- Recovery from `dispatching` never re-types; the run becomes `delivery: unknown` until the marker appears in history.
+- Completion covers all accepted follow-up messages; accepting a message and settling a run are serialized in the same store transaction. Queued, dispatching, unknown or not-yet-recorded input blocks settlement.
+- Interrupting dispatched work requires positively correlated current-turn evidence with no foreign input after that turn; cancellation before dispatch stays local while waiting for another run's target lock.
+- Identical submit retries return their existing handle before checking mutable target state; different immutable input under the key still conflicts.
+- Search coverage includes per-history conversation/activity read failures; zero matches under incomplete reads cannot establish absence.
 
 These are Corral product control/storage rules; SessKit remains the owner of
 native history interpretation. Reference transaction semantics: [Python sqlite3](https://docs.python.org/3/library/sqlite3.html#transaction-control).
@@ -639,29 +628,17 @@ agent-workflow receipts. The final release repeats checks after command exposure
 and Cursor trust changes. Two existing platform/environment skips remain
 identified by the complete test log. No compiler/lint warning was emitted.
 
-A fresh Pi Agent A, using only the packaged skill instructions and Corral CLI,
-searched the disposable billing project for `review-acceptance-20261020`, selected
-the exact stopped feature-owner `pi:513d5eb7`, dry-ran and submitted a repair to
-that owner, monitored it and retrieved the correlated result. The repair run
-completed as `run_754360c38c474644b88e865aec0e75c2`. Both A and the coordinator
-independently executed `apply_discount(200,10)==180` and
-`apply_discount(100,0)==100`; all assertions passed. A did not edit the function.
-The first owner's terminal was stopped before A started, establishing actual
-native resume rather than steering an already running pane.
-
-Fresh-session prompt/result checks passed for Codex, Pi (explicit model with
-matching usage evidence), OpenCode and Cursor. Cursor was checked on the Linux
-development host after selecting a saved account with remaining quota through
-subswap. Its initial trust-blocked attempt failed; the fresh-project rerun with
-the native trust flag completed and returned `ACCEPT-cursor`. The Mac Claude
-attempt was blocked by its subscription limit and is not a success; the separate
-Linux Claude check is recorded below when terminal evidence is available.
-
-Temporary native histories remain intact. Fixture hosting uses its own tmux
-socket and control store; only test-created panes are cleaned up. This is a local
-Agent CLI feature: iPhone and native Mac clients have no delegation-run surface.
-Their existing input/hosting paths are covered by the shared host regression
-suite; no Apple client artifact changed.
+End-to-end acceptance (2026-10-20): a fresh Pi Agent A using only the packaged
+skill instructions searched a disposable project, dry-ran and submitted a
+repair to the exact stopped owner, monitored it and retrieved the correlated
+result; both sides independently verified the billing assertions without
+editing the function. The first owner's terminal was stopped before A started,
+establishing actual native resume. Fresh-session prompt/result checks passed
+for Codex, Pi (explicit model with matching usage evidence), OpenCode and
+Cursor (Linux host, saved account with quota; initial trust-blocked attempt
+rerun with the native trust flag). The Mac Claude attempt was subscription
+blocked, not a success; no Apple client artifact changed (no delegation-run
+surface on iPhone/Mac).
 
 
 A real Pi follow-up test accepted a second marked prompt while the first task
@@ -680,34 +657,15 @@ cannot take its missing-dependency branch because zeroconf is installed.
 
 The v0.24.339 gate passed all 2675 discovered tests without failures or
 retries (two documented environment skips). Compiler and Ruff checks emitted no
-warnings. Asyncio debug mode retained slow-callback notices from the existing
-Textual test lane; each distinct coroutine is assessed below. These are
+warnings. Asyncio debug mode retained 17 slow-callback notice groups from the existing
+Textual test lane (0.100–0.219 s across `AppThemeTests`, `MessagePump`,
+`SessionHudPlacementTests`, `SidebarResizeTests`, `SidebarSplitHighlightTests`
+and `Timer._run_timer`); every associated behavior assertion passed. These are
 0.1-second debug thresholds during parallel UI fixtures, not evidence of a
-delegation data-loss or input failure. All associated behavior assertions passed.
+delegation data-loss or input failure.
 No diagnostic was disabled or threshold changed. Residual risk is timing variance
 under test/host contention; the owning test-environment guide retains the
 observable-event/controlled-clock approach for follow-up fixture work.
-
-| Coroutine origin | Count | Seconds | Assessment |
-|---|---:|---:|---|
-| `AppThemeTests.test_clicking_close_on_unfocused_pane_does_not_switch_to_it` | 1 | 0.113–0.113 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_focused_split_pane_stays_on_remaining_not_closed` | 1 | 0.109–0.109 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_middle_focused_pane_keeps_left_neighbor` | 1 | 0.153–0.153 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_one_split_pane_keeps_sibling_widget` | 1 | 0.109–0.109 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_closing_unfocused_split_pane_keeps_remaining_split` | 1 | 0.144–0.144 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_focusing_split_pane_highlights_matching_sidebar_session` | 1 | 0.115–0.115 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll` | 5 | 0.136–0.165 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_pending_selection_follow_after_close_does_not_open_closed_session` | 1 | 0.120–0.120 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_pi_provisional_refresh_keeps_split_group_without_duplicate` | 1 | 0.101–0.101 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_reconcile_split_keys_after_provisional_becomes_real` | 1 | 0.104–0.104 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `AppThemeTests.test_stale_focus_notify_after_close_is_ignored` | 1 | 0.100–0.100 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `MessagePump._process_messages` | 65 | 0.100–0.219 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SessionHudPlacementTests.test_every_live_pane_draws_its_own_hud` | 1 | 0.143–0.143 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SessionHudPlacementTests.test_hud_background_follows_pane_chrome` | 1 | 0.135–0.135 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SidebarResizeTests.test_drag_with_three_split_panes_adapts_all` | 1 | 0.108–0.108 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group` | 1 | 0.175–0.175 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-| `Timer._run_timer` | 8 | 0.104–0.134 | Existing UI fixture scheduling; assertions passed; retain diagnostic. |
-
 
 ## Native Claude API error correction
 
@@ -738,32 +696,26 @@ user events, so previously recorded inputs retain their identity.
 
 ### Published artifact verification
 
-Version 0.24.339 shipped from commit `e027f31`. The complete final gate ran 2675
-tests in 106.8 seconds, with no failures or retries and two environment skips
-(fish unavailable; optional zeroconf-absent branch in an environment with zeroconf).
-The 46 control tests include failed-first-turn discovery. Clean installation
-with remote extras succeeded, as did native-extension imports in the installed
-macOS pipx/Homebrew and isolated Linux x86_64 wheel environments.
+Version 0.24.339 shipped from commit `e027f31`: complete final gate 2675
+tests in 106.8 s, no failures/retries, two environment skips (fish
+unavailable; zeroconf-absent branch in an environment with zeroconf). The 46
+control tests include failed-first-turn discovery. Clean install with remote
+extras, native-extension imports (macOS pipx/Homebrew, isolated Linux x86_64
+wheel), installed pipx/Homebrew billing-owner resume with 12 durable events,
+fresh Cursor execution (`ACCEPT-cursor`), and native Claude HTTP 401 settling
+as `failed` with native finality all passed. Remaining limits: unexecuted
+musl/ARM runtime combinations; successful Claude inference still blocked by
+account quota/authentication. Release: <https://github.com/corral-dev/corral/releases/tag/v0.24.339>.
 
-The installed pipx binary resumed the original billing owner `pi:513d5eb7`,
-recorded the new native input, exposed 12 durable events and returned
-`INSTALLED-339-PASS` for two independently requested billing assertions. The
-Homebrew binary read the same completed, correlated result after its upgrade.
-Fresh Cursor execution on the development host returned `ACCEPT-cursor`.
-The final native Claude HTTP 401 probe bound its exact session and settled as
-`failed`, with native finality, an auth error and no synthetic model usage.
-Successful Claude inference remains blocked by account quota/authentication.
+<!-- 该文档整理/压缩于 2026-10-20 -->
 
-The public release contains five platform wheels, a source archive and
-`SHA256SUMS`; all six package downloads matched both the checksums and built
-bytes. macOS universal2 and Linux glibc/musl x86_64/aarch64 build logs were
-inspected completely. Two musl packaging probes retained warnings about missing
-`x86_64-linux-musl-gcc` / `aarch64-linux-musl-gcc` after successful Zig-backed Rust
-linking; the resulting ELF architectures match their wheel tags. No Rust source
-warning was reported. The unexecuted musl/ARM runtime combinations remain a
-compatibility limit; follow-up build-environment work should supply explicit
-target compiler discovery and execute these wheels on their native targets,
-without suppressing diagnostics. Homebrew's unrelated tap-trust advisory remains
-unchanged; Corral's formula upgrade and installed behavior passed.
 
-Release: <https://github.com/corral-dev/corral/releases/tag/v0.24.339>.
+### Long-brief correlation after trailing markers (2026-10-20)
+
+Implicit fresh-worker acceptance produced a 458-character native user message
+whose generated correlation marker followed the brief. The worker had written
+its report, but `own_message` inspected only the first 400 characters and could
+not bind the input or settle the run. Match the expected run's marker throughout
+the native user text. Retain prefix-marker compatibility and do not let a quoted
+marker for a different run hide the actual trailing marker. Native assistant/tool
+quotes remain excluded by the user-event-only correlation boundary.

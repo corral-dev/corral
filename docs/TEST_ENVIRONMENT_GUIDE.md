@@ -157,3 +157,19 @@ which the existing dry-run no-stray assertion correctly reports.
 
 Apple documents non-deterministic notification latency and event coalescing in
 [Using the File System Events API](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html).
+
+<!-- 该文档整理/压缩于 2026-10-20 -->
+
+
+## Packaged entry points and isolated delegation fixtures
+
+Inspect the actual console-script shebang before relying on `PYTHONPATH` hooks.
+The observed pipx-generated entry uses Python `-E`, which ignores `PYTHON*`
+environment variables; a detached worker started without `-E` can then see a
+different fixture store. Invoke the same installed interpreter as
+`<installed-python> -m corral` for a hook-based fixture and verify both caller
+and worker resolve its isolated store/socket. This is test isolation, not a
+product entry-point change. The failed fixture must not count as a runtime
+failure, and its own queued run must be cancelled/recovered through the CLI.
+For Python's `-E` semantics see the already referenced
+[command-line documentation](https://docs.python.org/3/using/cmdline.html#cmdoption-E).

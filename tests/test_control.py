@@ -165,6 +165,21 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(result["attribution"], "correlated")
         self.assertEqual(control.build_result(result)["final_response"], "fixed")
 
+    def test_long_trailing_marker_binds_completion_after_quoted_other_run(self):
+        other = "run_" + "b" * 32
+        prompt = control.marker(other, "initial") + "\n" + "需求与背景。" * 300
+        text = control.wire_prompt(self.RUN, "initial", prompt)
+        events = [_event(1, "user_message", text), _event(2, "assistant_message", "report ready")]
+        result = control.correlate(events, self._turns((1, 2)), self.RUN, baseline_seq=-1)
+        self.assertTrue(result["recorded"])
+        self.assertEqual(result["messages"], ["initial"])
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(control.build_result(result)["final_response"], "report ready")
+
+    def test_legacy_prefix_marker_still_matches(self):
+        text = control.marker(self.RUN, "initial") + "\n" + "legacy brief " * 100
+        self.assertEqual(control.own_message(text, self.RUN), "initial")
+
     def test_quoted_marker_in_assistant_output_is_not_delivery(self):
         quoted = _event(3, "assistant_message", control.marker(self.RUN, "initial"))
         result = control.correlate([quoted], self._turns((3, 3)), self.RUN, baseline_seq=0)

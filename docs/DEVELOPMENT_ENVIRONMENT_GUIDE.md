@@ -102,3 +102,5 @@ so verify the actual executable and package path when diagnosing an upgrade.
 
 - uv project synchronization and lock behavior: <https://docs.astral.sh/uv/concepts/projects/sync/>
 - uv dependency groups: <https://docs.astral.sh/uv/concepts/projects/dependencies/#development-dependencies>
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

@@ -340,35 +340,35 @@ Release acceptance (2026-10-17, CLI 0.24.320, source `4524518`): the complete ga
 
 | 路径（相对 `cli/` 项目根） | 内容 | 关键文件 / 符号 |
 |---|---|---|
-| `embed.py` | tmux 托管、抓帧、控制通道、输入、颜色与 SGR 解析 | `host_session()`、`capture()`、`ControlChannel`、`parse_screen()` |
-| `ui/embed_pane.py` | 右栏内嵌实时终端 widget、后台抓帧、输入和滚动 | `EmbedPane`、`_capture_loop()`、`_on_key()` |
-| `ui/main_screen.py` + `ui/controllers/host_controller.py` | 终端界面挂接、异步托管启动和关闭分栏 | `MainScreen._embed_open()`、`_on_embed_hosted()`（方法定义已迁至 `host_controller.py` 的 `HostControllerMixin`，经继承仍在 `MainScreen` 上解析，符号引用不变） |
+| `src/corral/embed.py` | tmux 托管、抓帧、控制通道、输入、颜色与 SGR 解析 | `host_session()`、`capture()`、`ControlChannel`、`parse_screen()` |
+| `src/corral/ui/embed_pane.py` | 右栏内嵌实时终端 widget、后台抓帧、输入和滚动 | `EmbedPane`、`_capture_loop()`、`_on_key()` |
+| `src/corral/ui/main_screen.py` + `src/corral/ui/controllers/host_controller.py` | 终端界面挂接、异步托管启动和关闭分栏 | `MainScreen._embed_open()`、`_on_embed_hosted()`（方法定义已迁至 `host_controller.py` 的 `HostControllerMixin`，经继承仍在 `MainScreen` 上解析，符号引用不变） |
 | `src/corral/cli.py` 等 | 启动接线、tmux 硬依赖检查、外层背景色探测 | `_require_tmux()`、`_probe_osc_colours()` |
-| `keepalive.py` | 专用 socket、命名空间、环境变量、状态标注和回收 | `_BASE_ARGV`、`_session_name()`、`annotate()` |
-| `test_embed.py` | 单元与真实 tmux 控制通道测试 | `ControlChannelProtocolTests`、`ControlChannelIntegrationTests` |
+| `src/corral/keepalive.py` | 专用 socket、命名空间、环境变量、状态标注和回收 | `_BASE_ARGV`、`_session_name()`、`annotate()` |
+| `tests/test_embed.py` | 单元与真实 tmux 控制通道测试 | `ControlChannelProtocolTests`、`ControlChannelIntegrationTests` |
 | `selftest.sh` | 隔离 HOME / tmux 的真实终端端到端验收 | 内嵌、输入、焦点、光标、复制验证 |
 
 ## §3 本域代码入口索引
 
 | 场景 | 入口 | 类 / 方法 / 配置 | 说明 |
 |---|---|---|---|
-| 创建运行中(托管)会话 | `embed.py` | `host_session()` | detached 创建专用 socket 会话，带尺寸、工作目录、环境与同名复用 |
-| 打开或接回右栏会话 | `ui/main_screen.py` | `MainScreen._embed_open()`、`MainScreen._on_embed_hosted()` | 在后台完成阻塞创建，成功后更新右栏画面并把输入交给该格（`_can_autofocus()` 把关） |
-| 聚焦实时画面 | `ui/embed_pane.py` | `EmbedPane.focus_session()` | 切会话、开控制通道、调整尺寸、启动首帧抓取；本身不动键盘焦点 |
-| 把输入交给某一格 | `ui/split_pane_area.py` | `SplitPaneArea._request_pane_focus()` → `_apply_focus_intent()` / `_settle_focus_intent()` → `focus_session_key(only_live=True)`、`_focus_after_close()` | 自动聚焦的唯一入口；意图登记后可跨异步 remount 存活，非实时格直接拒绝 |
-| 点击会话卡撤回焦点 | `ui/session_list.py` + `ui/main_screen.py` | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡＝回列表；只能用「按下前焦点」判定 |
-| 输入蒙版同步 | `ui/split_pane_area.py` | `SplitPaneArea._claim_pane_input()`、`sync_input_mask()`、`PaneCell.set_input_masked()` | 焦点变化 / 挂载 / 关格后按“右栏是否持有输入”压暗活着的实时格；自动聚焦的输入声明持续到真实焦点抵达，期间不得闪灰 |
-| 按焦点裁剪快捷键 | `ui/main_screen.py` | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发（含优先级绑定的翻页键） |
-| 抓取实时画面 | `embed.py` | `capture()`、`pane_state()` | 优先经控制通道请求，失效时回退外部只读 tmux 调用 |
-| 控制通道协议 | `embed.py` | `ControlChannel.request()`、`command()`、`close()` | FIFO 对应命令响应、处理 `%output` / `%pause` / `%exit`、可幂等关闭 |
-| 常规输入 | `ui/embed_pane.py` | `EmbedPane._on_key()`、`_on_paste()` | 文本、特殊键、Ctrl+C、Ctrl+\ 和粘贴的用户语义分流；仅右栏聚焦时生效 |
-| 剪贴板图片粘贴 | `embed.py` | `extract_pasted_image()`、`save_image_and_paste_path()`、`_pane_cwd()` | 识别哨兵包裹的 base64 图片、落盘、经 `paste()` 把路径喂给聚焦中的 agent；由 `EmbedPane._on_paste()` 分流调用（后台 worker，见 `_paste_image_worker`） |
-| 鼠标滚轮与历史 | `ui/embed_pane.py` | `EmbedPane._wheel()`、`_scroll()` | 按鼠标命中区处理，与键盘焦点无关；转发鼠标或变更应用层回滚偏移 |
-| 鼠标单击转发 | `ui/embed_pane.py` | `EmbedPane._on_mouse_down()`、`_on_mouse_up()`、`_click_forwardable()` | 同格按下 / 松开才算单击；拖拽留给 Textual 选词 |
-| 鼠标后台发送 | `embed.py` | `send_mouse_sequence()`、`mouse_event_sequence()`、`_wheel_send_loop()` | 发送 SGR / X10 鼠标序列、限速；队列饱和时只丢旧滚轮，不丢点击 |
-| 屏幕解析与真彩色 | `embed.py` | `parse_screen()`、`_SgrState.apply()`、`cell_style()` | 解析 SGR；RGB 直接交给 Rich，保留宽字符和组合字符 |
-| 背景色与主题 | `embed.py` | `report_theme()`、`supports_theme_report()` | 向新建 pane 注入外层 OSC 10/11 应答，恢复助手深浅色判断 |
-| 会话结束回退 | `ui/embed_pane.py` | `EmbedPane._capture_loop()`、`_apply_dead()` | 三次失败再确认会话存在性，避免瞬时超时抢走焦点 |
+| 创建运行中(托管)会话 | `src/corral/embed.py` | `host_session()` | detached 创建专用 socket 会话，带尺寸、工作目录、环境与同名复用 |
+| 打开或接回右栏会话 | `src/corral/ui/main_screen.py` | `MainScreen._embed_open()`、`MainScreen._on_embed_hosted()` | 在后台完成阻塞创建，成功后更新右栏画面并把输入交给该格（`_can_autofocus()` 把关） |
+| 聚焦实时画面 | `src/corral/ui/embed_pane.py` | `EmbedPane.focus_session()` | 切会话、开控制通道、调整尺寸、启动首帧抓取；本身不动键盘焦点 |
+| 把输入交给某一格 | `src/corral/ui/split_pane_area.py` | `SplitPaneArea._request_pane_focus()` → `_apply_focus_intent()` / `_settle_focus_intent()` → `focus_session_key(only_live=True)`、`_focus_after_close()` | 自动聚焦的唯一入口；意图登记后可跨异步 remount 存活，非实时格直接拒绝 |
+| 点击会话卡撤回焦点 | `src/corral/ui/session_list.py` + `src/corral/ui/main_screen.py` | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡＝回列表；只能用「按下前焦点」判定 |
+| 输入蒙版同步 | `src/corral/ui/split_pane_area.py` | `SplitPaneArea._claim_pane_input()`、`sync_input_mask()`、`PaneCell.set_input_masked()` | 焦点变化 / 挂载 / 关格后按“右栏是否持有输入”压暗活着的实时格；自动聚焦的输入声明持续到真实焦点抵达，期间不得闪灰 |
+| 按焦点裁剪快捷键 | `src/corral/ui/main_screen.py` | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发（含优先级绑定的翻页键） |
+| 抓取实时画面 | `src/corral/embed.py` | `capture()`、`pane_state()` | 优先经控制通道请求，失效时回退外部只读 tmux 调用 |
+| 控制通道协议 | `src/corral/embed.py` | `ControlChannel.request()`、`command()`、`close()` | FIFO 对应命令响应、处理 `%output` / `%pause` / `%exit`、可幂等关闭 |
+| 常规输入 | `src/corral/ui/embed_pane.py` | `EmbedPane._on_key()`、`_on_paste()` | 文本、特殊键、Ctrl+C、Ctrl+\ 和粘贴的用户语义分流；仅右栏聚焦时生效 |
+| 剪贴板图片粘贴 | `src/corral/embed.py` | `extract_pasted_image()`、`save_image_and_paste_path()`、`_pane_cwd()` | 识别哨兵包裹的 base64 图片、落盘、经 `paste()` 把路径喂给聚焦中的 agent；由 `EmbedPane._on_paste()` 分流调用（后台 worker，见 `_paste_image_worker`） |
+| 鼠标滚轮与历史 | `src/corral/ui/embed_pane.py` | `EmbedPane._wheel()`、`_scroll()` | 按鼠标命中区处理，与键盘焦点无关；转发鼠标或变更应用层回滚偏移 |
+| 鼠标单击转发 | `src/corral/ui/embed_pane.py` | `EmbedPane._on_mouse_down()`、`_on_mouse_up()`、`_click_forwardable()` | 同格按下 / 松开才算单击；拖拽留给 Textual 选词 |
+| 鼠标后台发送 | `src/corral/embed.py` | `send_mouse_sequence()`、`mouse_event_sequence()`、`_wheel_send_loop()` | 发送 SGR / X10 鼠标序列、限速；队列饱和时只丢旧滚轮，不丢点击 |
+| 屏幕解析与真彩色 | `src/corral/embed.py` | `parse_screen()`、`_SgrState.apply()`、`cell_style()` | 解析 SGR；RGB 直接交给 Rich，保留宽字符和组合字符 |
+| 背景色与主题 | `src/corral/embed.py` | `report_theme()`、`supports_theme_report()` | 向新建 pane 注入外层 OSC 10/11 应答，恢复助手深浅色判断 |
+| 会话结束回退 | `src/corral/ui/embed_pane.py` | `EmbedPane._capture_loop()`、`_apply_dead()` | 三次失败再确认会话存在性，避免瞬时超时抢走焦点 |
 
 ## §4 本域表与字段入口索引
 
@@ -442,7 +442,7 @@ Release acceptance (2026-10-17, CLI 0.24.320, source `4524518`): the complete ga
 - **AI 易错点**【禁止】自动把焦点交给静态预览格或已结束的格 -> `focus_session_key` 必须带 `only_live=True`（原因：那些格收不到输入，用户敲的字直接丢，比让他多点一下鼠标糟得多）。**但用户自己点进这类格子是允许的**，此时回车不再是「丢掉的输入」而是「重启这条会话」（见上文输入与滚动分流），改这块时别把两件事混成一条「已结束的格不处理按键」。
 - **AI 易错点**【隐性依赖】实时格持有输入时，Screen 上 `priority=True` 的翻页 / Home / End 绑定会**先于**面板拿到按键。必须靠 `MainScreen.check_action` 返回 `False` 让路，`run_action` 才会跳过派发、把键透传给托管会话。
 - **AI 易错点**【隐性依赖】`_mount_panes_async` 默认会把焦点还给原先持有焦点的列表；带着 `focus_pane=True` 的调用必须绕开这段，否则自动聚焦会在挂载后被立刻撤销。直启 `_on_direct_hosted` 必须走同一条 `focus_pane` 意图，禁止在 pane 尚未 mount 时 `set_focus` 失败就放弃——真机搜索框不可聚焦，默认焦点在侧边栏。
-- **AI 易错点**【隐性依赖】剪贴板图片粘贴走的哨兵协议（`␞CORRAL_IMG_BEGIN␞<base64>␞CORRAL_IMG_END␞`，`embed.py` 的 `_IMG_SENTINEL_BEGIN`/`_IMG_SENTINEL_END`）是与远程网页终端网关 `shell-gate`（另一仓库，`internal/server/web/enhance.js`）之间的跨仓库约定 —— 改任一侧的哨兵字符串都必须同步另一侧，否则粘贴的图片会被当成普通文本整段发给 agent，不会报错也不会落盘，只能靠肉眼发现。本域看不到 `shell-gate` 侧代码，改动前先确认对方现状。
+- **AI 易错点**【隐性依赖】剪贴板图片粘贴走的哨兵协议（`␞CORRAL_IMG_BEGIN␞<base64>␞CORRAL_IMG_END␞`，`src/corral/embed.py` 的 `_IMG_SENTINEL_BEGIN`/`_IMG_SENTINEL_END`）是与远程网页终端网关 `shell-gate`（另一仓库，`internal/server/web/enhance.js`）之间的跨仓库约定 —— 改任一侧的哨兵字符串都必须同步另一侧，否则粘贴的图片会被当成普通文本整段发给 agent，不会报错也不会落盘，只能靠肉眼发现。本域看不到 `shell-gate` 侧代码，改动前先确认对方现状。
 - **AI 易错点**【上游限制】右栏 Cursor 画面**概率性地跳回更早的对话、再一路滚回最新**，长对话时也常被说成「宽度在抖」（2026-07-31 真机定位，2026-08-29 补症状）：这不是抓帧采样抓到了中间态，而是 Cursor CLI 自己把已经滚走的历史整段重新打印了一遍——tmux 屏幕内容真的变了，任何 attach 的终端看到的都一样。实测证据：托管一个 Cursor 会话让它输出 400 行，回答收尾时画面在 8 秒内从最早内容一路重画回最新，中间每屏稳定停约 200ms；`pipe-pane` 抓原始字节确认它**不发同步输出**（DECSET 2026 `\e[?2026h/l` 零次），全靠 570 次 `ESC[<n>A` 光标上移重写。**对话越长、越正在转圈或刚说完话越容易发；刚开的、停在输入框等你打字的往往没事**——这是「有的 Cursor 会话抖、有的不抖」的第二条原因（第一条是上条的多窗口宽度互抢）。Cursor 官方已确认这是「CLI + tmux」已知问题并在修（触发条件：tmux 窗口重连、切 pane、终端尺寸变化，以及无明显诱因的自发重绘；历史越长重绘量越大），见 [Cursor 论坛 158881](https://forum.cursor.com/t/cursor-cli-should-limit-history-retention-to-reduce-tmux-refresh-churn/158881) 与 [screen snapping / 无同步帧](https://forum.cursor.com/t/cursor-agent-tui-unusable-screen-snapping-over-any-latent-jittery-link-ssh-tmux-incl-tmux-control-mode/167102)。
   - 【已验证无效，别再试】给抓帧加「整屏大变化时延迟重抓确认，两帧一致才上屏」的中间态过滤：真机对照实测**没有任何改善**（不过滤 50.2% 中间态上屏 → 过滤后 54.2%）。因为重绘出来的每一屏本身就稳定停留 ~200ms，任何「等稳定」判据都会把它判成合法新画面；而真正只存在几毫秒的重写中途，当时 25Hz 抓帧本来就几乎抓不到（同一探针实测命中 0%）。v0.24.158 的自动输出 10fps 背压取样是另一回事：丢掉用户看不见的中间帧，不是等两帧相同才上屏。
   - 可选缓解方向（都有代价，需产品决策后再动）：调小保活 socket 的 `history-limit` 减少重绘体量（代价：右栏能往上翻的历史变少）；把 `_RESIZE_CAPTURE_HOLD_MAX` 放长到覆盖整段重绘（代价：那几秒右栏不更新，且只挡得住 resize 这一类触发）；长会话定期新开（Cursor 官方认为最有效）。
@@ -507,11 +507,11 @@ Release acceptance (2026-10-17, CLI 0.24.320, source `4524518`): the complete ga
 
 ## §9 覆盖度与待补充项
 
-- 代码推断覆盖：已核对 `embed.py` 的托管、抓帧、输入、控制通道、鼠标队列、tmux 版本与主题注入；已核对 `ui/embed_pane.py` 的后台抓帧、回退、局部重绘、滚动、IME 和选择复制；已核对 `ui/main_screen.py` 的界面挂接入口，以及 `test_embed.py`、`selftest.sh` 的验收面。
+- 代码推断覆盖：已核对 `src/corral/embed.py` 的托管、抓帧、输入、控制通道、鼠标队列、tmux 版本与主题注入；已核对 `src/corral/ui/embed_pane.py` 的后台抓帧、回退、局部重绘、滚动、IME 和选择复制；已核对 `src/corral/ui/main_screen.py` 的界面挂接入口，以及 `test_embed.py`、`selftest.sh` 的验收面。
 - 领域语言统一：主称谓为“内嵌实时终端”“运行中(托管)”“会话保活”；旧 `embed` / `EmbedPane` / `capture-pane`、hosted / `host_session`、`SC_*` 仅作为定位别名保留。
 - 数据库证据：本域无业务表、字段或业务数据库；tmux socket、会话名和环境变量是运行时约定，不应伪装成数据模型。
 - 多源证据补强：已读取项目架构约束、维护指南、单元测试、真实 tmux 集成测试定义、端到端自测脚本，以及内嵌相关 Git 历史。历史中的滚动、面板隐藏后按键、连接中卡死、控制通道死亡回退均已在当前实现和测试入口中找到对应约束。
-- Git 弱信号：`embed.py`、`ui/embed_pane.py`、`test_embed.py`、`selftest.sh` 为本域热点；历史修复线索仅用于定位，当前规则均以现行代码和维护指南为准。
+- Git 弱信号：`src/corral/embed.py`、`src/corral/ui/embed_pane.py`、`test_embed.py`、`selftest.sh` 为本域热点；历史修复线索仅用于定位，当前规则均以现行代码和维护指南为准。
 - 深度扫描信号处理：保留 `_channel_lock`、`_close_lock` 与控制通道 FIFO，因其是真实并发协议约束；`_tmux_version()` 的缓存和 `EmbedPane._capture_generation` 中的“版本”仅分别表示 tmux 能力探测与 UI 过期回调隔离，均不是业务乐观锁 / 数据版本控制，已丢弃这类误报的通用 lock/version 归类。
 - Q&A 补充：用户已明确要求 Agent 自测加用户进入终端界面验收；涉及内嵌 / 保活必须运行 `selftest.sh`（当前脚本存在）；缺少用户经验输入。
 - 待补充：尚未在本次文档工作中实际运行 `selftest.sh` 或进行用户终端界面验收；鼠标拖拽选词由当前 Textual 原生选择实现；单击已转发给声明鼠标捕获的内层程序，拖动 / 悬停转发仍是能力边界，后续需求变更时需先重新验证端到端语义。
@@ -531,4 +531,4 @@ Release acceptance (2026-10-17, CLI 0.24.320, source `4524518`): the complete ga
 
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改内嵌实时终端前的快速参考文档 -->
 
-<!-- 该文档整理/压缩于 2026-09-05 -->
+<!-- 该文档整理/压缩于 2026-10-20 -->

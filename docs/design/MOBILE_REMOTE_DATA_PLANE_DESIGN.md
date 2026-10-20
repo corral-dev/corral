@@ -503,9 +503,6 @@ Implementation notes locked with approval: place host receipts beside existing r
 | Live LAN hello/list probe | Handshake frames OK; full RPC timed out on this probe identity | Need paired probe + restarted host process before claiming end-to-end UX numbers |
 
 Phone hello must send `want_command_receipts: true` or receipted sends never enable. Extend `after_seq`/`generation`; do not add a second event cursor in Slice 2.
-
-<!-- 该文档整理/压缩于 2026-09-05；详细方案增补于 2026-09-10 -->
-
 ## 8. Content-first history loading (2026-09-11)
 
 ### 8.1 User intent and scope
@@ -586,3 +583,5 @@ A submitted message is one durable intent. When the same native conversation has
 Apple text sends allocate their command identity before capability/readiness checks and keep it through queued execution and bounded transport recovery. A transient unconfirmed/reconnecting socket waits for authenticated readiness; negotiated host capability changes cannot remove command_id. Retries on receipt-capable hosts reuse the exact identity and payload, so the durable receipt deduplicates input. Legacy hosts do not automatically retry an ambiguous send. An explicit terminal rejection or an unresolved outcome after the bounded recovery window stays honest; ordinary process startup/reconnect must not produce an intermediate failed bubble or restore the same text into the composer. Offline new input remains a draft unless the host-connected send was already accepted into this path.
 
 The same host preparation serves iPhone and Mac; the TUI's direct terminal resume remains its native Enter path. Verify delayed startup of an old formal conversation, dead versus unknown binding, capability change between tap and dispatch, authenticated readiness, same-ID transport retry and verified terminal injection without duplicate delivery.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

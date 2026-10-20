@@ -31,3 +31,5 @@ Native clients currently require a local Xcode build; public App Store and TestF
 Keep keys, pairing codes and private conversations out of public reports. For vulnerabilities, use **Security → Report a vulnerability** in the affected repository.
 
 CLI: MIT · Apple clients: GPL-3.0-only · Relay: AGPL-3.0-only. See each repository for its license and contribution terms.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

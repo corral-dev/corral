@@ -752,4 +752,4 @@ python3 -m unittest discover -s tests -v
 
 然后用真实会话列表检查前 120 条没有 raw slug、纯命令、省略号或自产标题 prompt；再用真实终端启动一次 TUI 并退出，确认本机 `corral` 入口指向当前代码。改动会话扫描/预览逻辑时（不限于 Claude/Codex，OpenCode、Kimi 同样适用），至少随机抽查 5 条真实会话跑一遍 `scan_sessions`/`load_conversation`，断言没有空文本、字面量 `"None"`、角色标错或时间戳非单调，不能只信手写的单测小样例。
 
-<!-- 该文档整理/压缩于 2026-09-05 -->
+<!-- 该文档整理/压缩于 2026-10-20 -->

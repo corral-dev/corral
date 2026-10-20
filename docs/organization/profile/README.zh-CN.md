@@ -31,3 +31,5 @@ corral
 请勿在公开报告中提交密钥、配对码或私人对话。漏洞请在对应仓库使用 **Security → Report a vulnerability** 私密报告。
 
 CLI：MIT · Apple 客户端：GPL-3.0-only · 中继：AGPL-3.0-only。许可和贡献条款见各仓库。
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

@@ -143,3 +143,5 @@ GitHub Transfer redirects keep old `x0c/corral` links working for existing insta
 ## Public navigation checks
 
 A partial path replacement can leave `../https://...` in nested Markdown. After export, inspect links in the full documentation tree, not only the README: cross-repository links must be complete public URLs, while links within one repository must resolve from the containing document. Do not preserve stale claims that a now-public component is private or unavailable. Check generated client settings after XcodeGen as described in the Apple public-build guide; source-file presence alone does not verify a self-build route.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

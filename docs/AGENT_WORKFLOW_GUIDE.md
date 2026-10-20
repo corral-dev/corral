@@ -95,3 +95,5 @@ A future workflow improvement is accepted using actual task receipts: setup time
 ## Remaining environment improvements
 
 Adopt the maintained resource names in new task prompts and legacy check/acceptance launchers. Advisory ownership cannot coordinate commands that bypass the entry. Source/test edits during full-suite discovery can produce mixed test coverage; the existing CI runner rejects that snapshot and the operation must be rerun against current source. Never manufacture a success stamp from the individual shard results. For asynchronous fixture behavior, wait for the observable result instead of assuming a fixed short sleep is sufficient under build/test contention. The code-graph daemon connection remains a separate shared-tooling issue.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

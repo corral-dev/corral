@@ -1,6 +1,6 @@
 ---
 name: corral-search
-description: Find past Claude Code, Codex, OpenCode, Cursor and Pi sessions on this machine with the corral CLI - search history by keywords, file paths or commands, read a candidate's conversation and get its exact runtime:id. Use before reusing the agent that originally built a feature, or to recover earlier context. Read-only.
+description: Use when code review or bug triage would benefit from the original developer's session context, when you need earlier implementation decisions or prior work, or before returning a fix to its original agent. Search local Claude Code, Codex, OpenCode, Cursor and Pi history by keywords, file paths or commands; inspect matching conversations and obtain the exact session reference. Applies even when the user does not mention session history or Corral. Read-only; ordinary source-code or Git-history lookup alone does not need this skill.
 ---
 
 # corral-search: find the session that knows

@@ -312,10 +312,6 @@ TUI 卡顿、卡死、按键极慢、侧边栏不刷新、内嵌面板异常时�
 3. For exception history, read `~/.cache/corral/embed-error.log` and, if needed, `embed-error.log.1`; these hold background and crash tracebacks.
 4. 真机 TUI 内按 **F12** 导出当前画面到 `~/.cache/corral/screenshots/`（勿把含真实对话的截图提交仓库）。
 5. 需要细日志时设 `CORRAL_DEBUG=1` 后重启 TUI。
-
-<!-- 该文档整理/压缩于 2026-09-05 -->
-
-
 ## Agent control workflow
 
 The query commands above remain read-only. `corral run` is a separate explicit
@@ -343,3 +339,5 @@ or modified skills are preserved and reported as conflicts.
 
 Search `history_read_failures` and `potentially_limited` distinguish incomplete
 conversation/activity reads from a proven no-hit result.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

@@ -1,0 +1,22 @@
+[
+  {"id":"review-context","expected":["corral-search","corral-delegate"],"prompt":"Review 发现计费折扣有严重错误。相关规则刚由之前的开发会话实现，那边保留了完整业务上下文，我这里只看到失败断言。先利用原来的开发上下文判断处理路径，避免重新梳理整条业务链。"},
+  {"id":"repair-owner","expected":["corral-search","corral-delegate"],"prompt":"支付重试功能有回归。请找到当初实现它的开发会话，把失败用例交回原开发者修复，跟踪执行并取回结果供我验收。"},
+  {"id":"historical-decision","expected":["corral-search"],"prompt":"为什么上次我们把订单去重放在事务外？当前代码没有解释，请找回之前讨论这个决定的开发记录，给出原始依据。"},
+  {"id":"prior-command","expected":["corral-search"],"prompt":"上周某个开发会话成功跑过跨架构打包，当时还修过一个参数。帮我找回那次执行的命令和上下文，不要凭印象重新猜。"},
+  {"id":"past-error","expected":["corral-search"],"prompt":"又遇到 token_refresh_failed，上次是哪段开发对话定位并解决的？我要看到当时的原因和处理办法。"},
+  {"id":"new-worker-zh","expected":["corral-delegate"],"prompt":"另开一个独立的编码助手会话，让它在这个项目里检查异常处理并给出报告。你负责跟踪进度、接收它的问题并把最终结果带回来。"},
+  {"id":"new-worker-en","expected":["corral-delegate"],"prompt":"Start a separate coding-agent session for the independent documentation audit. Give it the brief, supervise it and bring its report back here; do not perform the audit yourself."},
+  {"id":"supervise-work","expected":["corral-delegate"],"prompt":"之前交出去的迁移检查现在做到哪一步了？接着监控那项工作，如果它需要补充信息就告诉我，结束后拿回报告。"},
+  {"id":"review-context-en","expected":["corral-search","corral-delegate"],"prompt":"This review found a critical regression in a recently built feature. The original development session has the domain context that I lack. Use that existing context to choose the repair path instead of reconstructing the whole feature here."},
+  {"id":"resume-stopped","expected":["corral-search","corral-delegate"],"prompt":"做登录回调的那个助手会话已经停了，但它知道完整背景。把 callback_state_mismatch 的修复交回同一个会话，继续执行并跟踪结果。"},
+  {"id":"simple-typo","expected":[],"prompt":"README 里有一处 recieve，改成 receive。只需要处理这个拼写错误，先看文件确认位置。"},
+  {"id":"simple-constant","expected":[],"prompt":"本文件的重试次数常量是 3，需要改成 4。这个改动很明确，先指出需要改哪一行。"},
+  {"id":"git-owner","expected":[],"prompt":"用 Git 历史查一下 billing_rules.py 最近一次是谁提交的，给我提交号和作者。"},
+  {"id":"source-symbol","expected":[],"prompt":"在当前仓库源码里找到 apply_discount 的定义和调用位置，不需要查开发对话。"},
+  {"id":"explain-python","expected":[],"prompt":"解释一下 Python 的浅拷贝和深拷贝区别，给一个简短例子。"},
+  {"id":"tiny-review","expected":[],"prompt":"Review 这两行：def add(a, b): return a + b。只判断它是否实现两个数相加，不需要其他背景。"},
+  {"id":"keyword-not-session","expected":[],"prompt":"当前日志文件里搜索 keyword timeout，告诉我出现在哪些行。不要搜索会话历史。"},
+  {"id":"business-agent-word","expected":[],"prompt":"代码里的 user_agent 变量应该重命名成 browser_agent 吗？先解释这两个名字的语义，暂时不要改代码。"},
+  {"id":"new-feature-self","expected":[],"prompt":"给这个函数增加空字符串输入检查，我已经给出全部规则：空字符串返回 False，非空返回 True。先说明最小改法。"},
+  {"id":"general-progress","expected":[],"prompt":"一个 Python for 循环里怎样显示进度百分比？举个十行以内的例子，不需要运行后台任务。"}
+]

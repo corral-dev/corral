@@ -128,8 +128,8 @@ def self_target(session: dict, caller: dict) -> bool:
 
 
 def own_message(text: str | None, run_id: str) -> str | None:
-    match = _MARKER.search((text or "")[:400])
-    return match.group(2) if match and match.group(1) == run_id else None
+    return next((match.group(2) for match in _MARKER.finditer(text or "")
+                 if match.group(1) == run_id), None)
 
 
 def _trim(text: str | None, limit: int) -> str | None:

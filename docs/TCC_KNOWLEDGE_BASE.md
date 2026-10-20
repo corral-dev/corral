@@ -1,5 +1,13 @@
 # macOS TCC 身份知识库
 
+## §0 目录索引
+
+| § | 标题 | 定位 |
+|---|---|---|
+| §1 | 归因规则 | 排查权限弹窗署名时查 |
+| §2 | `corral tcc` 跳板 | 改跳板或判断能否收敛时查 |
+| §3 | 改动入口 | 改实现、命令或诊断时查 |
+
 macOS 权限弹窗署名跟的是**二进制身份**，不是你敲的命令名。corral 用户看到
 "Python"/"tmux" 申请文件、截图权限，根因都在这里。
 
@@ -62,3 +70,5 @@ sudo launchctl procinfo <agent-pid> | grep -i responsible
   `agent_api.COMMANDS` 的 diagnose 项，`docs/SKILL.md` 有一句同步说明）。
 - 测试：`tests/test_tcc.py`（编排单测 + 真机 cc 编译透传测试；wrap 测试的
   软链一律指隔离目录，禁止碰 `~/.local/bin`）。
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

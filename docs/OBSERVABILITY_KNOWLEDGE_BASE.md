@@ -4,7 +4,7 @@ corral 是本地终端应用，诊断信息只留在本机，不发送远程遥�
 
 ## §0 目录索引
 
-| § | 标题 | 何时阅读 |
+| § | 标题 | 定位 |
 |---|---|---|
 | §1 | 业务背景与核心概念 | 首次处理界面异常排查时 |
 | §2 | 诊断闭环 | 卡顿、刷新异常、内嵌画面异常时 |
@@ -172,10 +172,6 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 
 
 State-refresh tests that claim a live process must use a real owned process PID (or explicitly mock the first-hand PID probe). Invented PIDs become ended under the current disk/process freshness check and invalidate attention, external-session, and stop-tombstone fixtures. This requirement preserves production liveness checks.
-
-<!-- 该文档整理/压缩于 2026-09-05 -->
-
-
 ## Relay connection timelines
 
 Host relay events use `lane` (`interaction`/`bulk`) and a monotonic attempt number scoped to the event's PID. `remote_relay_attempt` starts opening; `remote_relay_connected`/`remote_relay_bulk_attached` indicate WebSocket opening only. `remote_relay_ready` confirms the protocol acknowledgement and includes relay generation/node for comparison with the relay journal. Online status requires this acknowledgement. Open and acknowledgement deadlines are each 10 seconds; failed close handshakes wait at most 2 seconds. Existing 20-second ping interval and 60-second heartbeat tolerance are unchanged.
@@ -183,3 +179,5 @@ Host relay events use `lane` (`interaction`/`bulk`) and a monotonic attempt numb
 `remote_relay_receive_failed` records the observed failure before cleanup; the subsequent disconnected event includes close-wait duration. Opening versus registering versus active stages, exception class, numeric sent/received close codes, last application-frame age and positive measured ping RTT narrow the failed phase. `remote_relay_retry_scheduled` records the actual jittered wait. These timings are local evidence, not an end-to-end phone latency measurement. Sleep-inclusive/uptime clock divergence produces `failure_kind=system_resume` and a suspension duration; it rebuilds stale sockets without changing system power policy. Missing OS clock support keeps ordinary heartbeat recovery. No conversation bodies, auth headers or keys are logged.
 
 Read these events alongside the existing Apple [client diagnostic entry](../../apple/docs/design/IOS_OPTIMIZATION_PROGRAM.md#agent-diagnostic-entry). Phone records cannot be copied when the device is unavailable. Absence of a phone attempt start prevents claiming its complete wait or blaming its network. Incident evidence, recovery rules and physical acceptance limits are maintained in [Relay recovery](REMOTE_KNOWLEDGE_BASE.md#relay-recovery-and-connection-evidence-2026-10-17).
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

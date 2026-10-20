@@ -10,12 +10,11 @@ No keyboard entry point in this slice.
 
 ## Current state (verified 2026-10-15)
 
-- `src/corral/ui/main_screen.py:91`: `LIST_PANE_WIDTH = 39`, applied once in
-  `_apply_sidebar_visible`. The only geometry consumer besides layout is
-  `selftest.sh` (`expected_x = 40 + inner_x`, i.e. 39 + 1 gap column).
-- The 1-cell gap today is `SplitPaneArea` `margin-left: 1`
-  (`split_pane_area.py:621`); there is no widget in the gap.
-- Sidebar content already adapts to width dynamically: `session_list.py`
+- `src/corral/ui/main_screen.py` 的 `LIST_PANE_WIDTH` / `SIDEBAR_WIDTH_DEFAULT`（默认 39），经 `MainScreen._apply_sidebar_visible()` 应用。唯一的几何联动是
+  `selftest.sh`（期望列由默认宽 + 1 把手列/空隙推导）。
+- The 1-cell gap today is `SplitPaneArea` pane-cell left margin
+  (`SplitPaneArea.DEFAULT_CSS` / `PaneCell`); there is no widget in the gap.
+- Sidebar content already adapts to width dynamically: `src/corral/ui/session_list.py`
   truncates with `max(10, self.size.width or 40)`, `quick_filters._pack`
   uses `content_size.width`, `_FilterInput` refits its placeholder on
   resize. 39 is a tuned default, not a structural requirement.
@@ -27,10 +26,10 @@ No keyboard entry point in this slice.
 - Pointer: Textual `VALID_POINTER` includes `ew-resize`; kitty spec
   (sw.kovidgoyal.net/pointer-shapes, 30 names) includes `ew-resize`;
   iTerm2 `PTYSession.screenSetPointerShape:` maps X11 `sb_h_double_arrow`
-  to `resizeLeftRightCursor`. `ui/pointer_shape.py` already translates
+  to `resizeLeftRightCursor`. `src/corral/ui/pointer_shape.py` already translates
   CSS names to X11 names for iTerm2/real-xterm and appends the tmux DCS
   passthrough copy; it only lacks the resize entry.
-- Right-pane cost is already contained: `embed_pane.py`
+- Right-pane cost is already contained: `src/corral/ui/embed_pane.py`
   `_RESIZE_TMUX_DEBOUNCE = 0.2` defers `resize-window` + refetch until the
   size settles, and `render_line` crops to the current panel width, so live
   drag only needs imperative width updates — no extra deferral layer.
@@ -40,7 +39,7 @@ No keyboard entry point in this slice.
 - `selftest.sh` runs with isolated `HOME=$TMP/home` (hence an isolated
   `~/.cache` layout DB), so the width under test is always the default.
 - Tests isolate the layout DB via `CORRAL_CACHE_DIR` + `reset_default_layout_db`
-  (`tests/test_ui.py:35-46`); `ui_prefs` round-trip tests already exist.
+  (`tests/test_ui.py` sidebar-state isolation block); `ui_prefs` round-trip tests already exist.
 
 ## Design
 
@@ -109,7 +108,7 @@ Vertical#list-pane (width N) + _SidebarResizer (width 1) + SplitPaneArea (1fr)
 ### Pointer mapping
 
 - Add `"ew-resize": "sb_h_double_arrow"` to `_XTERM_NAMES` in
-  `ui/pointer_shape.py`. Real xterm also owns `sb_h_double_arrow` in
+  `src/corral/ui/pointer_shape.py`. Real xterm also owns `sb_h_double_arrow` in
   cursorfont; kitty/Ghostty/WezTerm keep the CSS name. tmux passthrough
   and exit-reset paths are reused unchanged.
 
@@ -124,7 +123,7 @@ Vertical#list-pane (width N) + _SidebarResizer (width 1) + SplitPaneArea (1fr)
 ## Plan
 
 1. Source: resizer widget + compose + visible/width apply paths in
-   `main_screen.py`; pointer entry; DB + prefs width accessors; i18n key.
+   `src/corral/ui/main_screen.py`; pointer entry; DB + prefs width accessors; i18n key.
 2. `selftest.sh`: derive the base column from
    `corral.ui.main_screen.SIDEBAR_WIDTH_DEFAULT` instead of hardcoded 40.
 3. Tests (`tests/test_ui.py`, new `SidebarResizeTests` + pointer-mapping
@@ -146,3 +145,5 @@ Vertical#list-pane (width N) + _SidebarResizer (width 1) + SplitPaneArea (1fr)
 
 - Keyboard width adjustment.
 - Per-project widths (width is global today, like visibility).
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

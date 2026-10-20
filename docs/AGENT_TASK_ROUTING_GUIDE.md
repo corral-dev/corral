@@ -36,3 +36,5 @@
 ## Routing ownership
 
 The entries above preserve domain-specific preconditions and symptom routes moved out of default-loaded navigation on 2026-10-06. Paths written as code are relative to the component repository root. Read only the matching domains before deciding or editing; referenced knowledge bases own product requirements. Do not add a second copy of those requirements here.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

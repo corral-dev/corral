@@ -528,7 +528,6 @@ print(f'{(time.perf_counter()-t)*1000:.0f}ms')
 - 待补充：新助手历史格式、Cursor CLI `store.db` blob schema 的版本兼容性、OpenCode 多数据目录在真实机器上的恢复策略，需要后续真实数据与版本升级时用 doc-update 补充。
 
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改会话扫描、对话预览、判活、缓存或扫描性能前的快速参考文档 -->
-
-<!-- 该文档整理/压缩于 2026-09-05 -->
-
 The Pi phone projection requires the published SessKit 0.2.1 artifact for typed thinking-only error lifecycle events; 0.2.0 predates this fix. Keep the package requirement and `scripts/sesskit_dep.py` artifact digests aligned.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

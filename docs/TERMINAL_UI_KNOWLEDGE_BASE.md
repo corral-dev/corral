@@ -460,7 +460,7 @@ Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFi
 
 | 目录（相对项目根） | 内容 | 关键文件 |
 |---|---|---|
-| `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`footer.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py`、`dragon_easter_egg.py`、`dragon_splash.py`、`ui/assets/dragon-grid.json` |
+| `src/corral/ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`footer.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py`、`dragon_easter_egg.py`、`dragon_splash.py`、`ui/assets/dragon-grid.json` |
 | `ui/controllers/` | `MainScreen` 按领域拆出的方法容器（mixin，状态仍挂在 MainScreen 实例上；`MainScreen.<method>` 经继承仍全部可解析，文档锚点不失效） | `layout_controller.py`（分屏布局/会话组）、`attention_reader.py`（关注已读）、`host_controller.py`（内嵌托管）、`hud_controller.py`（会话小窗）、`update_controller.py`（更新浮层） |
 | 项目根 | 侧边栏记忆（会话组 / 置顶 / 折叠 / 上次焦点 / 侧栏显隐） | `split_layout.py`、`ui_prefs.py` → `~/.cache/corral/sidebar-layout.sqlite3` |
 | `docs/screenshots/` | 虚构演示数据的截图验收脚本与产物位置 | `capture.py` |
@@ -816,11 +816,10 @@ CORRAL_LANG=zh python3 -m corral --limit 5
 - 运行时验证：本次为文档深写，未运行测试、截图或真实 TUI；§7 给出了当前项目要求的完整验证路径，后续界面代码改动必须实际执行。
 
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改终端界面业务域前的快速参考文档 -->
-
-<!-- 该文档整理/压缩于 2026-09-05 -->
-
 ### Your prompts preview line budget
 
 Owner correction (2026-10-11): each expanded prompt uses up to four wrapped body lines, truncating only when a fifth line exists. Two-, three- and exactly four-line prompts remain complete; short prompts do not reserve unused lines. The collapsed summary remains compact. Reuse `SessionHud._entry_lines` and its cell-width-aware wrapping, time-column alignment and scrolling. This is Corral presentation, not a SessKit parser change.
 
 Verification: the focused HUD render/summary suite passes 25 tests, including exact two/three/four-line ASCII and CJK bodies. The complete CLI gate covers 2345 tests. The synthetic production TUI screenshot shows a complete three-line prompt, a complete four-line prompt and truncation only in the fourth line of longer content.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->

@@ -165,3 +165,128 @@ installed binary. Interactive startup is the bounded fallback; version/help/quer
 status/dry-run remain read-only. Newly installed runtimes and incomplete attempts
 are reconciled on later eligible starts, including when the bundle version did
 not change.
+
+
+## Implicit selection requirements (2026-10-20)
+
+The owner approved strengthening the descriptions and evaluating automatic
+selection without naming Corral or either skill in the task. Search must cover
+review/bug triage where the original development context can prevent expensive
+rediscovery, and recovery of prior implementation decisions. Delegation must
+cover returning a contextual repair to its original session, starting a fresh
+agent for an independent task, and supervising work already handed off.
+A caller need not already have decided to reuse an agent before discovering
+these capabilities. Small self-contained changes, general explanations and
+ordinary Git/source searches must not acquire an unnecessary delegation step.
+
+Description selection does not authorize actions outside the user's task or
+turn every bug into mandatory delegation. Keep the existing exact-target,
+idempotency, uncertainty and acceptance boundaries in the body. Preserve generic
+five-runtime portability; do not add a vendor-specific invocation requirement.
+
+Prior real repair acceptance explicitly named Corral and the packaged skills.
+It established operational usability, not implicit skill selection. Evaluate
+fresh independent runtime contexts on positive and negative prompts, record the
+first actual skill read/tool action, and keep the original business task free
+of tool/skill names. Include an unprompted original-owner workflow and a fresh
+independent-task workflow. Use isolated fixture data and bounded execution;
+record model/runtime, trigger outcomes and remaining coverage limits. These
+checks complement the CLI suite and do not establish all-model reliability.
+
+References: [description guidance](https://agentskills.io/skill-creation/optimizing-descriptions)
+and [skill specification](https://agentskills.io/specification).
+
+
+Reproduce selection checkpoints with `python3 scripts/evaluate_skill_triggers.py`.
+The default only validates/prints the plan and makes no writes or model calls.
+Opt in with `--live --artifacts <new-directory> [--model <configured-model>]`;
+use `--extension <provider-extension>` only when that provider needs an explicit
+extension. Automatic extension/MCP/context discovery is disabled so unrelated
+agent orchestration cannot participate. Pi's own skill loader supplies the names
+and descriptions from the two packaged skills; no description is pasted into the
+business prompt. Both successful native assistant completion and successful
+SKILL.md read results are required. Native quota/auth errors invalidate a case,
+even when Pi exits zero, and never count as a correct negative result.
+
+<!-- 该文档整理/压缩于 2026-10-20 -->
+
+
+### Selection and execution evidence
+
+Pi 1.3.0 on `codex-1/gpt-6.1-sol` evaluated 20 fresh read-only contexts against
+the previous descriptions and 20 against the revised descriptions. Each group
+passed all 10 positive and 10 negative cases with actual successful skill reads
+as the trigger evidence. All native assistant completions were checked for errors.
+The previous wording also passed this sample: this is coverage evidence, not a
+measured trigger-rate improvement. The corpus includes Chinese/English requests,
+review-context routing, prior decisions/commands/errors, fresh workers and active
+supervision, with ordinary edits/source/Git queries as negatives.
+
+The contexts exposed only the two candidate skills through Pi's native skill
+loader and disabled unrelated extensions/MCP/context files. The business prompts
+named neither Corral nor a skill. This controlled selection test does not establish
+reliability across every skill catalog, model or runtime, nor a statistical
+trigger rate from one run per case. Additional independently worded cases and
+repeated native runs are the appropriate next measurement when usage exposes gaps.
+
+A separate execution probe gave only the billing defect and the value of the
+original developer's context. The fresh reviewer chose both skills, searched and
+inspected the stopped owner `pi:fe0dfd88`, submitted run
+`run_e69728c3670c4534b78f3e2ec77551ba`, waited for its result, and independently
+passed the two required assertions plus five regression tests. The owner made
+the repair; the reviewer did not replace the owner with a local implementation.
+The initial task did not name Corral, a skill, a session reference or CLI commands.
+
+The default evaluator plan and both skill frontmatters validate. The final
+2677-test/Ruff gate passed in 107.6 seconds with two environment skips, no
+failures or retries; the unchanged product source/environment stamp was checked
+separately. Background workflow receipts report documentation drift from the
+concurrent documentation pass; they do not verify those later document edits.
+Source and test files remained unchanged throughout the final gate. Navigation,
+links and current wording were reread separately.
+
+The complete diagnostic log retains existing Textual asyncio timing notices.
+They originate in the unchanged UI fixture/dependency lane, whose assertions all
+passed. Each observed origin is assessed below; no diagnostic or threshold was
+suppressed. These notices do not prove production latency. Timing under runner
+contention remains a test-environment limitation; investigate independently if a
+repeated user-visible stall accompanies an origin.
+
+| Coroutine origin | Count | Seconds | Assessment |
+|---|---:|---:|---|
+| `App.run_test.<locals>.run_app` | 1 | 0.111–0.111 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_clicking_close_on_unfocused_pane_does_not_switch_to_it` | 1 | 0.107–0.107 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_closing_focused_split_pane_stays_on_remaining_not_closed` | 1 | 0.102–0.102 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_closing_middle_focused_pane_keeps_left_neighbor` | 1 | 0.151–0.151 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_closing_one_split_pane_keeps_sibling_widget` | 1 | 0.108–0.108 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_closing_unfocused_split_pane_keeps_remaining_split` | 1 | 0.178–0.178 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_focusing_split_pane_highlights_matching_sidebar_session` | 1 | 0.108–0.108 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_group_pane_close_preserves_sidebar_scroll` | 5 | 0.122–0.181 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_pending_selection_follow_after_close_does_not_open_closed_session` | 1 | 0.119–0.119 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_pi_provisional_refresh_keeps_split_group_without_duplicate` | 1 | 0.104–0.104 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_reconcile_split_keys_after_provisional_becomes_real` | 1 | 0.114–0.114 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `AppThemeTests.test_stale_focus_notify_after_close_is_ignored` | 1 | 0.114–0.114 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `MessagePump._process_messages` | 59 | 0.101–0.260 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `SessionHudPlacementTests.test_every_live_pane_draws_its_own_hud` | 1 | 0.132–0.132 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `SessionHudPlacementTests.test_hud_background_follows_pane_chrome` | 1 | 0.151–0.151 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `SidebarResizeTests.test_narrow_screen_caps_width_for_right_pane` | 1 | 0.128–0.128 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group` | 1 | 0.180–0.180 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `Timer._run_timer` | 10 | 0.109–0.132 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+| `UpdateCheckWorkerTests.test_staged_spec_reaches_restart_request` | 1 | 0.129–0.129 | Existing fixture/dependency scheduling; assertions passed; retain notice. |
+
+The fresh independent-task probe also selected `corral-delegate` without a tool
+name in its task, created `pi:11b899f0` on the requested model, and produced its
+report. This uncovered the trailing-marker/400-character correlation defect
+recorded in the [delegation authority](AGENT_SESSION_DELEGATION_DESIGN.md#long-brief-correlation-after-trailing-markers-2026-10-20).
+After fixing the shared matcher, explicit monitoring recovery settled the same
+native turn as completed/correlated with model evidence, without sending the
+brief again. Regression coverage includes a long Chinese brief, a quoted other
+run marker before the actual trailing marker, and legacy prefix compatibility.
+
+
+The caller's independent fresh-session probe finished successfully, confirmed
+the report exists and returned the correlated result after recovery. Native
+transcripts show the reviewer selected search/delegation and the fresh-task
+caller selected delegation through successful skill reads before CLI execution.
+The private acceptance root retains native JSONL, CLI receipts, report and
+assertion output; no real user session was edited.
