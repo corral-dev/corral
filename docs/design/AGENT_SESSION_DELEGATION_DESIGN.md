@@ -4,7 +4,8 @@ Status: implemented on 2026-10-20; release acceptance recorded below.
 Expanded research includes fresh-session creation, explicit model selection and
 the [bundled skill distribution contract](BUNDLED_AGENT_SKILLS_DESIGN.md).
 The owner requested research first, followed by development using `agent-friendly-cli`.
-The outcome below is adopted. The shipped command authority is `corral describe run`;
+The outcome below is adopted. The shipped command authority is `corral describe run submit` and
+`corral describe run create`;
 the baseline findings below describe the pre-control 0.24.335 release.
 
 ## 1. Requested outcome and ownership
