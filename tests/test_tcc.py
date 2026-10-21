@@ -134,7 +134,10 @@ class TrampolineBinaryTests(unittest.TestCase):
         src = os.path.join(directory, "corral-tcc.c")
         dest = os.path.join(directory, "corral-tcc")
         Path(src).write_text(tcc.TRAMPOLINE_C, encoding="utf-8")
-        proc = subprocess.run(["cc", "-O2", "-std=c99", "-Wall", "-o", dest, src],
+        # Production builds only on macOS; glibc/musl hide POSIX/XSI declarations
+        # under strict C99, and editing the source would change the TCC identity.
+        feature = [] if sys.platform == "darwin" else ["-D_XOPEN_SOURCE=700"]
+        proc = subprocess.run(["cc", "-O2", "-std=c99", "-Wall", *feature, "-o", dest, src],
                               capture_output=True, timeout=120, check=False)
         self.assertEqual(proc.returncode, 0, proc.stderr.decode()[-1000:])
         if sign and sys.platform == "darwin":

@@ -613,6 +613,19 @@ check the tmux version and format output before changing the test: tmux 3.4
 escapes raw unit/record separators. The host wire-format contract and isolated
 old/current-version verification are in [project-shell list portability](REMOTE_KNOWLEDGE_BASE.md#project-shell-list-portability).
 
+For Ubuntu-only `test_tcc.TrampolineBinaryTests` failures such as
+`storage size of 'sa' isn't known`, fix the test build, not
+`tcc.TRAMPOLINE_C`. The trampoline is compiled for production only on macOS,
+where `-std=c99` still exposes POSIX declarations. glibc and musl hide
+`sigaction`, `kill` and `realpath` under strict C99 unless a feature macro is
+set. Any byte change to the C source changes `source_tag()` and the ad-hoc
+signing identity, so every user must grant TCC access again. The Linux test build
+therefore adds `-D_XOPEN_SOURCE=700` (POSIX 2008 plus XSI for `realpath`).
+On 2026-10-21 this flag compiled the unchanged source warning-free with
+`-Wall -Wextra -Werror` for x86_64/aarch64 glibc and x86_64 musl through
+`zig cc`. Without it, the same failure had made every cloud test run red since
+v0.24.329.
+
 ### Readiness and dependency handoff
 
 - Before expensive checks, prepare and verify the declared development/test environment with `python3 scripts/dev_env.py check --repo .` (converge first with `python3 scripts/dev_env.py prepare --repo .`; read-only `doctor --repo . --json` for diagnostics, `run --repo . -- <cmd>` to execute inside the checkout venv); use [the test guide](TEST_ENVIRONMENT_GUIDE.md) (`python3 scripts/acceptance.py --json`, read-only `--dry-run`) for isolated acceptance. Keep development, test, and build dependencies explicit in project metadata or the owning guide. A setup/dependency failure is not a product failure and must not be reported as a passing check.
