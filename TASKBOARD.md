@@ -4,7 +4,6 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Split member loss and restart availability (Codex primary) | Root-cause repair and acceptance | TUI pane composition, identity reconciliation, advanced-menu reasons, regressions and CLI delivery | 2026-10-21 | 2026-10-21 | Owner reports Claude leaving a split when adding Codex, and a fresh hosted Codex mislabeled not hosted. Preserve live members across identity migration and transient scan gaps. |
 | 更新浮层定位+后台预热 (opencode) | Done, verified, 待 0.24.312 一起发 | updater.py prepare_stage/prewarm_brew, update_toast 内容宽右下角+ready 文案, controller/app.py/i18n, 3 个测试文件, 维护指南 | 2026-10-16 | 84 个定向用例绿，全套件 2475 零失败；发版搭 0.24.312 顺风车，不单独 commit/tag |
 | Cold running-agent terminal snapshot (Codex) | Host API done + verified; Mac client integration after 0.3.105 GUI slot; CLI release pending slot | remote terminal stream/service/protocol, tests, remote KB; Mac client integration after 0.3.105 GUI slot | 2026-10-15 | 2026-10-15 | `terminal.peek` one-shot snapshot, no vote/subscription/channel-pool touch; focused 25+80 tests green, ruff clean, real-tmux verified. |
 | TUI stall P1+P2: scan signature + shared index (opencode) | P2-shell fix done awaiting gate+release (.315); P0 field-verified, P1 decided | scan_index missing-bucket flows through uncoverable excuse, tests, perf KB | 2026-10-15 | 2026-10-16 | Field: only keep_ids/shell/1 left (publisher shell keep=[552da174], no shell bucket ever scanned). Old code missed on absent bucket before excuses. Dual-worker pids noted as CPU-only backlog. |

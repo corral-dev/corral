@@ -98,6 +98,17 @@ explicitly before fixture imports. No PATH configuration or unrelated tap trust
 was changed. Residual risk: ordinary shell resolution can select either channel,
 so verify the actual executable and package path when diagnosing an upgrade.
 
+The active pipx `corral` was installed from a release wheel URL with `--no-deps`,
+and this machine's pipx uses the uv backend. On the v0.24.342 upgrade,
+`pipx install --force --pip-args=--no-deps <wheel-url>` was rejected by
+`uv pip install` usage parsing and changed nothing. Upgrading in place with
+`pipx runpip corral install --no-deps --force-reinstall <released universal2 wheel URL>`
+kept the existing SessKit and dependencies; afterward verify `corral --version`,
+`pip check` in that venv and `import corral._native`. pipx metadata still records
+the previous wheel URL, so do not rely on `pipx upgrade corral` for this channel.
+Restart the phone remote service after this upgrade: the release script's stale-daemon
+check runs before the local pipx upgrade.
+
 ## References
 
 - uv project synchronization and lock behavior: <https://docs.astral.sh/uv/concepts/projects/sync/>
