@@ -503,6 +503,79 @@ Pi 0.84.2 没有跨进程会话文件锁。Corral extension 使用本机协作�
 
 必须证明 Pi 的 `session_start` 与 extension `input` 拦截发生在首条 user/assistant entry 持久化之前。允许 Pi 在此之前创建 header-only 文件，但 race loser 不能追加任何对话 entry。若事件顺序不满足，协作锁无法达到目标，评审必须退回寻找更早的官方 hook，不得宣称“基本不会撞”。
 
+### 9.5 Ownership conflicts and a blank running terminal
+
+An existing Pi terminal becoming blank is an unresolved reported symptom,
+distinct from a later `/resume` refusal. A live owner and fresh idle claim establish process and
+session ownership; they do not establish that the terminal displays the correct
+conversation. Investigate the raw tmux pane, its exact claim/session binding and
+the Corral display separately. The October 21 report came from an unavailable
+host; its original blank-screen cause must not be presented as reproduced or
+fixed using local ownership tests alone.
+
+The owner later reported that the same Pi conversation reappeared without any
+recalled user action. The exact blank surface and intervening host state were
+not captured. Spontaneous recovery makes a transient display, binding or
+refresh failure a useful hypothesis; it proves neither that hypothesis nor
+history integrity. The owner ended this root-cause investigation because no
+conclusive evidence was available. Keep the cause unresolved: neither
+spontaneous recovery, local switching tests nor improved lock messages count as
+a fix. Reopen only with new concrete evidence, rather than attributing the
+symptom to the lock or adding speculative refresh/restart behavior.
+
+Conflict notifications must identify the session and available owner PID, locate
+the owner's tmux server and pane using positive process evidence, and provide a
+safe path back to that running terminal. An old extension owner must remain
+locatable without restarting it. If no pane can be verified, explain how to
+return to or normally exit the original Pi before retrying `/resume`; never
+invent a pane from a name prefix. Do not recommend removing a live lock, killing
+an unknown process, or opening a second writer. A cancelled switch preserves
+the current session and its ownership. Keep the existing Pi notification API;
+do not add another picker or force a window switch.
+
+Implementation reference: Pi 0.99.1's
+[`createExtensionUIContext` and `showExtensionNotify`](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/src/modes/interactive/interactive-mode.ts)
+route the existing public `ctx.ui.notify(message, "error")` into its native error
+message component. Reuse that component and add owner/recovery text only. Tmux
+lookup follows Corral's existing `liveness.py` process-ancestry evidence, with a
+750 ms total lookup budget only on conflicts. The [tmux manual](https://man.openbsd.org/tmux)
+defines socket selection, pane PID formats and attaching an existing session.
+Old 1.1 locks are located by existing user sockets and PID ancestry; 1.2 locks
+also retain their tmux socket. No heartbeat subprocesses are added.
+
+Acceptance covers the real Pi 0.99.1 `/resume` picker against a still-running
+1.1 owner, unchanged ownership tokens and current-session claim after refusal,
+and executing the returned attach command to reach that same original
+conversation. The bundled-handler regression suite also covers native owners
+without tmux, lookup failure, same names on different servers, writer children,
+quoted socket paths, self-resume, dead-owner reclamation and canonical symlinks.
+Corral's actual embedded pane retained both native conversations over twelve
+switches. Resizing the native pane restored its conversation at normal sizes;
+at 50 by 20 the deliberately unauthenticated fixture's startup warnings filled
+the viewport, so absence of a message marker there does not establish data loss
+or reproduce the reported blank screen. Mac/iPhone terminal surfaces consume
+the same host-owned Pi output; their physical clients were not exercised for
+this extension-only change.
+
+Delivery status at investigation closure: the recovery implementation is in
+source (extension 1.2.0), with 29 focused tests and the native recovery path
+verified. It has not been published or installed. A full 2686-test run completed
+with both failed UI cases passing its isolated retries, but concurrent source
+edits invalidated the final workspace verification/stamp. That run and the
+scratch wheels are not release evidence for the current tree. Follow the
+[existing readiness and release workflow](../AGENT_WORKFLOW_GUIDE.md) against
+the final integrated workspace before reporting the recovery fix as shipped.
+
+Fixture diagnostics are separate from product diagnostics: the historical
+0.99.1 npm dependency `node-domexception` emits a deprecation notice during
+setup, and the credential-free native fixture reports no available model.
+Neither is a Corral runtime dependency or evidence about model-call behavior;
+preserve the exact old runtime for reproduction and use a configured provider
+for any future generation acceptance. The initial isolated tmux lacked
+`extended-keys`; that fixture setting was enabled without changing user tmux
+configuration. Native TS loading replaced the initial test-only experimental
+strip API, eliminating its warning from the final handler test run.
+
 ## 10. 旧隔离历史一次性迁移
 
 > **v0.24.146 实现裁定**：首版采用比原设计更保守的 copy-through。目标仍以 no-replace + 完整 hash 校验原子创建，但验证后不删除、不移动源目录；原件就是回滚备份。这样已经让 Pi 原生 `/resume` 看见主会话，同时把跨文件系统归档/恢复的破坏面降为零。下文“归档后删除源”的流程仅保留为未来可选收尾，不是当前行为。

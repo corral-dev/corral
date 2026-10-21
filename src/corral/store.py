@@ -1618,17 +1618,53 @@ class SessionStore:
         originally opened, once that card has retired onto a new session id.
         """
         with self.lock:
-            seen: set[str] = set()
-            current = key
-            while current in self._session_key_migrations and current not in seen:
-                seen.add(current)
-                current = self._session_key_migrations[current]
-            return current
+            return self._canonical_session_key_locked(key)
+
+    def _canonical_session_key_locked(self, key: str) -> str:
+        """Caller holds the store lock; never perform I/O while resolving."""
+        seen: set[str] = set()
+        while key in self._session_key_migrations and key not in seen:
+            seen.add(key)
+            key = self._session_key_migrations[key]
+        return key
+
+    def resolve_bound_sessions(
+        self, bindings: list[tuple[str, str | None]],
+    ) -> list[dict | None]:
+        """Resolve UI bindings against one identity snapshot, without guessing.
+
+        A native history can replace a placeholder before the UI processes its
+        queued rebuild. Exact managed-host evidence also covers an unrecorded
+        migration, but multiple owners must never redirect a pane arbitrarily.
+        Missing rows remain missing; callers retain their mounted binding.
+        """
+        with self.lock:
+            sessions = [s for bucket in self.sessions.values() for s in bucket]
+            by_key = {session_key(s): s for s in sessions}
+            by_host: dict[str, list[dict]] = {}
+            for session in sessions:
+                name = session.get("keepalive_name") or self.hosted.get(session_key(session))
+                if name:
+                    by_host.setdefault(str(name), []).append(session)
+            resolved: list[dict | None] = []
+            for key, name in bindings:
+                canonical = self._canonical_session_key_locked(key)
+                session = by_key.get(canonical)
+                if session is not None and name:
+                    owner = session.get("keepalive_name") or self.hosted.get(session_key(session))
+                    if owner and str(owner) != name:
+                        session = None
+                if session is None and name:
+                    candidates = by_host.get(name, [])
+                    if len(candidates) == 1 and session_key(candidates[0]).partition(":")[0] == key.partition(":")[0]:
+                        session = candidates[0]
+                resolved.append(session)
+            return resolved
 
     def hosted_name_for(self, key: str) -> str | None:
         """Keepalive name this window is hosting for ``key``, after identity hops."""
-        canonical = self.canonical_session_key(key)
         with self.lock:
+            canonical = self._canonical_session_key_locked(key)
             name = self.hosted.get(canonical) or self.hosted.get(key)
             if name:
                 return str(name)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 
 from rich.text import Text
@@ -72,6 +72,9 @@ class PaneSpec:
     keepalive_name: str | None = None
     cell_id: str = ""
     is_shell: bool = False
+    # The mounted/pending binding outlives transient scan rows and async mounts.
+    session: dict | None = field(default=None, repr=False, compare=False)
+    detail_renderer: Callable[[], Text | str] | None = field(default=None, repr=False, compare=False)
 
 
 class _PaneClose(Static):
@@ -973,7 +976,11 @@ class SplitPaneArea(Vertical):
         self.current_project = project
         self.title_with_project = False
         self.allow_cross_project = False
-        spec = PaneSpec(session_key=key, cell_id=self._new_cell_id())
+        spec = PaneSpec(
+            session_key=key, cell_id=self._new_cell_id(),
+            session=session, detail_renderer=renderer,
+        )
+        self._panes = [spec]
         self._schedule_mount(
             [(spec, session, renderer)],
             focus_key=key,
@@ -1035,6 +1042,8 @@ class SplitPaneArea(Vertical):
                 keepalive_name=kname,
                 cell_id=self._new_cell_id(),
                 is_shell=str(session.get("source") or "") == SHELL_RUNTIME_ID,
+                session=session,
+                detail_renderer=renderer,
             )
             specs.append((spec, session, renderer))
         self._panes = [s for s, _, _ in specs]
@@ -1055,6 +1064,8 @@ class SplitPaneArea(Vertical):
         """同身份：更新标题，并确保活跃格不残留静态预览。"""
         cells = self._cells()
         for cell, (session, kname, renderer) in zip(cells, entries, strict=False):
+            cell.spec.session = session
+            cell.spec.detail_renderer = renderer
             cell.set_title(self._pane_title(session))
             cell.set_closable(self.panes_closable)
             cell._bind_renderers(renderer, hosted=bool(kname))  # noqa: SLF001
@@ -1122,16 +1133,29 @@ class SplitPaneArea(Vertical):
             keepalive_name=keepalive_name,
             cell_id=self._new_cell_id(),
             is_shell=is_shell,
+            session=session,
+            detail_renderer=renderer,
         )
-        existing = [(p, self._find_session(p.session_key)) for p in self._panes]
+        resolved = self.store.resolve_bound_sessions(self.hosted_identity())
         rebuild: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]] = []
-        for p, sess in existing:
+        for p, current in zip(self._panes, resolved, strict=True):
+            sess = current if current is not None else p.session
             if sess is None:
-                continue
+                # A legacy binding still identifies its exact terminal even
+                # when no history metadata has reached this window yet.
+                source, _, ident = p.session_key.partition(":")
+                sess = {"source": source, "id": ident, "cwd": self.current_project}
+            old_key = p.session_key
+            if current is not None:
+                p.session_key = make_session_key(current)
+            p.session = sess
+            for attribute in ("_focus_key", "_focus_intent_key", "_input_claim_key"):
+                if getattr(self, attribute) == old_key:
+                    setattr(self, attribute, p.session_key)
             cell = self._cell_for_spec(p)
-            renderer_fn = None
+            renderer_fn = p.detail_renderer
             if cell is not None:
-                renderer_fn = cell._ended_fallback  # noqa: SLF001
+                renderer_fn = cell._ended_fallback or renderer_fn  # noqa: SLF001
                 if renderer_fn is None and not p.keepalive_name:
                     pane = cell.embed_pane()
                     if pane is not None:
@@ -1185,7 +1209,11 @@ class SplitPaneArea(Vertical):
                 continue
             mapped = key_by_keepalive.get(kname)
             if mapped:
+                old_key = spec.session_key
                 spec.session_key = mapped
+                for attribute in ("_focus_key", "_focus_intent_key", "_input_claim_key"):
+                    if getattr(self, attribute) == old_key:
+                        setattr(self, attribute, mapped)
 
     def _cells(self) -> list[PaneCell]:
         """当前绑定中的可见格（不含格池闲置格）。"""

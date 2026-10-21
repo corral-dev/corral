@@ -1495,6 +1495,37 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(area.ordered_session_keys(), [new_key, companion_key])
 
+    async def test_adding_pane_during_promotion_preserves_persisted_members(self) -> None:
+        sessions = _live_split_sessions(2)
+        sessions[1]["provisional"] = True
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        with (
+            mock.patch.object(store, "refresh", return_value=False),
+            mock.patch("corral.liveness.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(160, 35)) as pilot:
+                area, keys = await _open_split_group(pilot, app, sessions)
+                real = dict(sessions[1], id="native-session", provisional=False)
+                new_key = corral.session_key(real)
+                with store.lock:
+                    store.sessions["claude"] = [sessions[0], real]
+                    store._session_key_migrations[keys[1]] = new_key
+                    store.hosted[new_key] = real["keepalive_name"]
+                # No queued sidebar reconciliation is allowed before adding.
+                app.screen._on_embed_hosted(
+                    corral.NewSessionRequest("claude", "/tmp"),
+                    "corral-claude-fresh", False, add_pane=True,
+                )
+                expected = [keys[0], new_key, "claude:fresh"]
+                self.assertEqual(area.ordered_session_keys(), expected)
+                group = app.screen._layout_db.read().get_group(new_key)
+                self.assertEqual(group.session_keys, expected)
+                await pilot.pause()
+                await app.screen._rebuild_list(select_key="claude:fresh")
+                self.assertEqual(area.ordered_session_keys(), expected)
+                self.assertEqual(app.screen._layout_db.read().get_group(new_key).session_keys, expected)
+
     async def test_pi_provisional_refresh_keeps_split_group_without_duplicate(self) -> None:
         """Pi 历史落盘后占位卡转正：分屏组跟上新键，侧边栏不得在组外再挂一张。"""
         kname = "corral-pi-abcd1234"
@@ -1573,24 +1604,31 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resize_full_repaint_is_debounced(self) -> None:
         """连续缩放手势只在停稳后触发一次整屏全量重绘，不能每次尺寸变化都狂刷。"""
-        import corral.ui.app as app_mod
-
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
-        # CI 上 pilot.pause 的墙钟开销可能让 0.12s 防抖在「拖动断言」前就到期；
-        # 本测把窗口拉长，只验证「拖动中重置、停稳后恰好一次」的契约。
-        debounce = 0.5
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
+            if app._resize_full_repaint_timer is not None:
+                app._resize_full_repaint_timer.stop()
+                app._resize_full_repaint_timer = None
             calls: list[Size] = []
+            scheduled = []
             original = app._force_full_repaint
+            original_set_timer = app.set_timer
 
             def _tracking_force() -> None:
                 calls.append(app.size)
                 original()
 
+            def schedule(delay, callback, **kwargs):
+                if callback is not app._force_full_repaint:
+                    return original_set_timer(delay, callback, **kwargs)
+                timer = mock.Mock()
+                scheduled.append((timer, callback))
+                return timer
+
             with (
-                mock.patch.object(app_mod, "_RESIZE_FULL_REPAINT_DEBOUNCE", debounce),
+                mock.patch.object(app, "set_timer", side_effect=schedule),
                 mock.patch.object(app, "_force_full_repaint", side_effect=_tracking_force),
             ):
                 # 快速连续缩放：防抖计时器应被反复重置，到期前不应触发全量重绘
@@ -1602,8 +1640,11 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.02)
                 self.assertEqual(calls, [], "拖动过程中不应触发整屏全量重绘")
                 self.assertIsNotNone(app._resize_full_repaint_timer)
-                # 停稳超过防抖窗口后应恰好一次，且尺寸为最后一次目标
-                await pilot.pause(delay=debounce + 0.05)
+                self.assertGreaterEqual(len(scheduled), 3)
+                for timer, _ in scheduled[:-1]:
+                    timer.stop.assert_called_once_with()
+                scheduled[-1][0].stop.assert_not_called()
+                scheduled[-1][1]()
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(calls[0], Size(70, 22))
                 self.assertIsNone(app._resize_full_repaint_timer)
@@ -6335,6 +6376,52 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 current = store.find_session(source_key)
                 self.assertIsNotNone(current)
                 self.assertEqual(current.get("keepalive_name"), "corral-claude-s0")
+
+    async def test_hosted_unsaved_session_has_accurate_restart_reason(self) -> None:
+        store, _ = _make_store()
+        provisional = store.register_hosted_session(
+            runtime_id="claude", keepalive_name="corral-claude-empty",
+            title="New Claude session", cwd="/tmp",
+        )
+        app = CorralApp(store, embed_ok=True)
+        with (
+            mock.patch.object(store, "refresh", return_value=False),
+            mock.patch("corral.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session") as host_mock,
+        ):
+            async with app.run_test(size=(140, 35)) as pilot:
+                await pilot.pause()
+                view = app.screen.query_one(SessionListView)
+                await view.rebuild(select_key=corral.session_key(provisional))
+                await pilot.press("ctrl+t")
+                await pilot.pause()
+                choice = app.screen._choices[2]
+                self.assertFalse(choice.available)
+                self.assertIn("waiting for session history", choice.unavailable_text)
+                self.assertNotIn("not hosted", choice.unavailable_text)
+                app.screen.query_one(ListView).index = 2
+                await pilot.press("enter")
+                self.assertIsInstance(app.screen, RuntimePickerModal)
+                host_mock.assert_not_called()
+
+    async def test_restart_menu_resolves_a_retired_selected_card(self) -> None:
+        store, _ = _make_store()
+        stale = dict(store.sessions["claude"][0], provisional=True)
+        real = dict(stale, id="native", provisional=False)
+        store.sessions["claude"] = [real]
+        store._session_key_migrations[corral.session_key(stale)] = "claude:native"
+        store.hosted["claude:native"] = "corral-claude-native"
+        app = CorralApp(store, embed_ok=True)
+        with (
+            mock.patch.object(store, "refresh", return_value=False),
+            mock.patch.object(store, "refresh_state", return_value=False),
+        ):
+            async with app.run_test(size=(140, 35)) as pilot:
+                await pilot.pause()
+                with mock.patch.object(app.screen, "_handoff_target_session", return_value=stale):
+                    await pilot.press("ctrl+t")
+                    await pilot.pause()
+                self.assertTrue(app.screen._choices[2].available)
 
     async def test_restart_session_unavailable_for_unhosted_session(self) -> None:
         """未托管的普通会话：重启项置灰，回车响铃不启动。"""

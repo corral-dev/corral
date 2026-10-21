@@ -980,6 +980,8 @@ class MainScreen(
 
     async def _rebuild_list(self, select_key: str | None = None) -> None:
         async with self._rebuild_lock:
+            if not self.is_mounted or not self.app.is_running:
+                return
             session_list = self.query_one(SessionListView)
             migrated: dict[str, str] = {}
             if self.embed_ok and self.store.loaded:
@@ -990,6 +992,8 @@ class MainScreen(
             else:
                 select_key = migrated.get(select_key, select_key)
             await session_list.rebuild(select_key=select_key)
+            if not self.is_mounted or not self.app.is_running:
+                return
             self._update_header()
             session_list.refresh_active_card()
             if self.embed_ok:
@@ -2069,7 +2073,12 @@ class MainScreen(
             except Exception:
                 key = None
             if key and not str(key).startswith("__"):
-                session = self.store.find_session(key)
+                area = self._split_area()
+                spec = next((p for p in area.pane_specs() if p.session_key == key), None)
+                name = spec.keepalive_name if spec is not None else None
+                session = self.store.resolve_bound_sessions([(key, name)])[0]
+                if session is None and spec is not None:
+                    session = spec.session
                 if session is not None:
                     return session
         try:
@@ -2103,6 +2112,7 @@ class MainScreen(
         if session is None:
             self.app.bell()
             return
+        session = self._current_bound_session(session)
         source = str(session.get("source") or self.nav.source)
         from corral.models import is_shell_session
         from corral.runtime.base import LaunchError
@@ -2117,11 +2127,16 @@ class MainScreen(
             self.store,
             source,
             restart_available=restart_available,
+            restart_unavailable_text=(
+                t("modal.restart_unsaved", action=t("modal.restart_session_action"))
+                if session.get("keepalive_name") and session.get("provisional") else None
+            ),
         )
         if target is None:
             return
         import corral
 
+        session = self._current_bound_session(session)
         if target == RESTART_SESSION_CHOICE:
             await self._restart_hosted_session(session)
             return
@@ -2161,6 +2176,17 @@ class MainScreen(
             self._prepare_handoff_split(session)
         await self._open_or_exit(request, add_pane=self.embed_ok)
 
+    def _current_bound_session(self, session: dict) -> dict:
+        """Use the same current identity and host for menu state and execution."""
+        from corral.models import session_key
+
+        key = session_key(session)
+        name = session.get("keepalive_name") or self.store.hosted_name_for(key)
+        current = self.store.resolve_bound_sessions([(key, str(name) if name else None)])[0]
+        current = current if current is not None else session
+        name = current.get("keepalive_name") or self.store.hosted_name_for(session_key(current))
+        return dict(current, keepalive_name=name) if name else current
+
     async def _restart_hosted_session(self, session: dict) -> None:
         """高级操作「重启会话」：结束托管进程后按原会话原地恢复（上下文保留）。
 
@@ -2181,6 +2207,7 @@ class MainScreen(
         import corral
         from corral.models import is_shell_session
 
+        session = self._current_bound_session(session)
         keepalive_name = session.get("keepalive_name")
         if (
             not keepalive_name

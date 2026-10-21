@@ -168,6 +168,7 @@ class LayoutControllerMixin:
         """
         if not self.embed_ok:
             return
+        self._reconcile_split_session_keys()
         self._sync_split_marks()
         area = self._split_area()
         keys = [

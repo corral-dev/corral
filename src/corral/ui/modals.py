@@ -708,6 +708,7 @@ async def choose_target_runtime(
     store,
     source: str,
     restart_available: bool = False,
+    restart_unavailable_text: str | None = None,
 ) -> str | None:
     """高级操作：导出会话、复制会话、重启会话，或选择接力目标运行时。
 
@@ -742,7 +743,7 @@ async def choose_target_runtime(
             t("modal.restart_session"),
             restart_action,
             restart_available,
-            unavailable_text=t("modal.not_hosted", action=restart_action),
+            unavailable_text=restart_unavailable_text or t("modal.not_hosted", action=restart_action),
         ),
     ]
     for runtime in runtimes:

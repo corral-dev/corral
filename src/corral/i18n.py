@@ -555,6 +555,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "{action} (session not hosted here)",
         "zh": "{action}［会话未托管］",
     },
+    "modal.restart_unsaved": {
+        "en": "{action} (waiting for session history to be saved)",
+        "zh": "{action}（等待会话历史保存后即可重启）",
+    },
     "modal.handoff_title": {
         "en": "Advanced: choose handoff assistant",
         "zh": "高级操作：选择接力助手",

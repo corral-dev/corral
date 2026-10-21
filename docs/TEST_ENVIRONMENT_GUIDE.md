@@ -158,6 +158,14 @@ which the existing dry-run no-stray assertion correctly reports.
 Apple documents non-deterministic notification latency and event coalescing in
 [Using the File System Events API](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html).
 
+Resize debounce tests must control timer delivery rather than assume a short
+`Pilot.pause` finishes before the deadline: a loaded runner can legitimately
+deliver the timer during that pause. Keep real resize events, verify cancellation
+of superseded timers, and deliver the surviving callback explicitly. A synthetic
+host record is not a real backend; identity/menu-only fixtures must prevent the
+state probe from correctly removing that nonexistent host. Separate real-tmux
+acceptance proves host liveness and input routing.
+
 <!-- 该文档整理/压缩于 2026-10-20 -->
 
 

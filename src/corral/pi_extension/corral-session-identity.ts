@@ -21,6 +21,7 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	readdirSync,
 	realpathSync,
 	renameSync,
 	unlinkSync,
@@ -28,9 +29,11 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 const PROTOCOL_VERSION = 1;
-const EXTENSION_VERSION = "1.1.0";
+const EXTENSION_VERSION = "1.2.0";
 const IDENTITY_DIRNAME = "corral-session-identity";
 /** 心跳间隔；Corral 读取侧按 4 个周期（60s）判定 claim 过期。 */
 const HEARTBEAT_MS = 15_000;
@@ -116,6 +119,11 @@ export default function (pi: ExtensionAPI): void {
 		};
 	}
 
+	function tmuxSocket(): string | undefined {
+		// TMUX ends in ,server-pid,session-index; the socket path may contain commas.
+		return process.env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1];
+	}
+
 	function processAlive(pid: number): boolean {
 		if (!Number.isInteger(pid) || pid <= 0) return false;
 		try {
@@ -169,6 +177,7 @@ export default function (pi: ExtensionAPI): void {
 				claimPath: resolveClaimPath(),
 				ownershipToken: token,
 				acquiredAt: new Date().toISOString(),
+				tmuxSocket: tmuxSocket(),
 			};
 			let fd: number | undefined;
 			try {
@@ -233,11 +242,88 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
-	function notifyOwnerConflict(ctx: ExtensionContext): void {
-		ctx.ui.notify(
-			"该 Pi 会话已在另一个窗口运行，已阻止重复写入。/ This Pi session is already open in another window; duplicate writing was blocked.",
-			"error",
-		);
+	function locateOwnerPane(owner: Record<string, unknown>): { socket: string; target: string; label: string } | null {
+		const pid = Number(owner.pid);
+		if (!Number.isInteger(pid) || pid <= 1 || !processAlive(pid)) return null;
+		// Only the error path probes tmux. Bound the entire read-only lookup, not
+		// each socket separately, so an unavailable server cannot freeze /resume.
+		const deadline = Date.now() + 750;
+		function query(command: string, args: string[]): string {
+			if (Date.now() >= deadline) return "";
+			try {
+				return execFileSync(command, args, {
+					encoding: "utf-8", timeout: Math.max(1, deadline - Date.now()),
+					maxBuffer: 512 * 1024, stdio: ["ignore", "pipe", "ignore"],
+				});
+			} catch { return ""; }
+		}
+		// Match the writer or one of its parents to pane_pid. Session names and
+		// cwd alone are not evidence, including when two tmux servers share names.
+		const parents = new Map<number, number>();
+		for (const line of query("ps", ["-A", "-o", "pid=,ppid="]).trim().split("\n")) {
+			const [child, parent] = line.trim().split(/\s+/).map(Number);
+			if (child > 1 && parent > 0) parents.set(child, parent);
+		}
+		const ancestors = new Set<number>();
+		for (let current = pid; current > 1 && !ancestors.has(current) && ancestors.size < 20;) {
+			ancestors.add(current);
+			current = parents.get(current) ?? 0;
+		}
+		const sockets = new Set<string>();
+		if (typeof owner.tmuxSocket === "string") sockets.add(owner.tmuxSocket);
+		const currentSocket = tmuxSocket();
+		if (currentSocket) sockets.add(currentSocket);
+		// Legacy 1.1 owners have no socket metadata. Discover existing sockets
+		// in the current user's tmux directories without starting any server.
+		const uid = process.getuid?.();
+		if (uid !== undefined) {
+			for (const base of new Set([process.env.TMUX_TMPDIR, "/tmp", tmpdir()])) {
+				if (!base) continue;
+				const directory = join(base, `tmux-${uid}`);
+				try {
+					for (const entry of readdirSync(directory, { withFileTypes: true })) {
+						if (entry.isSocket()) sockets.add(join(directory, entry.name));
+					}
+				} catch { /* No readable tmux directory. */ }
+			}
+		}
+		for (const socket of sockets) {
+			const output = query("tmux", ["-N", "-S", socket, "list-panes", "-a", "-F",
+				"#{pane_pid}\t#{session_id}:#{window_index}.#{pane_index}\t#{session_name}:#{window_index}.#{pane_index}"]);
+			for (const line of output.trim().split("\n")) {
+				const [panePid, target, label] = line.split("\t");
+				if (ancestors.has(Number(panePid)) && /^\$\d+:\d+\.\d+$/.test(target ?? "")) {
+					return { socket, target, label };
+				}
+			}
+		}
+		return null;
+	}
+
+	function notifyOwnerConflict(ctx: ExtensionContext, sessionFile: string | null = lastIdentity?.sessionFile ?? null): void {
+		const owner = sessionFile ? readOwner(ownerFile(sessionFile).path) : null;
+		// Strip terminal controls from paths and tmux names before displaying them.
+		const display = (value: unknown): string => String(value ?? "").replace(/[\x00-\x1f\x7f-\x9f]/g, "?");
+		const quote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
+		const lines = [owner
+			? "该 Pi 会话已在另一个窗口运行，已阻止重复写入。/ This Pi session is already open; duplicate writing was blocked."
+			: "无法确认 Pi 会话写入权限，已阻止重复写入。/ Pi session ownership could not be verified; writing was blocked."];
+		if (sessionFile) lines.push(`Session: ${display(basename(sessionFile))}`);
+		if (owner) lines.push(`Owner PID: ${display(owner.pid)}`);
+		const pane = owner ? locateOwnerPane(owner) : null;
+		if (pane) {
+			lines.push(`Tmux: ${display(pane.label)}`);
+			lines.push("在另一终端返回原窗口 / Return from another terminal:");
+			// Numeric tmux IDs avoid name ambiguity. Never emit a command containing
+			// terminal controls; PID-only guidance remains available in that case.
+			if (display(pane.socket) === pane.socket) {
+				lines.push(`tmux -S ${quote(pane.socket)} attach-session -t ${quote(pane.target)}`);
+			}
+		} else {
+			lines.push("请返回原 Pi 窗口；未能定位 tmux 面板。/ Return to the original Pi window; its tmux pane could not be located.");
+		}
+		lines.push("要在此恢复，先在原窗口退出 Pi，再重试 /resume。/ To resume here, exit Pi in the original window, then retry /resume.");
+		ctx.ui.notify(lines.join("\n"), "error");
 	}
 
 	function setAgentPhase(phase: AgentPhase, event: string): void {
@@ -400,7 +486,7 @@ export default function (pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		lastCtx = ctx;
 		if (event.targetSessionFile && ownershipConflict(event.targetSessionFile)) {
-			notifyOwnerConflict(ctx);
+			notifyOwnerConflict(ctx, event.targetSessionFile);
 			return { cancel: true };
 		}
 		if (!lastIdentity) return;
