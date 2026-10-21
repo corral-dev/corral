@@ -1930,6 +1930,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Could not deliver input to the session",
         "zh": "没能把输入送进会话",
     },
+    "remote.err.steer_failed": {
+        "en": "Could not steer the running OpenCode turn; your message was not sent. Please try again.",
+        "zh": "没能把这条消息送进正在跑的 OpenCode，请重试。",
+    },
     "remote.err.inject_partial": {
         "en": "Input may have been partially delivered; outcome is unknown",
         "zh": "输入可能只送进了一部分，结果不确定",

@@ -1565,6 +1565,192 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("cursor:c2", "选 A")
             send_key.assert_called_once_with("pane-cursor", "Enter")
 
+    def test_opencode_api_steer_applies_only_when_busy(self) -> None:
+        cases = [
+            ("opencode", "working", True),
+            ("opencode", "waiting", False),
+            ("opencode", "none", False),
+            ("opencode", "unread", False),
+            ("claude", "working", False),
+            ("cursor", "working", False),
+            ("codex", "working", False),
+        ]
+        for source, attention, expected in cases:
+            with self.subTest(source=source, attention=attention):
+                self.assertEqual(
+                    remote_sessions._opencode_api_steer_applies(
+                        _session(source=source, sid="s", attention=attention)
+                    ),
+                    expected,
+                )
+
+    def test_send_text_busy_opencode_steers_via_api(self) -> None:
+        """Busy OpenCode must steer through the v2 prompt API, never tmux queue."""
+        from corral.ui import terminal_prompt_navigation
+
+        session = _session(source="opencode", sid="ses_busy1", attention="working")
+        session["keepalive_name"] = "pane-oc"
+        self.hub.store.sessions = {"opencode": [session]}
+        events: list = []
+        self.hub._on_event = lambda channel, data: events.append(data)
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", return_value="→ ready"),
+            mock.patch.object(
+                terminal_prompt_navigation, "restore_composer", return_value=False
+            ),
+            mock.patch.object(remote_sessions.embed, "paste_detailed") as paste,
+            mock.patch.object(remote_sessions.embed, "send_key_detailed") as send_key,
+            mock.patch.object(
+                remote_sessions, "_opencode_api_prompt", return_value={"id": "msg_1"}
+            ) as api,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("opencode:ses_busy1", "换个方向")
+        api.assert_called_once_with("ses_busy1", "换个方向")
+        paste.assert_not_called()
+        send_key.assert_not_called()
+        self.assertEqual(
+            events,
+            [
+                {
+                    "version": 1,
+                    "kind": "attention",
+                    "session": "opencode:ses_busy1",
+                    "attention": "working",
+                    "provisional": True,
+                    "live": True,
+                },
+                {
+                    "version": 1,
+                    "kind": "echo",
+                    "session": "opencode:ses_busy1",
+                    "role": "user",
+                    "text": "换个方向",
+                },
+            ],
+        )
+
+    def test_send_text_waiting_opencode_keeps_tmux_path(self) -> None:
+        """Waiting OpenCode keeps paste+single Enter for the question flow."""
+        session = _session(source="opencode", sid="ses_wait1", attention="waiting")
+        session["keepalive_name"] = "pane-oc-wait"
+        self.hub.store.sessions = {"opencode": [session]}
+        with (
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ) as paste,
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
+            mock.patch.object(remote_sessions, "_opencode_api_prompt") as api,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("opencode:ses_wait1", "选 A")
+            api.assert_not_called()
+            paste.assert_called_once_with("pane-oc-wait", "选 A")
+            send_key.assert_called_once_with("pane-oc-wait", "Enter")
+
+    def test_send_text_idle_opencode_keeps_tmux_path(self) -> None:
+        session = _session(source="opencode", sid="ses_idle1", attention="none")
+        session["keepalive_name"] = "pane-oc-idle"
+        self.hub.store.sessions = {"opencode": [session]}
+        with (
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+            ) as paste,
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+            ) as send_key,
+            mock.patch.object(remote_sessions, "_opencode_api_prompt") as api,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("opencode:ses_idle1", "在吗")
+            api.assert_not_called()
+            paste.assert_called_once_with("pane-oc-idle", "在吗")
+            send_key.assert_called_once_with("pane-oc-idle", "Enter")
+
+    def test_send_text_busy_opencode_api_failure_is_honest(self) -> None:
+        """API steer failure is a plain rejection: no tmux fallback, no echo."""
+        from corral.ui import terminal_prompt_navigation
+
+        session = _session(source="opencode", sid="ses_fail1", attention="working")
+        session["keepalive_name"] = "pane-oc-fail"
+        self.hub.store.sessions = {"opencode": [session]}
+        events: list = []
+        self.hub._on_event = lambda channel, data: events.append(data)
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", return_value="→ ready"),
+            mock.patch.object(
+                terminal_prompt_navigation, "restore_composer", return_value=False
+            ),
+            mock.patch.object(remote_sessions.embed, "paste_detailed") as paste,
+            mock.patch.object(remote_sessions.embed, "send_key_detailed") as send_key,
+            mock.patch.object(
+                remote_sessions,
+                "_opencode_api_prompt",
+                side_effect=ActionError("unavailable", "nope"),
+            ),
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            with self.assertRaises(ActionError):
+                self.hub.send_text("opencode:ses_fail1", "换个方向")
+        paste.assert_not_called()
+        send_key.assert_not_called()
+        self.assertEqual(events, [])
+
+    def test_opencode_api_prompt_posts_steer_delivery(self) -> None:
+        proc = mock.Mock(returncode=0, stdout=json.dumps({"data": {"id": "msg_1"}}))
+        with (
+            mock.patch.object(
+                remote_sessions.shutil, "which", return_value="/usr/local/bin/opencode"
+            ),
+            mock.patch.object(remote_sessions.subprocess, "run", return_value=proc) as run,
+        ):
+            item = remote_sessions._opencode_api_prompt("ses_x", "换个方向")
+        self.assertEqual(item, {"id": "msg_1"})
+        argv = run.call_args[0][0]
+        self.assertEqual(
+            argv[:4],
+            ["/usr/local/bin/opencode", "api", "POST", "/api/session/ses_x/prompt"],
+        )
+        body = json.loads(argv[argv.index("-d") + 1])
+        self.assertEqual(body, {"text": "换个方向", "delivery": "steer"})
+
+    def test_opencode_api_prompt_rejects_failures(self) -> None:
+        import subprocess as _subprocess
+
+        bad_proc = mock.Mock(returncode=1, stdout="")
+        bad_json = mock.Mock(returncode=0, stdout="not json")
+        no_data = mock.Mock(returncode=0, stdout=json.dumps({"data": None}))
+        cases = [
+            {"which": None, "run": mock.Mock(return_value=bad_proc)},
+            {
+                "which": "/usr/local/bin/opencode",
+                "run": mock.Mock(return_value=bad_proc),
+            },
+            {
+                "which": "/usr/local/bin/opencode",
+                "run": mock.Mock(return_value=bad_json),
+            },
+            {
+                "which": "/usr/local/bin/opencode",
+                "run": mock.Mock(return_value=no_data),
+            },
+            {
+                "which": "/usr/local/bin/opencode",
+                "run": mock.Mock(side_effect=_subprocess.TimeoutExpired("cmd", 1)),
+            },
+        ]
+        for index, case in enumerate(cases):
+            with self.subTest(index=index):
+                with (
+                    mock.patch.object(remote_sessions.shutil, "which", return_value=case["which"]),
+                    mock.patch.object(remote_sessions.subprocess, "run", case["run"]),
+                ):
+                    with self.assertRaises(ActionError) as caught:
+                        remote_sessions._opencode_api_prompt("ses_x", "换个方向")
+                self.assertEqual(caught.exception.code, "unavailable")
+
     def _codex_pane_clearing_after(self, enters_needed: int, *, paste_lag: int = 0):
         """Fake Codex pane: shows the paste after ``paste_lag`` captures and
         clears the composer only once ``enters_needed`` Enters arrived."""

@@ -18,6 +18,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 from collections import deque
@@ -60,6 +62,8 @@ _PHONE_LIST_LIMIT = 80
 # OpenCode drops two interrupt presses that arrive in one read; 0.3 s apart
 # both count, about 1.3 s apart the first has already expired.
 _INTERRUPT_PRESS_GAP = 0.3
+# Local v2 server API admission is fast; cap it well inside the input lease.
+_OPENCODE_API_TIMEOUT = 20.0
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
 _CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期（空闲）
 _CONVERSATION_ACTIVE_INTERVAL = 0.25  # 正在处理或等回复时收紧，不改画面周期
@@ -186,6 +190,53 @@ def _phone_steer_promote(session: dict) -> bool:
         return False
     attention = str(session.get("attention_kind") or "none").strip().lower()
     return attention != "waiting"
+
+
+def _opencode_api_steer_applies(session: dict) -> bool:
+    """True when a busy OpenCode turn must steer through the v2 prompt API.
+
+    tmux paste+Enter queues behind a running OpenCode turn: the follow-up
+    only materializes when the turn ends, so the phone sees nothing until
+    then and reads it as loss (owner report 2026-10-21). The v2
+    ``session.prompt`` API with ``delivery=steer`` joins the running turn at
+    the next safe step boundary without interrupting it. Waiting sessions
+    keep the question-answer path; idle ones keep the tmux path.
+    """
+    if str(session.get("source") or "").strip().lower() != "opencode":
+        return False
+    return str(session.get("attention_kind") or "none").strip().lower() == "working"
+
+
+def _opencode_api_prompt(session_id: str, text: str) -> dict:
+    """Admit one steer into a running OpenCode session via its v2 server API.
+
+    Returns the admitted inbox item. Raises ``ActionError`` on any failure:
+    a steer that may not have landed is a plain rejection here, never a
+    silent queue — the caller must not fall back to tmux paste+Enter.
+    """
+    opencode = shutil.which("opencode")
+    if not opencode:
+        raise ActionError("unavailable", t("remote.err.steer_failed"))
+    body = json.dumps({"text": text, "delivery": "steer"})
+    try:
+        proc = subprocess.run(
+            [opencode, "api", "POST", f"/api/session/{session_id}/prompt", "-d", body],
+            capture_output=True,
+            text=True,
+            timeout=_OPENCODE_API_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ActionError("unavailable", t("remote.err.steer_failed")) from exc
+    if proc.returncode != 0:
+        raise ActionError("unavailable", t("remote.err.steer_failed"))
+    try:
+        data = json.loads(proc.stdout or "")
+    except ValueError as exc:
+        raise ActionError("unavailable", t("remote.err.steer_failed")) from exc
+    item = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(item, dict) or not item.get("id"):
+        raise ActionError("unavailable", t("remote.err.steer_failed"))
+    return item
 
 
 def _plain_pane_text(raw: str | None) -> str:
@@ -2537,7 +2588,11 @@ class SessionHub:
 
         Phone submits always steer (never queue-until-done follow-up). For
         Cursor, a second empty Enter promotes a mid-turn queue into the active
-        run; skip that only while the agent is waiting for an answer.
+        run; skip that only while the agent is waiting for an answer. For a
+        busy OpenCode turn, steering goes through the v2 ``session.prompt``
+        API (``delivery=steer``) instead of the terminal: paste+Enter would
+        queue behind the running turn. Other runtimes keep paste + single
+        Enter.
 
         Raises ActionError when injection certainly failed with no side effect.
         Raises PartialInjectionError when anything may already have reached
@@ -2567,6 +2622,20 @@ class SessionHub:
             if cause := _blocked_input_cause(snapshot):
                 # Nothing injected yet: a certain, retryable rejection.
                 raise ActionError("unavailable", cause)
+            if _opencode_api_steer_applies(session):
+                self._steer_opencode_via_api(key, session, text)
+                self._emit_provisional_working(key)
+                self._on_event(
+                    f"session:{key}",
+                    {
+                        "version": 1,
+                        "kind": "echo",
+                        "session": key,
+                        "role": "user",
+                        "text": text,
+                    },
+                )
+                return
         pasted = False
         if text:
             name, session = self._attempt_with_recovery(
@@ -2791,6 +2860,18 @@ class SessionHub:
             if time.monotonic() >= deadline:
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
             time.sleep(_TURN_READY_POLL)
+
+    def _steer_opencode_via_api(self, key: str, session: dict, text: str) -> None:
+        """Steer a busy OpenCode turn without touching its terminal.
+
+        The v2 ``session.prompt`` admission (``delivery=steer``) is the
+        delivery proof; the receipt path's post-inject pane-liveness gate
+        still applies afterwards, same as the tmux path.
+        """
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            raise ActionError("unavailable", t("remote.err.steer_failed"))
+        _opencode_api_prompt(session_id, text)
 
     def _submit_enter(self, name: str, session: dict):
         """Send Enter (+ Cursor steer promote). Returns the first Enter's result.
