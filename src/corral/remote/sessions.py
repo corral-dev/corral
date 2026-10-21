@@ -2070,12 +2070,16 @@ class SessionHub:
     def terminal_prompt(self, key: str, seq: int, generation: int, *, native: bool = False,
                         is_current=lambda: True) -> dict:
         from corral import observe
-        from corral.ui.terminal_prompt_navigation import (
-            PromptNavigationError,
-            buffer_offset,
-            navigate_native,
-            prompt_target,
-        )
+
+        try:
+            from corral.ui.terminal_prompt_navigation import (
+                PromptNavigationError,
+                buffer_offset,
+                navigate_native,
+                prompt_target,
+            )
+        except ImportError as exc:
+            raise ActionError("unavailable", t("remote.err.prompt_unavailable")) from exc
 
         session = self.require_session(key)
         if str(session.get("source") or "") not in {"claude", "codex", "pi", "opencode", "cursor"}:
@@ -2612,7 +2616,10 @@ class SessionHub:
             # starting is dropped and the text stays in the composer.
             self._wait_pane_settled(name)
         if text and submit:
-            from corral.ui.terminal_prompt_navigation import PromptNavigationError, restore_composer
+            try:
+                from corral.ui.terminal_prompt_navigation import PromptNavigationError, restore_composer
+            except ImportError as exc:
+                raise ActionError("unavailable", t("remote.err.prompt_unavailable")) from exc
             snapshot = embed.capture(name, 0, 0)
             try:
                 if restore_composer(name, str(session.get("source") or ""), screen=_plain_pane_text(snapshot)):

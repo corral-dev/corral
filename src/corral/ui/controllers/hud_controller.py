@@ -160,18 +160,18 @@ class HudControllerMixin:
     @work(thread=True, group="prompt-navigation")
     def _navigate_terminal_prompt(self, key: str, body: str, cell, revision: int,
                                   message_index: int | None = None, token: str | None = None) -> None:
-        from corral.ui.session_hud import _one_line, prompt_identity
-        from corral.ui.terminal_prompt_navigation import (
-            PromptNavigationError,
-            buffer_offset,
-            navigate_native,
-            prompt_target,
-        )
-
         started = time.monotonic()
         stage = "session"
         session = None
         try:
+            from corral.ui.session_hud import _one_line, prompt_identity
+            from corral.ui.terminal_prompt_navigation import (
+                PromptNavigationError,
+                buffer_offset,
+                navigate_native,
+                prompt_target,
+            )
+
             session = self.store.find_session(key)
             # This window can be hosting the session before the next liveness
             # scan annotates it; ask the store's hosted map first, including
@@ -229,7 +229,7 @@ class HudControllerMixin:
             # focus change or input impact. Diagnostics stay content-free.
             from corral import observe
 
-            reason = str(exc) if isinstance(exc, PromptNavigationError) else type(exc).__name__
+            reason = str(exc) if type(exc).__name__ == "PromptNavigationError" else type(exc).__name__
             observe.event("prompt_navigation_failed", runtime=str((session or {}).get("source") or ""),
                           stage=stage, reason=reason, duration_ms=round((time.monotonic() - started) * 1000))
             try:
