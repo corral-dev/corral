@@ -626,6 +626,17 @@ On 2026-10-21 this flag compiled the unchanged source warning-free with
 `zig cc`. Without it, the same failure had made every cloud test run red since
 v0.24.329.
 
+A Python 3.10 shard can time out after 25 minutes with zero reported tests when
+an async loop awaits `asyncio.to_thread(mock)` and the mock's finite
+`side_effect` list is exhausted. Python 3.10 cannot place the resulting
+`StopIteration` into the asyncio Future. The loop logs a `TypeError` from
+`_copy_future_state`, and the await never returns. Python 3.12 converts it to
+`RuntimeError`, so the fault appears only on slow 3.10 runners that run more
+loop iterations than the list length. On 2026-10-21 this was confirmed with
+uv-managed CPython 3.10 versus 3.12 for
+`test_remote_install_upgrade.InstallWatchTests`. Polling-loop fixtures must use
+a non-exhausting `side_effect` callable rather than a padded list.
+
 ### Readiness and dependency handoff
 
 - Before expensive checks, prepare and verify the declared development/test environment with `python3 scripts/dev_env.py check --repo .` (converge first with `python3 scripts/dev_env.py prepare --repo .`; read-only `doctor --repo . --json` for diagnostics, `run --repo . -- <cmd>` to execute inside the checkout venv); use [the test guide](TEST_ENVIRONMENT_GUIDE.md) (`python3 scripts/acceptance.py --json`, read-only `--dry-run`) for isolated acceptance. Keep development, test, and build dependencies explicit in project metadata or the owning guide. A setup/dependency failure is not a product failure and must not be reported as a passing check.

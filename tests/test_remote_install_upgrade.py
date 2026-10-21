@@ -17,9 +17,11 @@ def _host(ready: bool) -> types.SimpleNamespace:
 
 async def _watch(host: types.SimpleNamespace, readings: list[bool], ticks: int) -> asyncio.Event:
     stop = asyncio.Event()
+    # Never exhaust: Python 3.10 hangs when a thread's StopIteration reaches a Future.
+    pending = iter(readings)
     with (
         mock.patch.object(daemon, "_INSTALL_CHECK_INTERVAL", 0.001),
-        mock.patch.object(daemon.updater, "install_replaced", side_effect=readings + [False] * 50),
+        mock.patch.object(daemon.updater, "install_replaced", side_effect=lambda: next(pending, False)),
     ):
         task = asyncio.create_task(daemon.RemoteDaemon._install_watch_loop(host, stop))
         for _ in range(ticks):
