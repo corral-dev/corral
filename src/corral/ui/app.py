@@ -35,55 +35,55 @@ install_textual_patches()
 # 否则拖动过程中会疯狂全量刷新、卡顿闪烁。
 _RESIZE_FULL_REPAINT_DEBOUNCE = 0.12  # 秒；最后一次尺寸变化后再等这么久才整屏重绘
 
-# Reuse the Apple clients' adaptive Pine action pair with quiet green surfaces.
+# Client-green action accents sit on neutral reading surfaces; selected fills use a subtle tint.
 _CORRAL_DARK = Theme(
     name="corral-dark",
     primary="#96D5B3",
-    secondary="#7EAD94",
+    secondary="#98A4A0",
     accent="#96D5B3",
-    foreground="#C9D1D9",
-    background="#111714",
-    surface="#1A221E",
-    panel="#232D27",
+    foreground="#D7DCDB",
+    background="#171A1B",
+    surface="#202426",
+    panel="#292E30",
     warning="#D4A017",
     error="#E5534B",
     success="#3F9A6A",
     dark=True,
     variables={
         # Standalone and grouped selections share the same quiet green fill.
-        "block-cursor-background": "#31483B",
-        "block-cursor-blurred-background": "#31483BCC",
-        "pane-active-background": "#354B43",
+        "block-cursor-background": "#353E39",
+        "block-cursor-blurred-background": "#353E39CC",
+        "pane-active-background": "#343B38",
         # 侧边栏投影分屏组合的四级底色（见 _SIDEBAR_SPLIT_LADDER 的说明）
-        "sidebar-split-background": "#283B31",
-        "sidebar-split-cursor-background": "#31483B",
-        "sidebar-split-active-background": "#375342",
-        "sidebar-split-active-cursor-background": "#3D5D4C",
+        "sidebar-split-background": "#2B302E",
+        "sidebar-split-cursor-background": "#353E39",
+        "sidebar-split-active-background": "#3E4943",
+        "sidebar-split-active-cursor-background": "#48544C",
     },
 )
 _CORRAL_LIGHT = Theme(
     name="corral-light",
     primary="#2E7D5B",
-    secondary="#526E5F",
+    secondary="#64736B",
     accent="#2E7D5B",
-    foreground="#1F2328",
-    background="#F3F6F4",
-    surface="#E8EFEB",
-    panel="#DEE7E1",
+    foreground="#252A2B",
+    background="#F7F8F8",
+    surface="#EFF1F1",
+    panel="#E5E8E8",
     warning="#B8860B",
     error="#CF222E",
     success="#1A7F4B",
     dark=False,
     variables={
         # 与深色同理：选中 = 组内选中档（sidebar-split-cursor），勿再淡一档。
-        "block-cursor-background": "#CAE2D4",
-        "block-cursor-blurred-background": "#CAE2D4CC",
-        "pane-active-background": "#E8F1EB",
+        "block-cursor-background": "#DEE5E0",
+        "block-cursor-blurred-background": "#DEE5E0CC",
+        "pane-active-background": "#E7ECE8",
         # 浅色下"更显著"是更深更饱和，梯度方向与深色相反，见 _SIDEBAR_SPLIT_LADDER
-        "sidebar-split-background": "#DEEDE4",
-        "sidebar-split-cursor-background": "#CAE2D4",
-        "sidebar-split-active-background": "#B9D9C6",
-        "sidebar-split-active-cursor-background": "#A8CFB8",
+        "sidebar-split-background": "#EDF0EE",
+        "sidebar-split-cursor-background": "#DEE5E0",
+        "sidebar-split-active-background": "#D0DBD3",
+        "sidebar-split-active-cursor-background": "#C3D0C7",
     },
 )
 
@@ -98,11 +98,11 @@ _CORRAL_LIGHT = Theme(
 # 0.24.29 在 macOS Homebrew 安装下一启动就报 `$pane-inactive-background` 未定义）。
 # 这里给的是深色兜底值，具体主题里的同名变量会覆盖它。
 _THEME_VARIABLE_DEFAULTS = {
-    "pane-active-background": "#354B43",
-    "sidebar-split-background": "#283B31",
-    "sidebar-split-cursor-background": "#31483B",
-    "sidebar-split-active-background": "#375342",
-    "sidebar-split-active-cursor-background": "#3D5D4C",
+    "pane-active-background": "#343B38",
+    "sidebar-split-background": "#2B302E",
+    "sidebar-split-cursor-background": "#353E39",
+    "sidebar-split-active-background": "#3E4943",
+    "sidebar-split-active-cursor-background": "#48544C",
 }
 
 # 侧边栏投影右栏分屏组合时的四级底色阶梯，从弱到强：

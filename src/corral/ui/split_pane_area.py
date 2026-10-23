@@ -111,8 +111,7 @@ class _PaneClose(Static):
         self._on_close()
 
 
-# 活跃格顶/底高亮色：主题变量 = $primary-muted 再提亮约 10%（见 app.py），
-# 比纯 muted 更好辨认，仍避免高饱和蓝条抢过内嵌内容。
+# Active chrome uses a subtle selected-surface tint, keeping content dominant.
 _ACTIVE_PANE_BG = "$pane-active-background"
 # 未选中顶/底条与 Your prompts：比 $surface 略亮一档的深灰，浮在助手画布上才分得清。
 _INACTIVE_PANE_BG = "$panel"

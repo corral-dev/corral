@@ -19,33 +19,39 @@
 | §8 | 关联文档 | 进入相邻领域时联读 |
 | §9 | 覆盖度与待补充项 | 了解证据边界与未确认事项 |
 
-### Client-aligned green theme (2026-10-23)
+### Neutral surfaces with client-green accents (2026-10-23)
 
-The TUI uses the same Pine action colors as the Apple clients: light `#2E7D5B`
-and dark `#96D5B3`. Apply green consistently to primary/secondary/accent roles,
-selected rows, date/pinned separators, active pane bars and Your prompts stripes.
-Keep neutral reading text, runtime identity colors and waiting/working/unread,
-warning and error semantics. Preserve automatic terminal light/dark tracking,
-the four-step split-selection ladder and equal standalone/group cursor fills.
+Owner correction after reviewing v0.24.346: green-washed backgrounds, selection
+fills and pane highlights feel muddy. Use neutral charcoal in dark mode and
+neutral gray-white in light mode. Keep the Apple clients' Pine action pair
+(light `#2E7D5B`, dark `#96D5B3`) for small action/key accents. Selections use
+clear brightness differences with a restrained green tint; pane chrome and
+Your prompts surfaces stay close to neutral, with quiet alternating stripes.
+Do not dye all backgrounds green or reduce text contrast to make them quieter.
+Preserve runtime identity colors, attention/warning/error semantics, automatic
+terminal light/dark tracking, the four-step split-selection ladder and equal
+standalone/group cursor fills. This supersedes v0.24.346's broad green fills.
 
-Inspected references: `apple/Shared/UI/Design/Palette.swift`, the shared
-`AccentColor.colorset/Contents.json` and both app roots' `Palette.accent` tint;
-reuse their light/dark action pair. Adapt quiet green surface levels to terminal
-text contrast. Existing `ui/app.py` Theme registration and theme-variable
-consumers remain the implementation, using Textual's public [Theme API](https://textual.textualize.io/guide/design/).
-This supersedes earlier blue shell-color descriptions below; provider-owned
-blue remains meaningful. Apple clients already use the shared green assets;
-this change belongs to Corral's TUI presentation, with no SessKit change.
+Inspected references: the existing `ui/app.py` theme and `session_hud.py`
+background/stripe rendering, the v0.24.346 native dark/light captures, and Apple
+`Shared/UI/Design/Palette.swift` plus shared `AccentColor.colorset`. Reuse the
+client action pair and the existing Textual [Theme API](https://textual.textualize.io/guide/design/),
+adapting surface brightness and stripe strength for terminal reading. Both Apple
+roots already consume the shared green accent; their existing native surfaces
+need no change. This is Corral TUI presentation, with no SessKit change.
+Research exemption: the palette refinement is an owner-approved subjective
+visual decision; the existing inspected public Theme contract remains unchanged.
 
-Acceptance: production-renderer captures and actual Terminal window captures
-show the new light/dark palette, selected rows, pane bars and green prompt
-stripes at 120×36; the dark screen was also inspected at 80×24. Pilot filtering
-and the maintained isolated real-tmux acceptance passed, including 3→2 and
-2→1 pane closure with sidebar scroll preserved. Split-ladder text contrast is
-at least 4.74:1 in dark and 9.24:1 in light. The complete 2,706-test gate passed
-with zero first-pass failures and no compiler/lint/test warnings (two existing
-conditional skips). Apple source inspection confirms both client roots consume
-the same shared green asset; no Apple source or artifact changes are required.
+Acceptance: fresh Terminal instances were inspected separately in both
+appearances at 120×36, alongside production-renderer filter captures. The
+minimum split-selection text contrast is 5.72:1 dark and 9.11:1 light, with
+monotonic selection levels. The complete 2,706-test gate passed after one
+watchdog-fixture timing retry; compiler/lint/test output contained no warnings.
+The isolated real-tmux pane-close/scroll path passed on a quiet run after a
+concurrent-load marker-readiness failure; all fixture backends and sockets were
+cleaned. Temporary visual probes must start a fresh instance for each theme:
+manually swapping only App.theme can leave old rich-text backgrounds cached,
+so mixed-theme probe pixels do not establish either startup appearance.
 
 ### Inline quick-filter labels (2026-10-15)
 
@@ -304,7 +310,7 @@ stateDiagram-v2
 右栏格右上角浮着一个会话小窗（`ui/session_hud.py`），用来"扫一眼就知道这个会话在干啥、进行到哪"：
 
 - **两种形态都是从上到下、由旧到新**，与右栏完整对话方向一致。
-- **展开态（默认）**：列出**全部**真人提示词（不再砍中间），每条最多两行（`_MAX_PROMPT_LINES`），超出末行加 `...`；续行缩进与首行正文同一列（时间列固定 7 格）。浮层仍有高度上限，多出来的提示词靠区域内滚动查看——**禁止**再画「中间省略 N 条」或静默丢掉中间提示词。浮层底色是格子高光的一部分：选中 / 持焦格 `$pane-active-background`（蓝条），没选中 `$panel`（比 `$surface` 略亮的深灰，跟未选中顶底条同色，避免融进助手画布）。提示词块按奇偶叠一层 40% `$primary` 斑马纹（从**当前**浮层底混合，禁止叠 `$foreground`——那是灰，会把激活条的蓝洗脏），页眉 / 页脚不涂；hover 切 `$primary-muted` 时条纹跟着走。
+- **展开态（默认）**：列出**全部**真人提示词（不再砍中间），每条最多两行（`_MAX_PROMPT_LINES`），超出末行加 `...`；续行缩进与首行正文同一列（时间列固定 7 格）。浮层仍有高度上限，多出来的提示词靠区域内滚动查看——**禁止**再画「中间省略 N 条」或静默丢掉中间提示词。浮层底色是格子高光的一部分：选中 / 持焦格 `$pane-active-background`（主题高光条），没选中 `$panel`（比 `$surface` 略亮的深灰，跟未选中顶底条同色，避免融进助手画布）。提示词块按奇偶叠一层 12% `$primary` 斑马纹（从**当前**浮层底混合，禁止叠 `$foreground`——那是灰，会把主题色洗脏），页眉 / 页脚不涂；hover 切 `$primary-muted` 时条纹跟着走。
 - **收起态**：固定三行 —— `▶ N 条提示词` / `最初  <本会话第一条提示词>` / `最近  <最新一条提示词>`。这两头各自回答一个问题：最初那条说明"这个会话本来是要干嘛"，最近那条说明"现在做到哪"。只有一条提示词时省掉"最初"那行。收起态只摘要两头是刻意压缩遮挡面积，与展开态「可滚看全」不矛盾。
 - **展开态有高度上限（`_MAX_EXPANDED_HEIGHT` 与本格高度取小），超出靠滚动**，不截内容：页眉（`▼ 本会话提示词（N）`）和页脚（收起提示）**常驻**，中间正文按 `_scroll` 开窗；**默认钉在最底（`_stick_bottom`）**，保证最新提示词在视野里；用户上滚后取消钉底，新提示词到来不再强行跳回，滚回底部或收起再展开后恢复钉底。可滚时页脚文案换成带"滚轮看更多"的那条。滚轮事件在小窗内被消费（本来也穿不到托管画面）。
 - **时间列不用 `format_message_time`**：小窗自己的 `_short_time()` 当天只给 `HH:MM`、更早只给 `MM-DD`，两种都恰好 5 格宽（列不会错位）。共用的 `MM-DD HH:MM` 是 11 格，在浮层里会把正文挤掉一截，而同一会话的提示词绝大多数在当天，日期纯冗余。消息缺时间戳时（如 Cursor `store.db` blob 没有逐条时间）展开态用 `N/A` 占位（补齐到 5 格），不留空白缩进。
@@ -687,7 +693,7 @@ assert that the reporting user's other computer has already upgraded.
 - **AI 易错点**【右栏顶栏与分栏标题】助手顶栏按钮靠右排列，左侧为侧栏显隐开关（`#sidebar-toggle`），背景必须与底部操作栏共用 `$footer-background`，避免出现割裂的纯黑色条。侧边栏与右栏之间、右栏各分栏之间统一保留一列空白间隔：`SplitPaneArea` 左侧 `margin-left: 1`，第二格及后续 `PaneCell` 左侧 `margin-left: 1`；不画任何分隔线或边框，避免终端字体把线条字符渲成连续方块。每格上下各有一条高亮条：标题栏（有标题/关闭）+ 无文字底条（`_PaneFooter`）；默认 `$panel`（略亮深灰）。**高光跟当前会话走，不是只跟键盘焦点（2026-09-12）**：列表选中这一格对应的会话（含已结束预览）、或这一格正在打字，顶底条切到 `$pane-active-background`（`$primary-muted` 再提亮约 10%）。Your prompts 浮层底色是同一套高光：选中绿色条、没选中跟灰条同色（`$panel`，不要用更暗的 `$surface`——黑夜下会融进助手画面），斑马纹仍叠在当前底上。禁止只用 `has_focus_within` 决定 `-active`——已结束会话焦点留在列表，预览格也必须高光。分屏里只有当前会话那一格高光，其余灰条。标题文字用 `auto 90%` 保证深浅主题下的对比度。禁止再用整圈边框或标题前圆点表示焦点。`PaneCell._sync_active_marker` / `set_title` 必须容忍标题栏/底条尚未挂上或已卸下（双击顶栏快速加格时焦点回调会落在中间态），禁止对 `_PaneHeader` / `_PaneFooter` 裸 `query_one`。列表选中变化而格子没抢焦时，必须整排 `sync_chrome()`，否则只刷了持焦格、兄弟格的高光条/浮窗会留下。回归：`test_preview_pane_chrome_shows_enter_restart_hint`、`test_enter_hosts_session_and_pane_shows_live_output`（回列表后高光仍在）、`test_hud_background_follows_pane_chrome`。
 - **AI 易错点**【会话小窗默认展开，但浮层命中区仍要克制】小窗盖住的行，助手输出就看不见；Textual **没有点击穿透**，被盖住的区域滚轮不会再转发给托管会话、也划不了词。产品已明确改为**默认展开**，不要再按旧约定初始化成收起；用户仍可点击或按 `Ctrl+G` 临时收起，收起态固定为「条数 + 最初 + 最近」三行。布局仍有两条硬约束：①用 `dock: right` + `width/height: auto` 让命中区只有小窗本身，禁止整行宽容器；②不加边框，避免终端字体把线条画成实心方块并减少遮挡。回归：`SessionHudPlacementTests`。
 - **AI 易错点**【浮层渲染的行数必须取"已分配给自己的"高度】`SessionHud.render()` 只能用 `self.content_size.height` 开窗，**不能**再拿 `container_size` 重算一遍 `_max_height()`：布局阶段（`get_content_height`）和渲染阶段看到的 container 尺寸不保证一致（首帧、resize 中间态都会差一拍），两边各算各的就会出现「底色框比正文高出一截」——框是按布局给的高度铺的，正文却按渲染时另算的行数画。同理，每行都必须 `_fit_cell` 补齐到同宽，否则底色右侧会露出锯齿。回归：`test_box_height_matches_rendered_lines_in_both_states`（去掉修复即失败）。
-- **AI 易错点**【展开态单条折叠、整窗封顶靠滚动，页眉页脚常驻，默认钉底】提问在展开态最多两行（`_MAX_PROMPT_LINES`），超出末行 `_fit_cell(..., ellipsis=True)`；续行缩进到与首行正文同列。不要再改回「整条换行不省略」——浮层会把助手画面盖住。整窗另有高度上限（`_max_height()`），超出**只开窗不截内容**：页眉与页脚固定在首尾、正文按 `_scroll` 滚动；**默认 `_stick_bottom=True`**（与静态预览同语义），保证最新提问在视野里——不要改回从顶开窗。用户上滚后取消钉底；滚回底部或收起再展开恢复钉底。**页脚是唯一写着"点击收起"的地方，绝不能跟着正文滚出去**。斑马纹在 `lines()` 里按提问块奇偶叠 40% `$primary`（`_hud_stripe_color`），禁止叠 `$foreground`（会洗成灰），也禁止在 `render()` 里给整窗另铺一层底色（会盖住 hover 和 CSS 高光）。浮层 CSS 默认 `$panel`，`.-active` 才切 `$pane-active-background`——不要写死永远高光底色，否则没选中的格子浮窗会跟高光条对不上；也不要退回 `$surface`（黑夜下会融进助手画布）。回归：`test_expanded_folds_long_prompt_with_ellipsis`、`test_expanded_zebra_paints_odd_prompt_blocks`、`test_hud_stripe_stays_in_pane_green_family`、`test_hud_stripe_still_paints_on_panel_chrome`、`test_hud_css_uses_panel_until_active`、`test_expanded_continuation_lines_align_with_the_first_line`、`test_expanded_caps_height_and_scrolls_instead_of_dropping_content`、`test_new_prompts_keep_viewport_pinned_to_latest`。
+- **AI 易错点**【展开态单条折叠、整窗封顶靠滚动，页眉页脚常驻，默认钉底】提问在展开态最多两行（`_MAX_PROMPT_LINES`），超出末行 `_fit_cell(..., ellipsis=True)`；续行缩进到与首行正文同列。不要再改回「整条换行不省略」——浮层会把助手画面盖住。整窗另有高度上限（`_max_height()`），超出**只开窗不截内容**：页眉与页脚固定在首尾、正文按 `_scroll` 滚动；**默认 `_stick_bottom=True`**（与静态预览同语义），保证最新提问在视野里——不要改回从顶开窗。用户上滚后取消钉底；滚回底部或收起再展开恢复钉底。**页脚是唯一写着"点击收起"的地方，绝不能跟着正文滚出去**。斑马纹在 `lines()` 里按提问块奇偶叠 12% `$primary`（`_hud_stripe_color`），禁止叠 `$foreground`（会洗成灰），也禁止在 `render()` 里给整窗另铺一层底色（会盖住 hover 和 CSS 高光）。浮层 CSS 默认 `$panel`，`.-active` 才切 `$pane-active-background`——不要写死永远高光底色，否则没选中的格子浮窗会跟高光条对不上；也不要退回 `$surface`（黑夜下会融进助手画布）。回归：`test_expanded_folds_long_prompt_with_ellipsis`、`test_expanded_zebra_paints_odd_prompt_blocks`、`test_hud_stripe_stays_in_pane_green_family`、`test_hud_stripe_still_paints_on_panel_chrome`、`test_hud_css_uses_panel_until_active`、`test_expanded_continuation_lines_align_with_the_first_line`、`test_expanded_caps_height_and_scrolls_instead_of_dropping_content`、`test_new_prompts_keep_viewport_pinned_to_latest`。
 - **AI 易错点**【Your prompts 必须二次过滤注入，不要相信 `role == "user"`】扫描层只丢掉 Claude/Kimi 的 `origin.kind` 系统事件；Cursor 计划附件、Codex `<skill>`/`<turn_aborted>`、OpenConductor「你是…」角色提示仍会以 user 进 `load_conversation`（导出要原文）。Codex 还会注入从不显示为提问的上下文（`<codex_internal_context`、`<recommended_plugins>`、`<codex_delegation>` 等），Claude 有压缩摘要；小窗列表必须与助手实际显示的提问一一对应，否则原生按序号跳转会错位（清单与依据见[内嵌终端知识库 Current navigation design](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md#current-navigation-design-2026-10-19-no-native-find)）。小窗在 `is_injected_user_prompt` 再滤。corral 自身的跨运行时接力提示词视作真人提问，不在这里过滤。Every normalized user turn, including identical consecutive text, remains selectable with its own source index and prefix identity; native duplicate-record normalization belongs upstream.不要把 `$doc-update`、`/grilling`、带 `<image>` 配文的提问当成注入；也不要把这层过滤下沉到扫描器。回归：`test_injected_runtime_prompts_are_dropped`、`test_image_wrapper_keeps_the_caption`、`test_consecutive_duplicate_prompts_retain_identity`。
 - **AI 易错点**【小窗顺序恒为由旧到新；展开态保留全部提问，靠高度封顶滚动】两种形态都按时间从上到下排，不得改成"最新在最前"——那和右栏完整对话、和人读聊天记录的方向都相反。`summarize_user_messages` 必须把过滤后的提问**全部**放进 `entries`（`entries[0]` 仍为本会话最早那条）；条数再多也**禁止**砍中间或画「中间省略 N 条」——遮挡面积只靠 `_MAX_EXPANDED_HEIGHT` + `_scroll` 控制。收起态仍只画两头摘要。回归：`test_long_session_keeps_every_prompt_in_order`、`test_expanded_lists_every_prompt_and_scrolls_when_capped`、`test_expanded_caps_height_and_scrolls_instead_of_dropping_content`。
 - **AI 易错点**【小窗对每个右栏格都画，不只激活格、也不跳过静态预览】实时托管格与历史消息预览格都要画 Your prompts：长对话里完整预览仍要翻很久，小窗用来扫提问脉络。多分屏时每一格画自己的提问摘要。判定入口是 `MainScreen._hud_live_targets()`（遍历 `pane_specs()`，要求 store 能找到会话），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次；不要再加回「只认 `keepalive_name`」的过滤。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。回归：`test_every_live_pane_draws_its_own_hud`、`test_static_preview_pane_also_draws_hud`。
