@@ -180,20 +180,60 @@ class HudControllerMixin:
             if not name or cell.spec.session_key != key:
                 raise PromptNavigationError("prompt_unavailable")
             stage = "identity"
-            messages = self.store.get_conversation(session)
+            # Prefer the HUD's already-cached conversation to avoid a full
+            # re-parse on every click; live sessions rewrite history constantly
+            # so get_conversation would always miss and cost 100-300ms.
+            messages = self.store.peek_conversation(session, stale_ok=True)
+            if messages is None:
+                messages = self.store.get_conversation(session)
+            else:
+                # Validate the stale copy still identifies this row; if the
+                # history grew or the token mismatches, fall back to a fresh
+                # parse instead of landing on the wrong occurrence.
+                try:
+                    from corral.ui.session_hud import summarize_user_messages as _summarize
+
+                    _hud_check = _summarize(list(messages))
+                    _ok = (message_index in _hud_check.message_indices
+                           if message_index is not None else True)
+                    if not _ok:
+                        messages = self.store.get_conversation(session)
+                except Exception:
+                    messages = self.store.get_conversation(session)
             targets = [m for index, m in enumerate(messages) if m.role == "user" and _one_line(m.text) == body
                        and (message_index is None or index == message_index)]
             if len(targets) != 1:
                 raise PromptNavigationError("prompt_ambiguous")
-            if token is not None and (message_index is None or prompt_identity(messages, message_index) != token):
-                raise PromptNavigationError("prompt_stale")
+            if token is not None and (message_index is None
+                    or prompt_identity(messages, message_index) != token):
+                # Stale peek raced a rewrite; retry once with a fresh parse.
+                fresh = self.store.get_conversation(session)
+                if fresh is not messages:
+                    messages = fresh
+                    targets = [m for index, m in enumerate(messages) if m.role == "user" and _one_line(m.text) == body
+                               and (message_index is None or index == message_index)]
+                    if len(targets) != 1:
+                        raise PromptNavigationError("prompt_ambiguous")
+                    if token is not None and (message_index is None
+                            or prompt_identity(messages, message_index) != token):
+                        raise PromptNavigationError("prompt_stale")
+                else:
+                    raise PromptNavigationError("prompt_stale")
             stage = "query"
+            from corral.ui.session_hud import summarize_user_messages as _summarize_for_prompts
+            from corral.ui.terminal_prompt_navigation import _normalized_texts
+
+            _texts = _normalized_texts(messages)
             try:
-                target = prompt_target(messages, targets[0])
+                target = prompt_target(messages, targets[0], _texts=_texts)
             except PromptNavigationError:
                 # Fullscreen native paths locate by ordinal and context; only
                 # the retained-buffer lookup needs a text query.
                 target = None
+            try:
+                _prompts = list(_summarize_for_prompts(list(messages)).message_indices)
+            except Exception:
+                _prompts = None
             if revision != self._prompt_navigation_revision:
                 return
             stage = "buffer"
@@ -212,7 +252,8 @@ class HudControllerMixin:
                                 total=target.total if target else 1,
                                 target=target, messages=messages, selected=targets[0],
                                 is_current=lambda: revision == self._prompt_navigation_revision
-                                and cell.spec.session_key == key, allow_escape=not busy)
+                                and cell.spec.session_key == key, allow_escape=not busy,
+                                prompts=_prompts)
                 offset = 0
             stage = "presentation"
             self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, offset)

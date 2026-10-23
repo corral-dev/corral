@@ -207,20 +207,21 @@ def _hud_stripe_color(background: TextualColor, accent: TextualColor) -> Textual
     return background.blend(accent, _STRIPE_BLEND)
 
 
+def _single_prompt_identity(message, index: int) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    for value in (index, message.role, message.text, message.timestamp):
+        encoded = str(value).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
 def prompt_identity(messages, index: int) -> str:
-    return _prompt_identities(messages)[index]
+    return _single_prompt_identity(messages[index], index)
 
 
 def _prompt_identities(messages) -> list[str]:
-    digest = hashlib.blake2b(digest_size=16)
-    identities = []
-    for message in messages:
-        for value in (message.role, message.text, message.timestamp):
-            encoded = str(value).encode("utf-8")
-            digest.update(len(encoded).to_bytes(8, "big"))
-            digest.update(encoded)
-        identities.append(digest.hexdigest())
-    return identities
+    return [_single_prompt_identity(message, index) for index, message in enumerate(messages)]
 
 
 def summarize_user_messages(messages: list[ConversationMessage]) -> HudData:

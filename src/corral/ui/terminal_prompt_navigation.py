@@ -34,13 +34,34 @@ def _count(text: str, query: str) -> int:
     return count
 
 
-def prompt_target(messages: Sequence, target) -> PromptTarget:
+def _normalized_texts(messages: Sequence) -> list[str]:
+    return [" ".join((m.text or "").split()) for m in messages]
+
+
+def _is_unique(texts: Sequence[str], query: str) -> bool:
+    if not query:
+        return False
+    found = False
+    for text in texts:
+        start = 0
+        while query and (start := text.find(query, start)) >= 0:
+            if found:
+                return False
+            found = True
+            start += 1
+    return found
+
+
+def prompt_target(messages: Sequence, target, *, _texts: Sequence[str] | None = None) -> PromptTarget:
     """Keep the selected occurrence, including user repeats and quoted replies."""
+    texts = list(_texts) if _texts is not None else None
     try:
-        return PromptTarget(prompt_query(messages, target))
+        return PromptTarget(prompt_query(messages, target, _texts=texts))
     except PromptNavigationError as exc:
         if str(exc) != "prompt_ambiguous":
             raise
+    if texts is None:
+        texts = _normalized_texts(messages)
     compact = " ".join((target.text or "").split())
     query = ""
     for char in compact:
@@ -65,7 +86,7 @@ def prompt_target(messages: Sequence, target) -> PromptTarget:
         for neighbor in neighbors:
             if (neighbor.text or "").strip():
                 try:
-                    anchor = _query_for_text(messages, neighbor.text)
+                    anchor = _query_for_text(messages, neighbor.text, _texts=texts)
                     return PromptTarget(query, occurrence, total, anchor, direction)
                 except PromptNavigationError:
                     pass
@@ -74,7 +95,7 @@ def prompt_target(messages: Sequence, target) -> PromptTarget:
     return PromptTarget(query, occurrence, total)
 
 
-def prompt_query(messages: Sequence, target) -> str:
+def prompt_query(messages: Sequence, target, *, _texts: Sequence[str] | None = None) -> str:
     """Resolve a short, exact query only when it identifies this message alone.
 
     Check every role, including quotations. Short/repeated queries are refused
@@ -82,16 +103,17 @@ def prompt_query(messages: Sequence, target) -> str:
     """
     if target.role != "user":
         raise PromptNavigationError("prompt_unavailable")
-    return _query_for_text(messages, target.text)
+    return _query_for_text(messages, target.text, _texts=_texts)
 
 
-def _query_for_text(messages: Sequence, text: str, *, max_width: int = 24) -> str:
+def _query_for_text(messages: Sequence, text: str, *, max_width: int = 24,
+                    _texts: Sequence[str] | None = None) -> str:
     compact = " ".join((text or "").split())
     if not compact:
         raise PromptNavigationError("prompt_unavailable")
     if any(ord(c) < 32 or ord(c) == 127 for c in compact):
         raise PromptNavigationError("prompt_unavailable")
-    texts = [" ".join((m.text or "").split()) for m in messages]
+    texts = list(_texts) if _texts is not None else _normalized_texts(messages)
     # Native search is line-oriented. Never invent a query by joining two
     # source lines (reply anchors commonly start with a short heading).
     lines = [" ".join(line.split()) for line in (text or "").splitlines() if line.strip()]
@@ -105,12 +127,29 @@ def _query_for_text(messages: Sequence, text: str, *, max_width: int = 24) -> st
             query = query.strip()
             if not query or (start > 0 and len(query) < 8):
                 continue
-            if sum(_count(text, query) for text in texts) == 1:
+            if _is_unique(texts, query):
                 return query
     raise PromptNavigationError("prompt_ambiguous")
 
 
 def _tmux(name: str, *args: str) -> str:
+    try:
+        from corral import embed as _embed
+
+        channel = None
+        try:
+            channel = _embed._active_channel(name)
+        except Exception:
+            channel = None
+        if channel is not None:
+            try:
+                lines = channel.request(*args)
+            except Exception:
+                lines = None
+            if lines is not None:
+                return "\n".join(lines) + ("\n" if lines else "")
+    except Exception:
+        pass
     try:
         result = subprocess.run(
             [*tmux_argv_for_session(name), *args], capture_output=True,
@@ -196,13 +235,14 @@ def _transcript_area(runtime: str, screen: str) -> str:
 
 
 def _navigate_scrollback(name: str, runtime: str, resolved: PromptTarget, messages: Sequence,
-                          is_current: Callable[[], bool]) -> None:
+                          is_current: Callable[[], bool], _texts: Sequence[str] | None = None) -> None:
     """Read the native normal viewport without taking the composer's input.
 
     Accepted Codex Find still consumes Enter, and Claude's detailed transcript
     owns typing. Ordinary page navigation preserves the normal input path.
     Unique adjacent history context disambiguates repeated prompt text.
     """
+    texts = list(_texts) if _texts is not None else _normalized_texts(messages)
     def current():
         if not is_current():
             raise PromptNavigationError("prompt_stale")
@@ -231,7 +271,7 @@ def _navigate_scrollback(name: str, runtime: str, resolved: PromptTarget, messag
     first_proof = None
     for message in messages:
         try:
-            first_proof = _query_for_text(messages, message.text)
+            first_proof = _query_for_text(messages, message.text, _texts=texts)
             break
         except PromptNavigationError:
             pass
@@ -515,7 +555,8 @@ def _codex_close_modes(name: str) -> None:
 
 
 def _navigate_codex_backtrack(name: str, messages: Sequence, selected,
-                              is_current: Callable[[], bool]) -> bool:
+                              is_current: Callable[[], bool],
+                              prompts: Sequence[int] | None = None) -> bool:
     """Select the prompt by ordinal in Codex's native prompt browsing.
 
     Browsing steps between rendered user prompts without scanning tool output,
@@ -526,7 +567,10 @@ def _navigate_codex_backtrack(name: str, messages: Sequence, selected,
     """
     from corral.ui.session_hud import summarize_user_messages
 
-    prompts = list(summarize_user_messages(list(messages)).message_indices)
+    if prompts is None:
+        prompts = list(summarize_user_messages(list(messages)).message_indices)
+    else:
+        prompts = list(prompts)
     index = next((i for i, message in enumerate(messages) if message is selected), -1)
     if index not in prompts:
         return False
@@ -633,7 +677,8 @@ def _navigate_codex_backtrack(name: str, messages: Sequence, selected,
 
 
 def _navigate_codex_direct(name: str, messages: Sequence, selected,
-                           is_current: Callable[[], bool], allow_escape: bool = True) -> None:
+                           is_current: Callable[[], bool], allow_escape: bool = True,
+                           prompts: Sequence[int] | None = None) -> None:
     """Reach a Codex prompt without opening Find.
 
     Owner rule (2026-10-19): native Find must never appear. A visible prompt
@@ -643,15 +688,18 @@ def _navigate_codex_direct(name: str, messages: Sequence, selected,
     """
     from corral.ui.session_hud import summarize_user_messages
 
-    prompts = list(summarize_user_messages(list(messages)).message_indices)
+    if prompts is None:
+        prompts = list(summarize_user_messages(list(messages)).message_indices)
+    else:
+        prompts = list(prompts)
     index = next((i for i, message in enumerate(messages) if message is selected), -1)
     initial = _screen(name)
     if (index in prompts and not _codex_find(initial)
             and _codex_bring_to_top(name, initial, messages, prompts, prompts.index(index), is_current)):
         return
-    if allow_escape and _navigate_codex_backtrack(name, messages, selected, is_current):
+    if allow_escape and _navigate_codex_backtrack(name, messages, selected, is_current, prompts=prompts):
         return
-    _navigate_by_scroll(_SCROLL_PROFILES["codex"], name, messages, selected, is_current)
+    _navigate_by_scroll(_SCROLL_PROFILES["codex"], name, messages, selected, is_current, prompts=prompts)
 
 
 _OPENCODE_COMPOSER = re.compile(r"^\s*╹▀{8,}\s*$", re.MULTILINE)
@@ -823,9 +871,12 @@ def _claude_matches(cell: str, message) -> bool:
                                     or (cell.startswith("/") and cell.endswith(want)))
 
 
-def _navigate_claude(name: str, messages: Sequence, selected, is_current: Callable[[], bool]) -> None:
-    prompts = [i for i, message in enumerate(messages) if not (message.text or "").startswith(_CLAUDE_COMPACT)]
-    _navigate_by_scroll(_SCROLL_PROFILES["claude"], name, messages, selected, is_current, keep=set(prompts))
+def _navigate_claude(name: str, messages: Sequence, selected, is_current: Callable[[], bool],
+                    prompts: Sequence[int] | None = None) -> None:
+    if prompts is None:
+        prompts = [i for i, message in enumerate(messages) if not (message.text or "").startswith(_CLAUDE_COMPACT)]
+    _navigate_by_scroll(_SCROLL_PROFILES["claude"], name, messages, selected, is_current, keep=set(prompts),
+                        prompts=prompts)
 
 
 # Keys per PageUp/PageDown burst. A TUI that falls behind leaves keys queued
@@ -878,7 +929,8 @@ def _page(profile: _ScrollProfile, name: str, delta: int, screen: str, settle, c
 
 
 def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, selected,
-                        is_current: Callable[[], bool], keep: set[int] | None = None) -> None:
+                        is_current: Callable[[], bool], keep: set[int] | None = None,
+                        prompts: Sequence[int] | None = None) -> None:
     """Reach a prompt in a fullscreen view and click its pinned prompt header.
 
     The top row names the prompt that owns the viewport: either the dim header
@@ -893,7 +945,10 @@ def _navigate_by_scroll(profile: _ScrollProfile, name: str, messages: Sequence, 
 
     if not is_current():
         raise PromptNavigationError("prompt_stale")
-    prompts = [i for i in summarize_user_messages(list(messages)).message_indices if keep is None or i in keep]
+    if prompts is None:
+        prompts = [i for i in summarize_user_messages(list(messages)).message_indices if keep is None or i in keep]
+    else:
+        prompts = [i for i in prompts if keep is None or i in keep]
     index = next((i for i, message in enumerate(messages) if message is selected), -1)
     if index not in prompts:
         raise PromptNavigationError("prompt_unavailable")
@@ -1163,7 +1218,8 @@ _NATIVE_LIMIT = 15.0
 def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0, total: int = 1,
                     target: PromptTarget | None = None,
                     messages: Sequence = (), selected=None,
-                    is_current: Callable[[], bool] = lambda: True, allow_escape: bool = True) -> None:
+                    is_current: Callable[[], bool] = lambda: True, allow_escape: bool = True,
+                    prompts: Sequence[int] | None = None) -> None:
     """Navigate only the existing native viewport; never submit user input.
 
     `allow_escape=False` reports that the caller knows the agent is working or
@@ -1173,7 +1229,8 @@ def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0,
         raise PromptNavigationError("prompt_unavailable")
     # Codex Find scans long tool output between hits; any user input still
     # cancels at once, so its bound only limits an abandoned search.
-    with embed.navigation_transaction(name, timeout=_NATIVE_LIMIT if runtime in ("codex", "claude", "opencode")
+    _native_long = ("codex", "claude", "opencode", "cursor")
+    with embed.navigation_transaction(name, timeout=_NATIVE_LIMIT if runtime in _native_long
                                       else 5.0) as owns_input:
         selected_current = is_current
         def operation_current():
@@ -1182,13 +1239,23 @@ def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0,
         if not is_current():
             raise PromptNavigationError("prompt_stale")
         if runtime == "codex":
-            _navigate_codex_direct(name, messages, selected, is_current, allow_escape)
+            _navigate_codex_direct(name, messages, selected, is_current, allow_escape, prompts=prompts)
             return
         if runtime == "opencode":
             _navigate_opencode(name, messages, selected, is_current)
             return
         if runtime == "claude":
-            _navigate_claude(name, messages, selected, is_current)
+            _navigate_claude(name, messages, selected, is_current, prompts=prompts)
+            return
+        if runtime == "cursor":
+            # Cursor agent CLI has no prompt-ID timeline; use ordinary
+            # scrollback paging which preserves drafts and running turns.
+            # Single prompts land without a marker; repeated prompts still
+            # need a unique anchor or they report ambiguous instead of
+            # guessing a wrong occurrence.
+            resolved = target if target is not None else PromptTarget(query, occurrence, total)
+            _navigate_scrollback(name, runtime, resolved, messages, is_current,
+                                 _texts=_normalized_texts(messages))
             return
         if runtime != "pi":
             raise PromptNavigationError("prompt_unavailable")

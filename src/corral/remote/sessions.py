@@ -2106,8 +2106,11 @@ class SessionHub:
         runtime = str(session.get("source") or "")
         stage = "native" if native else "resolve"
         try:
+            from corral.ui.terminal_prompt_navigation import _normalized_texts
+
+            _texts = _normalized_texts(messages)
             try:
-                resolved = prompt_target(messages, target)
+                resolved = prompt_target(messages, target, _texts=_texts)
             except PromptNavigationError:
                 # TUI already falls back to ordinal/context navigation when the
                 # text query is unavailable; the remote resolve phase must do the
@@ -2120,6 +2123,12 @@ class SessionHub:
             if native:
                 if self._hosted_name(key) != name or not is_current():
                     raise PromptNavigationError("prompt_stale")
+                try:
+                    from corral.ui.session_hud import summarize_user_messages as _summarize
+
+                    _prompts = list(_summarize(list(messages)).message_indices)
+                except Exception:
+                    _prompts = None
                 navigate_native(name, str(session.get("source") or ""), query,
                                 occurrence=resolved.occurrence if resolved is not None else 0,
                                 total=resolved.total if resolved is not None else 1,
@@ -2128,7 +2137,8 @@ class SessionHub:
                                 is_current=lambda: is_current() and self._hosted_name(key) == name
                                 and self._transcripts.get(key, transcript) is transcript
                                 and transcript.generation == generation,
-                                allow_escape=session.get("attention_kind") not in {"working", "waiting"})
+                                allow_escape=session.get("attention_kind") not in {"working", "waiting"},
+                                prompts=_prompts)
                 # Content-free, like the TUI's events, so remote clicks are countable.
                 observe.event("prompt_navigation_done", runtime=runtime, native=True, client="remote",
                               duration_ms=int((time.monotonic() - started) * 1000))
