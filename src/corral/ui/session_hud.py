@@ -14,7 +14,7 @@
 - **实时托管格与静态对话预览格都画，且每个分屏格各自一份**。长对话里完整预览仍
   要翻很久，小窗用来扫提问脉络；多分屏时每一格画自己的提问摘要。
 - **底色是格子高光的一部分（2026-09-12）**：选中 / 持焦格用 `$pane-active-background`
-  （跟蓝条一样）；没选中用 `$panel`（比 `$surface` / 助手深色画布抬一层，避免浮层
+  （跟高光条一样）；没选中用 `$panel`（比 `$surface` / 助手深色画布抬一层，避免浮层
   融进会话画面）。斑马纹仍叠在当前底上。
 - 用 `dock: right` + `width/height: auto` 把浮层贴到右上角：这样浮层的命中区域**只有
   胶囊本身**。不要改成「整行宽的容器里右对齐」（`UpdateToast` 那种写法）——那会让
@@ -63,7 +63,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _FAILURE_SECONDS = 2.0
 # 条纹叠在**当前**浮层底上：选中格是 `$pane-active-background`，没选中是
 # `$panel`（抬离助手画布）。叠 `$primary`，不要叠 `$foreground`
-# （那是灰，会把激活条的蓝洗成泥灰）。40% 才能在蓝底上看得出一块更亮的
+# （那是灰，会把激活条的绿洗成泥灰）。40% 才能在绿底上看得出一块更亮的
 # 条；灰底上同样看得出斑马纹。hover 切到 `$primary-muted` 时跟着走。
 _STRIPE_BLEND = 0.40
 
@@ -201,8 +201,8 @@ def _one_line(text: str) -> str:
 def _hud_stripe_color(background: TextualColor, accent: TextualColor) -> TextualColor:
     """把 `$primary` 叠进当前浮层底，得到斑马纹。
 
-    选中底是 `$pane-active-background`（蓝），没选中是 `$panel`（跟未选中顶底条同色）。
-    调用方禁止传入 `$foreground`：那是灰，会把激活条的蓝洗脏。
+    选中底是 `$pane-active-background`（绿），没选中是 `$panel`（跟未选中顶底条同色）。
+    调用方禁止传入 `$foreground`：那是灰，会把激活条的绿洗脏。
     """
     return background.blend(accent, _STRIPE_BLEND)
 
@@ -359,7 +359,7 @@ class SessionHud(Widget):
         self.refresh(layout=True)
 
     def set_active(self, active: bool) -> None:
-        """浮层底色跟格子顶底高光走：选中蓝条，没选中跟灰条同色（`$panel`）。"""
+        """浮层底色跟格子顶底高光走：选中高光条，没选中跟灰条同色（`$panel`）。"""
         if self.has_class("-active") == active:
             return
         self.set_class(active, "-active")
@@ -386,8 +386,8 @@ class SessionHud(Widget):
     def _stripe_on(self) -> str:
         """当前浮层底上叠 `$primary`，得到斑马纹。
 
-        禁止叠 `$foreground`：那是灰，会把激活条的蓝洗脏。必须从
-        `styles.background` 混合：选中是蓝底、没选中是面板灰、hover 切
+        禁止叠 `$foreground`：那是灰，会把激活条的绿洗脏。必须从
+        `styles.background` 混合：选中是绿底、没选中是面板灰、hover 切
         `$primary-muted` 时条纹都跟着走。
         """
         try:

@@ -2227,7 +2227,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             cards = list(app.screen.query(SessionCard))
 
             # 筛选条用表面层弱化文字，不再白字铺高饱和主色底
-            self.assertEqual(search.styles.background, Color.parse("#1C2430"))
+            self.assertEqual(search.styles.background, Color.parse(app.get_css_variables()["panel"]))
             self.assertLess(search.styles.color.a, 1.0)
             self.assertEqual(search.region.height, 1)
             self.assertEqual(search.parent.region.height, 1)
@@ -11023,26 +11023,27 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("问题7", plains[-1])
         self.assertTrue(has_bg(body[-1]), "第 8 条是奇数块，要涂")
 
-    def test_hud_stripe_stays_in_pane_blue_family(self) -> None:
-        """条纹叠 `$primary`，必须仍是蓝，不能被 `$foreground` 洗成灰。"""
+    def test_hud_stripe_stays_in_pane_green_family(self) -> None:
+        """Primary-tinted stripes remain green rather than washing out to gray."""
         from textual.color import Color as TextualColor
 
+        from corral.ui.app import _CORRAL_DARK, _CORRAL_LIGHT
         from corral.ui.session_hud import _hud_stripe_color
 
         gray = TextualColor.parse("#C9D1D9")
-        for bg_hex, primary_hex in (("#31475E", "#3B7EB8"), ("#D1E7F7", "#2F6F9F")):
-            background = TextualColor.parse(bg_hex)
-            primary = TextualColor.parse(primary_hex)
+        for theme in (_CORRAL_DARK, _CORRAL_LIGHT):
+            background = TextualColor.parse(theme.variables["pane-active-background"])
+            primary = TextualColor.parse(theme.primary)
             mixed = _hud_stripe_color(background, primary)
             self.assertGreater(
-                mixed.b, mixed.r,
-                f"{bg_hex}+{primary_hex} → {mixed.hex} 必须偏蓝",
+                mixed.g, max(mixed.r, mixed.b),
+                f"{theme.name}: {mixed.hex} must remain green",
             )
             gray_mix = background.blend(gray, 0.16)
             self.assertGreater(
-                mixed.b - mixed.r,
-                gray_mix.b - gray_mix.r,
-                f"{mixed.hex} 应比叠灰 {gray_mix.hex} 更蓝",
+                mixed.g - max(mixed.r, mixed.b),
+                gray_mix.g - max(gray_mix.r, gray_mix.b),
+                f"{mixed.hex} must preserve more green than gray tint {gray_mix.hex}",
             )
             self.assertNotEqual(mixed.hex, gray_mix.hex)
 
@@ -11050,16 +11051,17 @@ class SessionHudRenderTests(unittest.TestCase):
         """没选中时浮层底是 `$panel`；斑马纹仍叠 `$primary`，不能消失。"""
         from textual.color import Color as TextualColor
 
+        from corral.ui.app import _CORRAL_DARK, _CORRAL_LIGHT
         from corral.ui.session_hud import _hud_stripe_color
 
-        for bg_hex, primary_hex in (("#1C2430", "#3B7EB8"), ("#DCE3EA", "#2F6F9F")):
-            background = TextualColor.parse(bg_hex)
-            primary = TextualColor.parse(primary_hex)
+        for theme in (_CORRAL_DARK, _CORRAL_LIGHT):
+            background = TextualColor.parse(theme.panel)
+            primary = TextualColor.parse(theme.primary)
             mixed = _hud_stripe_color(background, primary)
             self.assertNotEqual(mixed.hex, background.hex)
 
     def test_hud_css_uses_panel_until_active(self) -> None:
-        """未选中浮层默认 `$panel`（略亮深灰），`-active` 才切到激活蓝条。"""
+        """The inactive HUD uses panel fill; active uses the pane highlight."""
         from corral.ui.session_hud import SessionHud
 
         css = SessionHud.DEFAULT_CSS
