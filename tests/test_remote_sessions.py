@@ -408,19 +408,24 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertNotIn("sessions", again)
         self.assertEqual(again["aliases"], expected)
 
-    def test_list_aliases_ignore_resumed_pane_idents(self) -> None:
-        """原生恢复的窗格 ident 是会话 id 前缀，不能倒推出一个假旧键。"""
-        resumed = _session(source="opencode", sid="ses_e9345886", title="resumed")
-        resumed["keepalive_name"] = "corral-opencode-ses_e934"
+    def test_list_aliases_use_full_pane_ident(self) -> None:
+        """UUID ident 必须整段剥离；完整 id 窗格不产生自指别名。"""
+        prefixed = _session(source="opencode", sid="ses_e9345886", title="prefixed")
+        prefixed["keepalive_name"] = "corral-opencode-ses_e934"
+        full = _session(source="codex", sid="01a16be0-2fbd-7f93-b144-53babd0010fe", title="full")
+        full["keepalive_name"] = "corral-codex-01a16be0-2fbd-7f93-b144-53babd0010fe"
         with (
-            mock.patch.object(self.hub.store, "all_sessions", return_value=[resumed]),
+            mock.patch.object(self.hub.store, "all_sessions", return_value=[prefixed, full]),
             mock.patch.object(self.hub.store, "session_key_migrations", return_value={}),
             mock.patch.object(
                 self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
             ),
         ):
             snapshot = self.hub.list_snapshot()
-        self.assertEqual(snapshot["aliases"], {})
+        self.assertEqual(
+            snapshot["aliases"],
+            {"opencode:ses_e934": "opencode:ses_e9345886"},
+        )
 
     def test_delete_session_removes_layout_membership(self) -> None:
         self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])

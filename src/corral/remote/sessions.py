@@ -1197,11 +1197,13 @@ class SessionHub:
 
         两个来源都要，禁止只靠内存迁移表（守护进程重启即丢）：
         - 本轮/历史占位卡转正留下的精确迁移；
-        - 仍在运行的托管窗格：名字末段就是创建时的 ident，正式会话已带上
-          ``corral-<runtime>-<ident>``，因此 ``<runtime>:<ident>`` 仍是客户端
-          手里可能留着的旧键。ident 本身已经是会话 id 前缀时跳过（原生恢复
-          复用完整/前缀 id 的窗格不需要别名）。
+        - 仍在运行的托管窗格：名字里的 ident 就是创建时的占位键后缀，正式
+          会话已带上 ``corral-<runtime>-<ident>``，因此 ``<runtime>:<ident>``
+          仍是客户端手里可能留着的旧键。ident 按运行时的完整前缀剥离，不能
+          用 ``rsplit("-")``（Codex/Pi 的 UUID ident 会被截成最后一段）。
         """
+        from corral.legacy_names import ALL_SESSION_PREFIXES
+
         aliases = {
             str(old): str(new)
             for old, new in (self.store.session_key_migrations() or {}).items()
@@ -1211,11 +1213,15 @@ class SessionHub:
         for session in rows:
             name = str(session.get("keepalive_name") or "")
             runtime = str(session.get("source") or "")
-            sid = str(session.get("id") or "")
-            if not name or not runtime or not sid:
+            if not name or not runtime:
                 continue
-            ident = name.rsplit("-", 1)[-1]
-            if not ident or sid.startswith(ident):
+            ident = ""
+            for prefix in ALL_SESSION_PREFIXES:
+                head = f"{prefix}{runtime}-"
+                if name.startswith(head):
+                    ident = name[len(head):]
+                    break
+            if not ident:
                 continue
             old = f"{runtime}:{ident}"
             if old != session_key(session):
