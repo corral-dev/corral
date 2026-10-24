@@ -825,6 +825,38 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.assertEqual(earliest["messages"][0]["text"], "提问-0")
         self.hub.unwatch_conversation("claude:p")
 
+    def test_handoff_prompt_stays_a_human_prompt(self) -> None:
+        """接力提示词是真人消息：Your prompts 与对话分页都必须照常返回。"""
+        path = Path(self._tmp.name) / "claude-handoff.jsonl"
+        handoff = (
+            "任务：Subswap 余量不显示\n\n你正在接力一个来自 Cursor 的会话。"
+            "请新建自己的会话继续工作；这不是对原会话的原生恢复。"
+        )
+        lines = [
+            {"type": "user", "uuid": "q1", "message": {"role": "user", "content": handoff}},
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "收到"}]},
+            },
+            {"type": "user", "uuid": "q2", "message": {"role": "user", "content": "继续"}},
+        ]
+        path.write_text(
+            "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n",
+            encoding="utf-8",
+        )
+        session = _session(sid="handoff")
+        session["path"] = str(path)
+        with mock.patch.object(self.hub, "require_session", return_value=session):
+            prompts = self.hub.user_prompts("claude:handoff")["prompts"]
+            page = self.hub.message_page("claude:handoff")
+        self.assertEqual([row["text"] for row in prompts], [handoff, "继续"])
+        self.assertEqual(
+            [item["text"] for item in page["messages"] if item["role"] == "user"],
+            [handoff, "继续"],
+        )
+        self.hub.unwatch_conversation("claude:handoff")
+
     def test_require_session_follows_placeholder_key_migration(self) -> None:
         """占位卡转正后，手机仍拿着旧键也必须能找到会话，不能报已经不在列表里。"""
         real = _session(sid="real-id", title="正式会话")
