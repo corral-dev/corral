@@ -382,6 +382,46 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertEqual(again["version"], first["version"])
         self.assertEqual(payload_calls_after_first, 0)
 
+    def test_list_snapshot_repeats_provisional_aliases(self) -> None:
+        """客户端保留的新建会话旧键，必须能从每个列表回包（含未变）收敛。"""
+        promoted = _session(source="opencode", sid="ses_a", title="real")
+        promoted["keepalive_name"] = "corral-opencode-72e038c8"
+        with (
+            mock.patch.object(self.hub.store, "all_sessions", return_value=[promoted]),
+            mock.patch.object(
+                self.hub.store,
+                "session_key_migrations",
+                return_value={"opencode:3ffbe30a": "opencode:ses_a"},
+            ),
+            mock.patch.object(
+                self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
+            ),
+        ):
+            first = self.hub.list_snapshot()
+            again = self.hub.list_snapshot(since_version=str(first["version"]))
+        expected = {
+            "opencode:72e038c8": "opencode:ses_a",
+            "opencode:3ffbe30a": "opencode:ses_a",
+        }
+        self.assertEqual(first["aliases"], expected)
+        self.assertTrue(again["unchanged"])
+        self.assertNotIn("sessions", again)
+        self.assertEqual(again["aliases"], expected)
+
+    def test_list_aliases_ignore_resumed_pane_idents(self) -> None:
+        """原生恢复的窗格 ident 是会话 id 前缀，不能倒推出一个假旧键。"""
+        resumed = _session(source="opencode", sid="ses_e9345886", title="resumed")
+        resumed["keepalive_name"] = "corral-opencode-ses_e934"
+        with (
+            mock.patch.object(self.hub.store, "all_sessions", return_value=[resumed]),
+            mock.patch.object(self.hub.store, "session_key_migrations", return_value={}),
+            mock.patch.object(
+                self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
+            ),
+        ):
+            snapshot = self.hub.list_snapshot()
+        self.assertEqual(snapshot["aliases"], {})
+
     def test_delete_session_removes_layout_membership(self) -> None:
         self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
         self.hub.layout_db.toggle_session_pin("claude:solo")

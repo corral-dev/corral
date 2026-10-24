@@ -1143,7 +1143,13 @@ class SessionHub:
     def list_snapshot(
         self, query: str = "", limit: int = 0, since_version: str = ""
     ) -> dict:
-        """给手机的列表回包：默认窗口带版本号；版本未变不带会话数组。"""
+        """给手机的列表回包：默认窗口带版本号；版本未变不带会话数组。
+
+        ``aliases`` 每次都下发（含 ``unchanged``）：客户端把新建会话的详情
+        打开后会把占位键记成显式访问并跨窗口保留，一次性 ``old_key/new_key``
+        事件在详情页期间不会送达，开发机重启后也不会重放。重复下发才能让
+        手机与 Mac 侧栏把旧键收敛到正式会话（见远程知识库 2026-10-24 条）。
+        """
         layout = self._layout()
         if query or limit > 0:
             payloads, total, has_more = self._listed_payloads(
@@ -1157,9 +1163,11 @@ class SessionHub:
                 "unchanged": False,
                 "has_more": has_more,
                 "total": total,
+                "aliases": self._list_aliases(None),
                 "sessions": payloads,
             }
         sessions = self.store.all_sessions()
+        aliases = self._list_aliases(sessions)
         windowed = _phone_list_window_sessions(sessions, layout)
         total = len(sessions)
         has_more = total > len(windowed)
@@ -1171,6 +1179,7 @@ class SessionHub:
                 "unchanged": True,
                 "has_more": has_more,
                 "total": total,
+                "aliases": aliases,
             }
         payloads = [self.session_payload(item, layout) for item in windowed]
         return {
@@ -1179,8 +1188,39 @@ class SessionHub:
             "unchanged": False,
             "has_more": has_more,
             "total": total,
+            "aliases": aliases,
             "sessions": payloads,
         }
+
+    def _list_aliases(self, sessions: list[dict] | None) -> dict[str, str]:
+        """占位键 → 正式键：供客户端收敛跨窗口保留的新建会话旧键。
+
+        两个来源都要，禁止只靠内存迁移表（守护进程重启即丢）：
+        - 本轮/历史占位卡转正留下的精确迁移；
+        - 仍在运行的托管窗格：名字末段就是创建时的 ident，正式会话已带上
+          ``corral-<runtime>-<ident>``，因此 ``<runtime>:<ident>`` 仍是客户端
+          手里可能留着的旧键。ident 本身已经是会话 id 前缀时跳过（原生恢复
+          复用完整/前缀 id 的窗格不需要别名）。
+        """
+        aliases = {
+            str(old): str(new)
+            for old, new in (self.store.session_key_migrations() or {}).items()
+            if old and new and old != new
+        }
+        rows = sessions if sessions is not None else self.store.all_sessions()
+        for session in rows:
+            name = str(session.get("keepalive_name") or "")
+            runtime = str(session.get("source") or "")
+            sid = str(session.get("id") or "")
+            if not name or not runtime or not sid:
+                continue
+            ident = name.rsplit("-", 1)[-1]
+            if not ident or sid.startswith(ident):
+                continue
+            old = f"{runtime}:{ident}"
+            if old != session_key(session):
+                aliases.setdefault(old, session_key(session))
+        return aliases
 
     def resolve_session_key(self, key: str) -> str:
         """手机可能还拿着占位卡旧键；助手落下真实历史后换成正式键，旧键仍须能用。
