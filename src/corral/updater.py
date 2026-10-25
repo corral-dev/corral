@@ -314,7 +314,7 @@ def is_updatable(channel: Channel | None = None) -> bool:
 # 并同步 install.sh 的 curl|bash 硬编码 fallback。
 _SESSKIT_VERSION = "0.2.17"
 _SESSKIT_WHEEL_NAME = f"sesskit-{_SESSKIT_VERSION}-py3-none-any.whl"
-_SESSKIT_WHEEL_SHA256 = "d38fa6ca0a57d5cef0bab9dad9088cdb1c2bd46e730bbfd9b8d12e4d5ab4944e"
+_SESSKIT_WHEEL_SHA256 = "947c43ebfcb594b445724c9aecf01708046e6e508c26d225d03aa965e1302459"
 _SESSKIT_WHEEL_URL = (
     f"https://github.com/x0c/sesskit/releases/download/v{_SESSKIT_VERSION}/{_SESSKIT_WHEEL_NAME}"
 )
