@@ -105,7 +105,7 @@ Historical pre-split findings follow. Later changes are recorded in section 4; c
 1. 开发机常驻连接只负责在线登记、候选地址、能力协商和最小心跳；中继继续只转发不可读的端到端密文。
 2. 手机先建立可用路径，再记录 `direct` 或 `relay`、建立耗时、最近一次成功时间和失败原因。默认保留中继可用性；直连成功后周期性探测更优路径并平滑升级，直连失效则回落中继。
 3. 首阶段继续使用现有 WebSocket/中继，先解决协议和调度问题；不把更换 QUIC 作为前置条件。若后续需要 QUIC，只能在已有的序号、确认、恢复和可观测契约上替换传输实现。
-4. 历史/大画面不能与控制请求共用同一条有序字节流。首阶段使用两个物理数据连接：控制连接承载输入、短 RPC、心跳、状态和实时事件；数据连接承载历史页和终端画面。仅把两类消息标不同优先级但仍放在一条 TCP/WebSocket 上，不能真正消除大帧阻塞。**已落地**：`hello` 的 `capabilities` 增加 `"planes": ["control", "data"]`；客户端带 `want_data_plane: true` 时控制面响应带一次性 `data_bind`（绑定设备公钥，TTL ≤ 120 秒）。手机对同一主机再抢答一条 WebSocket，独立加密握手后 `hello`：`{"plane":"data","bind":"<token>","name":...}`。校验失败只关数据通道。旧客户端不带 `want_data_plane`，不发 token，仍单连接。数据面 `HostChannel` 队列满时丢弃过时终端帧或拒绝新的历史页，禁止因此 `close()` 控制面。
+4. 历史/大画面不能与控制请求共用同一条有序字节流。首阶段使用两个物理数据连接：控制连接承载输入、短 RPC、心跳、状态和实时事件；数据连接承载历史页和终端画面。仅把两类消息标不同优先级但仍放在一条 TCP/WebSocket 上，不能真正消除大帧阻塞。**已落地**：`hello` 的 `capabilities` 增加 `"planes": ["control", "data"]`；客户端带 `want_data_plane: true` 时控制面响应带一次性 `data_bind`（绑定设备公钥，TTL ≤ 120 秒）。手机对同一主机再抢答一条 WebSocket，独立加密握手后 `hello`：`{"plane":"data","bind":"<token>","name":...}`。校验失败只关数据通道。旧客户端不带 `want_data_plane`，不发 token，仍单连接。数据面 `HostChannel` 队列满时关闭并重绑该数据面（显式 reset，客户端重新握手），不丢加密帧、禁止因此 `close()` 控制面。
 
 ### 4.2 会话历史：开发机侧规范化缓存 + 位置分页
 

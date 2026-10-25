@@ -121,6 +121,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [Bundled agent skills](docs/design/BUNDLED_AGENT_SKILLS_DESIGN.md): Approved corral-* names, runtime skill paths, AgentSync coexistence, default registration, packaging boundaries, protected ownership, implicit selection and discovery/execution acceptance.
 - [docs/design/WINDOWS_COMPATIBILITY_DESIGN.md](docs/design/WINDOWS_COMPATIBILITY_DESIGN.md): Decision against Windows and dedicated WSL product support.
 - [docs/PERFORMANCE_KNOWLEDGE_BASE.md](docs/PERFORMANCE_KNOWLEDGE_BASE.md): Performance, caching, load, offline data and profiling.
+- [Memory budgets](docs/design/MEMORY_OPTIMIZATION_DESIGN.md): Measured cross-component memory costs, supervisor lifetime, transport/cache/reader budgets, ownership and acceptance.
 - [docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md](docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md): Native resume, cross-runtime handoff, launch plans and working directories.
 - [docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md](docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md): Runtime adapters, scanning, hosting and integration boundaries.
 - [docs/OBSERVABILITY_KNOWLEDGE_BASE.md](docs/OBSERVABILITY_KNOWLEDGE_BASE.md): Local diagnostics, event logs and error evidence.
