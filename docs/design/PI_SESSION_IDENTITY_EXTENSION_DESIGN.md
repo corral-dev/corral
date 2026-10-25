@@ -423,6 +423,7 @@ sequenceDiagram
 6. sessionFile 存在时 canonical path 必须与 claim 一致，首行 header id/cwd 必须与 claim 的 sessionId/cwd 一致；不存在时保留 provisional。
 7. 同一 managed instance 出现多份有效 claim、同一 session 出现互相冲突的 active claim、claim 与有效 owner 不一致时，全部进入 conflict，不自行择新者。
 8. state=shutdown 或进程已死的 claim 不提供 live 归属；确认 stale 后只清理 Corral-owned 文件。
+   - Implemented 2026-10-25 (`pi_identity.prune_stale_claims`): the claims directory had grown to 287 files with 9 live (median age 31 days), and every attention pass stats and copies each one, every second in the remote service. A claim file is removed only when it is not live by rule 5, its file mtime is more than 24 hours old, and its state is `shutdown` or its pid no longer exists; a recycled pid keeps the file. Full scans in the TUI and remote service run it at most once an hour per process; a failure only logs. No reader uses non-live claims (`live_agent_phases`, `host_extension.pi_claims_provider`).
 
 ### 7.2 权威级别
 

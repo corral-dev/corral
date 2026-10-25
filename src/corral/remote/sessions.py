@@ -1159,6 +1159,8 @@ class SessionHub:
         try:
             revision_reader = getattr(self.layout_db, "read_revision", None)
             revision = revision_reader() if callable(revision_reader) else None
+            if not isinstance(revision, int) or isinstance(revision, bool):
+                revision = None
             cached = self._layout_cache
             if revision is not None and cached is not None and cached[0] == revision:
                 return cached[1]

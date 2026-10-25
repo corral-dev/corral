@@ -450,6 +450,101 @@ def read_claims(root: str | os.PathLike[str] | None = None) -> list[dict]:
     return claims
 
 
+_CLAIM_PRUNE_AGE_SECONDS = 24 * 3600.0
+_CLAIM_PRUNE_INTERVAL_SECONDS = 3600.0
+_CLAIM_PRUNE_LOCK = threading.Lock()
+_LAST_CLAIM_PRUNE: list[float | None] = [None]
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but not ours (EPERM), or unknowable: keep the claim
+    return True
+
+
+def prune_stale_claims(
+    root: str | os.PathLike[str] | None = None,
+    *,
+    now: datetime | None = None,
+    older_than: float = _CLAIM_PRUNE_AGE_SECONDS,
+) -> int:
+    """Remove claim files that can never provide ownership again; return the count.
+
+    Design §7.1 rule 8: a file goes only when it is not live (rule 5), it has
+    not been written for ``older_than`` seconds, and its state is ``shutdown``
+    or its pid no longer exists. A recycled pid keeps the file. Every attention
+    pass stats and copies each claim file, so dead ones cost CPU every second.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    directory = os.fspath(claims_dir(root))
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    wall = now.timestamp()
+    removed = 0
+    for name in names:
+        if not name.endswith(".json") or name.startswith("."):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            info = os.stat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or wall - info.st_mtime < older_than:
+            continue
+        claim = _read_json(Path(path))
+        if claim is None or claim_is_live(claim, now):
+            continue
+        try:
+            pid = int(claim.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if claim.get("state") != "shutdown" and _pid_exists(pid):
+            continue
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        removed += 1
+    return removed
+
+
+def prune_stale_claims_periodically() -> int:
+    """At most once an hour per process; never raises. Off under test isolation."""
+    if os.environ.get("CORRAL_ISOLATE_MANAGED_HOSTS") == "1":
+        return 0
+    import time
+
+    mono = time.monotonic()
+    with _CLAIM_PRUNE_LOCK:
+        last = _LAST_CLAIM_PRUNE[0]
+        if last is not None and mono - last < _CLAIM_PRUNE_INTERVAL_SECONDS:
+            return 0
+        _LAST_CLAIM_PRUNE[0] = mono
+    try:
+        removed = prune_stale_claims()
+    except Exception:  # noqa: BLE001 - housekeeping must never disturb a scan
+        return 0
+    if removed:
+        try:
+            from corral import observe
+
+            observe.event("pi_claims_pruned", count=removed)
+        except Exception:  # noqa: BLE001
+            pass
+    return removed
+
+
 def read_claim(instance_id: str, root: str | os.PathLike[str] | None = None) -> dict | None:
     """读取指定 instance 的 claim；instance id 做路径安全校验。"""
     text = str(instance_id or "").strip()

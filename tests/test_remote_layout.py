@@ -37,6 +37,20 @@ class LayoutHubTests(unittest.TestCase):
         self.assertEqual(snap["pinned_sessions"], {})
         self.assertIn("revision", snap)
 
+    def test_layout_snapshot_is_reused_until_revision_moves(self) -> None:
+        """The per-second state loop must not rebuild every group on each read."""
+        first = self.hub._layout()
+        with mock.patch.object(self.hub.layout_db, "read_with_promote",
+                               wraps=self.hub.layout_db.read_with_promote) as full_read:
+            self.assertIs(self.hub._layout(), first)
+            full_read.assert_not_called()
+            other = split_layout.SidebarLayoutDB()  # another process's writer
+            self.addCleanup(other.close)
+            other.toggle_session_pin("claude:aaaa")
+            changed = self.hub._layout()
+        full_read.assert_called_once()
+        self.assertIn("claude:aaaa", changed.pinned_session_keys)
+
     def test_mobile_layout_reuses_revision_then_observes_external_pin_changes(self) -> None:
         self.hub.layout_set_group("/p", ["claude:a", "codex:b"], None)
         db = self.hub.layout_db

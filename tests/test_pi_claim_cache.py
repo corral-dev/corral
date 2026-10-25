@@ -316,3 +316,44 @@ class ClaimMemoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleClaimPruneTests(unittest.TestCase):
+    """Design §7.1 rule 8: only old, non-live, dead/shutdown claims are removed."""
+
+    def _write(self, directory: Path, name: str, claim: dict, *, age: float) -> Path:
+        path = directory / name
+        path.write_text(json.dumps(claim), encoding="utf-8")
+        stamp = datetime.now(timezone.utc).timestamp() - age
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_prunes_only_old_dead_or_shutdown_claims(self) -> None:
+        day = 24 * 3600
+        old = datetime.now(timezone.utc) - timedelta(days=3)
+        with tempfile.TemporaryDirectory() as td:
+            directory = pi_identity.claims_dir(td)
+            directory.mkdir(parents=True)
+            me, gone = os.getpid(), 9_999_999
+
+            def write(name, *, pid, state="active", updated=old, age=3 * day):
+                claim = _claim(name, f"s-{name}", pid=pid, updated=updated, state=state)
+                return self._write(directory, f"{name}.json", claim, age=age)
+
+            shutdown = write("a", pid=me, state="shutdown")
+            dead = write("b", pid=gone)
+            alive_pid = write("c", pid=me)
+            recent = write("d", pid=gone, state="shutdown", age=3600)
+            live = write("e", pid=me, updated=datetime.now(timezone.utc))
+            removed = pi_identity.prune_stale_claims(td)
+            self.assertEqual(removed, 2)
+            self.assertFalse(shutdown.exists())
+            self.assertFalse(dead.exists())
+            for kept in (alive_pid, recent, live):
+                self.assertTrue(kept.exists(), kept.name)
+
+    def test_periodic_prune_is_off_under_test_isolation(self) -> None:
+        with mock.patch.dict(os.environ, {"CORRAL_ISOLATE_MANAGED_HOSTS": "1"}), \
+                mock.patch.object(pi_identity, "prune_stale_claims") as prune:
+            self.assertEqual(pi_identity.prune_stale_claims_periodically(), 0)
+        prune.assert_not_called()

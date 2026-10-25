@@ -550,6 +550,10 @@ class SessionStore:
         with self.lock:
             self.load_error = None
             self.last_refresh_at = time.time()
+        # Dead Pi claims are re-read every attention pass; drop them hourly.
+        from corral import pi_identity
+
+        pi_identity.prune_stale_claims_periodically()
         return changed
 
     def refresh_age_seconds(self) -> float | None:
