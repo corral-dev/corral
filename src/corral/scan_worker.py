@@ -22,6 +22,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -108,7 +110,22 @@ def _installed_provider_version() -> str:
     try:
         from importlib import metadata
 
-        return str(metadata.version("sesskit") or "").strip()
+        distribution = metadata.distribution("sesskit")
+        installed = str(distribution.version or "").strip()
+        loaded_path = getattr(sys.modules.get("sesskit"), "__file__", None)
+        if loaded_path and os.path.realpath(loaded_path) != os.path.realpath(
+            distribution.locate_file("sesskit/__init__.py")
+        ):
+            # Editable/PYTHONPATH imports may not belong to this distribution.
+            # Their metadata can stay at the build-time version indefinitely.
+            # Compare the actual source's version, without reimporting it.
+            with open(loaded_path, encoding="utf-8") as handle:
+                match = re.search(
+                    r"^__version__\s*=\s*[\"']([^\"']+)[\"']",
+                    handle.read(), re.MULTILINE,
+                )
+            return match.group(1) if match else ""
+        return installed
     except Exception:  # noqa: BLE001 — drift detection is best-effort
         return ""
 
@@ -156,6 +173,7 @@ def _singleton_free() -> bool:
     """
     try:
         _heartbeat_path, lock_path = _paths()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a", encoding="utf-8") as handle:
             try:
                 import fcntl
@@ -197,7 +215,16 @@ def _process_command(pid: int) -> str:
 
 def _is_scan_worker_process(pid: int) -> bool:
     """Guard against killing a recycled pid that is not our helper."""
-    return WORKER_MODULE_MARKER in _process_command(pid)
+    try:
+        argv = shlex.split(_process_command(pid))
+    except ValueError:
+        return False
+    return (
+        len(argv) >= 3
+        and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", os.path.basename(argv[0]), re.I)
+        is not None
+        and argv[1:3] == ["-m", WORKER_MODULE_MARKER]
+    )
 
 
 def obsolete_worker_pid() -> int | None:
@@ -207,7 +234,9 @@ def obsolete_worker_pid() -> int | None:
     Heartbeats without a cohort (pre-cohort installs) qualify too: no current
     consumer can reuse them, and they hold the same singleton slot.
     """
-    if not _worker_enabled():
+    if not _worker_enabled() or provider_drift():
+        # A previous-generation consumer cannot decide which newer worker is
+        # obsolete. In particular it must never evict the current install.
         return None
     payload = _read_heartbeat()
     if payload is None:
@@ -227,6 +256,10 @@ def obsolete_worker_pid() -> int | None:
     if payload.get("cohort") == current:
         return None
     if not _is_scan_worker_process(pid):
+        return None
+    # ps can race another consumer's takeover. Do not signal from a heartbeat
+    # that was replaced while we were checking the process.
+    if _read_heartbeat() != payload:
         return None
     return pid
 
@@ -490,18 +523,81 @@ def _try_adopt(*, limit: int, keep_ids):
         return None
 
 
-def _republish(scanned, *, limit: int, keep_ids) -> None:
-    """Refresh ``published_at`` on unchanged buckets (never raises)."""
+def _republish(scanned, *, limit: int, keep_ids, expected_published_at=None):
+    """Refresh completed buckets, optionally comparing the observed publication."""
     try:
         from corral import scan_index
 
-        scan_index.publish(
+        return scan_index.publish(
             scanned,
             limit=max(int(limit), PUBLISH_LIMIT_FLOOR),
             keep_ids_by_runtime=keep_ids,
+            expected_published_at=expected_published_at,
         )
     except Exception:  # noqa: BLE001 — index is optional acceleration
-        pass
+        return None
+
+
+class _ScanKeepAlive:
+    """Keep completed snapshots and heartbeats fresh during a blocking parse.
+
+    Only this thread mutates its private snapshot/reference time. The main
+    loop supplies completed, non-mutated buckets and joins before touching
+    its own state again. Index CAS also coordinates the registry's concurrent
+    end-of-scan publish and other processes' completed scans.
+    """
+
+    def __init__(self, buckets, *, limit, keep_ids, published_wall, parent_pid):
+        self.buckets = buckets
+        self.limit = limit
+        self.keep_ids = {key: set(ids) for key, ids in keep_ids.items()}
+        self.published_wall = published_wall
+        self.parent_pid = parent_pid
+        self.last_heartbeat = time.monotonic()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run, daemon=True, name="corral-scan-keepalive",
+        )
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.stop.set()
+        self.thread.join()
+
+    def _tick(self) -> None:
+        now = time.monotonic()
+        if now - self.last_heartbeat >= HEARTBEAT_MIN_INTERVAL_SECONDS:
+            if (self.parent_pid and _parent_dead(self.parent_pid)) or provider_drift():
+                self.stop.set()
+                return
+            _write_heartbeat()
+            self.last_heartbeat = now
+        meta = _published_meta()
+        if meta is None:
+            return  # a first parse must complete before we can publish
+        if meta[0] > self.published_wall:
+            adopted = _try_adopt(limit=self.limit, keep_ids=self.keep_ids)
+            if adopted is None:
+                return  # never overwrite a newer but non-covering snapshot
+            self.buckets = adopted
+            # Use the originally observed time: a raced newer publication
+            # is then re-adopted or rejected by CAS, never overwritten.
+            self.published_wall = meta[0]
+        if self.buckets is not None and time.time() - meta[0] >= REPUBLISH_GAP_SECONDS:
+            published = _republish(
+                self.buckets, limit=self.limit, keep_ids=self.keep_ids,
+                expected_published_at=meta[0],
+            )
+            if published is not None:
+                self.published_wall = published
+
+    def _run(self) -> None:
+        gap = min(1.0, HEARTBEAT_MIN_INTERVAL_SECONDS, REPUBLISH_GAP_SECONDS / 2)
+        while not self.stop.wait(gap):
+            self._tick()
 
 
 def run_loop(
@@ -554,6 +650,7 @@ def run_loop(
     streak = 0
     fingerprint = None
     last_buckets = None
+    last_buckets_keep_ids = {}
     last_keeps_frozen = None
     next_parse_at = 0.0  # first pass always parses
     our_publish_wall = 0.0
@@ -628,7 +725,7 @@ def run_loop(
                 # remote daemon did the parse work for us) is adopted.
                 meta = _published_meta()
                 adopted = None
-                if meta is not None and meta[0] > our_publish_wall + 1.0:
+                if meta is not None and meta[0] > our_publish_wall:
                     adopted = _try_adopt(limit=limit, keep_ids=keep_ids)
                 if adopted is not None:
                     adopted_fp = _bucket_fingerprint(adopted)
@@ -646,6 +743,7 @@ def run_loop(
                         )
                     fingerprint = adopted_fp
                     last_buckets = adopted
+                    last_buckets_keep_ids = keep_ids
                     our_publish_wall = meta[0] if meta is not None else now_wall
                 else:
                     # Hold the consumers on the current buckets while the
@@ -655,11 +753,19 @@ def run_loop(
                     if last_buckets is not None:
                         stale = _published_meta()
                         if stale is not None and now_wall - stale[0] >= REPUBLISH_GAP_SECONDS:
-                            _republish(last_buckets, limit=limit, keep_ids=keep_ids)
-                            our_publish_wall = time.time()
-                    scanned, _shared = _scan_local(
-                        limit=limit, registry=registry, keep_ids=keep_ids
-                    )
+                            published = _republish(
+                                last_buckets, limit=limit, keep_ids=last_buckets_keep_ids,
+                                expected_published_at=stale[0],
+                            )
+                            if published is not None:
+                                our_publish_wall = published
+                    with _ScanKeepAlive(
+                        last_buckets, limit=limit, keep_ids=last_buckets_keep_ids,
+                        published_wall=our_publish_wall, parent_pid=parent_pid,
+                    ):
+                        scanned, _shared = _scan_local(
+                            limit=limit, registry=registry, keep_ids=keep_ids
+                        )
                     if scanned is None:
                         next_parse_at = now_mono + floor
                     else:
@@ -678,8 +784,13 @@ def run_loop(
                             streak = 0
                         fingerprint = parsed
                         last_buckets = scanned
-                        our_publish_wall = now_wall
-                        next_parse_at = now_mono + _parse_gap_seconds(
+                        last_buckets_keep_ids = keep_ids
+                        completed_meta = _published_meta()
+                        our_publish_wall = completed_meta[0] if completed_meta else time.time()
+                        # Backoff starts on completion, not before a slow
+                        # parse (which otherwise exhausts its own next gap).
+                        last_action_mono = time.monotonic()
+                        next_parse_at = last_action_mono + _parse_gap_seconds(
                             streak, floor, pressured
                         )
             else:
@@ -688,7 +799,7 @@ def run_loop(
                 meta = _published_meta()
                 if meta is None:
                     next_parse_at = now_mono  # index vanished: parse next pass
-                elif meta[0] > our_publish_wall + 1.0:
+                elif meta[0] > our_publish_wall:
                     adopted = _try_adopt(limit=limit, keep_ids=keep_ids)
                     if adopted is not None:
                         adopted_fp = _bucket_fingerprint(adopted)
@@ -701,10 +812,15 @@ def run_loop(
                             next_parse_at = now_mono + floor
                         fingerprint = adopted_fp
                         last_buckets = adopted
+                        last_buckets_keep_ids = keep_ids
                     our_publish_wall = meta[0]
                 elif now_wall - meta[0] >= REPUBLISH_GAP_SECONDS:
-                    _republish(last_buckets, limit=limit, keep_ids=keep_ids)
-                    our_publish_wall = time.time()
+                    published = _republish(
+                        last_buckets, limit=limit, keep_ids=last_buckets_keep_ids,
+                        expected_published_at=meta[0],
+                    )
+                    if published is not None:
+                        our_publish_wall = published
             passes += 1
             if max_passes is not None and passes >= max_passes:
                 return 0
@@ -777,7 +893,14 @@ def ensure_scan_worker(tui_limit: int):
         # consumer on multi-second local scans forever. Verified before killing
         # (see reap_obsolete_worker): the counter resets only after it is gone
         # or after the 30 s retry window.
+        if provider_drift():
+            return None
         reap_obsolete_worker()
+        # Another consumer may already have replaced the obsolete worker, or
+        # the incumbent may still be scanning without a fresh heartbeat. Do
+        # not fork a guaranteed singleton loser (nor parse in another worker).
+        if is_active() or not _singleton_free():
+            return None
         proc = subprocess.Popen(  # noqa: S603 — fixed argv, same-install python
             [
                 sys.executable,

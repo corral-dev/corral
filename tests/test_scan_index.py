@@ -250,6 +250,64 @@ class ScanIndexTests(unittest.TestCase):
             self.assertIsNone(scan_index.try_consume(50))
             self.assertEqual(emitted.call_count, 2)
 
+    def test_failed_replace_can_retry_immediately(self) -> None:
+        data = {"claude": [self._session("claude", "a", 1)]}
+        with mock.patch("corral.scan_index.os.replace", side_effect=OSError("fixture")):
+            self.assertIsNone(scan_index.publish(data, limit=200))
+        self.assertIsNotNone(scan_index.publish(data, limit=200))
+        self.assertIsNotNone(scan_index.try_consume(50))
+
+    def test_changed_keep_coverage_is_not_throttled(self) -> None:
+        data = {"claude": [self._session("claude", "a", 1)]}
+        scan_index.publish(data, limit=200)
+        scan_index.publish(data, limit=200, keep_ids_by_runtime={"claude": {"gone"}})
+        self.assertIsNotNone(scan_index.try_consume(50, {"claude": {"gone"}}))
+
+    def test_publish_contention_skips_without_poisoning_throttle(self) -> None:
+        data = {"claude": []}
+        with scan_index._publication_lock(scan_index.index_path()) as acquired:
+            self.assertTrue(acquired)
+            self.assertIsNone(scan_index.publish(data, limit=200))
+            self.assertFalse(scan_index.index_path().exists())
+        self.assertIsNotNone(scan_index.publish(data, limit=200))
+
+    def test_depth_check_is_inside_cross_process_lock(self) -> None:
+        original = scan_index._covered_by_fresh_index
+        def checked(limit):
+            with scan_index._publication_lock(scan_index.index_path()) as acquired:
+                self.assertFalse(acquired)
+            return original(limit)
+        with mock.patch("corral.scan_index._covered_by_fresh_index", side_effect=checked) as check:
+            scan_index.publish({"claude": []}, limit=200)
+        check.assert_called_once_with(200)
+
+    def test_keepalive_cas_cannot_overwrite_newer_foreign_publish(self) -> None:
+        old = {"claude": [self._session("claude", "old", 1)]}
+        foreign = {"claude": [self._session("claude", "foreign", 2)]}
+        stamp = scan_index.publish(old, limit=200)
+        self.assertIsNotNone(stamp)
+        scan_index.publish(foreign, limit=200)
+        self.assertIsNone(scan_index.publish(old, limit=200, expected_published_at=stamp))
+        self.assertEqual(scan_index.try_consume(50)["claude"][0]["id"], "foreign")
+
+    def test_foreign_cleanup_only_removes_old_recognized_unlocked_indexes(self) -> None:
+        old = self.cache / "scan-index-0123456789.json"
+        busy = self.cache / "scan-index-abcdef0123.json"
+        fresh = self.cache / "scan-index-1111111111.json"
+        legacy = self.cache / "scan-index.json"
+        unrelated = self.cache / "scan-index-backup.json"
+        for path in (old, busy, fresh, legacy, unrelated):
+            path.write_text("{}", encoding="utf-8")
+            age = time.time() - scan_index.FOREIGN_INDEX_MAX_AGE_SECONDS - 60
+            if path != fresh:
+                os.utime(path, (age, age))
+        with scan_index._publication_lock(busy) as acquired:
+            self.assertTrue(acquired)
+            scan_index.publish({"claude": []}, limit=200)
+        self.assertFalse(old.exists())
+        for path in (busy, fresh, legacy, unrelated, scan_index.index_path()):
+            self.assertTrue(path.exists(), path.name)
+
     def test_isolate_managed_hosts_disables_shared_index(self) -> None:
         for patch in self.patches:
             patch.stop()

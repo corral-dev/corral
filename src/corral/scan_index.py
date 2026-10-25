@@ -11,8 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 
 from corral.cache import cache_dir, provider_cohort
@@ -38,8 +40,8 @@ MAX_UNCOVERABLE_KEEP_IDS = 2000
 # A killed publisher can leave its tmp file behind; entries older than this are
 # removed best-effort on the next publish.
 STALE_TMP_MAX_AGE_SECONDS = 300.0
-# Index files from other provider cohorts are kept while their process is
-# alive (it keeps rewriting them); an untouched one is abandoned.
+# Index files from other provider cohorts are kept while their publishers
+# keep rewriting them; an untouched one is abandoned (not a liveness proof).
 FOREIGN_INDEX_MAX_AGE_SECONDS = 7 * 24 * 3600.0
 
 # Last publish by this process: monotonic time, result limit, and per-runtime
@@ -269,16 +271,41 @@ def _covered_by_fresh_index(limit: int) -> bool:
     )
 
 
+@contextmanager
+def _publication_lock(path):
+    """Coordinate depth checks, replacement and cleanup across processes.
+
+    Lock inodes are stable and never unlinked. Contention skips optional
+    publication instead of blocking a consumer behind another publisher.
+    """
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(f"{path.name}.lock"), "a", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def publish(
     scanned: dict[str, list[dict[str, Any]]],
     *,
     limit: int,
     keep_ids_by_runtime: dict[str, set[str]] | None = None,
-) -> None:
-    """Atomically replace the shared index after a successful local scan."""
+    expected_published_at: float | None = None,
+) -> float | None:
+    """Replace a completed snapshot; return its publication time on success.
+
+    Keep-alive callers pass the publication they observed. The compare and
+    replace share one lock, so they cannot overwrite a newer completed scan.
+    """
     if not _shared_index_enabled():
-        return
-    if _covered_by_fresh_index(limit):
         return
     try:
         keep_payload = {
@@ -312,19 +339,6 @@ def publish(
         }
         now_mono = time.monotonic()
         path = index_path()
-        with _PUBLISH_LOCK:
-            last = _LAST_PUBLISH
-            if (
-                str(last.get("path") or "") == str(path)
-                and now_mono - float(last.get("at") or 0.0) < PUBLISH_MIN_INTERVAL_SECONDS
-                and last.get("limit") == int(limit)
-                and last.get("keys") == fingerprint
-            ):
-                return
-            last["at"] = now_mono
-            last["path"] = str(path)
-            last["limit"] = int(limit)
-            last["keys"] = fingerprint
         payload = {
             "version": INDEX_VERSION,
             "provider_cohort": provider_cohort(),
@@ -337,32 +351,54 @@ def publish(
                 for runtime_id, bucket in scanned.items()
             },
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False)
-        os.replace(tmp, path)
-        _cleanup_stale_tmps(path)
+        with _PUBLISH_LOCK, _publication_lock(path) as acquired:
+            if not acquired or _covered_by_fresh_index(limit):
+                return None
+            if expected_published_at is not None:
+                meta = published_meta()
+                if meta is None or meta[0] != expected_published_at:
+                    return None
+            last = _LAST_PUBLISH
+            if (
+                str(last.get("path") or "") == str(path)
+                and now_mono - float(last.get("at") or 0.0) < PUBLISH_MIN_INTERVAL_SECONDS
+                and last.get("limit") == int(limit)
+                and last.get("keys") == fingerprint
+                and last.get("keep_ids") == keep_payload
+            ):
+                return
+            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+            os.replace(tmp, path)
+            last.update(
+                at=now_mono, path=str(path), limit=int(limit),
+                keys=fingerprint, keep_ids=keep_payload,
+            )
+            _cleanup_stale_tmps(path)
         _cleanup_foreign_indexes(path)
+        return payload["published_at"]
     except Exception:  # noqa: BLE001 — index is optional acceleration
         return
 
 
 def _cleanup_foreign_indexes(path) -> None:
-    """Drop index files no live publisher of the current cohort owns.
+    """Drop recognized abandoned cohort indexes under their publication lock.
 
-    Older-cohort TS/Daemon processes write their own file while they run, so a
-    recently touched foreign file is kept; only abandoned generations older than
-    a week are removed. Derived data only. Never raises.
+    The legacy unscoped file is ignored: pre-fix writers cannot honor this
+    lock. Its single bounded file must never be migrated into a new cohort.
     """
     try:
         now = time.time()
         for candidate in path.parent.glob("scan-index*.json"):
-            if candidate == path:
+            if candidate == path or not re.fullmatch(
+                r"scan-index-[0-9a-f]{10}\.json", candidate.name,
+            ):
                 continue
             try:
-                if now - candidate.stat().st_mtime > FOREIGN_INDEX_MAX_AGE_SECONDS:
-                    candidate.unlink()
+                with _publication_lock(candidate) as acquired:
+                    if acquired and now - candidate.stat().st_mtime > FOREIGN_INDEX_MAX_AGE_SECONDS:
+                        candidate.unlink()
             except OSError:
                 continue
     except Exception:  # noqa: BLE001 — cleanup must never fail a publish

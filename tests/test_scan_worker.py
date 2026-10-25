@@ -344,6 +344,89 @@ class ScanWorkerTests(unittest.TestCase):
         self.assertEqual(self.scan_worker.worker_limit(50), 200)
         self.assertEqual(self.scan_worker.worker_limit(300), 300)
 
+    def test_drifted_consumer_never_reaps_or_spawns(self) -> None:
+        self._write_heartbeat(424242, cohort="newer-cohort")
+        with mock.patch.object(self.scan_worker, "provider_drift", return_value=True), \
+                mock.patch.object(self.scan_worker.os, "kill") as kill, \
+                mock.patch.object(subprocess, "Popen") as popen:
+            self.assertIsNone(self.scan_worker.obsolete_worker_pid())
+            self.assertIsNone(self.scan_worker.ensure_scan_worker(50))
+        # A signal-0 liveness query is read-only; no termination signal.
+        self.assertTrue(all(call.args[1] == 0 for call in kill.call_args_list))
+        popen.assert_not_called()
+
+    def test_process_check_requires_exact_python_module_invocation(self) -> None:
+        for command, expected in [
+            ("/opt/bin/python3.12 -m corral.scan_worker --limit 200", True),
+            ("/opt/Python -m corral.scan_worker --parent-pid 42", True),
+            ("python -m corral.scan_worker_other", False),
+            ("python -c 'print(\"corral.scan_worker\")'", False),
+            ("sh -c 'python -m corral.scan_worker'", False),
+            ("echo corral.scan_worker", False),
+            ("", False),
+            ("python -m 'corral.scan_worker", False),
+        ]:
+            with self.subTest(command=command), mock.patch.object(
+                self.scan_worker, "_process_command", return_value=command,
+            ):
+                self.assertEqual(self.scan_worker._is_scan_worker_process(42), expected)
+
+    def test_reap_does_not_signal_replaced_heartbeat(self) -> None:
+        self._write_heartbeat(424242, cohort="old")
+        def replaced(_pid):
+            self._write_heartbeat(424243)
+            return True
+        with mock.patch.object(self.scan_worker, "_pid_alive", return_value=True), \
+                mock.patch.object(self.scan_worker, "_is_scan_worker_process", side_effect=replaced), \
+                mock.patch.object(self.scan_worker.os, "kill") as kill:
+            self.assertIsNone(self.scan_worker.reap_obsolete_worker())
+        kill.assert_not_called()
+
+    def test_ensure_does_not_spawn_behind_held_singleton(self) -> None:
+        lock = self.scan_worker._acquire_singleton_lock()
+        self.assertIsNotNone(lock)
+        self.addCleanup(lock.close)
+        with mock.patch.object(subprocess, "Popen") as popen:
+            self.assertIsNone(self.scan_worker.ensure_scan_worker(50))
+        popen.assert_not_called()
+
+    def test_reap_uses_released_flock_instead_of_zombie_pid(self) -> None:
+        with mock.patch.object(self.scan_worker, "obsolete_worker_pid", return_value=424242), \
+                mock.patch.object(self.scan_worker, "_pid_alive", return_value=True), \
+                mock.patch.object(self.scan_worker.os, "kill"), \
+                mock.patch.object(self.scan_worker.time, "sleep") as sleep:
+            self.assertEqual(self.scan_worker.reap_obsolete_worker(), 424242)
+        sleep.assert_not_called()
+
+    def test_spawned_child_is_waited_without_blocking_caller(self) -> None:
+        import threading
+
+        collected = threading.Event()
+        child = mock.Mock()
+        child.wait.side_effect = lambda: collected.set()
+        self.scan_worker._reap_child_later(child)
+        self.assertTrue(collected.wait(2))
+        child.wait.assert_called_once_with()
+
+    def test_editable_or_shadowed_source_beats_stale_metadata(self) -> None:
+        source = self.cache / "__init__.py"
+        source.write_text('__version__ = "0.2.17"\n', encoding="utf-8")
+        dist = mock.Mock(version="0.2.16")
+        dist.locate_file.return_value = self.cache / "site-packages/sesskit/__init__.py"
+        with mock.patch("importlib.metadata.distribution", return_value=dist), \
+                mock.patch.dict(sys.modules, {"sesskit": mock.Mock(__file__=str(source))}):
+            self.assertEqual(self.scan_worker._installed_provider_version(), "0.2.17")
+            source.write_text('__version__ = "0.2.18"\n', encoding="utf-8")
+            self.assertEqual(self.scan_worker._installed_provider_version(), "0.2.18")
+
+    def test_missing_distribution_version_is_unknown_not_drift(self) -> None:
+        from importlib.metadata import PackageNotFoundError
+
+        with mock.patch("importlib.metadata.distribution", side_effect=PackageNotFoundError), \
+                mock.patch("corral.updater.install_replaced", return_value=False):
+            self.assertEqual(self.scan_worker._installed_provider_version(), "")
+            self.assertFalse(self.scan_worker.provider_drift())
+
     # -- store integration --
 
     def test_store_skips_forced_local_scan_with_live_worker(self) -> None:
@@ -404,6 +487,12 @@ class ScanWorkerTests(unittest.TestCase):
     def test_scan_worker_once_subprocess(self) -> None:
         env = dict(os.environ)
         env["CORRAL_CACHE_DIR"] = str(self.cache)
+        env["HOME"] = str(self.cache)
+        env["XDG_DATA_HOME"] = str(self.cache / "data")
+        env["XDG_CONFIG_HOME"] = str(self.cache / "config")
+        env["CODEX_HOME"] = str(self.cache / "codex")
+        env["CLAUDE_CONFIG_DIR"] = str(self.cache / "claude")
+        env["PI_CODING_AGENT_DIR"] = str(self.cache / "pi")
         # Suite env sets CORRAL_ISOLATE_MANAGED_HOSTS=1; the worker must run
         # with it off (as in production).
         env.pop("CORRAL_ISOLATE_MANAGED_HOSTS", None)
@@ -555,6 +644,7 @@ class WorkerBackoffLoopTests(unittest.TestCase):
                 "corral.scan_worker._remembered_keep_ids", return_value={},
             ),
             mock.patch("corral.scan_worker._memory_pressured", return_value=False),
+            mock.patch("corral.scan_worker.provider_drift", return_value=False),
             mock.patch("corral.scan_worker.time", self.fake),
         ]
         for patch in self.patches:
@@ -629,9 +719,12 @@ class WorkerBackoffLoopTests(unittest.TestCase):
         republished = []
         real_republish = self.scan_worker._republish
 
-        def counting(scanned, *, limit, keep_ids):
+        def counting(scanned, *, limit, keep_ids, expected_published_at=None):
             republished.append(self.fake.now)
-            return real_republish(scanned, limit=limit, keep_ids=keep_ids)
+            return real_republish(
+                scanned, limit=limit, keep_ids=keep_ids,
+                expected_published_at=expected_published_at,
+            )
 
         buckets = {"opencode": [self._session("a", 30)]}
         registry = _AlwaysParseRegistry(lambda: buckets)

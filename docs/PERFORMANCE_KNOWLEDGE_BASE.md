@@ -94,6 +94,20 @@ Contracts (acceleration only; same bypasses as above, plus `CORRAL_ISOLATE_MANAG
 
 Retained diagnostic (2026-10-09): running `FooterVersionTests` directly outside the maintained UI isolation emitted `ResourceWarning: subprocess ... is still running`. Tracemalloc attributed it to `_make_store` → `SessionStore.load` → `ensure_scan_worker`: the store discards the returned `Popen` while the scan worker intentionally continues. Python documents this destructor warning at <https://docs.python.org/3/library/subprocess.html#popen-constructor>. The worker has a parent-PID exit guard, and the observed fixture child was no longer running after the standalone tests ended. This predates the help changes, and help never starts this worker. The complete isolated gate emitted no warnings. Residual risk: non-isolated callers can still emit the diagnostic and rely on deferred child reaping. Follow-up: give the existing scan-worker launcher explicit nonblocking child-handle ownership and reaping; do not suppress warnings or wait for the long-running worker on the UI thread.
 
+### Upgrade-safe scanner ownership (2026-10-25)
+
+The worker and all derived snapshots belong to Corral, not SessKit's native parsers. Keep one user-wide worker lock, but scope shared indexes by `sha256(provider_cohort)[:10]`: `scan-index-<digest>.json`. Never migrate a legacy snapshot into a new cohort or trust its payload without the existing cohort, depth, keep-id and TTL checks. Leave the single legacy `scan-index.json` ignored; older installed processes do not participate in new publication locks. Only recognized cohort-index filenames untouched for seven days are cleanup candidates. Publishers and cleanup must hold the same per-index advisory lock; check covering depth inside that lock so a racing narrow writer cannot replace a fresh wide snapshot. Publish throttling commits only after a successful replacement and must include keep coverage.
+
+A current consumer may terminate a registered mismatched-cohort worker only after confirming an exact Python `-m corral.scan_worker` invocation and rechecking the registered heartbeat. A drifted consumer must never reap or respawn: otherwise an old window can repeatedly terminate the new worker. Workers exit on loaded-provider/on-disk drift or `updater.install_replaced()`; metadata describes a distribution, not necessarily an editable/shadowed import, so those imports require checking their own source version rather than comparing against unrelated/stale metadata. Missing metadata is unknown, not an upgrade. The flock, not `kill(pid, 0)`, determines whether a terminated zombie released the singleton; spawned children have a nonblocking wait owner. PID validation reduces but cannot atomically eliminate POSIX PID-reuse races.
+
+Read-only observation at 14:21–14:26 found a 0.2.17 heartbeat and cohort-scoped depth-200 index, shared hits of 21–126 ms, but also 30.1/45.5 s local scans and a 22 s TTL miss. Cohort isolation alone therefore does not establish recovery under load: the worker still writes its heartbeat on its scan thread, and a long parse can outlive both the 20 s heartbeat and 12 s snapshot TTL. Keep heartbeat and snapshot keep-alive on an independent thread while a local parse is in flight. It owns an immutable last-completed snapshot, adopts newer covering foreign snapshots, and republishes only with an expected-publication compare inside the index lock. Stop and join it before leaving the parse scope or releasing the singleton. The 12 s consume TTL is unchanged; during an in-flight parse the publication timestamp may advance without a new parse, as in the existing churn keep-alive. A parser that never returns can therefore keep a stale completed snapshot fresh; this needs a separately designed progress watchdog, not an arbitrary silent TTL extension. Do not claim live latency improvements from isolated tests or restart user consumers for this investigation.
+
+Post-fix live observation (15:15–15:24, new cohort worker with an independent keep-alive): the first cold parse still produced three TTL misses at 15:15:25 / 15:16:02 / 15:17:29 (13.6–28.4 s) because no completed snapshot existed yet. Once the first snapshot completed, 20 consecutive remote refreshes shared-hit at 23–702 ms; heartbeat age stayed 3–7 s and the cohort-scoped index age 1–9 s between passes. One `keep_ids` miss at 15:19:22 (22.2 s) came from a newly pinned session the previous snapshot could not cover and recovered on the next pass. Local scans reappear only when the machine is genuinely starved or a parse exceeds the snapshot's coverage; a hung parser still requires the separate progress watchdog above.
+
+The SQLite cache still uses one row per `(runtime, path)` (conversation/search have equivalent single-version keys). Different cohorts safely reject but can replace each other's rows; index isolation does not isolate this cache. No cohort-DB migration is justified by old rows alone: establish active cross-cohort overwrite/latency before adding per-cohort disk budgets and cleanup. All acceptance must isolate cache, histories and diagnostics; process tests must reap their own children.
+
+References: [distribution metadata](https://docs.python.org/3/library/importlib.metadata.html), [child wait ownership](https://docs.python.org/3/library/subprocess.html#subprocess.Popen.wait), [advisory locks](https://docs.python.org/3/library/fcntl.html#fcntl.flock).
+
 ### Scan-worker churn backoff (perf-H, 2026-09-30; instrumented on the owner's machine)
 
 Root cause (measured, not guessed): the worker polls `scan_all(prefer_shared=True)` every 2 s, but `try_consume` misses whenever the index is older than the 12 s TTL — so under OpenCode WAL churn the worker pays a full local re-parse about every 12 s even though intermediate passes shared-hit in ~9 ms. Steady-state TTL-miss passes cost 0.6–1.4 s wall (fixture: OpenCode-only re-parse ~0.6–1.2 s at limit 200 with 36 keep ids; live runs add 0.5–1.2 s flap re-parses of claude/codex when their pid/file signatures move), which is ~17–21 s CPU per 90 s (~20% of one core). Lengthening the poll interval alone cannot fix TTL-driven parses; per-runtime signature skip (`registry.scan_all`) already fires — the remaining cost is the changed runtimes themselves.
@@ -196,7 +210,7 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 用户体感「启动白屏好几秒、会话中又卡」在 16GB 忙机上复现：`load` 一次 28s、首铺 `list_rebuild` full 3.5s、界面与 `remote _serve` 各扫一遍。阶段 0 拆解（负载已回落时）：冷 `scan_all(50)` ≈540ms（OpenCode/Claude 等并行），签名全命中仍 ≈100ms，`annotate` ≈70ms——所以「共享索引跳过整段扫描」比「把轮询间隔拉长」更符合体验优先。
 
-1. **`scan_index`（`~/.cache/corral/scan-index.json`）**：任一方完成本地 `scan_all` 后原子发布；另一方在 TTL（默认 12s）内若发布方 `limit` 覆盖自己的需求且置顶/组成员 id 都在索引里，直接消费（可按更小 limit 收窄）。事件字段 `shared_index=true`。`CORRAL_CACHE=0` 或 **`CORRAL_ISOLATE_MANAGED_HOSTS=1`（单测隔离）全禁用**——后者禁止把开发机真实索引泄漏进 mock 扫描。
+1. **`scan_index`（`~/.cache/corral/scan-index-<cohort-digest>.json`）**：任一方完成本地 `scan_all` 后原子发布；另一方在 TTL（默认 12s）内若发布方 `limit` 覆盖自己的需求且置顶/组成员 id 都在索引里，直接消费（可按更小 limit 收窄）。事件字段 `shared_index=true`。`CORRAL_CACHE=0` 或 **`CORRAL_ISOLATE_MANAGED_HOSTS=1`（单测隔离）全禁用**——后者禁止把开发机真实索引泄漏进 mock 扫描。
 2. **`SessionStore.refresh` 每 `_FULL_MERGE_INTERVAL`（12s）强制本地扫一轮**（`prefer_shared=False`），避免只喝共享索引时新会话永远不出现；间隔内可喝共享或本机签名缓存。
 3. **启动首帧优先**：有侧栏快照时 `main()` **不**立即起 `load` 线程（`store._load_deferred`），等 Textual 首帧 `call_after_refresh` 后再扫——消除「六个解析线程与首铺抢 GIL」的白屏。无快照仍与 OSC 探测并行开扫。
 4. **远程刷新线程 `demote_background()`**（macOS Utility QoS + nice+5）：纯扫描后台给前台 TUI 让路；不得用于界面主线程。
@@ -417,11 +431,10 @@ Final native acceptance with the host fix and a 50 ms client wait returned the t
   `parser_version NOT LIKE <cohort>%` 的行（LIKE 转义后比较），当期裸行与
   host-tagged 行都保留。读路径仍是精确比较（`_decode_session_row` 与
   `get_conversation`），正确性不依赖 purge。
-- **共享快照与 worker 心跳同样带 cohort。** `scan-index.json` 的
+- **共享快照与 worker 心跳同样带 cohort。** `scan-index-<cohort-digest>.json` 的
   `provider_cohort` 对不上（或缺失）就直接不消费，回退本地扫描；
   `scan-worker.json` 心跳缺 cohort/对不上，本进程 `is_active()` 即为假——
-  旧合约的常驻 worker 永不被新合约复用，只等它退出后新 worker 占到单例槽
-  （期间消费者走本地扫描，不杀进程、不抢锁）。
+  旧合约的常驻 worker 永不被新合约复用；当前消费者可按上文升级安全规则清退已校验的旧 worker，再由单例锁选出新 worker（期间消费者仍保留本地扫描兜底）。
 
 实测（同一进程内把行为还原成改动前做 A/B，n=15，本机 168 个会话）：`scan_all` 暖缓存中位 **251.9 ms → 203.3 ms**（−19%），最快 218.4 ms → 175.8 ms。验收差分：走快照与 `CORRAL_CACHE=0` 现解析，5 个运行时的扫描结果逐字段完全一致。
 
