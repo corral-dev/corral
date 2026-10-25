@@ -4919,6 +4919,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("✓", lines[0])
             self.assertNotIn("X", "".join(lines))
             self.assertNotIn("✓", lines[1])
+            choices.select("/tmp/other")
+            await pilot.pause()
+            lines = [choices.render_line(index).text for index in range(choices.option_count)]
+            self.assertIn("✓", lines[0])
+            self.assertIn("✓", lines[1])
+            self.assertNotIn("X", "".join(lines))
 
     async def test_active_filter_toggle_narrows_list_without_touching_panes(self) -> None:
         """Active toggles only real activity and leaves open workspace panes untouched."""
