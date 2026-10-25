@@ -1,5 +1,13 @@
 # corral 性能知识库
 
+## CPU optimization acceptance (owner approval, 2026-10-25)
+
+Optimize repeated work without increasing normal state-refresh intervals, slowing input echo, dropping final terminal state, changing terminal stream ordering, or resizing a hosted pane on behalf of a hidden viewer. The previous 50 ms host-stream pacing experiment caused the owner's Mac terminal to nearly stop refreshing and was reverted; do not repeat it as a CPU remedy.
+
+The current investigation found shared scan hits in every observed TUI/remote pass, but both consumers still perform hot-session probes. Native single-session history interpretation and safe incremental/versioned reuse belong to SessKit; Corral consumes a versioned artifact and keeps product attention/notification policy. Pi claims remain host-owned. Cache unchanged claims by exact source identity while checking expiry on every observation; never hide a PID-ownership correction or reuse a torn/failed read.
+
+The TUI also blocked for 62.6 s and 8.5 s when Textual's bounded output queue filled. Preserve the native Textual driver and ordered terminal output, propagate backpressure to paint production, and make low-priority theme queries nonblocking. Do not treat a full queue as permission to drop arbitrary ANSI chunks. Inspected reference: the installed Textual 8.2.8 `drivers/_writer_thread.py` and `drivers/linux_driver.py`; reuse its writer/driver contract, not a second terminal renderer. Verification must include a deliberately blocked output consumer, subsequent recovery to the final screen, immediate input handling, a real terminal capture, and unsampled process CPU deltas. Saved investigation evidence: `/tmp/corral-cpu-deep-20261025/` (ephemeral, not a permanent artifact).
+
 ## Lightweight help and cache binding
 
 Help and version queries must not import SessKit parsers or initialize the history cache bridge. The package initializer previously called `_wire_sesskit_cache()` unconditionally, which pulled SessKit's parser package into every command despite the lightweight bootstrap. Keep the binding function available, but invoke it from `corral.scan` package initialization, immediately before the Corral scanner aliases are used. This preserves Corral's cache provider for real scans while keeping help independent of session parsing. Verify both a fresh help process without parser imports and scanner initialization with the existing cache provider attached.

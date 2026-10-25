@@ -444,6 +444,35 @@ sequenceDiagram
 - 明确提示“重启此 Pi 会话以启用精确关联 / Restart this Pi session to enable exact association”。
 - 进程结束后正常按历史会话处理。
 
+### 7.4 Exact-source claim parse memo (CPU, 2026-10-25)
+
+`read_claims()` is called on every hot-state tick by the TUI and the remote
+service. A live machine held 287 claim files (about 183 KB) while only eight
+were live, so reopening and JSON-decoding every old file cost about 7–18 ms per
+call even though almost all sources were unchanged.
+
+Invariant: the process-local memo stores **only successfully parsed, immutable
+JSON dictionaries** and returns independent copies. A hit requires the exact
+same resolved claims directory (device/inode) and per-file identity
+(device/inode/size/`mtime_ns`/`ctime_ns`) before and after the original read.
+Atomic replacement, in-place same-size rewrite, removal, a different claims
+root, a repaired corrupt file and a torn/failed read therefore all miss;
+failed reads are never memoized. The memo is byte-bounded and evicts
+least-recently-used entries. It has no time-based TTL: new file content is
+never hidden behind an arbitrary age.
+
+Liveness is deliberately **not** cached. Every `live_agent_phases()` call
+re-evaluates protocol, state, session id, PID fields and `updatedAt` against the
+caller's current clock, so expiry and PID-ownership corrections remain
+immediately observable even while the source stamp is unchanged. Claim
+deletion, claim TTL and the committed PID-reuse lockout behavior are unchanged.
+
+Read-only benchmark on the owner's 287-file directory: warm
+`live_agent_phases()` fell from roughly 8.6–11.5 ms to 1.6–2.1 ms CPU per call
+(about 5×), with 287 opens/JSON decodes per call becoming zero; the cold pass
+stayed equivalent (about 10–15 ms in both versions). Focused coverage is in
+`tests/test_pi_claim_cache.py`.
+
 ## 8. Subagent 边界
 
 不能仅用 JSONL header 的 `parentSession` 判断 subagent，因为顶层 TUI 的 `/fork`、`/clone` 同样会产生 parentSession。

@@ -12,6 +12,7 @@ import atexit
 import os
 import sys
 
+from textual._compositor import CompositorUpdate
 from textual.app import App, ScreenError
 from textual.theme import Theme
 from textual.timer import Timer
@@ -200,6 +201,31 @@ class CorralApp(App):
         # 连续恢复有上限，避免真故障时死循环刷屏。
         self._compositor_recovery_budget = 0
         self._stall_watchdog = None
+        self._output_repaint_timer: Timer | None = None
+
+    @property
+    def output_backpressured(self) -> bool:
+        return bool(getattr(self._driver, "output_backpressured", False))
+
+    def _display(self, screen, renderable) -> None:
+        if isinstance(renderable, CompositorUpdate) and (
+            self.output_backpressured or self._output_repaint_timer is not None
+        ):
+            # The compositor already consumed its dirty regions. Do not enqueue
+            # this delta: repaint the entire latest screen after the ordered
+            # writer drains. Never discard individual ANSI/control chunks.
+            if self._output_repaint_timer is None:
+                self._output_repaint_timer = self.set_timer(0.05, self._resume_output)
+            self.post_display_hook()
+            return
+        super()._display(screen, renderable)
+
+    def _resume_output(self) -> None:
+        self._output_repaint_timer = None
+        if self.output_backpressured:
+            self._output_repaint_timer = self.set_timer(0.05, self._resume_output)
+            return
+        self._force_full_repaint()
 
     def _on_terminal_supports_synchronized_output(self, message) -> None:
         # Textual 默认在终端支持时把每帧包进同步输出（`\e[?2026h…l`，原子提交整帧防撕裂）。
@@ -290,6 +316,9 @@ class CorralApp(App):
             self.set_interval(BACKGROUND_POLL_INTERVAL, self._query_runtime_theme)
 
     def on_unmount(self) -> None:
+        if self._output_repaint_timer is not None:
+            self._output_repaint_timer.stop()
+            self._output_repaint_timer = None
         if self._stall_watchdog is not None:
             self._stall_watchdog.stop()
             self._stall_watchdog = None

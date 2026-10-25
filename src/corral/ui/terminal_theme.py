@@ -176,7 +176,34 @@ if os.name != "nt":
 
 
     class TerminalThemeLinuxDriver(LinuxDriver):
-        """复用 Textual Unix 驱动，只替换其输入解析器。"""
+        """Reuse Textual's parser/writer, with bounded paint backpressure."""
+
+        @property
+        def output_backpressured(self) -> bool:
+            # Textual owns the writer and its queue; if either is absent (a
+            # future driver or an unbounded queue) paint stays on the native
+            # path instead of guessing a threshold.
+            queue = getattr(getattr(self, "_writer_thread", None), "_queue", None)
+            if queue is None:
+                return False
+            maxsize = int(getattr(queue, "maxsize", 0) or 0)
+            if maxsize <= 0:
+                return False
+            # A display uses three ordered writes with synchronized output.
+            # Reserve headroom for input/cursor and lifecycle controls.
+            return queue.qsize() >= max(1, maxsize // 3)
+
+        def try_write_theme(self, data: str) -> bool:
+            from queue import Full
+
+            queue = getattr(getattr(self, "_writer_thread", None), "_queue", None)
+            if queue is None or self.output_backpressured:
+                return False
+            try:
+                queue.put_nowait(data)
+            except Full:
+                return False
+            return True
 
         def start_application_mode(self) -> None:
             super().start_application_mode()
@@ -246,7 +273,11 @@ def query_runtime_theme(driver) -> None:
             "\x1bPtmux;\x1b\x1b[?996n\x1b\\"
             "\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\"
         )
-    _write(driver, query)
+    try_write = getattr(driver, "try_write_theme", None)
+    if callable(try_write):
+        try_write(query)
+    else:
+        _write(driver, query)
 
 
 def disable_runtime_theme_tracking(driver) -> None:

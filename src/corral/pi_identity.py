@@ -22,7 +22,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
+import sys
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -39,6 +43,10 @@ EXTENSION_VERSION = "1.2.1"
 MANIFEST_NAME = "corral-manifest.json"
 #: 扩展 15s 心跳；超过 4 个周期未更新视为过期（含系统睡眠的短暂窗口）。
 CLAIM_TTL_SECONDS = 60.0
+#: Claim parse memo budget. The measured live set was 287 files / ~183 KB raw;
+#: this bound leaves room for parsed dictionaries while staying far below the
+#: process's other caches. Entries are evicted least-recently-used.
+_CLAIM_MEMO_MAX_BYTES = 4 * 1024 * 1024
 _ASSET_NAME = "corral-session-identity.ts"
 
 
@@ -152,6 +160,174 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+_ClaimStamp = tuple[int, int, int, int, int]
+_ClaimRoot = tuple[str, int, int]
+_ClaimKey = tuple[str, int, int, str]
+
+
+def _claim_stamp(info: os.stat_result) -> _ClaimStamp:
+    """Exact source identity: replacement, in-place rewrite and removal all differ."""
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _copy_json(value: object) -> object:
+    """Copy only JSON-shaped values so a caller cannot mutate memoized state."""
+    if isinstance(value, dict):
+        return {key: _copy_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_json(item) for item in value]
+    return value
+
+
+def _copy_claim(claim: dict) -> dict:
+    """Shallow-copy scalars and recursively copy only JSON containers."""
+    copied = dict(claim)
+    for key, value in claim.items():
+        if isinstance(value, (dict, list)):
+            copied[key] = _copy_json(value)
+    return copied
+
+
+def _claim_value_bytes(value: object, depth: int = 0) -> int:
+    """Approximate retained bytes; called once per successful parse, never per hit."""
+    size = sys.getsizeof(value)
+    if depth >= 8:
+        return size
+    if isinstance(value, dict):
+        for key, item in value.items():
+            size += _claim_value_bytes(key, depth + 1)
+            size += _claim_value_bytes(item, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            size += _claim_value_bytes(item, depth + 1)
+    return size
+
+
+class _ClaimMemo:
+    """Process-local exact-source memo for successful, immutable claim parses.
+
+    A hit requires the caller's current stat stamp to equal the stamp captured
+    around the read that produced the entry, so atomic replacement, in-place
+    rewrites, torn reads and failed reads all miss. The memo never stores a
+    liveness, TTL or PID-ownership verdict: callers re-evaluate those against
+    their own clock on every observation. Values are returned as independent
+    copies, and retention is byte-bounded with LRU eviction.
+    """
+
+    def __init__(self, max_bytes: int = _CLAIM_MEMO_MAX_BYTES) -> None:
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[_ClaimKey, tuple[_ClaimStamp, dict, int]] = OrderedDict()
+        self._bytes = 0
+        self._max_bytes = max(0, int(max_bytes))
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    @property
+    def total_bytes(self) -> int:
+        with self._lock:
+            return self._bytes
+
+    def get(self, key: _ClaimKey, stamp: _ClaimStamp) -> dict | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None or entry[0] != stamp:
+                return None
+            self._entries.move_to_end(key)
+            claim = entry[1]
+        # Copy outside the lock; the retained dictionary is never handed out.
+        return _copy_claim(claim)
+
+    def put(self, key: _ClaimKey, stamp: _ClaimStamp, claim: dict, cost: int) -> None:
+        if cost > self._max_bytes:
+            self.drop(key)
+            return
+        with self._lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._bytes -= previous[2]
+            self._entries[key] = (stamp, claim, cost)
+            self._bytes += cost
+            while self._bytes > self._max_bytes and self._entries:
+                _, dropped = self._entries.popitem(last=False)
+                self._bytes -= dropped[2]
+
+    def drop(self, key: _ClaimKey) -> None:
+        with self._lock:
+            self._drop_locked(key)
+
+    def prune(self, root_path: str, root: _ClaimRoot, names: set[str]) -> None:
+        """Forget entries of a vanished/replaced root or file in one pass."""
+        with self._lock:
+            stale = [
+                key
+                for key in self._entries
+                if key[0] == root_path
+                and (key[1] != root[1] or key[2] != root[2] or key[3] not in names)
+            ]
+            for key in stale:
+                self._drop_locked(key)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+    def _drop_locked(self, key: _ClaimKey) -> None:
+        dropped = self._entries.pop(key, None)
+        if dropped is not None:
+            self._bytes -= dropped[2]
+
+
+_CLAIM_MEMO = _ClaimMemo()
+
+
+def _parse_claim(raw: bytes) -> dict | None:
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_cached_claim(path: str, key: _ClaimKey) -> dict | None:
+    """Stat-gated read: unchanged sources skip open and JSON decode."""
+    try:
+        current = os.stat(path)
+    except OSError:
+        _CLAIM_MEMO.drop(key)
+        return None
+    stamp = _claim_stamp(current)
+    cached = _CLAIM_MEMO.get(key, stamp)
+    if cached is not None:
+        return cached
+
+    try:
+        with open(path, "rb") as handle:
+            opened = _claim_stamp(os.fstat(handle.fileno()))
+            raw = handle.read()
+            after = _claim_stamp(os.fstat(handle.fileno()))
+    except OSError:
+        _CLAIM_MEMO.drop(key)
+        return None
+    if opened != after:
+        # The source moved under the read: return the valid snapshot, if any,
+        # but never keep it. A later call must observe the final bytes.
+        _CLAIM_MEMO.drop(key)
+        return _parse_claim(raw)
+
+    claim = _parse_claim(raw)
+    if claim is None:
+        _CLAIM_MEMO.drop(key)
+        return None
+    # `after` is the inode actually read. If the path was replaced between the
+    # initial stat and open, this is the newer identity and the next call will
+    # simply miss again if another replacement has happened.
+    _CLAIM_MEMO.put(key, after, claim, _claim_value_bytes(claim))
+    return _copy_claim(claim)
+
+
 def _atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
@@ -239,19 +415,38 @@ def ensure_extension_installed(root: str | os.PathLike[str] | None = None) -> di
 
 
 def read_claims(root: str | os.PathLike[str] | None = None) -> list[dict]:
-    """读取全部 claim 文件；损坏/半写的文件直接跳过（原子写保证极少出现）。"""
-    directory = claims_dir(root)
+    """读取全部 claim 文件；损坏/半写的文件直接跳过（原子写保证极少出现）。
+
+    Unchanged files are served from an exact-source parse memo (root identity +
+    device/inode/size/mtime_ns/ctime_ns). Claim expiry and PID ownership are
+    deliberately not memoized; callers such as :func:`live_agent_phases` must
+    re-evaluate them with their current clock on every observation.
+    """
+    directory = os.fspath(claims_dir(root))
     try:
+        info = os.stat(directory)
+        if not stat.S_ISDIR(info.st_mode):
+            return []
         names = os.listdir(directory)
     except OSError:
         return []
+    try:
+        root_path = os.path.realpath(directory)
+    except OSError:
+        return []
+    root: _ClaimRoot = (root_path, info.st_dev, info.st_ino)
     claims: list[dict] = []
+    present: set[str] = set()
     for name in names:
         if not name.endswith(".json") or name.startswith("."):
             continue
-        claim = _read_json(directory / name)
+        present.add(name)
+        claim = _read_cached_claim(os.path.join(directory, name), (*root, name))
         if claim is not None:
             claims.append(claim)
+    # A listing failure returned above without pruning, so a transient error
+    # cannot discard healthy entries. A successful listing can.
+    _CLAIM_MEMO.prune(root_path, root, present)
     return claims
 
 
@@ -298,6 +493,9 @@ def live_agent_phases(
     Optional claim fields ``agentPhase`` / ``agentPhaseEvent`` / ``agentPhaseAt``
     (extension 1.1+) report TUI Working before jsonl catches up. Missing or
     invalid phase is omitted so history-only inspectors keep working.
+
+    The parse memo only reuses source decoding; protocol/state/session/PID
+    fields and the TTL are re-evaluated against ``now`` on every call.
     """
     if now is None:
         now = datetime.now(timezone.utc)
