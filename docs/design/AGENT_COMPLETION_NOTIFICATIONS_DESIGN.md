@@ -469,3 +469,30 @@ Slice 1/2 可先按“有 `completion_id` 则用、无则对 DONE 保守静默�
 ### Invisible device mute correction (2026-10-05)
 
 Both owned hosts were verified to retain disabled completion/abort preferences for their paired iPhones. The client registration only supplied token/environment, and its Settings screen did not expose these preferences. Apple clients now show device-local completed/aborted switches, default on, and include both in every registration. Explicit local off choices persist. Do not reset unrelated devices (the iPad's retained BadDeviceToken records are a separate problem). Desktop notification events are independent of APNs device preferences and list pagination; see the remote knowledge base.
+
+### Delivery record (2026-10-25)
+
+- **SessKit 0.2.17** published with `terminal_error_kind` /
+  `terminal_error_retryable` for aborted rows (wheel digest verified after
+  download). Real-history probe: 600 sessions, 97 aborted, all classified —
+  54 quota, 22 user interrupt, 13 retryable provider/timeout, 4 auth,
+  4 non-retryable provider.
+- **Corral 0.24.352** shipped the `transient` push kind, per-device
+  `notify_transient` (default off), the 75-second settle window for retryable
+  or unclassified aborts, and `hello capabilities.transient_notify`. The
+  running remote service reloaded Corral 0.24.352 with SessKit 0.2.17.
+- **Device preference path verified live**: iPhone app 1.0.195 (205)
+  re-registered after the host restart and the host persisted
+  `notify_transient: false` for it (the Mac test device also defaults off).
+  iPhone IPA is on AppShelf (release 337). The new Settings row itself needs a
+  manual open on the phone; that visual check is not claimed here.
+- **Mac**: 0.3.148 (152) Debug Settings was opened with
+  `-CorralInspectSettings` and the new “When a retryable error stops the work”
+  switch inspected in the off state. The installed Release app remains
+  0.3.147; public Mac publication follows the Mac release task.
+- **Verification**: SessKit 565 tests, Corral full gate 2765 tests with
+  complete coverage (known flakes passed on retry), Apple Core 422 tests,
+  Ruff clean, Mac/iOS Release builds without new warnings.
+- **Limits**: no live transient push was observed on a phone (the switch is off
+  by default and no genuine retryable abort was induced). Reception, the sound,
+  and the tap-through remain for the owner once the switch is enabled.
