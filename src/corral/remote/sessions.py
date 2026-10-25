@@ -320,6 +320,25 @@ def _composer_holds(runtime, raw: str | None, text: str) -> bool | None:
     return marker in _alnum(region) or bool(_PASTE_PLACEHOLDER_RE.search(region))
 
 
+class _LazyPayloads:
+    """Terminal-session payloads built only when a push retry pass reads them.
+
+    The state loop runs every second over about a thousand finished sessions,
+    and the retry pass almost always returns before reading (nothing due).
+    Building every payload eagerly was half of an idle tick (2026-10-25).
+    """
+
+    def __init__(self, sessions: list[dict], build) -> None:
+        self._sessions = sessions
+        self._build = build
+
+    def __iter__(self):
+        return (self._build(session) for session in self._sessions)
+
+    def __len__(self) -> int:
+        return len(self._sessions)
+
+
 @dataclass
 class _ScreenWatch:
     key: str
@@ -749,6 +768,7 @@ class SessionHub:
         self._layout_watchers = 0
         self._layout_thread: threading.Thread | None = None
         self._layout_revision_seen: int | None = None
+        self._layout_cache: tuple[int, object] | None = None
         self._stop = threading.Event()
         self._search_refresh = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -1133,11 +1153,20 @@ class SessionHub:
         # 移动端没有分组概念：读布局必须跳过成员独立钉到整组置顶的提升，
         # 否则 pin 一条会把同组其它会话一起抬进手机置顶区。桌面侧栏仍走
         # 默认 read()（组可见时整组展示）。
+        # A full read rebuilds every group (~20 ms with ~300 groups) and the
+        # state loop asks every second; reuse the read-only snapshot until the
+        # store's revision moves (every group/pin write bumps it).
         try:
+            revision_reader = getattr(self.layout_db, "read_revision", None)
+            revision = revision_reader() if callable(revision_reader) else None
+            cached = self._layout_cache
+            if revision is not None and cached is not None and cached[0] == revision:
+                return cached[1]
             reader = getattr(self.layout_db, "read_with_promote", None)
-            if callable(reader):
-                return reader(skip_promote=True)
-            return self.layout_db.read()
+            layout = reader(skip_promote=True) if callable(reader) else self.layout_db.read()
+            if revision is not None:
+                self._layout_cache = (revision, layout)
+            return layout
         except Exception:
             return None
 
@@ -3879,12 +3908,19 @@ class SessionHub:
         避免重试中的一闪而过；已分类的终局失败（retryable=False）立即通知。
         """
         hook = self._status_hook
-        layout = self._layout()
+        layout_box: list = []
+
+        def layout():
+            # Read only when a payload is built: an idle pass builds none.
+            if not layout_box:
+                layout_box.append(self._layout())
+            return layout_box[0]
+
         now = time.time()
         # Settle timing must survive wall-clock adjustments (NTP/manual change);
         # mtime freshness below still uses the wall clock.
         mono = time.monotonic()
-        terminal_payloads: list[dict] = []
+        terminal_sessions: list[dict] = []
         # key -> (identity, session) for every ABORTED row seen this scan.
         seen_aborts: dict[str, tuple[str, dict]] = {}
         for session in self.store.all_sessions():
@@ -3900,7 +3936,7 @@ class SessionHub:
                 sesskit_titles.STATUS_ABORTED,
             )
             if terminal:
-                terminal_payloads.append(self.session_payload(session, layout))
+                terminal_sessions.append(session)
             identity = str(current_cid or current)
             if current == sesskit_titles.STATUS_ABORTED:
                 seen_aborts[key] = (identity, session)
@@ -3922,7 +3958,7 @@ class SessionHub:
                     mtime = 0.0
                 if mtime <= 0 or (now - mtime) > _STATUS_NOTIFY_FRESH_SECONDS:
                     continue
-            payload = self.session_payload(session, layout)
+            payload = self.session_payload(session, layout())
             if current == sesskit_titles.STATUS_DONE:
                 # Empty completion_id is a weak verdict: no completion push, but
                 # the hook still records the deliberate skip.
@@ -3949,7 +3985,7 @@ class SessionHub:
                 continue
             if mono - first_seen < _ABORT_SETTLE_SECONDS:
                 continue
-            payload = self.session_payload(seen[1], layout)
+            payload = self.session_payload(seen[1], layout())
             self._pending_abort.pop(key, None)
             self._emit_notification(payload, abort_kind(payload))
             try:
@@ -3972,7 +4008,7 @@ class SessionHub:
             retry = getattr(owner, "retry_due", None)
         if callable(retry):
             try:
-                retry(terminal_payloads)
+                retry(_LazyPayloads(terminal_sessions, lambda row: self.session_payload(row, layout())))
             except Exception:
                 pass
 

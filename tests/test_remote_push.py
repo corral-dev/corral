@@ -889,6 +889,23 @@ class ProductionAssemblyRetryTests(unittest.TestCase):
         )
         self.daemon = RemoteDaemon(state)
 
+    def test_idle_status_pass_builds_no_terminal_payloads(self) -> None:
+        """Nothing due: the per-second pass must not build a payload per finished session."""
+        hub = self.daemon.hub
+        rows = []
+        for index in range(50):
+            row = _session(status_tag=sesskit_titles.STATUS_DONE, last_agent="done")
+            row["id"] = f"done-{index}"
+            row["completion_id"] = f"{index}:done"
+            rows.append(row)
+        hub.store.sessions = {"pi": rows}
+        hub._snapshot_status()
+        with mock.patch.object(hub, "session_payload", wraps=hub.session_payload) as payload, \
+                mock.patch.object(hub, "_layout", wraps=hub._layout) as layout:
+            hub._detect_status_changes()
+        payload.assert_not_called()
+        layout.assert_not_called()
+
     def test_bound_hook_retry_resolves_and_retries(self) -> None:
         hub = self.daemon.hub
         push = self.daemon.push

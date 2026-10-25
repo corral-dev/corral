@@ -35,6 +35,31 @@ class LayoutHubTests(unittest.TestCase):
         self.assertEqual(snap["pinned_sessions"], {})
         self.assertIn("revision", snap)
 
+    def test_mobile_layout_reuses_revision_then_observes_external_pin_changes(self) -> None:
+        self.hub.layout_set_group("/p", ["claude:a", "codex:b"], None)
+        db = self.hub.layout_db
+        with mock.patch.object(db, "read_with_promote", wraps=db.read_with_promote) as reader:
+            first = self.hub._layout()
+            self.assertIs(self.hub._layout(), first)
+            self.assertEqual(reader.call_count, 1)
+            # An independent connection represents a TUI/other-client writer.
+            writer = split_layout.SidebarLayoutDB()
+            writer.toggle_session_pin("claude:a", promote_to_group=False)
+            pinned = self.hub._layout()
+            self.assertIn("claude:a", pinned.pinned_session_keys)
+            self.assertNotIn("codex:b", pinned.pinned_session_keys)
+            self.assertFalse(pinned.pinned_group_ids)
+            self.assertEqual(reader.call_count, 2)
+            writer.toggle_session_pin("claude:a", promote_to_group=False)
+            self.assertNotIn("claude:a", self.hub._layout().pinned_session_keys)
+            self.assertEqual(reader.call_count, 3)
+
+    def test_mobile_layout_read_failure_does_not_poison_cache(self) -> None:
+        first = self.hub._layout()
+        with mock.patch.object(self.hub.layout_db, "read_revision", side_effect=OSError("unavailable")):
+            self.assertIsNone(self.hub._layout())
+        self.assertIs(self.hub._layout(), first)
+
     def test_set_group_creates_named_group_and_emits_event(self) -> None:
         snap = self.hub.layout_set_group("/p", ["claude:a", "codex:b"], "codex:b")
         self.assertEqual(len(snap["groups"]), 1)

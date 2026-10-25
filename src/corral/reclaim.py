@@ -31,6 +31,7 @@ import fcntl
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -365,7 +366,60 @@ def _parse_mem_available_ratio(text: str) -> float | None:
     return int(available) / total
 
 
+_LIBC = None
+
+
+def _sysctlbyname(name: str, size: int) -> bytes | None:
+    """Read a sysctl in-process; None on any failure."""
+    global _LIBC
+    try:
+        import ctypes
+
+        if _LIBC is None:
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.sysctlbyname.argtypes = (
+                ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+                ctypes.c_void_p, ctypes.c_size_t,
+            )
+            libc.sysctlbyname.restype = ctypes.c_int
+            _LIBC = libc
+        buffer = ctypes.create_string_buffer(size)
+        length = ctypes.c_size_t(size)
+        if _LIBC.sysctlbyname(name.encode(), buffer, ctypes.byref(length), None, ctypes.c_size_t(0)) != 0:
+            return None
+        if length.value > size:
+            return None
+        return buffer.raw[:length.value]
+    except Exception:  # noqa: BLE001 - fall back to the command
+        return None
+
+
+def _sysctl_native(name: str) -> str | None:
+    """Same text ``sysctl -n`` prints for the two keys the probe reads.
+
+    The remote refresh loop and scan worker probe pressure every second; two
+    ``sysctl`` children per probe cost more CPU than the rest of an idle tick.
+    """
+    if name == "vm.swapusage":
+        raw = _sysctlbyname(name, 32)  # struct xsw_usage
+        if raw is None or len(raw) != 32:
+            return None
+        total, _available, used = struct.unpack_from("=QQQ", raw)
+        mib = 1024 * 1024
+        return f"total = {total / mib:.2f}M used = {used / mib:.2f}M free = {(total - used) / mib:.2f}M"
+    if name != "kern.memorystatus_vm_pressure_level":
+        return None
+    raw = _sysctlbyname(name, 8)
+    if raw is None or len(raw) not in (4, 8):
+        return None
+    return str(int.from_bytes(raw, sys.byteorder, signed=True))
+
+
 def _sysctl(name: str) -> str | None:
+    if sys.platform == "darwin":
+        value = _sysctl_native(name)
+        if value is not None:
+            return value
     try:
         return subprocess.check_output(
             ["sysctl", "-n", name], stderr=subprocess.DEVNULL, timeout=2,

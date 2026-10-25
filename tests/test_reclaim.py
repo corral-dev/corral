@@ -12,7 +12,9 @@ import io
 import os
 import pty
 import shutil
+import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -275,6 +277,34 @@ class ApplyTests(unittest.TestCase):
 
 
 class MemoryPressureTests(unittest.TestCase):
+    def test_native_sysctl_decodes_darwin_values(self) -> None:
+        swap = struct.pack("=QQQII", 100 * 1024**2, 40 * 1024**2, 60 * 1024**2, 4096, 1)
+        with mock.patch.object(reclaim, "_sysctlbyname", return_value=swap):
+            self.assertAlmostEqual(reclaim._parse_swap_ratio(reclaim._sysctl_native("vm.swapusage")), 0.6)
+        for size in (4, 8):
+            for level in (1, 2, 4):
+                raw = level.to_bytes(size, sys.byteorder, signed=True)
+                with self.subTest(size=size, level=level), \
+                        mock.patch.object(reclaim, "_sysctlbyname", return_value=raw):
+                    self.assertEqual(reclaim._sysctl_native("kern.memorystatus_vm_pressure_level"), str(level))
+
+    def test_native_sysctl_failure_or_bad_size_falls_back_to_command(self) -> None:
+        for name in ("vm.swapusage", "kern.memorystatus_vm_pressure_level"):
+            for raw in (None, b"", b"bad"):
+                with self.subTest(name=name, raw=raw), \
+                        mock.patch.object(reclaim.sys, "platform", "darwin"), \
+                        mock.patch.object(reclaim, "_sysctlbyname", return_value=raw), \
+                        mock.patch.object(reclaim.subprocess, "check_output", return_value=b"fallback") as command:
+                    self.assertEqual(reclaim._sysctl(name), "fallback")
+                    self.assertEqual(command.call_args.args[0], ["sysctl", "-n", name])
+
+    def test_native_sysctl_success_avoids_subprocess(self) -> None:
+        with mock.patch.object(reclaim.sys, "platform", "darwin"), \
+                mock.patch.object(reclaim, "_sysctlbyname", return_value=(2).to_bytes(4, sys.byteorder)), \
+                mock.patch.object(reclaim.subprocess, "check_output") as command:
+            self.assertEqual(reclaim._sysctl("kern.memorystatus_vm_pressure_level"), "2")
+            command.assert_not_called()
+
     def test_parse_swap_ratio(self) -> None:
         text = "total = 10240.00M  used = 9115.06M  free = 1124.94M  (encrypted)"
         self.assertAlmostEqual(reclaim._parse_swap_ratio(text), 9115.06 / 10240.0, places=4)
