@@ -131,6 +131,10 @@ class FulltextSearchTests(unittest.TestCase):
         ]
         with (
             mock.patch.object(hub.store, "get_conversation", return_value=conversation, create=True),
+            # Index construction reads through the unretained variant so a
+            # one-shot search pass cannot fill the preview cache.
+            mock.patch.object(hub.store, "get_conversation_for_index",
+                              return_value=conversation, create=True),
             mock.patch.object(hub.store, "get_title", return_value="Relay work"),
         ):
             result = hub.fulltext_search("timeout")
@@ -185,12 +189,16 @@ class FulltextSearchTests(unittest.TestCase):
 
         self.addCleanup(cleanup)
         with mock.patch.object(hub.store, "get_title", return_value="Title"):
-            with mock.patch.object(hub.store, "get_conversation", return_value=[
+            with (mock.patch.object(hub.store, "get_conversation", return_value=[
                 ConversationMessage("user", "old searchable message", 1),
-            ]):
+            ]),
+                  mock.patch.object(hub.store, "get_conversation_for_index", return_value=[
+                ConversationMessage("user", "old searchable message", 1),
+            ])):
                 self.assertEqual(hub.fulltext_search("old")["total"], 1)
             session["file_mtime"] = (session.get("file_mtime") or 0) + 1
             with (mock.patch.object(hub.store, "get_conversation", side_effect=slow_read),
+                  mock.patch.object(hub.store, "get_conversation_for_index", side_effect=slow_read),
                   mock.patch.object(index, "refresh", side_effect=refresh)):
                 worker = threading.Thread(target=hub._search_loop, daemon=True)
                 hub._threads = [worker]

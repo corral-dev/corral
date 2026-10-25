@@ -11,6 +11,7 @@ from corral.attention import AttentionEvidence, AttentionState, AttentionStore
 from corral.attention_signals import inspect_session
 from corral.cache import cache_dir, get_cache
 from corral.cache import enabled as cache_enabled
+from corral.conversation_cache import ConversationCache
 from corral.display import (
     _filter_sessions_by_query,
 )
@@ -235,7 +236,14 @@ class SessionStore:
         self._deleted: set[str] = set()
         # 值是 (读取时的历史文件 mtime, 消息列表)；文件 mtime 变化就重读，
         # 修掉"同一次 corral 内 / 关闭预览重开还是旧内容"的问题。
-        self.conversations: dict[str, tuple[float | None, list[ConversationMessage]]] = {}
+        # 有字节预算的 LRU：预览与搜索未命中都会读整份对话，无上限会把所有
+        # 读过的会话一直留在内存里（TUI 与远程服务各一份）。
+        self.conversations: ConversationCache = ConversationCache()
+        # 同一会话的并发读取只解析一次；搜索建索引与界面预览同时命中时，
+        # 后到的线程复用先到线程的结果，而不是各读一遍几十 MB 的历史。
+        self._conversation_load_locks: dict[str, threading.Lock] = {}
+        # 删除/占位卡退役时递增；加载中的旧任务完成后不得把已删除会话重新塞回缓存。
+        self._conversation_generations: dict[str, int] = {}
         self._cache_mtime: float = self._cache_file_mtime()
         self._projects: list[dict] | None = None  # 项目聚合缓存，仅在 load() 时失效
         # 稳定的展示顺序（跨运行时会话键）：列表展示出来后已有会话位置固定，
@@ -1731,7 +1739,7 @@ class SessionStore:
             self._order = [k for k in self._order if k != key]
             self.display_titles.pop(key, None)
             self.generating.discard(key)
-            self.conversations.pop(key, None)
+            self._invalidate_conversation(key)
             self.hosted.pop(key, None)
             self._provisional.pop(key, None)
             self._force_ended.discard(key)
@@ -1842,7 +1850,7 @@ class SessionStore:
             self._order = [item for item in self._order if item != key]
             self.display_titles.pop(key, None)
             self.generating.discard(key)
-            self.conversations.pop(key, None)
+            self._invalidate_conversation(key)
             self.attention_states.pop(key, None)
             self._cursor_attention_signatures.pop(key, None)
             self._attention_evidence_cache.pop(key, None)
@@ -1998,6 +2006,25 @@ class SessionStore:
         except OSError:
             return (main.st_mtime_ns, main.st_size, None, None)
 
+    def _invalidate_conversation(self, key: str) -> None:
+        """Forget one cached conversation and fence off an in-flight reload.
+
+        Caller holds ``self.lock`` (``remove_session`` / provisional retirement).
+        The generation bump means a loader that started before the removal
+        cannot repopulate the cache after it finishes.
+        """
+        self.conversations.pop(key, None)
+        self._conversation_generations[key] = self._conversation_generations.get(key, 0) + 1
+
+    def _conversation_load_lock(self, key: str) -> threading.Lock:
+        """Return the per-session single-flight lock (created on first use)."""
+        with self.lock:
+            lock = self._conversation_load_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._conversation_load_locks[key] = lock
+            return lock
+
     def get_conversation(self, session: dict) -> list[ConversationMessage]:
         """按需读取并缓存选中会话的真实聊天记录；历史文件 mtime 变化（有新写入）时自动
         重读，供预览页关闭重开和停留期间的轮询刷新使用。"""
@@ -2005,30 +2032,76 @@ class SessionStore:
             # 终端 pane 没有助手历史，也不属于任何注册的运行时；右栏 HUD / 预览
             # 会把它们当普通会话轮询，这里直接给空对话，避免一路查到底层运行时。
             return []
+        return self._read_conversation(session, admit=True)
+
+    def get_conversation_for_index(self, session: dict) -> list[ConversationMessage]:
+        """Read one conversation for one-shot index construction, unretained.
+
+        Search rebuilds visit every changed session once. Admitting those reads
+        to ``conversations`` would retain the whole corpus a second time even
+        though the index only needs each list transiently. Existing valid cache
+        entries are reused; fresh reads are returned without insertion.
+        """
+        if is_shell_session(session):
+            return []
+        return self._read_conversation(session, admit=False)
+
+    def _read_conversation(self, session: dict, *, admit: bool) -> list[ConversationMessage]:
+        """Shared cached read path for previews and one-shot index builds.
+
+        Concurrent readers of the same session share one native read. The
+        per-session lock is never held while acquiring another key's lock, and
+        ``self.lock`` is only held around cache bookkeeping, never disk I/O.
+        """
         key = session_key(session)
         path = str(session.get("path") or "")
         version = self._conversation_version(session)
         with self.lock:
-            cached = self.conversations.get(key)
+            cached = (
+                self.conversations.get(key) if admit else self.conversations.peek(key)
+            )
             if cached is not None and cached[0] == version:
                 return list(cached[1])
-        runtime_id = str(session.get("source") or "")
-        persistent = get_cache().get_conversation(runtime_id, key, path) if path else None
-        if persistent is not None:
+        with self._conversation_load_lock(key):
             with self.lock:
-                self.conversations[key] = (version, list(persistent))
-            return list(persistent)
-        runtime = self.registry.get(runtime_id)
-        messages = runtime.load_conversation(session)
+                cached = (
+                    self.conversations.get(key) if admit else self.conversations.peek(key)
+                )
+                if cached is not None and cached[0] == version:
+                    return list(cached[1])
+                generation = self._conversation_generations.get(key, 0)
+            runtime_id = str(session.get("source") or "")
+            persistent = (
+                get_cache().get_conversation(runtime_id, key, path) if path else None
+            )
+            if persistent is not None:
+                if admit:
+                    self._admit_conversation(key, version, persistent, generation)
+                return list(persistent)
+            runtime = self.registry.get(runtime_id)
+            messages = runtime.load_conversation(session)
+            if admit:
+                self._admit_conversation(key, version, messages, generation)
+            # 还在写的会话不落盘：助手每写一次历史，签名就变一次、缓存必然失效，落盘
+            # 只是白写。右栏小窗和"在别的窗口跑"的对话都会每隔几秒重读一次，真按 mtime
+            # 落盘就变成几秒一次的整份 JSON 写库 + prune（缓存到上限后还要删行、
+            # checkpoint）。内存缓存照常更新，会话结束后的第一次读取会补上落盘。
+            if path and not session.get("live"):
+                get_cache().put_conversation(runtime_id, key, path, list(messages))
+            return messages
+
+    def _admit_conversation(
+        self,
+        key: str,
+        version: object | None,
+        messages: list[ConversationMessage],
+        generation: int,
+    ) -> None:
+        """Insert into the byte-budgeted cache unless the key was removed meanwhile."""
         with self.lock:
-            self.conversations[key] = (version, list(messages))
-        # 还在写的会话不落盘：助手每写一次历史，签名就变一次、缓存必然失效，落盘
-        # 只是白写。右栏小窗和"在别的窗口跑"的对话都会每隔几秒重读一次，真按 mtime
-        # 落盘就变成几秒一次的整份 JSON 写库 + prune（缓存到上限后还要删行、
-        # checkpoint）。内存缓存照常更新，会话结束后的第一次读取会补上落盘。
-        if path and not session.get("live"):
-            get_cache().put_conversation(runtime_id, key, path, list(messages))
-        return messages
+            if self._conversation_generations.get(key, 0) != generation:
+                return
+            self.conversations[key] = (version, messages)
 
     def peek_conversation(
         self, session: dict, *, stale_ok: bool = False

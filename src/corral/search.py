@@ -342,7 +342,11 @@ def _meta_text(session: dict, title: str) -> str:
 def _build_entry(store, session: dict, signature: tuple) -> _Entry:
     """读一个会话的对话正文并拆成行；读失败时留空条目，不让整轮建索引中断。"""
     try:
-        messages = store.get_conversation(session)
+        # One-shot indexing must not retain every full conversation in the
+        # preview cache. SessionStore exposes an unretained read; fake stores in
+        # tests keep the historical single-method contract.
+        loader = getattr(store, "get_conversation_for_index", None)
+        messages = loader(session) if callable(loader) else store.get_conversation(session)
     except Exception:
         # A transient read failure must neither persist an empty conversation
         # nor mark this signature current forever. Retry on the next refresh.
