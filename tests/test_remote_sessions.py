@@ -62,6 +62,7 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.addCleanup(split_layout.reset_default_layout_db)
         self.hub = SessionHub(scan_limit=10)
         self.hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(self.hub.layout_db.close)
 
     def tearDown(self) -> None:
         self.hub.stop()

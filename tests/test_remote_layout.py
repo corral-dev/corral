@@ -25,6 +25,8 @@ class LayoutHubTests(unittest.TestCase):
         self.events: list[tuple[str, dict]] = []
         self.hub = SessionHub(scan_limit=10, on_event=lambda ch, data: self.events.append((ch, data)))
         self.hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(self.hub.layout_db.close)
+        self.addCleanup(self.hub.stop)
         # Keys resolve to themselves; resolution against scanned history is not under test.
         mock.patch.object(self.hub, "resolve_session_key", side_effect=lambda key: key).start()
         self.addCleanup(mock.patch.stopall)
@@ -44,6 +46,7 @@ class LayoutHubTests(unittest.TestCase):
             self.assertEqual(reader.call_count, 1)
             # An independent connection represents a TUI/other-client writer.
             writer = split_layout.SidebarLayoutDB()
+            self.addCleanup(writer.close)
             writer.toggle_session_pin("claude:a", promote_to_group=False)
             pinned = self.hub._layout()
             self.assertIn("claude:a", pinned.pinned_session_keys)
@@ -118,7 +121,9 @@ class LayoutHubTests(unittest.TestCase):
         self.hub._emit_layout_if_changed(force=True)
         self.events.clear()
         # The TUI writes the shared store directly (another process in real life).
-        split_layout.SidebarLayoutDB().set_group("/p", ["claude:a", "codex:b"])
+        writer = split_layout.SidebarLayoutDB()
+        self.addCleanup(writer.close)
+        writer.set_group("/p", ["claude:a", "codex:b"])
         self.hub._emit_layout_if_changed()
         self.hub._emit_layout_if_changed()
         layout_events = [data for channel, data in self.events if channel == "layout"]
