@@ -1365,6 +1365,13 @@ class EmbedPane(Widget):
         """需要整篇排版 + detail_offset 窗口的静态内容（含托管首帧前回退）。"""
         return self._is_detail_view() or self._is_hosted_fallback()
 
+    def has_scrollable_detail(self) -> bool:
+        """Whether the HUD's latest row has a scroll position to return to.
+
+        A live terminal capture has none, so the row stays hidden there.
+        """
+        return self._uses_detail_window()
+
     def _detail_full_strips(self) -> list[Strip]:
         """把详情全文编译成完整 Strip 列表（高度不限），供窗口切片与滚动上限计算。"""
         key = (id(self._detail_renderer), self.size.width, self.visual_style)

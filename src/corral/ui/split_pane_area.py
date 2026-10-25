@@ -373,7 +373,8 @@ class PaneCell(Vertical):
         )
         yield _PaneFooter(classes="footer")
         # 浮层放在最后：同层内单独排版，dock 到右上角，不参与上面三个的纵向堆叠。
-        yield SessionHud(self._toggle_hud_local, classes="hud")
+        yield SessionHud(self._toggle_hud_local, on_jump_latest=self._jump_detail_latest,
+                         classes="hud")
 
     def on_session_hud_prompt_selected(self, event: SessionHud.PromptSelected) -> None:
         event.stop()
@@ -511,12 +512,23 @@ class PaneCell(Vertical):
                 self._hud_data,
                 expanded=self._hud_effective_expanded(),
                 compact=0 < width < HUD_EXPAND_MIN_PANE_WIDTH,
+                can_jump_latest=self._can_jump_latest(),
             )
 
     def _toggle_hud_local(self) -> None:
         """点小窗只切本格；其它格与全局开关不动。"""
         self._hud_override = not self._hud_effective_expanded()
         self._apply_hud()
+
+    def _jump_detail_latest(self) -> None:
+        """HUD last row: return this cell only (End still scrolls every cell)."""
+        pane = self.embed_pane()
+        if pane is not None:
+            pane.scroll_detail_end()
+
+    def _can_jump_latest(self) -> bool:
+        pane = self.embed_pane()
+        return pane is not None and pane.has_scrollable_detail()
 
     def clear_hud_override(self) -> None:
         self._hud_override = None

@@ -307,11 +307,13 @@ class SessionHud(Widget):
     }
     """
 
-    def __init__(self, on_toggle: Callable[[], None] | None = None, **kwargs) -> None:
+    def __init__(self, on_toggle: Callable[[], None] | None = None,
+                 on_jump_latest: Callable[[], None] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = HudData(0, ())
         self._expanded = False
         self._pressed_entry: int | None = None
+        self._pressed_latest = False
         self._press_timer = None
         # Clicked-row navigation status keyed by source message index:
         # ("locating", "") or ("failed", reason text).
@@ -320,6 +322,11 @@ class SessionHud(Widget):
         self._spinner_timer = None
         self._status_timers: dict[int, object] = {}
         self._on_toggle = on_toggle
+        self._on_jump_latest = on_jump_latest
+        # Expanded-only last row that returns the pane to the latest position
+        # (owner requirement 2026-10-25). Hidden while the pane has no scroll
+        # position to return to (a live terminal capture).
+        self._can_jump_latest = False
         # 展开态正文的滚动位置（行）。`lines()` 每次按实际可见高度重算上限并夹紧，
         # 所以窗口变小、内容变少都不会滚出界。默认钉在最底（最新提问）；用户上滚
         # 后取消钉底，新内容到来不再强行跳回；滚回底部或重新展开后恢复钉底。
@@ -332,16 +339,20 @@ class SessionHud(Widget):
 
     # ---- 外部驱动 ----
 
-    def update_data(self, data: HudData | None, *, expanded: bool, compact: bool = False) -> None:
+    def update_data(self, data: HudData | None, *, expanded: bool, compact: bool = False,
+                    can_jump_latest: bool = False) -> None:
         """喂新数据；data 为空（没有提问）时整个小窗不出现。"""
         changed = (
             (data or HudData(0, ())) != self._data
             or expanded != self._expanded
             or compact != self._compact
+            or can_jump_latest != self._can_jump_latest
         )
         self._compact = compact
+        self._can_jump_latest = can_jump_latest
         if changed:
             self._pressed_entry = None
+            self._pressed_latest = False
         if expanded != self._expanded:
             # 每次重新展开都钉在最新；沿用上次的上滚位置会让人以为最新提问丢了。
             self._stick_bottom = True
@@ -518,7 +529,12 @@ class SessionHud(Widget):
             return out
 
         body = self._expanded_body(width, stripe_on)
-        capacity = len(body) if max_height is None else max(1, max_height - 2)
+        # The latest row is fixed: it never scrolls out of the window and the
+        # collapse hint below it stays the only exit (owner requirement
+        # 2026-10-25).
+        latest = self._latest_row(width) if self._can_jump_latest else None
+        reserved = 2 + (1 if latest is not None else 0)
+        capacity = len(body) if max_height is None else max(1, max_height - reserved)
         self._max_scroll = max(0, len(body) - capacity)
         if self._stick_bottom:
             self._scroll = self._max_scroll
@@ -526,12 +542,26 @@ class SessionHud(Widget):
             self._scroll = max(0, min(self._scroll, self._max_scroll))
         window = body[self._scroll:self._scroll + capacity]
         hint = t("hud.collapse_hint_scroll") if self._max_scroll else t("hud.collapse_hint")
-        return [
+        out = [
             Text(fit_cell(t("hud.title", count=data.count), width, ellipsis=True),
                  style="bold", no_wrap=True),
             *window,
-            Text(fit_cell(hint, width, ellipsis=True), style="dim", no_wrap=True),
         ]
+        if latest is not None:
+            out.append(latest)
+        out.append(Text(fit_cell(hint, width, ellipsis=True), style="dim", no_wrap=True))
+        return out
+
+    def _latest_row(self, width: int) -> Text:
+        """Fixed last row: return this pane to the latest position."""
+        line = Text(no_wrap=True)
+        label = t("hud.jump_latest")
+        line.append("↓ ", style="dim")
+        line.append(fit_cell(label, max(1, width - 2), ellipsis=True))
+        if self._pressed_latest:
+            line.pad_right(max(0, width - text_width(line.plain)))
+            line.stylize(self.get_component_rich_style("session-hud--pressed"))
+        return line
 
     def get_content_width(self, container: Size, viewport: Size) -> int:
         if not self._data or container.width < _MIN_PANE_WIDTH:
@@ -576,11 +606,20 @@ class SessionHud(Widget):
 
     # ---- Interaction: rows navigate; header/footer collapse without taking focus. ----
 
+    def _latest_local_y(self) -> int | None:
+        """Content-relative row of the fixed latest row, if it is shown."""
+        if not self._can_jump_latest or not self._expanded:
+            return None
+        return self.content_size.height - 2
+
     def _entry_at(self, y: int) -> int | None:
         if not self._expanded:
             return None
         local_y = y - self.styles.padding.top
-        if not 0 < local_y < self.content_size.height - 1:
+        body_end = self.content_size.height - 1
+        if self._latest_local_y() is not None:
+            body_end -= 1
+        if not 0 < local_y < body_end:
             return None
         width = self.content_size.width or self._inner_width(self.container_size.width)
         self.lines(width, self.content_size.height or None)
@@ -638,6 +677,7 @@ class SessionHud(Widget):
 
     def _clear_pressed(self) -> None:
         self._pressed_entry = None
+        self._pressed_latest = False
         self.refresh()
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -646,6 +686,12 @@ class SessionHud(Widget):
         if event.button == 1:
             if self._press_timer is not None:
                 self._press_timer.stop()
+            if self._latest_local_y() == event.y - self.styles.padding.top:
+                self._pressed_entry = None
+                self._pressed_latest = True
+                self.refresh()
+                return
+            self._pressed_latest = False
             self._pressed_entry = self._entry_at(event.y)
             self.refresh()
 
@@ -659,6 +705,15 @@ class SessionHud(Widget):
     def on_click(self, event: events.Click) -> None:
         event.stop()
         if event.button != 1:
+            return
+        if self._latest_local_y() == event.y - self.styles.padding.top:
+            if self._press_timer is not None:
+                self._press_timer.stop()
+            self._pressed_entry = None
+            self._pressed_latest = False
+            self.refresh()
+            if self._on_jump_latest is not None:
+                self._on_jump_latest()
             return
         index = self._entry_at(event.y)
         if index is not None:

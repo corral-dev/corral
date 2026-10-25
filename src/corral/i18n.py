@@ -141,14 +141,17 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "This prompt is no longer in the agent's terminal.",
         "zh": "这条提问已不在助手终端中。",
     },
+    "hud.jump_latest": {
+        "en": "Back to latest",
+        "zh": "回到最新",
+    },
     "hud.collapse_hint": {
         "en": "Click to collapse",
         "zh": "点击收起",
     },
     "hud.collapse_hint_scroll": {
         "en": "Click to collapse · scroll for more",
-        "zh": "点击收起 · 滚轮看更多",
-    },
+        "zh": "点击收起 · 滚轮看更多",    },
     "action.quit": {
         "en": "Quit",
         "zh": "退出",

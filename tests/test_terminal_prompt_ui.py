@@ -11,6 +11,7 @@ from unittest import mock
 from textual.app import App
 from textual.screen import Screen
 
+from corral.i18n import t
 from corral.models import ConversationMessage
 from corral.ui.controllers.hud_controller import HudControllerMixin
 from corral.ui.session_hud import HudData, SessionHud, prompt_identity, summarize_user_messages
@@ -24,10 +25,11 @@ class PromptApp(App):
         super().__init__()
         self.selected = []
         self.toggles = 0
+        self.latest_jumps = 0
         self.identities = []
 
     def compose(self):
-        self.hud = SessionHud(self.toggle)
+        self.hud = SessionHud(self.toggle, on_jump_latest=self.jump_latest)
         self.hud.update_data(HudData(3, (("12:00", "first prompt"),
                                        ("12:01", "long 中文提问 " * 12),
                                        ("12:02", "last prompt"))), expanded=True)
@@ -36,6 +38,9 @@ class PromptApp(App):
     def toggle(self):
         self.toggles += 1
         self.hud.update_data(self.hud.data, expanded=not self.hud.expanded)
+
+    def jump_latest(self):
+        self.latest_jumps += 1
 
     def on_session_hud_prompt_selected(self, event):
         self.selected.append(event.body)
@@ -94,6 +99,58 @@ class PromptHitTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(hud.expanded)
             self.assertEqual(app.toggles, 2)
+
+    async def test_latest_row_returns_the_pane_without_collapsing_or_selecting(self):
+        app = PromptApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            hud = app.hud
+            hud.update_data(hud.data, expanded=True, can_jump_latest=True)
+            await pilot.pause()
+            rows = hud.size.height
+            await pilot.click(hud, offset=(3, rows - 3))
+            await pilot.pause()
+            self.assertEqual(app.selected, ["last prompt"])
+            await pilot.click(hud, offset=(3, rows - 2))
+            await pilot.pause()
+            self.assertIn(t("hud.jump_latest"), hud.render().plain)
+            self.assertEqual(app.latest_jumps, 1)
+            self.assertEqual(app.selected, ["last prompt"])
+            self.assertEqual(app.toggles, 0)
+            self.assertTrue(hud.expanded)
+            # The collapse hint below the latest row is still the only exit.
+            await pilot.click(hud, offset=(3, rows - 1))
+            await pilot.pause()
+            self.assertEqual(app.toggles, 1)
+            self.assertFalse(hud.expanded)
+
+    async def test_latest_row_only_lists_while_a_detail_window_can_scroll(self):
+        app = PromptApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            hud = app.hud
+            hud.update_data(hud.data, expanded=True, can_jump_latest=False)
+            await pilot.pause()
+            self.assertNotIn(t("hud.jump_latest"), hud.render().plain)
+            hud.update_data(hud.data, expanded=True, can_jump_latest=True)
+            await pilot.pause()
+            self.assertIn(t("hud.jump_latest"), hud.render().plain)
+
+    async def test_latest_row_never_scrolls_out_of_the_window(self):
+        app = PromptApp()
+        async with app.run_test(size=(100, 12)) as pilot:
+            await pilot.pause()
+            hud = app.hud
+            data = HudData(30, tuple(("12:00", f"prompt {i}") for i in range(30)))
+            hud.update_data(data, expanded=True, can_jump_latest=True)
+            await pilot.pause()
+            self.assertGreater(hud._scroll, 0)
+            plain = hud.render().plain
+            self.assertIn(t("hud.jump_latest"), plain)
+            self.assertIn(t("hud.collapse_hint_scroll"), plain)
+            await pilot.click(hud, offset=(3, hud.size.height - 2))
+            await pilot.pause()
+            self.assertEqual(app.latest_jumps, 1)
 
     async def test_scrolled_hit_uses_visible_window(self):
         app = PromptApp()
