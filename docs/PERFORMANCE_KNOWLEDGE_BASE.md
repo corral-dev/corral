@@ -199,6 +199,21 @@ Decision: the worker backs off full parses while consecutive parses show an unch
 
 **修完后验收**：必须完全退出再开 TUI（旧进程仍跑旧代码）。再读 `~/.cache/corral/events.log`：助手流式写入期间应出现 `reason=refresh_live` + `cache_hit=true`；若仍全是 `reason=refresh` 且每 3–4s 一条、`duration_ms` 经常数百毫秒以上，先核版本号与 SessKit ≥0.1.2，再查是否两扇窗口 / `remote on` 同盘重复扫。
 
+### Warm list scans rebuild only changed sessions (SessKit 0.2.19, 2026-10-25)
+
+Symptom: with five live OpenCode TUIs writing history, `corral.scan_worker` (child of `corral remote _serve`) held a steady ~50% of one core and accumulated 14.5 min CPU in 1.5 h. `sample`/`py-spy` showed the worker inside SessKit's list path, not Corral orchestration; the 2 s poll floor and churn backoff were working as designed, but every pass still re-parsed every listed session.
+
+Two SessKit list-path defects, both invisible from Corral:
+
+1. OpenCode's list-level `scan_signature` hashed every tracked row value, so each WAL change read ~1 GB of message bodies: 1.2–1.5 s CPU per fingerprint.
+2. `scan_sessions` rebuilt every listed record on every pass: OpenCode decoded all 470 v2 transcripts and Pi reread all 210 listed JSONL files whenever one session changed.
+
+Fix (SessKit 0.2.19, published as a versioned artifact): message bodies contribute their byte length (`octet_length`; `length` before SQLite 3.43) instead of content, and a bounded `ListRecordMemo` reuses built records keyed by native source state (OpenCode: session row plus message count/max/sum `time_updated`/sum `seq`/sum byte length; Pi: inode, size, mtime and ctime in ns) plus the host's cache tag and excerpt transform. A version mismatch always rebuilds, versions are read before the build, and `refresh_session` keeps reading fresh. Corral consumes it through the complete pin: `scripts/sesskit_dep.py`, `pyproject.toml` (`sesskit>=` plus the uv source), the `install.sh` curl|bash fallback, the `updater.py` mirror and `uv.lock`.
+
+Measured on the 988 MB live database with one session appending between passes: pass CPU 3.70 s → 0.40 s (9.4×), wall 2.48 s → 0.25 s; the restarted worker then held 2% of one core. List output stayed byte-identical on a fixed snapshot and on live data (only the actively written session differed, as expected). Parity and timing scripts: dump `scan_sessions` from both interpreters and diff the JSON; never judge this from one warm pass, because `registry.scan_all` reuses its in-process signature cache when the database is quiet and hides the churn cost.
+
+Remaining, separate from this fix: while a live TUI animates (spinner/clock at roughly 15 fps) the native Mac client spends about 50% of one core in `TerminalView.buildAttributedString` plus CoreGraphics/Vision compositing; the host mirror is behaving as designed. Treat that as a client rendering issue, not a scan regression.
+
 **已落地（v0.24.308，2026-10-15 异机 Pi 现场实锤）**：周期整机卡死 13~16s（`tui_stall` / `tui_stall_recovered` 同 `stall_id`、同 `pid`），根因不是扫描慢，而是 `_merge_scanned` 持 `SessionStore.lock` 的区间内逐占位卡 fork `tmux has-session`（`_reconcile_provisional_sessions` → `pane_liveness` / `is_alive`，忙时单次可达 1.5s；509 会话 × 约 25~30ms ≈ 13~16s），0.5s UI 标题轮询（`poll_title_updates`）撞同一把锁。现场栈：UI 线程停在 `with self.lock` 的 C 级 acquire，刷新线程停在 `subprocess._wait`。修法：锁外快照存活态（`_probe_provisional_liveness`；`alive`/`dead` 短路、仅 `unknown` 走 `is_alive`），锁内只查表、不确定保卡。回归：`test_provisional_order.py` 断言探测时锁空闲（旧代码必挂）。禁止把探测加回锁内；存活态禁止跨刷新 TTL 缓存（沿 v0.24.185 第 2 条）。
 
 **P1 裁定（2026-10-15，用户体验优先，机主授权 agent 定）**：OpenCode 列表签名覆盖 `message` / `session_message` 含 `data` 列（SessKit `parsers/opencode.py` `_SIGNATURE_TABLES`），流式输出每块都改变指纹 → `cache_hit` 永 False；本机实测 632MB 库单次签名约 1s 且背靠背不稳定。**不做消息不敏感签名**：`_merge_live_state` 只刷新托管标注与关注态，`_freshen_from_disk` 只覆盖 `claude/codex/pi` 文件型运行时——opencode 卡片的相对时间在签名稳定期间会冻住，这是可见倒退，而后台 CPU 是 P0/P2 之后不可见的。注意：P2 共享命中后 TUI 直接跳过签名计算，P1 的界面影响自然消失，只剩后台单解析进程的固有哈希成本。纯降本（不改变翻转语义，如按计数而非 data 哈希）可后续单独立项，需 SessKit 发版 + 升 pin，本轮不做。
