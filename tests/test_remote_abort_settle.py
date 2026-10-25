@@ -67,8 +67,13 @@ class AbortSettleTests(unittest.TestCase):
         self._time = mock.patch.object(
             remote_sessions.time, "time", side_effect=lambda: self.clock
         )
+        self._mono = mock.patch.object(
+            remote_sessions.time, "monotonic", side_effect=lambda: self.clock
+        )
         self._time.start()
+        self._mono.start()
         self.addCleanup(self._time.stop)
+        self.addCleanup(self._mono.stop)
 
     def _abort_hooks(self) -> list:
         return [

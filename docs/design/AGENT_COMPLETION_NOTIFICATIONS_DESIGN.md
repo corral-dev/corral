@@ -448,6 +448,11 @@ Slice 1/2 可先按“有 `completion_id` 则用、无则对 DONE 保守静默�
   `terminal_error_retryable`，复用 `sesskit.errors` 的封闭分类与 `retryable`
   语义；只从决定 `STATUS_ABORTED` 的同一份有界尾部证据推导，禁止 Corral 对
   `last_agent` 文本做第二套正则判断。仅 `aborted` 行带这两个字段；其它状态省略。
+- **重试已用尽不算“临时异常”**（2026-10-25 review 修正，SessKit 0.2.18）：
+  运行时已经重试并放弃（`after N retry attempts` 等）属于终局失败，
+  `terminal_error_retryable=False`；确定性的请求校验错误
+  （`bad_request` / `invalid_request` / `invalid_output`）同样不可重试。
+  它们走“异常中断”通知，不再被默认为可自动恢复而静音。
 - **Corral 口径**：`retryable is True` → `transient`；`False` → `aborted`
   （立即）；缺失或 `None` → 按 `aborted`，但要等沉降窗口。
 - **沉降窗口**：`transient` 与未知结局在 `ABORTED` 持续 75 秒、期间没有新一轮
