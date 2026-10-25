@@ -155,8 +155,8 @@ Read the documents whose described content is relevant before deciding or editin
 
 ## 发版要求
 
-- 产品行为或代码修复完成后必须发布新版本（补丁位递增），同步 `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`。以 `release: vX.Y.Z …` 提交、打 annotated tag、推送 `github` 与 `origin`，再运行 `bash scripts/publish-release.sh`。纯文档或规则整理且不改变产品行为时可不 bump 版本。
-- 完工时按全局无条件 ship-all 规则集成、验证并交付完整当前工作区，包括其他 Agent 的改动；脏树、foreign WIP 或并行发布窗口不构成只发布部分内容或延后的理由。不得搬走、隐藏、丢弃其他人的文件。失败检查要在完整工作区上查明并修复，不能缩小验证或发布范围。
+- 每次改完（2026-10-25 机主决定，权威见 [发版管家指南](~/.config/agentsync/docs/RELEASE_TRAIN_GUIDE.md)）：验证后提交并推送自己的改动到 `origin` 与 `github`，确认本机 editable 安装（`corral --version` 的 `package_file`）已加载新代码，需要时重启远程服务并在受影响端验收。不得提交、搬走、隐藏或丢弃其他 Agent 未提交的文件；失败检查要查明归属并修复自己的部分。
+- 公开发版由发版管家执行（机主要求、每日空闲定时，或修复已发布版本的严重缺陷时运行 `python3 ~/.config/agentsync/scripts/release_train.py now corral-cli`），不要自己打 tag。发版步骤本身不变：补丁位递增并同步 `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`，以 `release: vX.Y.Z …` 提交、打 annotated tag、推送 `github` 与 `origin`，再运行 `bash scripts/publish-release.sh`；只发已提交的内容。
 - 本机发布路径必须完成完整验证和干净安装核验，不以 tag 或 CI 队列状态代替实际发布；具体顺序与远端核对见 `docs/MAINTAINER_GUIDE.md`「开源发布 / 多 Agent 并行时的发版卫生」。
 
 ## 验证要求
