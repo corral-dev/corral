@@ -589,14 +589,24 @@ Acceptance: the affected real session resumed through `embed.host_session` (the
 same call the TUI, Mac and iPhone use), stayed alive with its TUI drawn for
 30 s, and the stale lock was replaced by the new PID. Delivery accepted below.
 
-Delivery status at investigation closure: the recovery implementation is in
-source (extension 1.2.0), with 29 focused tests and the native recovery path
-verified. It has not been published or installed. A full 2686-test run completed
-with both failed UI cases passing its isolated retries, but concurrent source
-edits invalidated the final workspace verification/stamp. That run and the
-scratch wheels are not release evidence for the current tree. Follow the
-[existing readiness and release workflow](../AGENT_WORKFLOW_GUIDE.md) against
-the final integrated workspace before reporting the recovery fix as shipped.
+Delivery: extension 1.2.1 ships in CLI commit `d2ea743` (pushed to `origin` and
+`github`). The full gate (`scripts/ci-test.py`, 2821 tests) passes with Ruff
+clean; the editable install already serves this source (`corral --version`
+0.24.353, `package_file` in the checkout) and the remote service was restarted
+onto it (pid 4019, relay online, paired Mac reconnected). `/Applications`
+clients needed no rebuild: the ownership decision lives in the extension
+installed on the host, which now reports version 1.2.1 and
+`sha256 bbb1e506…`.
+
+Limits: the Mac window was not re-captured for this session because a
+concurrent performance task owned the GUI during acceptance; its pane and
+attach path are unchanged and were observed working in the owner's own report.
+The iPhone client was not exercised (host-side fix only; the phone was not in
+use for this acceptance).
+
+The earlier 1.2.0 conflict-notification work is now delivered inside extension
+1.2.1 and installed locally; the 2686-test run recorded at that investigation's
+closure never served as release evidence and is superseded by the gate above.
 
 Fixture diagnostics are separate from product diagnostics: the historical
 0.99.1 npm dependency `node-domexception` emits a deprecation notice during
