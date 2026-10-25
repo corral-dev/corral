@@ -32,7 +32,11 @@ below; this supersedes item 6 and refines item 2:
   its pickers drop down **in place**, anchored directly below the clicked chip,
   not as a centered dialog that forces the pointer to travel. Options are
   clickable immediately; outside click or Escape closes. Keep at least one blank
-  cell between the Project chip and the checkbox.
+  cell between the Project chip and the checkbox. The box is placed before the
+  first paint: no top-left frame followed by a jump under the chip.
+- **Selected options show a `✓`** in the built-in mark column (green), while
+  unselected rows show no mark. Textual's native inner `X` reads as "remove"
+  and must not be used; the row fill remains as a second selection cue.
 
 Lesson: density must not cost scanability (aligned columns, breathing room), and
 a popup for a frequent action must open where the pointer already is.
@@ -55,13 +59,14 @@ selection, brand-colored top-bar add-pane chips and the "Advanced" naming.
 2. **One filter row.** `Agent: All ▾`, `Project: All ▾` and an `Active`
    checkbox share one row at the default 39-cell width. Agent/Project chips
    show the dimension and current value: `All`, one name, or `name +N`; values
-   truncate before the checkbox loses space. Clicking opens a multi-select
-   dropdown anchored directly under the clicked chip, never a centered dialog;
-   Project is searchable and the option list scrolls. At least one blank cell
-   separates the Project chip from the checkbox. Clear and Done stay in the
-   dropdown; outside click or Escape closes it. Selection semantics are
-   unchanged: union within a dimension, intersection across Agent, Project,
-   text and Active.
+   truncate before the checkbox loses space, and at the tightest widths the
+   dimension prefix yields before the value and arrow (fixed chip order keeps
+   the identity). Clicking opens a multi-select dropdown anchored directly
+   under the clicked chip, never a centered dialog; Project is searchable and
+   the option list scrolls. At least one blank cell separates the Project chip
+   from the checkbox. Clear and Done stay in the dropdown; outside click or
+   Escape closes it. Selection semantics are unchanged: union within a
+   dimension, intersection across Agent, Project, text and Active.
 3. **Active** is the native Textual `Checkbox` (compact, no border), replacing
    the `ActiveFilterCard` row and its two-block Switch. It shows no count; the
    input's count already reports the result, so no number can disagree with the
@@ -271,7 +276,7 @@ corral 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 侧边栏会话列表 | 左栏的搜索框、新建入口、会话组三行卡和会话三行卡 | `SessionListView`、`SessionGroupCard`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话；有关键字时框体高亮（`-active`） | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式。索引正文去掉行内 Markdown 标记（粗体、行内代码、删除线、标题/引用/列表前缀、代码围栏、表格分隔线、链接地址），Corral 接力提示词只索引继承的任务、不索引摘录的他人会话正文（2026-10-18，与 Mac ⌘F 共用；改清洗规则须递增 `search.py` 的条目格式号让派生缓存失效） |
-| Runtime and project quick filters | One row at the default 39-cell width: `Agent: All ▾` and `Project: All ▾` picker chips plus the native `Active` checkbox. Chips show `All`, one name or `name +N`; values truncate before the checkbox. Pickers open an in-place multi-select dropdown anchored under the clicked chip (Project searchable) with Clear/Done; outside click or Escape closes. At least one blank cell separates the Project chip and the checkbox. Neutral colors in the row; brand colors only inside the Agent picker. Hover/focus never adds white fill, underlines or frames. | Owner redesign 2026-10-25 and the same-day in-place correction supersede the inline quick-choice rows; see One-pass visual redesign and Owner correction above. Reuse Button and the native SelectionList/Checkbox with terminal-cell measurement. Multi-select unions intersect with text and Active. Mouse and native keyboard selection remain available. Only five active runtimes appear. Apple ordering is governed by the Apple UI KB. |
+| Runtime and project quick filters | One row at the default 39-cell width: `Agent: All ▾` and `Project: All ▾` picker chips plus the native `Active` checkbox. Chips show `All`, one name or `name +N`; values truncate before the checkbox. Pickers open an in-place multi-select dropdown anchored under the clicked chip (Project searchable) with Clear/Done; outside click or Escape closes. Selected options carry a green `✓`, unselected rows no mark. At least one blank cell separates the Project chip and the checkbox. Neutral colors in the row; brand colors only inside the Agent picker. Hover/focus never adds white fill, underlines or frames. | Owner redesign 2026-10-25 and the same-day in-place correction supersede the inline quick-choice rows; see One-pass visual redesign and Owner correction above. Reuse Button and the native SelectionList/Checkbox with terminal-cell measurement. Multi-select unions intersect with text and Active. Mouse and native keyboard selection remain available. Only five active runtimes appear. Apple ordering is governed by the Apple UI KB. |
 | 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提示词，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或任意焦点按 `Ctrl+N`（与 `Ctrl+F` / `Ctrl+P` 同级的全局键），或右栏顶栏点助手加格；打开弹窗时光标必须在项目筛选框，立刻可打字；单字母 `n` 不绑 |
 | Runtime names in dialogs | New Session and the runtime handoff picker reuse `theme.runtime_label_style` for Agent names, including focused and selected rows. Unavailable runtimes keep their brand color with dim styling; project labels and action hints retain their existing styles. | Owner correction 2026-10-11. Reuse the existing Rich Text labels and native Textual ListView selection background; do not recolor every row uniformly. |
