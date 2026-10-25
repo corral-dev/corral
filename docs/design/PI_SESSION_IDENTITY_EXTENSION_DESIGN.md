@@ -557,6 +557,38 @@ or reproduce the reported blank screen. Mac/iPhone terminal surfaces consume
 the same host-owned Pi output; their physical clients were not exercised for
 this extension-only change.
 
+### 9.6 PID reuse locked a session out of every client (owner report 2026-10-25)
+
+Owner report: opening a Pi session in the Mac client showed the restart prompt
+instead of its agent TUI, and Restart made the TUI appear for a moment before
+the pane returned to that prompt. Reproduced on the host: `session.resume`
+started the agent, the pane drew its TUI, and then Pi exited **cleanly (status
+0)** after about four seconds, so the terminal stream ended and the client fell
+back to Return to restart.
+
+Cause: the ownership lock for that session was left behind by the Pi process
+that died at 15:18. macOS had since reassigned the recorded PID to an unrelated
+system process, and 1.2.0 only checked `process.kill(pid, 0)`. `removeDeadOwner`
+therefore judged the lock live, `session_start` reported a conflict and called
+`ctx.shutdown()`, and every later resume of that conversation exited the same
+way. A stale lock whose PID is dead reclaims normally; only PID reuse triggered
+this permanent lockout. Copying the same JSONL to another path reproduced the
+TUI normally, which isolated the cause to the lock file rather than history.
+
+Correction (extension 1.2.1): an owner still counts as live only when the PID is
+alive **and** the process start time reported by `ps -p <pid> -o lstart=` matches
+the recorded `processStartedAt` within three seconds (second-level `ps` rounding
+plus sampling jitter). Locks without `processStartedAt` (1.1) and lookups that
+fail keep the conservative "still owned" answer, so a real concurrent writer is
+never displaced. Both the acquisition retry and the `/resume` pre-check use the
+same predicate. Regression coverage in `tests/test_pi_extension.py` forces a
+reused PID (reclaimed), a matching start time (still refused) and an
+unverifiable start time (still refused).
+
+Acceptance: the affected real session resumed through `embed.host_session` (the
+same call the TUI, Mac and iPhone use), stayed alive with its TUI drawn for
+30 s, and the stale lock was replaced by the new PID. Delivery accepted below.
+
 Delivery status at investigation closure: the recovery implementation is in
 source (extension 1.2.0), with 29 focused tests and the native recovery path
 verified. It has not been published or installed. A full 2686-test run completed

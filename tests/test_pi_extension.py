@@ -160,6 +160,41 @@ class PiExtensionOwnershipTests(unittest.TestCase):
         self.assertEqual(result["notifications"], [])
         self.assertEqual(json.loads(self.target_lock.read_text())["pid"], result["pid"])
 
+    def test_reused_pid_is_reclaimed_instead_of_blocking_the_session(self) -> None:
+        # Owner killed at 2026-09-13; macOS later handed its PID to an unrelated
+        # process. Liveness alone must not keep the session locked forever.
+        self.owner.update(pid=os.getpid(),
+                          processStartedAt="2026-09-13T04:00:00.000Z")
+        self.write_owner(self.target, self.owner)
+        result = self.run_extension(
+            sessionFile=str(self.target), sessionId="target", target=None,
+            processStarts={str(os.getpid()): "2026-10-25T10:06:12.000Z"},
+        )
+        self.assertFalse(result["shutdown"])
+        self.assertEqual(result["notifications"], [])
+        self.assertEqual(json.loads(self.target_lock.read_text())["pid"], result["pid"])
+
+    def test_live_owner_with_matching_start_time_still_wins(self) -> None:
+        self.owner.update(pid=os.getpid(),
+                          processStartedAt="2026-09-13T04:00:00.000Z")
+        self.write_owner(self.target, self.owner)
+        result = self.run_extension(
+            sessionFile=str(self.target), sessionId="target", target=None,
+            processStarts={str(os.getpid()): "2026-09-13T04:00:00.000Z"},
+        )
+        self.assertTrue(result["shutdown"])
+        self.assertEqual(json.loads(self.target_lock.read_text()), self.owner)
+
+    def test_unverifiable_start_time_keeps_the_conflict(self) -> None:
+        self.owner.update(pid=os.getpid(),
+                          processStartedAt="2026-09-13T04:00:00.000Z")
+        self.write_owner(self.target, self.owner)
+        # No `processStarts` entry: the fixture's `ps` fails, as it does when the
+        # process table cannot be read. Uncertainty never reclaims the lock.
+        result = self.run_extension(sessionFile=str(self.target), sessionId="target", target=None)
+        self.assertTrue(result["shutdown"])
+        self.assertEqual(json.loads(self.target_lock.read_text()), self.owner)
+
     def test_symlink_target_does_not_bypass_live_owner(self) -> None:
         link = self.root / "alias.jsonl"
         link.symlink_to(self.target)

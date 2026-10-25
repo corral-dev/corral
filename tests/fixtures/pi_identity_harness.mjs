@@ -15,7 +15,17 @@ process.env.TMUX_TMPDIR = spec.agentDir;
 // A regression fixture must never query the developer's real tmux sessions.
 const realExec = childProcess.execFileSync;
 childProcess.execFileSync = (command, args, options) => {
-	if (command === "ps") return spec.parents;
+	if (command === "ps") {
+		// Ownership checks read a process start time; the fixture answers it
+		// directly instead of inspecting this machine's real processes.
+		if (args.includes("lstart=")) {
+			const pid = args[args.indexOf("-p") + 1];
+			const started = spec.processStarts?.[pid];
+			if (started === undefined) throw new Error(`ps: no such process: ${pid}`);
+			return `${started}\n`;
+		}
+		return spec.parents;
+	}
   if (command !== "tmux") return realExec(command, args, options);
   const socket = args[args.indexOf("-S") + 1];
   if (spec.slowTmux) throw new Error("fixture lookup timed out");

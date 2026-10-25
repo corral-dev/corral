@@ -33,7 +33,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
 const PROTOCOL_VERSION = 1;
-const EXTENSION_VERSION = "1.2.0";
+const EXTENSION_VERSION = "1.2.1";
 const IDENTITY_DIRNAME = "corral-session-identity";
 /** 心跳间隔；Corral 读取侧按 4 个周期（60s）判定 claim 过期。 */
 const HEARTBEAT_MS = 15_000;
@@ -144,12 +144,52 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
+	/** 冲突路径才查一次启动时间；按 pid + 记录值缓存，避免每次输入都 fork `ps`。 */
+	const ownerStartTimes = new Map<string, number | null>();
+
+	function processStartMillis(pid: number, recorded: number): number | null {
+		const key = `${pid}:${recorded}`;
+		if (ownerStartTimes.has(key)) return ownerStartTimes.get(key) ?? null;
+		let millis: number | null = null;
+		try {
+			const text = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+				encoding: "utf-8",
+				timeout: 750,
+				stdio: ["ignore", "pipe", "ignore"],
+				// lstart 是本地化日期文本；固定 C 语言环境才能稳定解析。
+				env: { ...process.env, LC_ALL: "C", LANG: "C" },
+			}).trim();
+			const parsed = Date.parse(text);
+			millis = Number.isFinite(parsed) ? parsed : null;
+		} catch {
+			millis = null;
+		}
+		ownerStartTimes.set(key, millis);
+		return millis;
+	}
+
+	/** `ps` 只到秒，`processStartedAt` 带毫秒：容差覆盖舍入与取时刻的抖动。 */
+	const START_TIME_TOLERANCE_MS = 3_000;
+
+	function ownerProcessAlive(owner: Record<string, unknown>): boolean {
+		const pid = Number(owner.pid ?? 0);
+		if (!processAlive(pid)) return false;
+		// 1.1 owner 没有启动时间：只能按 pid 存活判断，保守保留。
+		const recorded = Date.parse(String(owner.processStartedAt ?? ""));
+		if (!Number.isFinite(recorded)) return true;
+		const actual = processStartMillis(pid, recorded);
+		// 查不到启动时间（ps 缺失/超时）时保守认为仍被占用。
+		if (actual === null) return true;
+		return Math.abs(actual - recorded) <= START_TIME_TOLERANCE_MS;
+	}
+
 	function removeDeadOwner(path: string): boolean {
 		const owner = readOwner(path);
 		// 损坏 owner 且无法证明原进程已死时保守冲突，不擅自删除。
 		if (!owner) return false;
-		const pid = Number(owner.pid ?? 0);
-		if (processAlive(pid)) return false;
+		// macOS 会复用 pid：锁里的 pid 活着但它已经不是当初那个进程（启动
+		// 时间不一致）时必须当作残留回收，否则这条会话会被永久锁死。
+		if (ownerProcessAlive(owner)) return false;
 		try {
 			// 删除前再回读 token，避免 stale 检查后锁已被后来者替换。
 			const current = readOwner(path);
@@ -218,7 +258,7 @@ export default function (pi: ExtensionAPI): void {
 		if (ownershipHeld && path === ownerPath) return false;
 		const current = readOwner(path);
 		if (!current) return false;
-		if (!processAlive(Number(current.pid ?? 0)) && removeDeadOwner(path)) return false;
+		if (!ownerProcessAlive(current) && removeDeadOwner(path)) return false;
 		return true;
 	}
 
