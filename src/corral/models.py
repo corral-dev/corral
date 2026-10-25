@@ -51,6 +51,7 @@ class Handoff:
     original_cwd: str
     history_reading_hint: str
     conversation_digest: str = ""
+    package_path: str = ""
 
     def render_prompt(self) -> str:
         """生成目标运行时收到的首条用户提示词。"""
@@ -65,6 +66,8 @@ class Handoff:
                 hint=self.history_reading_hint,
             ),
         ]
+        if self.package_path:
+            sections.append(t("handoff.package", path=self.package_path))
         if self.conversation_digest:
             sections.append(t("handoff.digest_intro", digest=self.conversation_digest))
             sections.append(t("handoff.read_with_digest"))

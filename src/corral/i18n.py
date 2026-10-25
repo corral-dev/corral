@@ -852,6 +852,19 @@ _MESSAGES: dict[str, dict[str, str]] = {
         ),
         "zh": "原会话历史文件：{path}\n原工作目录：{cwd}\n历史格式提示：{hint}",
     },
+    "handoff.package": {
+        "en": (
+            "Handoff package (read this first): {path}\n"
+            "It holds every user message verbatim, the recent conversation and tool activity "
+            "verbatim, any in-flight operation, and the workspace state at handoff time. "
+            "The history file above stays authoritative."
+        ),
+        "zh": (
+            "接力包（请先读）：{path}\n"
+            "其中有全部用户消息原文、最近对话与工具调用原文、交接时仍在进行的操作，以及交接时的工作区状态。"
+            "上述历史文件仍是权威来源。"
+        ),
+    },
     "handoff.digest_intro": {
         "en": (
             "Below is a conversation excerpt automatically extracted from the original session "

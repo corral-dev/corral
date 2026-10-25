@@ -89,6 +89,18 @@ flowchart TD
 - 解析异常或没有可用对话时，静默回退到扫描阶段已有的首尾消息；再无内容则保留空串，接力仍可继续。
 - 原始历史永远是权威：提示词必须说明摘录是截断版，要求目标助手以它为线索核对、补全源文件与工作区事实。
 
+### 3.2a 接力包（handoff package，2026-10-25 owner-adopted）
+
+The inline digest alone lost detail: eight count-based slots were often filled by repeated "continue" turns and progress narration, 200-character clipping cut owner corrections, tool activity was absent, and the target spent its first turns re-reading multi-megabyte raw histories. Coding-agent compaction practice keeps the user's words and a recent verbatim tail by token budget: Codex keeps recent user messages verbatim up to 20k tokens, Pi keeps `keepRecentTokens` (default 20000) of recent history, Claude Code's compact summary lists all user messages and quotes the latest exchange verbatim ([Codex analysis](https://gist.github.com/sam-saffron-jarvis/30403c1bc5682bf9f69fa00933aad815), [Pi compaction](https://pi.dev/docs/latest/compaction), [Claude Code compact prompt](https://github.com/noelzappy/claude-code-system-prompts/blob/main/prompts/21_compact_service.md)).
+
+Every handoff therefore also writes a deterministic Markdown package under `<Corral cache>/handoff/` and the prompt names its path (`handoff_package.py`). It never calls a model: handoffs commonly happen because quota is exhausted.
+
+1. **All user messages, verbatim**, oldest first, with nested handoff prompts peeled to their task. Consecutive identical short messages collapse to one line with a count. Each message keeps up to 4,000 characters; when the total exceeds the user-message budget, keep the first message and the newest messages and state how many were omitted.
+2. **Recent tail, verbatim, by character budget** (about 15–20k tokens), not by message count, from the normalized rich reader (`remote/richmsg.RichReader`): assistant text in full, each tool call as one line (kind, summary, status), and the output head/tail for the last few tool calls. The last still-running tool call is called out as the in-flight operation.
+3. **Workspace state at handoff**: for the source cwd (or its immediate child Git repositories), branch, `git status --short`, diff stat and recent commits, each bounded and time-limited.
+
+Package generation is best-effort: any failure leaves `package_path` empty and the prompt falls back to the inline digest plus raw history. The raw history remains authoritative; the package is the first file to read, not a replacement. Packages older than 14 days are pruned when a new one is written. The same package path reaches `corral context` because both consume `Handoff.render_prompt`. Completion state is still never injected (§4.4).
+
 ### 3.3 启动计划（LaunchPlan）
 
 LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试、托管或最终执行层安全消费。

@@ -92,6 +92,11 @@ corral plan continue <会话> --instruction "继续完成剩余工作并汇报�
 截断版）——摘录给目标运行时一个任务与进展锚点，原始历史文件仍是权威来源，目标运行时应以摘录
 为线索去读取历史、判断已完成和未完成的部分。
 
+`suggested_prompt` 还会写明本次生成的接力包路径（同时作为 `handoff_package` 字段返回，生成失败时为
+`null`）。接力包是 `<Corral 缓存>/handoff/` 下的 Markdown 文件，权限 0600、保留 14 天，内含全部用户
+消息原文、按字数预算截取的最近对话与工具调用原文、交接时仍在进行的操作和工作区 Git 状态；它不调用
+模型。因此每次 `corral context` 会写出一个新的接力包文件，但不启动会话、不改写原历史。
+
 `corral plan continue` 用于调用方需要把同运行时续接交给后台执行器时。它会依据运行时适配器返回
 `session_ref`、`runtime`、原 `cwd`、能力边界和 `launch`；其中 `launch.argv` 是**参数数组**，新指令
 作为一个独立元素保留，调用方必须以 `execve` / `subprocess` 的 argv 形式执行，不能重新拼成 shell

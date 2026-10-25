@@ -229,6 +229,12 @@ class BaseRuntime(ABC):
         history_path = os.path.abspath(raw_history_path)
         if not os.path.isfile(history_path):
             raise LaunchError(t("launch.history_missing", path=history_path))
+        try:
+            messages = self.load_conversation(session)
+        except Exception:
+            messages = []
+        from corral.handoff_package import write_package
+
         return Handoff(
             source_runtime_id=self.id,
             source_runtime_name=self.display_name,
@@ -236,10 +242,16 @@ class BaseRuntime(ABC):
             history_path=history_path,
             original_cwd=str(session.get("cwd") or ""),
             history_reading_hint=self.history_reading_hint,
-            conversation_digest=self._conversation_digest(session),
+            conversation_digest=self._conversation_digest(session, messages),
+            package_path=write_package(
+                runtime_name=self.display_name,
+                session={**session, "source": self.id},
+                history_path=history_path,
+                conversation=messages,
+            ),
         )
 
-    def _conversation_digest(self, session: SessionInfo) -> str:
+    def _conversation_digest(self, session: SessionInfo, messages: list[ConversationMessage]) -> str:
         """构建接力提示词里的对话摘录；任何失败都降级为空串，不阻断接力。
 
         标题最长十几个字，作为任务说明极度有损；原始 JSONL 尾部又常是工具结果、
@@ -248,11 +260,6 @@ class BaseRuntime(ABC):
         做锚点。角色标"用户"而不是"你"——摘录是给接手的大模型看的，"你"会被
         误解为指它自己。
         """
-        try:
-            messages = self.load_conversation(session)
-        except Exception:
-            messages = []
-
         lines: list[str] = []
         if messages:
             recent = messages[-_DIGEST_RECENT_COUNT:]

@@ -904,6 +904,7 @@ def cmd_context(args, registry) -> dict:
         "history_path": handoff.history_path,
         "history_reading_hint": handoff.history_reading_hint,
         "suggested_prompt": handoff.render_prompt(),
+        "handoff_package": handoff.package_path or None,
         "resume_command": resume_command,
     })
 
@@ -1231,6 +1232,7 @@ COMMANDS = [
             "history_path": "历史 JSONL 文件绝对路径",
             "history_reading_hint": "如何解读该运行时历史格式的提示",
             "suggested_prompt": "跨运行时接力时建议使用的首条提示词（人类或 Agent 可直接复用）；内含会话状态和从原会话自动提取的对话摘录，原始历史文件仍是权威来源",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "handoff_package": "本次生成的接力包 Markdown 绝对路径（全部用户消息原文、最近对话与工具调用原文、交接时工作区状态）；生成失败为 null",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "resume_command": "同运行时原生恢复该会话的 shell 命令（可能为 null）",
         },
     },

@@ -63,6 +63,11 @@ The tool reads these files to build a recent-session list, extract a compact pre
 - Share transcripts exported from the TUI Advanced menu under `~/.cache/corral/share/` (the same
   `corral.share/v1` JSON as `corral share`, including conversation text, thinking, and tool I/O).
   The directory follows `CORRAL_CACHE_DIR` / XDG like other cache files. Nothing in it is uploaded.
+- Handoff packages under `~/.cache/corral/handoff/`, written each time you hand a session to another
+  assistant (TUI, phone/Mac remote) or run `corral context`. Each Markdown file (mode 0600) contains
+  that session's user messages, recent assistant text and tool activity, and the Git status of its
+  working directory. Packages older than 14 days are deleted on the next handoff. The directory
+  follows `CORRAL_CACHE_DIR` / XDG; nothing is uploaded or sent to a model.
 - Corral's bundled Pi identity extension under `~/.pi/agent/extensions/corral-session-identity/`,
   plus content-free process/session claims and single-writer locks under
   `~/.pi/agent/corral-session-identity/`. They contain local identifiers, paths, PIDs, timestamps,
