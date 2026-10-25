@@ -22,6 +22,7 @@ Help and version queries must not import SessKit parsers or initialize the histo
 - [派生缓存边界](#派生缓存边界)
 - [原生扩展与分发](#原生扩展与分发)
 - [测量与验收](#测量与验收)
+- [Remote session-open path](#remote-session-open-path-2026-10-25)
 
 ## 系统高负载下的调度优先级（为什么「自己不重却卡」）
 
@@ -502,3 +503,16 @@ Asyncio debug mode also reported 101 existing UI fixture callbacks over its 100m
 | `SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group()` | 1 | 0.134–0.134 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
 | `Timer._run_timer()` | 7 | 0.103–0.158 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
 | `UpdateCheckWorkerTests.test_dismiss_calls_mark_dismissed_and_hides_toast()` | 1 | 0.111–0.111 | Existing UI fixture scheduling; retain with the bounded risk/follow-up above |
+
+## Remote session-open path (2026-10-25)
+
+「打开一个会话要等几秒、终端一直转 Connecting、电脑忙时整机卡」在会话量大时由开发机侧决定，不是客户端渲染问题。权威规则、协议约束与验收口径见 [远程知识库](REMOTE_KNOWLEDGE_BASE.md#session-open-path-per-session-locks-and-bounded-read-dispatch-2026-10-25)，本节只留性能结论：
+
+- 单份历史的解析锁必须是**按会话**的，不是进程级；同一会话并发只解析一次（single-flight），不同会话并行。
+- 落盘 transcript 对「文件没变」是权威：`exact` 命中时**禁止再 poll**，否则恢复的 SessKit 游标会把整份历史重新物化（缓存命中≈解析成本）。`st_dev` 不参与比较。
+- `session.userPrompts` 的投影必须持久化，不能在每次打开时回溯整份历史。
+- 慢只读 RPC（`session.get/messages/toolDetail/prompts/userPrompts`、`media.image`、`search*`、`projects.list`、`runtimes.list`、`terminal.peek`）走每连接有界并发；输入、attach、布局与变更帧保持原顺序。饱和立即返回可重试 `unavailable`，**禁止**加长客户端超时或排队。
+
+本机实测（988–994 会话，目录每 runtime 上限 200）：未变更会话重开 **119–1157 ms → 2–72 ms**，`userPrompts` 重开 **92–572 ms → 1–104 ms**，两会话并发/串行比 **0.81 → 1.38**，慢读后的 `terminal.attach`/`input.text` **756 ms → 1.5–6.2 ms**；冷解析本身不变（129–972 ms）。`PARSER_VERSION` 提升仍会使全部行失效，这是正确性取舍。
+
+复现：`scripts/remote_open_benchmark.py --json /tmp/x.json`（transcript-cold、隔离临时缓存、不启动扫描 worker）。跨运行不要比绝对毫秒，只比同一次运行里的并发/串行比与重开列。

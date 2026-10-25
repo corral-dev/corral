@@ -165,6 +165,31 @@ _TMUX_KEY_RE = re.compile(
 
 _PUSH_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# Slow read-only methods: a cold multi-MB history parse, a tmux screen capture
+# or an image decode can take seconds. They run on bounded per-connection
+# workers so the serial encrypted channel keeps serving input, terminal attach
+# and short RPCs while one read is in flight. Everything else stays inline:
+# ordering-sensitive input/attach/layout/mutation frames never overtake each
+# other. See `RemoteService.dispatch`.
+_CONCURRENT_READ_METHODS = frozenset(
+    {
+        protocol.M_SESSION_GET,
+        protocol.M_SESSION_MESSAGES,
+        protocol.M_SESSION_TOOL_DETAIL,
+        protocol.M_SESSION_PROMPTS,
+        protocol.M_SESSION_USER_PROMPTS,
+        protocol.M_MEDIA_IMAGE,
+        protocol.M_SEARCH,
+        protocol.M_SEARCH_FULLTEXT,
+        protocol.M_PROJECTS_LIST,
+        protocol.M_RUNTIMES_LIST,
+        protocol.M_TERMINAL_PEEK,
+    }
+)
+# Concurrent slow reads one connection may run. Excess requests get a retryable
+# `unavailable` immediately; they are never queued behind the current read.
+_MAX_CONCURRENT_READS = 8
+
 
 class _DataBind:
     """控制面签发的短时数据面令牌。绑定设备公钥，一次性，超时作废。"""
@@ -204,6 +229,10 @@ class Connection:
         self.instance_id = ""
         self.attached_at = 0.0
         self.terminal_prompt_requests: dict[str, str] = {}
+        # Bounded slots for this connection's slow read-only RPCs (dispatch()).
+        # Per connection, so one device's cold history read cannot make another
+        # device's `projects.list` or `terminal.peek` retry.
+        self.read_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_READS)
 
     def emit(self, message: dict, *, data: bool = False) -> None:
         """按平面发一帧。数据面未附着或 ``data=False`` 时走控制面。"""
@@ -608,6 +637,56 @@ class RemoteService:
                 continue
 
     # -- 消息处理 ---------------------------------------------------------
+
+    def dispatch(self, connection: Connection, message: dict, *, reply=None) -> None:
+        """Transport entry: keep slow read-only RPCs off the serial channel worker.
+
+        A decrypted frame normally runs through `handle` on the channel's reader
+        thread, which keeps input/attach/mutation ordering. A whitelisted read
+        instead takes one of this connection's bounded slots and runs on its own
+        daemon thread, so the next frame (typing, mark-read, terminal attach)
+        never waits behind a cold multi-MB parse. Saturation returns the
+        retryable `unavailable` code immediately; nothing is queued and no
+        client timeout is lengthened.
+
+        Admission, startup readiness, device/read-only checks and handler
+        validation still run through `handle` → `_invoke`.
+        """
+        method = str(message.get("m") or "")
+        if message.get("t") != "req" or method not in _CONCURRENT_READ_METHODS:
+            self.handle(connection, message, reply=reply)
+            return
+        inbound = reply if reply is not None else connection.send
+        req_id = int(message.get("id") or 0)
+        if not connection.read_slots.acquire(blocking=False):
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+            return
+
+        def run() -> None:
+            try:
+                if connection.closed:
+                    return
+                # Re-enters the normal dispatcher: a request that still needs
+                # the first index scan is handed to the bounded startup waiter
+                # and releases this read slot immediately.
+                self.handle(connection, message, reply=inbound)
+            except Exception as exc:
+                # _handle_request already reports handler failures; this covers
+                # admission-level faults (readiness hook, malformed request) so
+                # the client gets a retryable error instead of a silent gap.
+                observe.event("remote_method_failed", method=method, error=str(exc))
+                try:
+                    inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+                except Exception:
+                    pass
+            finally:
+                connection.read_slots.release()
+
+        try:
+            threading.Thread(target=run, daemon=True, name="remote-read-rpc").start()
+        except RuntimeError:
+            connection.read_slots.release()
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
 
     def handle(self, connection: Connection, message: dict, *, reply=None) -> None:
         method = str(message.get("m") or "")

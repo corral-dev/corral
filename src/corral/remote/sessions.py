@@ -379,6 +379,53 @@ class _Transcript:
     messages: list[richmsg.RichMessage]
 
 
+@dataclass
+class _LockEntry:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    users: int = 0
+
+
+class _KeyedLocks:
+    """One mutex per transcript key, dropped as soon as nobody needs it.
+
+    Parsing and paging used to serialize the whole process on a single lock,
+    so opening one 60 MB session stalled every other session and every
+    control-plane read behind it. Per-key locks keep readers of the same
+    transcript serialized (their ``messages`` list and reader cursor must not
+    be mutated concurrently) without coupling unrelated sessions.
+
+    ``users`` counts holders *and* waiters, so an entry is removed only while
+    no thread can still be inside or about to enter it. The map is therefore
+    bounded by concurrent work, never by the number of sessions ever opened.
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._entries: dict[str, _LockEntry] = {}
+
+    @contextlib.contextmanager
+    def hold(self, key: str):
+        with self._guard:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = _LockEntry()
+                self._entries[key] = entry
+            entry.users += 1
+        try:
+            with entry.lock:
+                yield
+        finally:
+            with self._guard:
+                entry.users -= 1
+                if entry.users <= 0 and self._entries.get(key) is entry:
+                    del self._entries[key]
+
+    def tracked(self) -> int:
+        """Number of live entries (diagnostics and tests)."""
+        with self._guard:
+            return len(self._entries)
+
+
 def _same_identity(
     left: tuple[int, int, int, int] | None,
     right: tuple[int, int, int, int] | None,
@@ -522,27 +569,30 @@ def _message_page(
     }
 
 
-def _user_prompt_rows(users: list[richmsg.RichMessage]) -> list[dict]:
-    """Wire rows for session.userPrompts, shrinking texts to stay within budget."""
+def _prompt_row(item: richmsg.RichMessage) -> dict:
+    """One ``session.userPrompts`` row; live and cached projections share it."""
+    text = (item.text or "").strip()
+    row: dict = {
+        "seq": item.seq,
+        "role": "user",
+        "text": text if len(text) <= USER_PROMPT_TEXT_LIMIT else text[:USER_PROMPT_TEXT_LIMIT].rstrip() + "…",
+    }
+    if item.timestamp is not None:
+        row["ts"] = item.timestamp
+    return row
 
-    def rows(limit: int) -> list[dict]:
-        out: list[dict] = []
-        for item in users:
-            text = item.text.strip()
-            row: dict = {
-                "seq": item.seq,
-                "role": "user",
-                "text": text if len(text) <= limit else text[:limit].rstrip() + "…",
-            }
-            if item.timestamp is not None:
-                row["ts"] = item.timestamp
-            out.append(row)
-        return out
 
-    wire = rows(USER_PROMPT_TEXT_LIMIT)
-    if _json_size({"prompts": wire}) > USER_PROMPTS_BYTES:
-        wire = rows(USER_PROMPT_SHORT_TEXT_LIMIT)
-    return wire
+def _fit_prompt_rows(rows: list[dict]) -> list[dict]:
+    """Shrink texts when the whole payload would exceed the wire budget."""
+    if _json_size({"prompts": rows}) <= USER_PROMPTS_BYTES:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        text = str(row.get("text") or "")
+        if len(text) > USER_PROMPT_SHORT_TEXT_LIMIT:
+            row = {**row, "text": text[:USER_PROMPT_SHORT_TEXT_LIMIT].rstrip() + "…"}
+        out.append(row)
+    return out
 
 
 def _continuous_after(
@@ -642,7 +692,9 @@ class SessionHub:
         self._conversations: dict[str, _ConversationWatch] = {}
         self._transcripts: dict[str, _Transcript] = {}
         self._transcript_cache = transcript_cache.TranscriptCache()
-        self._transcript_io = threading.Lock()
+        # Per-session parse/page locks (never one process-wide lock: see
+        # _KeyedLocks).
+        self._transcript_locks = _KeyedLocks()
         self._sessions_watchers = 0
         self._layout_watchers = 0
         self._layout_thread: threading.Thread | None = None
@@ -1009,11 +1061,18 @@ class SessionHub:
                     continue
                 seen_readers.add(reader_id)
                 new_messages: list[richmsg.RichMessage] = []
+                key = watch.canonical_key or watch.key
                 try:
-                    with self._transcript_io:
+                    with self._transcript_locks.hold(key):
+                        # Signature before the poll: the row we write must not
+                        # claim to cover bytes this read may not have seen.
+                        signature = (
+                            history_signature(watch.reader.path)
+                            if watch.reader.path else None
+                        )
                         new_messages = watch.reader.poll()
                         self._publish_reader_update(
-                            watch.canonical_key or watch.key, watch.reader, new_messages
+                            key, watch.reader, new_messages, signature=signature
                         )
                 except Exception:
                     continue
@@ -1395,6 +1454,10 @@ class SessionHub:
 
     def _persist_transcript(self, transcript: _Transcript) -> None:
         runtime = str(transcript.reader.session.get("source") or "")
+        if transcript.signature is None:
+            # No observed signature: never stamp "as of now", or a later cold
+            # open could treat a tail this read never saw as current.
+            return
         try:
             self._transcript_cache.put(
                 runtime,
@@ -1403,11 +1466,18 @@ class SessionHub:
                 transcript.messages,
                 transcript.reader.export_state(),
                 transcript.generation,
+                signature=transcript.signature,
             )
         except Exception:
             return
 
-    def _append_transcript(self, key: str, new_messages: list[richmsg.RichMessage]) -> None:
+    def _append_transcript(
+        self,
+        key: str,
+        new_messages: list[richmsg.RichMessage],
+        *,
+        signature: tuple[int, int, int, int] | None = None,
+    ) -> None:
         with self._lock:
             current = self._transcripts.get(key)
             if current is None or not new_messages:
@@ -1421,12 +1491,19 @@ class SessionHub:
                 else:
                     # Same seq with updated tool status (Claude/Pi result fill-in).
                     current.messages[index] = item
-            current.signature = history_signature(current.path) if current.path else None
+            current.signature = (
+                signature if signature is not None
+                else (history_signature(current.path) if current.path else None)
+            )
             snapshot = current
         self._persist_transcript(snapshot)
 
     def _publish_new_messages(
-        self, transcript_key: str, new_messages: list[richmsg.RichMessage]
+        self,
+        transcript_key: str,
+        new_messages: list[richmsg.RichMessage],
+        *,
+        signature: tuple[int, int, int, int] | None = None,
     ) -> None:
         """规范化游标刚读到的新消息：写入缓存，并推给所有正在看这条会话的手机通道。
 
@@ -1435,7 +1512,7 @@ class SessionHub:
         """
         if not new_messages:
             return
-        self._append_transcript(transcript_key, new_messages)
+        self._append_transcript(transcript_key, new_messages, signature=signature)
         with self._lock:
             targets = [
                 watch
@@ -1453,12 +1530,17 @@ class SessionHub:
                 self._on_event(f"session:{watch.key}", event)
 
     def _publish_reader_update(
-        self, key: str, reader: richmsg.RichReader, messages: list[richmsg.RichMessage]
+        self,
+        key: str,
+        reader: richmsg.RichReader,
+        messages: list[richmsg.RichMessage],
+        *,
+        signature: tuple[int, int, int, int] | None = None,
     ) -> None:
         replacement = reader.take_replacement()
         if replacement is None:
             if messages:
-                self._publish_new_messages(key, messages)
+                self._publish_new_messages(key, messages, signature=signature)
             return
         with self._lock:
             transcript = self._transcripts.get(key)
@@ -1466,7 +1548,10 @@ class SessionHub:
                 return
             transcript.messages = replacement
             transcript.generation += 1
-            transcript.signature = history_signature(transcript.path) if transcript.path else None
+            transcript.signature = (
+                signature if signature is not None
+                else (history_signature(transcript.path) if transcript.path else None)
+            )
             targets = [watch for watch in self._conversations.values()
                        if watch.watchers > 0 and (watch.key == key or watch.canonical_key == key)]
             for watch in targets:
@@ -1482,16 +1567,41 @@ class SessionHub:
                 **page, "kind": "history_reset", "session": watch.key, "resume": "tail",
             })
 
-    def _ensure_transcript(self, session: dict) -> _Transcript:
-        """返回当前会话的规范化消息缓存；文件没变就不重新解析。"""
-        key = session_key(session)
-        path = str(session.get("path") or "")
-        signature = history_signature(path) if path else None
+    def _current_transcript(
+        self,
+        key: str,
+        path: str,
+        signature: tuple[int, int, int, int] | None,
+    ) -> _Transcript | None:
         with self._lock:
             current = self._transcripts.get(key)
             if current is not None and current.path == path and current.signature == signature:
                 return current
-        with self._transcript_io:
+        return None
+
+    def _new_reader(self, session: dict) -> richmsg.RichReader:
+        """Reader factory; tests substitute a deterministic reader."""
+        return richmsg.RichReader(session)
+
+    def _ensure_transcript(self, session: dict) -> _Transcript:
+        """返回当前会话的规范化消息缓存；文件没变就不重新解析。
+
+        Cold loads are serialized per session, not per process: the first
+        caller parses while later callers of the *same* session wait here and
+        then reuse it (one parse, one cache write). Other sessions proceed in
+        parallel, which is what used to stall `session.messages`,
+        `session.prompts` and terminal attach behind one big JSONL.
+        """
+        key = session_key(session)
+        path = str(session.get("path") or "")
+        signature = history_signature(path) if path else None
+        current = self._current_transcript(key, path, signature)
+        if current is not None:
+            return current
+        with self._transcript_locks.hold(key):
+            current = self._current_transcript(key, path, signature)
+            if current is not None:
+                return current
             return self._load_transcript(session, key, path, signature)
 
     def _load_transcript(
@@ -1518,7 +1628,7 @@ class SessionHub:
             generation = current.generation if current is not None else time.time_ns() // 1_000
         if incremental and reader is not None and messages is not None and current is not None:
             new_messages = reader.poll()
-            self._publish_reader_update(key, reader, new_messages)
+            self._publish_reader_update(key, reader, new_messages, signature=signature)
             with self._lock:
                 stored = self._transcripts.get(key)
                 if stored is not None and stored.reader is reader:
@@ -1532,20 +1642,33 @@ class SessionHub:
             return stored
 
         runtime = str(session.get("source") or "")
-        cached = self._transcript_cache.get(runtime, key, path) if path else None
+        # Cold open: the persisted transcript is only usable while nothing
+        # else holds this session's reader. A mismatched in-memory transcript
+        # means a rebuild is already in flight and keeps its own generation.
+        cached = (
+            self._transcript_cache.get(runtime, key, path)
+            if path and current is None else None
+        )
         if cached is not None:
-            messages, state, generation = cached
-            reader = richmsg.RichReader(session)
-            reader.restore_state(state, messages)
-            transcript = _Transcript(key, path, signature, generation, reader, messages)
+            reader = self._new_reader(session)
+            reader.restore_state(cached.state, cached.messages)
+            transcript = _Transcript(
+                key, path, signature, cached.generation, reader, cached.messages
+            )
             self._remember_transcript(transcript)
+            if cached.exact:
+                # The file has not changed since these messages were written,
+                # so there is nothing to poll. Polling anyway would throw the
+                # cache away: SessKit-backed readers cannot page forward from a
+                # restored cursor and re-materialise the whole history.
+                return transcript
             new_messages = reader.poll()
-            self._publish_reader_update(key, reader, new_messages)
+            self._publish_reader_update(key, reader, new_messages, signature=signature)
             if not new_messages:
                 self._persist_transcript(transcript)
             return transcript
 
-        reader = richmsg.RichReader(session)
+        reader = self._new_reader(session)
         messages = reader.read_all(limit=MESSAGE_PAGE_LIMIT)
         rebuilt = current is not None and not incremental
         generation = generation + 1 if rebuilt else generation
@@ -1583,8 +1706,7 @@ class SessionHub:
         session = self.require_session(key)
         transcript = self._ensure_transcript(session)
         if before_seq is not None:
-            with self._transcript_io:
-                self._fill_earlier(transcript, before_seq, limit)
+            self._fill_earlier(transcript, before_seq, limit)
         return _message_page(
             transcript.messages,
             limit=limit,
@@ -1600,18 +1722,22 @@ class SessionHub:
         limit: int,
     ) -> None:
         """内存里没有更早消息时，从窗口左缘再向前读一块并 prepend。"""
-        scoped = [item for item in transcript.messages if item.seq < before_seq]
-        while len(scoped) < max(1, limit) and transcript.reader.has_earlier():
-            older_than = min((item.seq for item in transcript.messages), default=before_seq)
-            try:
-                earlier = transcript.reader.read_earlier(limit, before_seq=older_than)
-            except Exception:
-                break
-            if not earlier:
-                break
-            transcript.messages = earlier + transcript.messages
+        with self._transcript_locks.hold(transcript.key):
             scoped = [item for item in transcript.messages if item.seq < before_seq]
-            self._persist_transcript(transcript)
+            added = False
+            while len(scoped) < max(1, limit) and transcript.reader.has_earlier():
+                older_than = min((item.seq for item in transcript.messages), default=before_seq)
+                try:
+                    earlier = transcript.reader.read_earlier(limit, before_seq=older_than)
+                except Exception:
+                    break
+                if not earlier:
+                    break
+                transcript.messages = earlier + transcript.messages
+                added = True
+                scoped = [item for item in transcript.messages if item.seq < before_seq]
+            if added:
+                self._persist_transcript(transcript)
 
     def tool_detail(
         self,
@@ -1628,8 +1754,7 @@ class SessionHub:
         target = next((item for item in transcript.messages if item.seq == seq), None)
         if target is None:
             # Message may sit earlier than the current window; fill toward seq.
-            with self._transcript_io:
-                self._fill_earlier(transcript, seq + 1, max(1, limit))
+            self._fill_earlier(transcript, seq + 1, max(1, limit))
             target = next((item for item in transcript.messages if item.seq == seq), None)
         if target is None:
             return {
@@ -1663,8 +1788,7 @@ class SessionHub:
         transcript = self._ensure_transcript(session)
         target = next((item for item in transcript.messages if item.seq == seq), None)
         if target is None:
-            with self._transcript_io:
-                self._fill_earlier(transcript, seq + 1, 1)
+            self._fill_earlier(transcript, seq + 1, 1)
             target = next((item for item in transcript.messages if item.seq == seq), None)
         if target is None or not reference or reference not in (target.text or ""):
             raise ActionError("not_found", t("remote.err.image_not_found"))
@@ -1686,19 +1810,94 @@ class SessionHub:
     def user_prompts(self, key: str) -> dict:
         """Every human prompt of the session, oldest first (clients' Your prompts).
 
-        Clients page history in windows, but Your prompts lists the whole session,
-        so the transcript is filled back to its start here. The I/O lock is taken
-        per chunk so other sessions keep opening meanwhile, and the cache is
-        written once at the end. Seqs share the ``session.messages`` space, which
-        lets a client page earlier up to a prompt before jumping to it.
+        Clients page history in windows, but Your prompts lists the whole
+        session, so the first call has to walk back to its first message. That
+        projection is persisted beside the transcript: a repeat or cold open
+        answers from the row and only appends prompts newer than its coverage,
+        instead of paging a 65 MB history again. Seqs share the
+        ``session.messages`` space, which lets a client page earlier up to a
+        prompt before jumping to it.
         """
         from corral.ui.session_hud import is_injected_user_prompt
 
+        def human(messages) -> list:
+            return [
+                item
+                for item in messages
+                if item.role == "user"
+                and (item.text or "").strip()
+                and not is_injected_user_prompt(item.text)
+            ]
+
         session = self.require_session(key)
         transcript = self._ensure_transcript(session)
-        filled = False
-        while transcript.reader.has_earlier():
-            with self._transcript_io:
+        runtime = str(session.get("source") or "")
+        path = str(session.get("path") or "")
+
+        cached = (
+            self._transcript_cache.get_prompts(runtime, key, path, transcript.generation)
+            if path else None
+        )
+        rows = self._project_prompts(session, transcript, human, cached)
+        return {
+            "prompts": _fit_prompt_rows(rows),
+            "generation": transcript.generation,
+            "total": len(rows),
+        }
+
+    def _project_prompts(self, session: dict, transcript: _Transcript, human, cached) -> list[dict]:
+        """Rows for session.userPrompts, extending a cached projection.
+
+        Both phases run under this transcript's lock so the rows and the
+        coverage they claim come from one snapshot: a concurrent append must
+        never be recorded as already projected. The persisted row is a pure
+        cache; when it cannot be used the history is walked instead of
+        returning only the loaded window.
+        """
+        with self._transcript_locks.hold(transcript.key):
+            messages = list(transcript.messages)
+            if cached is not None:
+                rows, covered = cached
+                if self._prompts_covered(transcript, messages, covered):
+                    newer = human([item for item in messages if item.seq > covered])
+                    if not newer:
+                        return rows
+                    rows = rows + [_prompt_row(item) for item in newer]
+                    self._save_prompts(session, transcript, rows, messages)
+                    return rows
+        self._fill_transcript_back(transcript)
+        with self._transcript_locks.hold(transcript.key):
+            messages = list(transcript.messages)
+            rows = [_prompt_row(item) for item in human(messages)]
+            self._save_prompts(session, transcript, rows, messages)
+            return rows
+
+    @staticmethod
+    def _prompts_covered(
+        transcript: _Transcript,
+        messages: list[richmsg.RichMessage],
+        upto_seq: int,
+    ) -> bool:
+        """Does the in-memory window reach back to the cached coverage?
+
+        The projection is only stored after a complete walk, so anything at or
+        below ``upto_seq`` is already in the rows. What must not happen is a
+        gap between ``upto_seq`` and the oldest message still in memory: the
+        prompts in it would silently disappear.
+        """
+        if not transcript.reader.has_earlier():
+            return True
+        if not messages:
+            return False
+        return min(item.seq for item in messages) <= upto_seq + 1
+
+    def _fill_transcript_back(self, transcript: _Transcript) -> int:
+        """Read chunked history back to the session start; returns chunks read."""
+        chunks = 0
+        while True:
+            with self._transcript_locks.hold(transcript.key):
+                if not transcript.reader.has_earlier():
+                    break
                 oldest = min((item.seq for item in transcript.messages), default=1)
                 try:
                     earlier = transcript.reader.read_earlier(
@@ -1708,24 +1907,42 @@ class SessionHub:
                     break
                 if not earlier:
                     break
-                with self._lock:
-                    transcript.messages = earlier + transcript.messages
-                filled = True
-        if filled:
+                transcript.messages = earlier + transcript.messages
+            chunks += 1
+        if chunks:
             self._persist_transcript(transcript)
-        with self._lock:
-            users = [
-                item
-                for item in transcript.messages
-                if item.role == "user"
-                and (item.text or "").strip()
-                and not is_injected_user_prompt(item.text)
-            ]
-        return {
-            "prompts": _user_prompt_rows(users),
-            "generation": transcript.generation,
-            "total": len(users),
-        }
+        return chunks
+
+    def _save_prompts(
+        self,
+        session: dict,
+        transcript: _Transcript,
+        rows: list[dict],
+        messages: list[richmsg.RichMessage],
+    ) -> None:
+        """Persist a complete prompt projection; partial walks are never cached.
+
+        ``rows`` must cover exactly ``messages`` (one snapshot), and
+        ``upto_seq`` is its highest seq — never a newer one from a concurrent
+        append, which would later be treated as already projected.
+        """
+        if transcript.reader.has_earlier():
+            return
+        path = str(session.get("path") or "")
+        if not path:
+            return
+        upto_seq = max((item.seq for item in messages), default=0)
+        try:
+            self._transcript_cache.put_prompts(
+                str(session.get("source") or ""),
+                session_key(session),
+                path,
+                transcript.generation,
+                rows,
+                upto_seq=upto_seq,
+            )
+        except Exception:
+            return
 
     def prompts(self, key: str) -> list[dict]:
         """当前仍待回答的提问型工具调用（含可点选项列表）。"""
@@ -3497,6 +3714,9 @@ class SessionHub:
         hook = self._status_hook
         layout = self._layout()
         now = time.time()
+        # Settle timing must survive wall-clock adjustments (NTP/manual change);
+        # mtime freshness below still uses the wall clock.
+        mono = time.monotonic()
         terminal_payloads: list[dict] = []
         # key -> (identity, session) for every ABORTED row seen this scan.
         seen_aborts: dict[str, tuple[str, dict]] = {}
@@ -3545,7 +3765,7 @@ class SessionHub:
                 if session.get("terminal_error_retryable") is not False:
                     existing = self._pending_abort.get(key)
                     if existing is None or existing[1] != identity:
-                        self._pending_abort[key] = (now, identity)
+                        self._pending_abort[key] = (mono, identity)
                     continue
                 self._emit_notification(payload, abort_kind(payload))
             try:
@@ -3560,7 +3780,7 @@ class SessionHub:
             if seen is None or seen[0] != identity:
                 self._pending_abort.pop(key, None)
                 continue
-            if now - first_seen < _ABORT_SETTLE_SECONDS:
+            if mono - first_seen < _ABORT_SETTLE_SECONDS:
                 continue
             payload = self.session_payload(seen[1], layout)
             self._pending_abort.pop(key, None)

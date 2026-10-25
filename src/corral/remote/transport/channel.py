@@ -48,12 +48,17 @@ def _client_instance(message: dict) -> str:
 class HostChannel:
     """一条设备通道。``writer`` 收 (帧类型, 载荷) 并负责实际发送，必须线程安全。
 
-    每条通道自带一个工作线程：解密与业务处理都在这里串行完成。
+    每条通道自带一个工作线程：解密与顺序敏感的业务处理都在这里串行完成。
 
     **为什么必须串行**：加密用的是逐帧递增的计数器，乱序解密会直接判定失败并
     断开通道。同时业务侧会调用 tmux、扫磁盘这类可能阻塞几十毫秒的操作，放在
     网络事件循环里会拖慢所有其他设备的帧，所以也不能就地处理。一条通道一个
     线程，两个要求同时满足。
+
+    **例外**：少数只读慢调用（多 MB 历史冷解析、屏幕抓取）由
+    ``RemoteService.dispatch`` 交给连接自己的有界读工作线程，避免一次冷解析把
+    后续输入 / ``terminal.attach`` / 标记已读堵在该通道的读线程后面；输入、
+    画面订阅和所有写操作仍按到达顺序就地处理。
     """
 
     def __init__(
@@ -172,7 +177,9 @@ class HostChannel:
             self._confirm_and_attach(message)
         if self._connection is None:
             raise ChannelError("通道未确认")
-        self.service.handle(self._connection, message, reply=self._send_message)
+        # Slow read-only RPCs go to the connection's bounded read workers;
+        # everything else keeps this channel's serial order.
+        self.service.dispatch(self._connection, message, reply=self._send_message)
 
     def _confirm_and_attach(self, message: dict) -> None:
         """首条可解密帧 = 密钥确认。可选校验毫秒时间戳防重放。"""
@@ -223,14 +230,18 @@ class HostChannel:
         observe.event("remote_channel_confirmed", address=self._address)
 
     def _send_message(self, message: dict) -> None:
-        if self._secure is None or self._closed:
-            return
         with self._lock:
+            # Read workers and the reader thread can both reply; check under the
+            # same lock that serialises the counter so a close cannot leave a
+            # half-encrypted frame or an AttributeError behind.
+            secure = self._secure
+            if secure is None or self._closed:
+                return
             payload = protocol.pack(
                 message,
                 compress=self._connection is not None and self._connection.compression_enabled,
             )
-            frame = self._secure.encrypt(payload)
+            frame = secure.encrypt(payload)
             # The counter was assigned just now, so the hand-off must stay inside
             # the lock: a reply and a pushed event racing on two threads would
             # otherwise reach the socket in the wrong order and the client drops

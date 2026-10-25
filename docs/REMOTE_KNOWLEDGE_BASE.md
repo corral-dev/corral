@@ -17,6 +17,7 @@
 - [加密与身份](#加密与身份)
 - [安全边界](#安全边界)
 - [连接策略](#连接策略) · [Same-machine and LAN connections never drop](#same-machine-and-lan-connections-never-drop-owner-requirement-2026-10-05)
+- [Session-open path: per-session locks and bounded read dispatch](#session-open-path-per-session-locks-and-bounded-read-dispatch-2026-10-25)
 - [踩坑](#踩坑)
 - [验证](#验证)
 - [Pairing state recovery](#pairing-test-isolation-and-recovery-2026-10-08)
@@ -423,6 +424,34 @@ Verified 2026-10-25 on the clean-disk run with the same real catalog and encrypt
 Regression coverage: `tests/test_remote_startup_latency.py` exercises the real serial `HostChannel` queue, encryption, admission bound, readiness timeout, revocation recheck, native-prompt admission, and an RPC during a blocked full scan; the remote service, session, transport and connection-stability suites pass together (177 tests). The full 2,763-test gate ran with two failures in concurrent TUI redesign files, not in the remote path.
 
 References: Python documents [thread synchronization](https://docs.python.org/3/library/threading.html) and [CPU-bound executor limits](https://docs.python.org/3/library/asyncio-eventloop.html#executing-code-in-thread-or-process-pools). The inspected existing native-prompt dispatch in `RemoteService.handle` supplies bounded thread admission; reuse that pattern rather than queueing startup waits in the default executor. Public TUI experience likewise motivates [cross-instance background polling deduplication](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/config-reference.md); this change does not implement that separate optimization.
+
+## Session-open path: per-session locks and bounded read dispatch (2026-10-25)
+
+Owner report: with a large catalog every Mac pane took seconds to open (terminal pane showed "Connecting…") and the client stalled overall. The host was the cause, not the client: opening one 60 MB history parsed the whole JSONL **while holding one process-wide lock**, and every RPC on a connection ran inline on that connection's reader thread.
+
+Rules this investigation establishes:
+
+- **One parse lock per transcript, never per process.** `SessionHub._transcript_locks` (`_KeyedLocks`) serializes readers of the *same* session — its `messages` list and reader cursor must not be mutated concurrently — and drops the entry when nobody holds or waits. Single-flight is mandatory: concurrent callers of one cold key must produce one parse and one cache write, not two. The lock map is bounded by concurrent work, not by the number of sessions ever opened.
+- **A persisted transcript row is authoritative for an unchanged file.** The stored signature is the one observed *before* the read, and `exact` (same inode, size and `mtime_ns`, ignoring `st_dev`) means the restored cursor is already current, so the cold open must **not** `poll()`. Polling a restored SessKit cursor re-materialises the whole history (`_cc_full is None`), which silently made cache "hits" cost as much as a parse. `st_dev` is deliberately excluded: macOS changes it for the same inode across boots/volume snapshots (31/542 rows on this host).
+- **`session.userPrompts` must not walk the history on open.** The projection is persisted beside the transcript (`session_prompts`, generation + inode + `upto_seq` gated), extended with prompts newer than its coverage, and only ever stored after a complete walk. A projection that does not reach back to the oldest in-memory message must trigger a walk, never a partial list. Wire shape (`prompts`/`generation`/`total`, 500-char cap with the 160-char shrink above the 1 MB budget) is unchanged, so shipped iPhone/Mac clients need nothing.
+- **Slow read-only RPCs run on bounded per-connection workers; ordering-sensitive frames stay inline.** `RemoteService.dispatch` (transport entry) admits a whitelist — `session.get/messages/toolDetail/prompts/userPrompts`, `media.image`, `search`, `search.fulltext`, `projects.list`, `runtimes.list`, `terminal.peek` — through a per-connection semaphore (8). Saturation returns the retryable `unavailable` immediately: nothing is queued and no client timeout is lengthened. `input.*`, `command.status`, `terminal.input/attach/resize/detach/theme/prompt`, `session.watch/unwatch/markRead`, `layout.*`, `session.new/resume/restart/handoff/copy/stop/delete/pin`, `push.register` and `shell.*` stay on the reader thread in arrival order. Authentication, readonly and handler validation still run through the existing dispatcher.
+- **`terminal.attach` already acknowledges the subscription, not the first screen.** Measurement rejected making the first frame "asynchronous": the capture runs on the stream worker, the attach RPC does not track an injected 400 ms capture delay (attach p50 25–122 ms, first snapshot p50 57–574 ms). What did need fixing was a real race: a stream stopped by `terminal.detach` could still publish its in-flight capture onto `term:<key>`, arriving as the next attachment's first screen with `seq: 1`. Emits now go through a stop-guarded `_publish()`; detach does not wait for the capture.
+
+Measured on this host (988–994 sessions, 3647 history files / 7.1 GB, catalog capped at 200 per runtime):
+
+| signal | before | after |
+|---|---|---|
+| Reopen unchanged session (5 fixtures, 23–128 MB) | 119 – 1157 ms | 2 – 72 ms |
+| Reopen `userPrompts` | 92 – 572 ms | 1 – 104 ms |
+| Two different sessions opened concurrently vs serial (`serial/concurrent`) | 0.81 (all rounds < 1) | 1.38 (all rounds ≥ 1.02) |
+| `terminal.attach` / `input.text` behind a 600 ms `session.prompts` (real channel + encryption) | 756 ms | 1.5 – 6.2 ms |
+| Cold parse of an unchanged file (`read_all`) | 129 – 972 ms | unchanged by design |
+
+Cache audit behind the reopen win: of 542 live transcript rows, only 52 were exact hits under the old rule; 58 % were `PARSER_VERSION` drift, 25 % genuinely changed files, 6 % differed in `st_dev` only. New rule: 83 exact + 135 resumable = 40 % usable. **`PARSER_VERSION` must stay in the key** — reusing a row across a parser change can move seqs or reclassify a user message, so the first open after a bump re-parses; that cost is accepted, not a bug.
+
+Known limits after this change: `session.watch` still runs inline (it owns subscribe state), so a cold multi-MB watch can still delay a following frame on that device; a grown Claude/Codex file still pays a full re-materialisation on its first open (restored SessKit readers cannot page forward — that is `richmsg.py`); exact hits still JSON-decode 20–78 ms for 1.6–3.4 MB payloads; the daemon must be restarted to load the new code.
+
+Evidence: `tests/test_remote_transcript_concurrency.py`, `tests/test_remote_user_prompts_cache.py`, `tests/test_remote_dispatch_concurrency.py`, `tests/test_remote_terminal_attach_first_frame.py`, and the reproducible harness `scripts/remote_open_benchmark.py` (`--json`/`--markdown`; transcript-cold, isolated temp cache, never starts the scan worker). Harness numbers must be compared within one run — the `serial/concurrent` ratio is the load-robust signal, absolute milliseconds are not.
 
 ## 踩坑
 

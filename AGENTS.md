@@ -83,7 +83,7 @@ Read the documents whose described content is relevant before deciding or changi
 用户报告的缺陷无论出现在哪一端（iPhone、原生 Mac、终端界面 TUI），都要按同一用户场景检查其余两端；同样存在的在同一任务里一并修复、逐端验收，交付说明写明每端的检查结论（已修 / 不复现 / 该端无此功能）。
 
 - **开发机侧**（`cli/`，含远程服务与 SessKit 扫描）的根因修一处，三端都受益，客户端无需发版，但仍要在受影响的端上验收。
-- **`apple/Shared/` 公用代码**修一处覆盖 iPhone 与 Mac：两端都要真机 / 真窗验收并一起发版安装；只发一端，另一端继续跑旧代码，且公用改动可能改坏另一端。`#if os(...)` 平台分支与 `Shared/UI/Platform/` 只修到其中一端。
+- **`apple/Shared/` 公用代码**修一处覆盖 iPhone 与 Mac：两端都要真机 / 真窗验收并一起安装（iPhone 走 `ios-deliver`，Mac 本机安装；Mac 公开发版由[发版管家](~/.config/agentsync/docs/RELEASE_TRAIN_GUIDE.md)执行）；只发一端，另一端继续跑旧代码，且公用改动可能改坏另一端。`#if os(...)` 平台分支与 `Shared/UI/Platform/` 只修到其中一端。
 - **各端外壳**（`apple/iOS/`、`apple/macOS/`、TUI）代码互不共享；同类功能（分屏、侧栏、分组、焦点、搜索、状态点、提问面板等）要逐端对照行为，不能因代码不同就跳过。
 
 ## 运行时支持（Corral 产品边界，永久）

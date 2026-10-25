@@ -246,6 +246,13 @@ class TerminalStream:
         self._need_snapshot = threading.Event()
         self._wake = threading.Event()
         self._stop = threading.Event()
+        # Publishing and stopping must not interleave. A captured-but-stale
+        # first screen would otherwise be emitted on the same `term:<key>`
+        # channel after a detach/re-attach created a newer stream, and the
+        # newer attachment would receive an old frame with its own seq 1.
+        # Reentrant: an emit can synchronously kick a revoked device, whose
+        # detach stops this stream on the emitting thread.
+        self._emit_lock = threading.RLock()
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"terminal-stream-{key[:16]}")
 
     # -- lifecycle -----------------------------------------------------
@@ -254,8 +261,16 @@ class TerminalStream:
         self._need_snapshot.set()
         self._thread.start()
 
+    def _publish(self, payload: dict) -> None:
+        """Emit unless stopped; atomic with `stop` so no frame lands later."""
+        with self._emit_lock:
+            if self._stop.is_set():
+                return
+            self._emit(payload)
+
     def stop(self) -> None:
-        self._stop.set()
+        with self._emit_lock:
+            self._stop.set()
         self._wake.set()
         with self._votes_lock:
             viewers = list(self._votes)
@@ -427,7 +442,7 @@ class TerminalStream:
         self._ended = True
         with self._snap_lock:
             self._seq += 1
-            self._emit({"kind": "ended", "seq": self._seq})
+            self._publish({"kind": "ended", "seq": self._seq})
 
     def _on_data(self, _pane: str, data: bytes, seq: int) -> None:
         with self._buf_lock:
@@ -461,7 +476,7 @@ class TerminalStream:
             blob = b"".join(chunks)
             for start in range(0, len(blob), _MAX_EVENT_BYTES):
                 self._seq += 1
-                self._emit({
+                self._publish({
                     "kind": "output",
                     "seq": self._seq,
                     "data": base64.b64encode(blob[start:start + _MAX_EVENT_BYTES]).decode("ascii"),
@@ -480,6 +495,10 @@ class TerminalStream:
             captured = self._capture(channel)
             if captured is None:
                 self._need_snapshot.set()
+                return
+            if self._stop.is_set():
+                # Detached while the capture was in flight; the new stream (if
+                # any) owns this channel name now.
                 return
             state, main, alt, barrier = captured
             if frame_state(self.name) != navigation:
@@ -505,7 +524,7 @@ class TerminalStream:
             self._navigation_revision = navigation.revision
             self._navigation_waiting = False
             self._seq += 1
-            self._emit({
+            self._publish({
                 "kind": "snapshot",
                 "seq": self._seq,
                 "cols": state.cols,
