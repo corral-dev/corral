@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
+from rich.segment import Segment
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
@@ -16,13 +17,15 @@ from textual.containers import Grid, Horizontal, Vertical
 from textual.content import Content
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.strip import Strip
 from textual.style import Style
 from textual.widgets import Button, Checkbox, Input, SelectionList, Static
+from textual.widgets._toggle_button import ToggleButton
 
 from corral.i18n import t
 from corral.projects import disambiguate_labels, fuzzy_match, normalize_cwd
 from corral.runtime.registry import active_runtimes
-from corral.textutil import text_width
+from corral.textutil import fit_cell, text_width
 from corral.theme import runtime_label_style
 from corral.ui.dismiss import OutsideClickDismiss
 from corral.ui.nav import NavState
@@ -41,6 +44,29 @@ def project_options(sessions: list[dict]) -> list[tuple[str, str]]:
 
 class FilterChanged(Message):
     """Selections changed; rebuild rows without following selection into a pane."""
+
+
+class _PickerSelectionList(SelectionList[str]):
+    """SelectionList with a check mark for selected rows.
+
+    Textual's native inner glyph is ``X``, which reads as "remove" in a filter
+    menu. Replace it with ``✓`` for selected rows and leave unselected rows
+    unmarked; the row fill stays as the highlight.
+    """
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        _, scroll_y = self.scroll_offset
+        index = scroll_y + y
+        if not 0 <= index < self.option_count:
+            return strip
+        selected = self.get_option_at_index(index).value in self.selected
+        for offset, segment in enumerate(strip):
+            if segment.text == ToggleButton.BUTTON_INNER:
+                segments = list(strip)
+                segments[offset] = Segment("✓" if selected else " ", style=segment.style)
+                return Strip(segments, strip.cell_length)
+        return strip
 
 
 class FilterPickerModal(OutsideClickDismiss, ModalScreen[None]):
@@ -68,14 +94,15 @@ class FilterPickerModal(OutsideClickDismiss, ModalScreen[None]):
     }
     FilterPickerModal SelectionList:focus { border: none; }
     FilterPickerModal #picker-box.-searchable { width: 40; }
-    /* Unselected options draw no mark (a faint X reads as selected). */
+    /* Selection is shown by a ✓ in the built-in button (unselected rows leave
+       the centre blank); never use Textual's X, which reads as "remove". */
     FilterPickerModal SelectionList > .selection-list--button,
     FilterPickerModal SelectionList > .selection-list--button-highlighted {
         color: $panel;
     }
     FilterPickerModal SelectionList > .selection-list--button-selected,
     FilterPickerModal SelectionList > .selection-list--button-selected-highlighted {
-        color: $foreground;
+        color: $text-success;
     }
     FilterPickerModal Horizontal { height: 1; width: auto; }
     FilterPickerModal Button { height: 1; min-width: 6; border: none; margin-right: 2; }
@@ -95,7 +122,7 @@ class FilterPickerModal(OutsideClickDismiss, ModalScreen[None]):
         with Vertical(id="picker-box", classes="-searchable" if self.searchable else ""):
             if self.searchable:
                 yield Input(placeholder=t("filter.projects_search"), id="picker-query")
-            yield SelectionList(*self._selections(""), id="picker-choices")
+            yield _PickerSelectionList(*self._selections(""), id="picker-choices")
             with Horizontal():
                 yield Button(t("filter.done"), compact=True, id="picker-done")
                 yield Button(t("filter.clear_all"), compact=True, id="picker-clear")
@@ -105,6 +132,11 @@ class FilterPickerModal(OutsideClickDismiss, ModalScreen[None]):
             self.query_one(Input).focus()
         else:
             self.query_one(SelectionList).focus()
+        # Place before the first paint: a call_after_refresh-only placement
+        # would show the box at the top-left and then visibly jump under the
+        # chip (owner report 2026-10-25). The refresh pass below only corrects
+        # clamping when the box would overflow the screen.
+        self._place()
         self.call_after_refresh(self._place)
 
     def _place(self) -> None:
@@ -113,10 +145,14 @@ class FilterPickerModal(OutsideClickDismiss, ModalScreen[None]):
             return
         box = self.query_one("#picker-box")
         width, height = box.outer_size
+        # Before layout, use the known CSS width so the first frame is already
+        # horizontally anchored; height is only needed for the bottom clamp.
+        if not width:
+            width = 40 if self.searchable else 24
         screen_w, screen_h = self.size
         x = max(0, min(self._anchor.x, screen_w - width))
         y = self._anchor.bottom
-        if y + height > screen_h:
+        if height and y + height > screen_h:
             y = max(0, self._anchor.y - height)
         box.styles.offset = (x, y)
 
@@ -302,12 +338,30 @@ class QuickFilters(Horizontal):
             return chosen[0]
         return t("filter.more_selected", name=chosen[0], count=len(chosen) - 1)
 
-    def _chip_label(self, dimension: str) -> Text:
+    def _chip_label(self, dimension: str, width: int | None = None) -> Text:
+        """Dimension + value + dropdown arrow, fitting ``width`` exactly.
+
+        The arrow must survive truncation: it is the only affordance that says
+        the chip opens a picker. At a tight sidebar the value (and, below the
+        default width, the dimension prefix) gives way first.
+        """
         key = "filter.agent_label" if dimension == "agent" else "filter.project_label"
+        prefix = t(key) + t("filter.dimension_sep")
+        suffix = " ▾"
+        value = self._value_text(dimension)
+        if width is not None:
+            budget = max(0, width - text_width(prefix) - text_width(suffix))
+            # If the dimension prefix would leave only dots for the value, drop
+            # the prefix instead: the fixed chip order still identifies it, and
+            # the real value is more useful than "Agent: ...".
+            if text_width(value) > budget and budget < 4:
+                prefix = ""
+                budget = max(0, width - text_width(suffix))
+            value = fit_cell(value, budget, ellipsis=True).rstrip() if budget else ""
         label = Text()
-        label.append(t(key) + t("filter.dimension_sep"))
-        label.append(self._value_text(dimension))
-        label.append(" ▾")
+        label.append(prefix)
+        label.append(value)
+        label.append(suffix)
         return label
 
     # ---- layout ----
@@ -342,13 +396,32 @@ class QuickFilters(Horizontal):
         room = max(2, width - check_width - 2)
         natural_agent = text_width(str(agent.label))
         natural_project = text_width(str(project.label))
+        agent_selected = bool(self.nav.runtime_filters)
+        project_selected = bool(self.nav.project_filters)
         if natural_agent + natural_project <= room:
             agent_width, project_width = natural_agent, natural_project
-        else:
-            agent_width = min(natural_agent, max(room // 2, room - natural_project))
+        elif not agent_selected and not project_selected:
+            # Both say All but the row is extremely narrow: split the room.
+            agent_width = max(1, room // 2)
             project_width = max(1, room - agent_width)
+        else:
+            # Keep the unfiltered dimension readable ("Project: All ▾") and
+            # truncate the active filter's value; its arrow still survives.
+            if agent_selected and project_selected:
+                agent_width = max(1, min(natural_agent, room // 2))
+                project_width = max(1, room - agent_width)
+            elif project_selected:
+                project_width = max(1, room - natural_agent)
+                agent_width = max(1, room - project_width)
+            else:
+                project_width = min(natural_project, max(1, room - 1))
+                agent_width = max(1, room - project_width)
         agent.styles.width = max(1, agent_width)
         project.styles.width = max(1, project_width)
+        # Rebuild labels against the final widths so the dropdown arrow is never
+        # the part that gets truncated.
+        agent.label = self._chip_label("agent", max(1, agent_width))
+        project.label = self._chip_label("project", max(1, project_width))
 
     def on_resize(self, event: events.Resize) -> None:
         self.call_next(self.sync)

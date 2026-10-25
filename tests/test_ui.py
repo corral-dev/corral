@@ -43,6 +43,10 @@ from corral import split_layout as _split_layout
 _SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="corral-test-sidebar-state-")
 os.environ["CORRAL_CACHE_DIR"] = _SIDEBAR_STATE_DIR
 os.environ["CORRAL_QUICK_START_PATH"] = os.path.join(_SIDEBAR_STATE_DIR, "recent-starts.json")
+# UI fixtures use mock registries; never let the cross-process scan index or a
+# live scan worker inject real sessions. ci-test already sets this; manual runs
+# must match it (the shared index is otherwise consumed mid-test).
+os.environ["CORRAL_ISOLATE_MANAGED_HOSTS"] = "1"
 _split_layout.reset_default_layout_db()
 _SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
 
@@ -246,7 +250,17 @@ def _make_store(sessions=None, extra_runtimes=()):
         corral.ConversationMessage("assistant", "测试回复"),
     ]
     registry = corral.RuntimeRegistry((claude, *extra_runtimes))
-    with mock.patch.object(corral.titles, "load_cache", return_value={}):
+    # UI fixtures must never consume the developer's cross-process scan index
+    # or worker heartbeat: that would inject real sessions into mock registries
+    # when the suite runs outside ci-test's isolation wrapper.
+    from corral import scan_index, scan_worker
+
+    with (
+        mock.patch.object(corral.titles, "load_cache", return_value={}),
+        mock.patch.object(scan_index, "try_consume", return_value=None),
+        mock.patch.object(scan_index, "published_meta", return_value=None),
+        mock.patch.object(scan_worker, "is_active", return_value=False),
+    ):
         store = corral.SessionStore(limit=20, registry=registry)
         store.load()
     return store, registry
@@ -4646,12 +4660,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             choices.select("codex")
             await pilot.pause()
             self.assertEqual([s["source"] for s in view.visible_sessions()], ["codex"])
-            self.assertEqual(str(agent.label), "Agent: Codex ▾")
+            # At this sidebar width the responsive chip drops the dimension
+            # prefix before truncating the value; chip order still identifies it.
+            self.assertEqual(str(agent.label), "Codex ▾")
             self.assertTrue(agent.has_class("-chosen"))
             choices.select("claude")
             await pilot.pause()
             self.assertEqual(filters.nav.runtime_filters, {"claude", "codex"})
-            self.assertEqual(str(agent.label), "Agent: Claude +1 ▾")
+            self.assertEqual(str(agent.label), "Claude +1 ▾")
             await pilot.click("#picker-clear")
             await pilot.pause()
             self.assertEqual(filters.nav.runtime_filters, set())
@@ -4662,7 +4678,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             filters.set_selected("project", {"/tmp/alpha"})
             await pilot.pause()
             self.assertEqual({s["id"] for s in view.visible_sessions()}, {"f0", "f2"})
-            self.assertEqual(str(filters.query_one("#project-filter", Button).label), "Project: alpha ▾")
+            self.assertEqual(str(filters.query_one("#project-filter", Button).label), "alpha ▾")
             self.assertEqual(area.ordered_session_keys(), before)
             # A zero-result text intersection keeps the filter row usable.
             app.screen.query_one("#project-search", Input).value = "absent-project"
@@ -4717,7 +4733,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len({agent.region.y, project.region.y, active.region.y}), 1)
                 self.assertTrue(filters.region.contains_region(active.region))
                 self.assertLess(agent.region.right, project.region.x + 1)
-                self.assertLessEqual(project.region.right, active.region.x)
+                # At least one blank cell separates the Project chip from the
+                # checkbox (owner correction 2026-10-25).
+                self.assertLess(project.region.right, active.region.x)
                 self.assertIn("Active", active.render().plain)
                 chosen = agent.get_component_rich_style("filter-chip--fill")
                 self.assertTrue(chosen.bold)
@@ -4838,6 +4856,69 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click(app.screen, offset=(0, 0))
             await pilot.pause()
             self.assertNotIsInstance(app.screen, FilterPickerModal)
+
+    async def test_filter_pickers_open_in_place_below_their_chip(self) -> None:
+        """Owner correction 2026-10-25: the dropdown appears under the clicked
+        chip instead of a centered dialog that forces the pointer to travel."""
+        from corral.ui.quick_filters import FilterPickerModal
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            for chip_id in ("agent-filter", "project-filter"):
+                chip = app.screen.query_one(f"#{chip_id}")
+                chip_region = chip.region
+                await pilot.click(f"#{chip_id}")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, FilterPickerModal)
+                box = app.screen.query_one("#picker-box")
+                self.assertEqual(box.region.y, chip_region.bottom)
+                self.assertEqual(box.region.x, chip_region.x)
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertNotIsInstance(app.screen, FilterPickerModal)
+
+    async def test_filter_picker_is_placed_before_the_first_refresh(self) -> None:
+        """Owner report 2026-10-25: the box must not paint at the top-left and
+        then visibly jump under the chip on the next refresh."""
+        from corral.ui.quick_filters import FilterPickerModal
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            chip_region = app.screen.query_one("#agent-filter").region
+            with mock.patch.object(FilterPickerModal, "call_after_refresh"):
+                await pilot.click("#agent-filter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, FilterPickerModal)
+                box = app.screen.query_one("#picker-box")
+                self.assertEqual((box.region.x, box.region.y),
+                                 (chip_region.x, chip_region.bottom))
+
+    async def test_project_picker_marks_selected_rows_with_a_check(self) -> None:
+        """Selected projects carry a ✓; Textual's native X marker never appears."""
+        from textual.widgets import SelectionList
+
+        from corral.ui.quick_filters import FilterPickerModal, QuickFilters
+
+        sessions = [_claude_session("p0", time.time()), _claude_session("p1", time.time() - 60)]
+        sessions[0]["cwd"], sessions[1]["cwd"] = "/tmp/chosen", "/tmp/other"
+        store, _ = _make_store(sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            owner = app.screen.query_one(QuickFilters)
+            owner.nav.project_filters = {"/tmp/chosen"}
+            await pilot.click("#project-filter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, FilterPickerModal)
+            choices = app.screen.query_one(SelectionList)
+            lines = [choices.render_line(index).text for index in range(choices.option_count)]
+            self.assertIn("✓", lines[0])
+            self.assertNotIn("X", "".join(lines))
+            self.assertNotIn("✓", lines[1])
 
     async def test_active_filter_toggle_narrows_list_without_touching_panes(self) -> None:
         """Active toggles only real activity and leaves open workspace panes untouched."""
@@ -8204,6 +8285,11 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
                 resize_calls.append((name, w, h))
 
             with (
+                # A loaded machine can starve the event loop past the real
+                # debounce window between two pauses; hold the timer long
+                # enough that the drag phase is deterministic, then fire the
+                # pending callback exactly once.
+                mock.patch.object(embed_pane_mod, "_RESIZE_TMUX_DEBOUNCE", 60.0),
                 mock.patch("corral.embed.resize", side_effect=_fake_resize),
                 mock.patch.object(pane._poke, "set", side_effect=lambda: poke_calls.append(1)),
             ):
@@ -8213,7 +8299,10 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.02)
                 self.assertEqual(resize_calls, [], "拖动过程中不应立刻 resize-window")
                 self.assertEqual(poke_calls, [], "拖动过程中不应立刻唤醒抓帧")
-                await pilot.pause(delay=embed_pane_mod._RESIZE_TMUX_DEBOUNCE + 0.05)
+                self.assertIsNotNone(pane._resize_tmux_timer)
+                self.assertEqual(pane._pending_tmux_size, (40, 18))
+                pane._apply_pending_tmux_resize()
+                await pilot.pause()
                 self.assertEqual(resize_calls, [("corral-claude-debounce", 40, 18)])
                 self.assertEqual(len(poke_calls), 1)
 

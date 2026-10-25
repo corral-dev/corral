@@ -215,6 +215,12 @@ class Connection:
 # loading waits this long (client RPC timeout is 20 s), then gets a retryable
 # `unavailable` instead of a half-loaded store.
 _HUB_READY_WAIT = 15.0
+# Startup queries wait independently, never in the serial encrypted-channel
+# worker or an unbounded executor queue. Writes remain retryable until ready.
+_MAX_STARTUP_QUERIES = 8
+_INDEX_INDEPENDENT_METHODS = frozenset({
+    protocol.M_HELLO, protocol.M_PAIR, protocol.M_RUNTIMES_LIST,
+})
 
 # Concurrent control planes one device key may hold (several app instances on
 # one machine, e.g. the installed Mac app plus a Debug build).
@@ -273,6 +279,7 @@ class RemoteService:
         self.receipts = CommandReceiptStore(self.host_run_id)
         self._input_slots = threading.BoundedSemaphore(32)
         self._prompt_slots = threading.BoundedSemaphore(4)
+        self._startup_slots = threading.BoundedSemaphore(_MAX_STARTUP_QUERIES)
         self._input_targets: set[str] = set()
         self._input_lock = threading.Lock()
         self._input_target_free = threading.Condition(self._input_lock)
@@ -603,6 +610,13 @@ class RemoteService:
     # -- 消息处理 ---------------------------------------------------------
 
     def handle(self, connection: Connection, message: dict, *, reply=None) -> None:
+        method = str(message.get("m") or "")
+        if (message.get("t") == "req" and connection.paired
+                and method in _READONLY_METHODS and method not in _INDEX_INDEPENDENT_METHODS):
+            wait_ready = getattr(self.hub, "wait_ready", None)
+            if wait_ready is not None and not wait_ready(0):
+                self._defer_startup_query(connection, message, wait_ready, reply=reply)
+                return
         params = message.get("p")
         if (message.get("t") == "req" and message.get("m") == protocol.M_TERMINAL_PROMPT
                 and isinstance(params, dict) and params.get("native") is True):
@@ -624,6 +638,34 @@ class RemoteService:
                 inbound(protocol.error(int(message.get("id") or 0), "unavailable", t("remote.err.prompt_unavailable")))
             return
         self._handle_request(connection, message, reply=reply)
+
+    def _defer_startup_query(self, connection: Connection, message: dict, wait_ready, *, reply=None) -> None:
+        """Bound startup waiting without blocking later frames on this channel."""
+        inbound = reply if reply is not None else connection.send
+        req_id = int(message.get("id") or 0)
+        if not self._startup_slots.acquire(blocking=False):
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.host_starting")))
+            return
+
+        def wait_then_handle() -> None:
+            try:
+                ready = wait_ready(_HUB_READY_WAIT)
+                if not connection.closed:
+                    # Re-enter admission too (native prompt requests have their
+                    # own bound). A timeout never queues another wait or exposes
+                    # a partial catalog, even if readiness changes just after it.
+                    if ready:
+                        self.handle(connection, message, reply=inbound)
+                    else:
+                        inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.host_starting")))
+            finally:
+                self._startup_slots.release()
+
+        try:
+            threading.Thread(target=wait_then_handle, daemon=True, name="remote-startup-rpc").start()
+        except RuntimeError:
+            self._startup_slots.release()
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.host_starting")))
 
     def _handle_request(self, connection: Connection, message: dict, *, reply=None) -> None:
         inbound = reply if reply is not None else connection.send
@@ -711,7 +753,8 @@ class RemoteService:
         if not connection.paired:
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
         wait_ready = getattr(self.hub, "wait_ready", None)
-        if wait_ready is not None and not wait_ready(_HUB_READY_WAIT):
+        if (method not in _INDEX_INDEPENDENT_METHODS
+                and wait_ready is not None and not wait_ready(0)):
             raise ActionError(protocol.E_UNAVAILABLE, t("remote.err.host_starting"))
         if connection.access == "readonly" and (
             method not in _READONLY_METHODS or shell_terminal.is_shell_key(params.get("key"))

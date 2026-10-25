@@ -190,11 +190,18 @@ class HostStartupTests(_TempStateMixin, unittest.TestCase):
 
         service = RemoteService(StartingHub())  # type: ignore[arg-type]
         sent: list[dict] = []
-        connection = Connection("aa" * 32, sent.append)
+        replied = threading.Event()
+
+        def record(message):
+            sent.append(message)
+            replied.set()
+
+        connection = Connection("aa" * 32, record)
         connection.paired = True
         with mock.patch.object(service, "is_known_device", return_value=True), \
                 mock.patch.object(service_mod, "_HUB_READY_WAIT", 0):
             service.handle(connection, protocol.request(1, protocol.M_SESSIONS_LIST, {}))
+            self.assertTrue(replied.wait(2))
         self.assertFalse(sent[0]["ok"])
         self.assertEqual(sent[0]["e"]["code"], protocol.E_UNAVAILABLE)
 
