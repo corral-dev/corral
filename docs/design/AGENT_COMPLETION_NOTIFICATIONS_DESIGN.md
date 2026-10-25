@@ -497,11 +497,18 @@ Both owned hosts were verified to retain disabled completion/abort preferences f
   `-CorralInspectSettings` shows “When a retryable error stops the work” off;
   the installed Release ships the same localized key and keeps
   `transient: false`. Limit: the Release has no inspection entry, so its
-  Settings window itself was not opened, and the 0.3.148 release notes cover
-  the menu/split work without advertising this switch.
+  Settings window itself was not opened. The 0.3.148 release notes were
+  amended to include the switch without changing signed feed bytes.
 - **Verification**: SessKit 565 tests, Corral full gate 2765 tests with
   complete coverage (known flakes passed on retry), Apple Core 422 tests,
   Ruff clean, Mac/iOS Release builds without new warnings.
 - **Limits**: no live transient push was observed on a phone (the switch is off
   by default and no genuine retryable abort was induced). Reception, the sound,
   and the tap-through remain for the owner once the switch is enabled.
+- **Known edges**: the 75-second queue is in memory, so a host restart inside
+  the window suppresses that notice (startup baseline); Cursor never reports
+  `STATUS_ABORTED`, so it has no transient bucket today; a phone paired to a
+  pre-0.24.352 host still shows the switch (the field is ignored there);
+  `user_interrupt` stays in the immediate terminal lane, matching prior
+  behavior; a runtime that keeps the session aborted while retrying internally
+  for longer than the window can still produce one abort notice.
