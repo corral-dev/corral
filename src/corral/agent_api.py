@@ -341,6 +341,31 @@ def _scan_runtimes(runtimes: list, limit: int) -> tuple[dict[str, list[dict]], d
     return scanned, failures
 
 
+def _list_scan(registry, runtimes: list, limit: int, *, fresh: bool) -> tuple[dict, dict, dict]:
+    """Sessions for ``list``: the fresh shared scan index when it covers us, else a local scan.
+
+    Pollers such as LidStay call ``list`` every few seconds; a local scan costs
+    seconds of CPU while the TUI, remote service and scan worker keep a shared
+    index fresh. Only the real registry uses it (test fixtures never read or
+    publish the developer's index). A complete local scan without failures is
+    published like ``scan_all`` so back-to-back callers share it.
+    """
+    from corral import scan_index
+
+    standard = {runtime.id for runtime in registry} == {runtime.id for runtime in default_registry()}
+    if standard and not fresh:
+        shared = scan_index.try_consume(limit)
+        if shared is not None:
+            meta = scan_index.published_meta()
+            scanned = {runtime.id: list(shared.get(runtime.id) or []) for runtime in runtimes}
+            age = round(max(0.0, time.time() - meta[0]), 1) if meta else None
+            return scanned, {}, {"scan_source": "shared_index", "index_age_s": age}
+    scanned, failures = _scan_runtimes(runtimes, limit)
+    if standard and not failures and len(runtimes) == len(list(registry)):
+        scan_index.publish(scanned, limit=limit)
+    return scanned, failures, {"scan_source": "local", "index_age_s": None}
+
+
 def resolve_ref(registry, ref: str, limit: int) -> dict:
     """把用户提供的会话标识（完整 ID / 前缀 / runtime:id）解析为唯一会话。"""
     if not ref:
@@ -443,7 +468,9 @@ def cmd_list(args, registry) -> dict:
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
 
-    scanned, failures = _scan_runtimes(runtimes, args.limit)
+    scanned, failures, source = _list_scan(
+        registry, runtimes, args.limit, fresh=getattr(args, "fresh", None) is True,
+    )
     flat = [session for bucket in scanned.values() for session in bucket]
     liveness.annotate(flat)
     _attach_attention(flat)
@@ -479,6 +506,7 @@ def cmd_list(args, registry) -> dict:
         "returned": len(sessions),
     }
     data.update(coverage)
+    data.update(source)
     return _ok(data)
 
 
@@ -1073,6 +1101,13 @@ COMMANDS = [
                 "kwargs": {"action": "store_true", "help": "只返回正挂在 corral 后台保活（tmux）里的会话"},
             },
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
+            {
+                "flags": ["--fresh"],
+                "kwargs": {
+                    "action": "store_true",
+                    "help": "跳过跨进程共享扫描索引，强制本机重新扫描（刚建的会话要立刻出现时用）",
+                },
+            },
         ],
         "fields": {
             "runtime": "运行时标识（claude / codex / opencode / cursor / pi）",
@@ -1102,6 +1137,8 @@ COMMANDS = [
             "truncated_runtimes": "读满扫描深度（--limit）的运行时 ID 列表；命中说明该运行时可能还有更早的会话没读到，调大 --limit 再查",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "failed_runtimes": "本次扫描抛异常的运行时 {id: 失败摘要}；非空时零命中结论不可信",
             "potentially_limited": "truncated_runtimes 或 failed_runtimes 非空时为 true，提醒调用方覆盖面可能不全",
+            "scan_source": "会话来源：shared_index（TUI/远程服务共享的最新扫描索引，十几秒内）或 local（本次本机扫描）",
+            "index_age_s": "scan_source=shared_index 时索引年龄（秒），local 时为 null；共享索引不带发布方的失败分片",
             "resumable": "是否可生成同运行时原生恢复命令",
             "resume_command": "同运行时原生恢复该会话的 shell 命令（可能为 null）",
         },

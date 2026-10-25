@@ -53,7 +53,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 
 | 命令 | 用途 |
 | --- | --- |
-| `corral list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--keepalive] [--fields a,b]` | 结构化列出会话 |
+| `corral list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--keepalive] [--fields a,b] [--fresh]` | 结构化列出会话 |
 | `corral search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--keepalive] [--fields a,b]` | 按主题找会话 |
 | `corral show <会话> [--messages N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 对话内容 |
 | `corral share <会话> [--out 路径] [--compact]` | 导出含 thinking / 工具调用的统一 transcript，给其他 Agent 做元认知 |
@@ -181,6 +181,7 @@ corral list --live --keepalive --compact
   再按更新时间倒序；`matched_via` 是 `quick` 或 `deep`，兼容旧调用方；`matched_fields` 是命中的字段
   列表，如 `title`、`first_user_msg`、`conversation`。
 - `mtime`：Unix 时间戳，按更新时间排序或做"最近"过滤时用这个，不要解析 `time` 的人类可读格式。
+- `scan_source` / `index_age_s`（`list`）：`list` 优先复用 TUI、远程服务与扫描进程共享的最新扫描索引（`scan_source=shared_index`，`index_age_s` 为索引年龄，通常十几秒内；此时 `failed_runtimes` 为空，因为共享索引不带发布方的失败分片），否则本机扫描（`local`）。刚建的会话必须立刻出现时加 `--fresh` 强制本机扫描。轮询类调用（每几秒查一次 `--live --keepalive`）就是靠这条把每次约 6 秒 CPU 降到零点几秒。
 - `scanned` / `matched` / `returned` / `potentially_limited`（`list`/`search`；`export` 有除 `matched`/`returned` 外的同名字段）：零命中时先看这组数再下结论——`scanned` 是实际读到的会话总数（过滤前），`matched` 是命中数（`--top` 截断前），`returned` 是实际返回数。`count=0` 且 `scanned>0`、`potentially_limited=false` 才是"范围内干净"；`scanned=0` 是根本没读到；`failed_runtimes` 非空（{运行时: 失败摘要}）说明某家扫描抛异常，结论不可信；`truncated_runtimes` 非空说明某家读满了 `--limit`，更早的会话没读到，调大 `--limit` 再查。
 - `--fields` 只接受 `describe <command>` 列出的字段：未知字段直接 `usage_error`（退出码 2）并在错误里列出可用值，照着改就行。不要传猜出来的字段名。
 - `--limit` 控制的是**扫描深度**（每个运行时最多看多少条历史），不是"最多返回几条"——过滤条件

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -154,6 +155,52 @@ class AgentApiTests(unittest.TestCase):
         result = agent_api.cmd_list(args, registry)
 
         self.assertEqual(result["data"]["count"], 1)
+
+    # ---- list: shared scan index (2026-10-25, LidStay poll cost) ----
+
+    def _list_args(self, **extra):
+        return argparse_namespace(runtime=None, limit=50, status=None, cwd=None, fields=None, **extra)
+
+    def test_cmd_list_fixture_registry_never_touches_shared_index(self) -> None:
+        with mock.patch("corral.scan_index.try_consume") as consume, \
+                mock.patch("corral.scan_index.publish") as publish:
+            result = agent_api.cmd_list(self._list_args(), self.registry)
+        consume.assert_not_called()
+        publish.assert_not_called()
+        self.assertEqual(result["data"]["scan_source"], "local")
+        self.assertEqual(result["data"]["count"], 1)
+
+    def test_cmd_list_reuses_fresh_shared_index_without_scanning(self) -> None:
+        shared = {"fake": [dict(self.session)]}
+        with mock.patch.object(agent_api, "default_registry", return_value=self.registry), \
+                mock.patch("corral.scan_index.try_consume", return_value=shared) as consume, \
+                mock.patch("corral.scan_index.published_meta", return_value=(time.time() - 4, 200)), \
+                mock.patch.object(agent_api, "_scan_runtimes") as scan:
+            result = agent_api.cmd_list(self._list_args(), self.registry)
+        consume.assert_called_once_with(50)
+        scan.assert_not_called()
+        data = result["data"]
+        self.assertEqual((data["scan_source"], data["count"], data["failed_runtimes"]), ("shared_index", 1, {}))
+        self.assertGreaterEqual(data["index_age_s"], 3)
+
+    def test_cmd_list_fresh_scans_locally_and_publishes(self) -> None:
+        with mock.patch.object(agent_api, "default_registry", return_value=self.registry), \
+                mock.patch("corral.scan_index.try_consume") as consume, \
+                mock.patch("corral.scan_index.publish") as publish:
+            result = agent_api.cmd_list(self._list_args(fresh=True), self.registry)
+        consume.assert_not_called()
+        publish.assert_called_once()
+        self.assertEqual(result["data"]["scan_source"], "local")
+        self.assertIsNone(result["data"]["index_age_s"])
+
+    def test_cmd_list_does_not_publish_a_scan_with_failures(self) -> None:
+        registry = RuntimeRegistry((self.runtime, BrokenRuntime()))
+        with mock.patch.object(agent_api, "default_registry", return_value=registry), \
+                mock.patch("corral.scan_index.try_consume", return_value=None), \
+                mock.patch("corral.scan_index.publish") as publish:
+            result = agent_api.cmd_list(self._list_args(), registry)
+        publish.assert_not_called()
+        self.assertTrue(result["data"]["failed_runtimes"])
 
     # ---- search ----
 
