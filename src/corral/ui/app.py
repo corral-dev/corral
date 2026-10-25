@@ -156,14 +156,15 @@ class CorralApp(App):
     #project-search-row.-active > Static,
     #project-search-row.-active #project-search,
     #project-search-row.-active #project-search:focus {
-        background: $primary-muted; color: $warning;
+        /* 有关键字：中性填充 + 粗体前景（2026-10-25）；黄色只留给警告与等待回答。 */
+        background: $primary-muted; color: $foreground; text-style: bold;
     }
     #project-search-row:focus-within > .filter-cap,
     #project-search-row.-active > .filter-cap {
         color: $primary-muted; background: transparent;
     }
     #project-search-row #filter-count { color: $text-muted; }
-    #project-search-row.-active #project-search-clear { background: $primary-muted; color: $warning; }
+    #project-search-row.-active #project-search-clear { background: $primary-muted; color: $foreground; }
     #project-search-row.-active #project-search-clear:hover { color: $error; }
     /* 新版本浮层的定位锚：UpdateToast 是内容宽的 overlay 盒子，靠父级右下对齐
        钉到右下角。注意这条不能写进 update_toast.py 的 DEFAULT_CSS——控件的

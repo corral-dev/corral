@@ -142,11 +142,12 @@ class ScanIndexTests(unittest.TestCase):
         self.assertEqual(len(third["sessions"]["claude"]), 2)
 
     def test_publish_cleans_stale_tmps(self) -> None:
-        stale = self.cache / "scan-index.json.tmp.424242"
+        name = scan_index.index_path().name
+        stale = self.cache / f"{name}.tmp.424242"
         stale.write_text("{}", encoding="utf-8")
         old = time.time() - 600
         os.utime(stale, (old, old))
-        fresh = self.cache / "scan-index.json.tmp.424243"
+        fresh = self.cache / f"{name}.tmp.424243"
         fresh.write_text("{}", encoding="utf-8")
         scan_index.publish({"claude": [self._session("claude", "a", 1)]}, limit=50)
         self.assertFalse(stale.exists())

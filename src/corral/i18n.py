@@ -27,9 +27,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "filter.no_project": {"en": "No project", "zh": "无项目"},
     "filter.projects_search": {"en": "Search projects", "zh": "搜索项目"},
     "filter.done": {"en": "Done", "zh": "完成"},
+    "filter.agents": {"en": "Agents", "zh": "助手"},
+    "filter.clear_all": {"en": "Clear", "zh": "清除"},
+    "filter.active": {"en": "Active", "zh": "活跃"},
+    "filter.dimension_sep": {"en": ": ", "zh": "："},
+    "filter.more_selected": {"en": "{name} +{count}", "zh": "{name} +{count}"},
+    "topbar.new_pane": {"en": "+ New pane", "zh": "＋ 新分屏"},
+    "modal.section_session": {"en": "This session", "zh": "本会话"},
+    "modal.section_handoff": {"en": "New session from this history", "zh": "读取本会话历史后新建"},
+    "modal.same_runtime": {"en": "same assistant", "zh": "同一助手"},
     "action.advanced": {
-        "en": "Advanced",
-        "zh": "高级操作",
+        "en": "Actions",
+        "zh": "操作",
     },
     "action.new": {
         "en": "New",
@@ -520,7 +529,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "无法导出会话：{error}",
     },
     "modal.copy_session": {
-        "en": "Fork Session",
+        "en": "Fork session",
         "zh": "分叉会话",
     },
     "modal.copy_session_action": {
@@ -560,8 +569,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "{action}（等待会话历史保存后即可重启）",
     },
     "modal.handoff_title": {
-        "en": "Advanced: choose handoff assistant",
-        "zh": "高级操作：选择接力助手",
+        "en": "Session actions",
+        "zh": "会话操作",
     },
     "modal.new_session_title": {
         "en": "New session",

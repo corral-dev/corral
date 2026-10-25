@@ -52,7 +52,6 @@ from corral.ui.nav import NavState
 from corral.ui.quick_filters import FilterChanged, QuickFilters
 from corral.ui.runtime_top_bar import RuntimeTopBar
 from corral.ui.session_list import (
-    ACTIVE_FILTER_ID,
     STICKY_IDS,
     SessionListView,
     split_project_name,
@@ -357,9 +356,10 @@ def _main_bindings() -> list[Binding]:
         # 只要 Ctrl+字母。Ctrl+T 会挡住 Claude 待办清单，是 2026-09-13 选定的代价。
         # 不绑单字母 a/x/q/c：右栏持焦时会变成打给助手的字符。结束托管走高级操作。
         # Esc 只关弹窗，不退出应用。侧栏显隐只点顶栏 ◀/▶（无回列表快捷键）。
+        # 底栏顺序（2026-10-25）：新建 → 搜索 → 置顶 → 操作 → 删除（不可恢复的放最后）。
+        Binding("ctrl+n", "new_session", t("action.new"), priority=True),
         Binding("ctrl+f", "search_content", t("action.search"), priority=True),
         Binding("ctrl+p", "toggle_pin", t("action.toggle_pin"), priority=True),
-        Binding("ctrl+n", "new_session", t("action.new"), priority=True),
         Binding("ctrl+t", "advanced", t("action.advanced"), priority=True),
         Binding("ctrl+x", "delete_session", t("action.delete_session"), priority=True),
         # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
@@ -470,21 +470,23 @@ class MainScreen(
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="list-pane"):
-                with _FilterRow(id="project-search-row"):
-                    yield Static("▐", id="filter-left", classes="filter-cap")
-                    yield Static("/ ", id="filter-prefix")
-                    yield _FilterInput(
-                        placeholder=t("filter.placeholder"), id="project-search"
-                    )
-                    yield Static("", id="filter-count")
-                    yield _FilterClear(self._clear_project_search, id="project-search-clear")
-                    yield Static("▌", id="filter-right", classes="filter-cap")
-                yield QuickFilters(self.store, self.nav, id="quick-filters")
+                # 头部顺序（2026-10-25）：＋ 新建（列表固定区）→ 筛选框 → 筛选行 → 会话。
+                # 筛选框与筛选行作为头部插在固定区与滚动区之间，不是列表项。
+                filter_row = _FilterRow(
+                    Static("▐", id="filter-left", classes="filter-cap"),
+                    Static("/ ", id="filter-prefix"),
+                    _FilterInput(placeholder=t("filter.placeholder"), id="project-search"),
+                    Static("", id="filter-count"),
+                    _FilterClear(self._clear_project_search, id="project-search-clear"),
+                    Static("▌", id="filter-right", classes="filter-cap"),
+                    id="project-search-row",
+                )
                 yield SessionListView(
                     self.store,
                     self.nav,
                     group_store=self._split_store,
                     on_layout_change=self._apply_layout_change,
+                    header=(filter_row, QuickFilters(self.store, self.nav, id="quick-filters")),
                     id="session-list",
                 )
             if self.embed_ok:
@@ -995,7 +997,6 @@ class MainScreen(
             if not self.is_mounted or not self.app.is_running:
                 return
             self._update_header()
-            session_list.refresh_active_card()
             if self.embed_ok:
                 # 仅刷新当前可见预览格，避免每次重扫都把 Cursor store.db 预览整页重载。
                 self._split_area().invalidate_visible_previews()
@@ -1042,7 +1043,13 @@ class MainScreen(
             width = search.content_size.width
             search.placeholder = (fit_cell(t("filter.placeholder"), width, ellipsis=True).rstrip()
                                   if width > 0 else t("filter.placeholder"))
-            metadata = str(count) if self.store.loaded else ""
+            total = session_list.total_count()
+            # 有任一筛选时写「可见/总数」，否则只写总数：一眼看出列表为什么变少。
+            metadata = (
+                (f"{count}/{total}" if self.nav.narrowing else str(total))
+                if self.store.loaded
+                else ""
+            )
             self.query_one("#filter-count", Static).update(metadata)
         if load_error or (self.store.loaded and count == 0 and not any(self.store.sessions.values())):
             self.query_one("#filter-count", Static).update("")
@@ -1117,9 +1124,6 @@ class MainScreen(
         if session_list.multi_count() > 0:
             return
         area = self._split_area()
-        if session_list.is_active_filter_selected():
-            # 筛选开关不是会话：方向键经过时右栏保持原样。
-            return
         if area.any_embed_focused():
             return
         if session_list.is_new_session_selected():
@@ -1225,10 +1229,7 @@ class MainScreen(
         # 在别的窗口跑的会话右栏永远只有静态对话，不说明原因就会被当成"会话已断"。
         if is_external_running(session):
             out.append("\n" + t("detail.running_external"), style="#B8860B")
-        elif not session.get("keepalive_name") and not session.get("provisional"):
-            # 已结束会话默认只给历史预览，重启没有任何可见入口——用户会以为
-            # 这条会话再也接不上了。把回车这条路写在头上。
-            out.append("\n" + t("detail.restart_hint"), style="dim")
+        # 已结束会话的回车重启提示只在格子底条（不随内容滚走），详情头不再重复。
         return out
 
     # 静态详情 renderer 缓存上限：覆盖最近看过的几个会话，超过就淘汰最旧的。
@@ -1380,9 +1381,6 @@ class MainScreen(
         session_list.clear_multi()
         if session_list.is_new_session_selected():
             await self._start_new_session_flow()
-            return
-        if session_list.is_active_filter_selected():
-            await self._toggle_active_filter()
             return
         if session_list.is_older_stack_selected():
             session_list.toggle_older_stack()
@@ -1954,12 +1952,17 @@ class MainScreen(
             session_list.focus()
 
     async def _toggle_active_filter(self) -> None:
-        """侧栏「活跃」开关：只收窄列表，右栏与焦点不动，光标留在开关上便于再按一次。"""
+        """筛选行「活跃」勾选：只收窄列表，右栏与焦点不动（焦点留在勾选框上便于再按）。"""
         list_view = self.query_one(SessionListView)
         list_view.clear_multi()
         list_view.toggle_active_filter()
-        await list_view.rebuild(keep_selection=False)
-        list_view.index = STICKY_IDS.index(ACTIVE_FILTER_ID)
+        self._cancel_follow_selection()
+        self._suppress_selection_follow += 1
+        try:
+            async with self._rebuild_lock:
+                await list_view.rebuild(keep_selection=True)
+        finally:
+            self.call_after_refresh(self._release_selection_follow_suppress)
         self._update_header()
 
     async def on_filter_changed(self, event: FilterChanged) -> None:
@@ -2033,6 +2036,7 @@ class MainScreen(
                 "project-search",
                 "project-search-row",
                 "project-search-clear",
+                "quick-filters",
                 "sidebar-sticky",
             ):
                 try:

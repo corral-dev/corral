@@ -117,7 +117,6 @@ class RebuildLifecycleTests(unittest.IsolatedAsyncioTestCase):
         view.rebuild = mock.AsyncMock(side_effect=shutdown)
         await MainScreen._rebuild_list(screen)
         screen._update_header.assert_not_called()
-        view.refresh_active_card.assert_not_called()
 
     async def test_queued_rebuild_after_shutdown_does_not_query_widgets(self):
         from corral.ui.main_screen import MainScreen

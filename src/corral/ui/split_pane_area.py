@@ -27,12 +27,17 @@ _LIST_FOCUS_TYPES = frozenset({"SessionListView", "_SidebarList"})
 
 
 def _session_list_has_focus(focused) -> bool:
-    """焦点是否在侧边栏会话列表（含固定头 / 会话列表两段内层 ListView）。"""
+    """焦点是否在侧边栏会话列表（含固定头 / 会话列表两段内层 ListView）。
+
+    筛选框与筛选行虽然挂在 `SessionListView` 里（2026-10-25 头部改版），但不算
+    列表持焦：焦点控件本身就是外壳时才算，从头部控件往上走到外壳不算。
+    """
     node = focused
     while node is not None:
-        if getattr(node, "id", None) in _LIST_FOCUS_IDS:
-            return True
-        if type(node).__name__ in _LIST_FOCUS_TYPES:
+        name = type(node).__name__
+        if name == "SessionListView" or getattr(node, "id", None) == "session-list":
+            return node is focused
+        if getattr(node, "id", None) in _LIST_FOCUS_IDS or name in _LIST_FOCUS_TYPES:
             return True
         node = getattr(node, "parent", None)
     return False
@@ -62,6 +67,10 @@ def projected_embed_sizes(
         sizes.append((width, height))
         x = nxt + (1 if index < count - 1 else 0)
     return sizes
+
+
+# 小窗默认展开的最小格宽（2026-10-25）：更窄的格默认收起，浮层不至于盖住整格。
+HUD_EXPAND_MIN_PANE_WIDTH = 60
 
 
 @dataclass
@@ -299,6 +308,12 @@ class PaneCell(Vertical):
         # 按格子当前态重算标题栏提示时会先看它——占位期间不许被 Enter 重启
         # 提示盖掉，否则用户会再按一次回车触发重复重启。
         self._restarting_hint = False
+        # 小窗展开态：默认跟全局开关走，但窄格（< HUD_EXPAND_MIN_PANE_WIDTH）默认
+        # 收起，免得浮层盖住整格。点小窗只改本格（_hud_override），Ctrl+G 改全局
+        # 并清掉各格的单独选择。
+        self._hud_global_expanded = True
+        self._hud_override: bool | None = None
+        self._hud_data = None
         # Live panes must not *display* a transcript renderer (capture gaps
         # would flash chat). Keep it as an ended fallback so a confirmed-dead
         # host can switch to the same preview path as a history card.
@@ -358,7 +373,7 @@ class PaneCell(Vertical):
         )
         yield _PaneFooter(classes="footer")
         # 浮层放在最后：同层内单独排版，dock 到右上角，不参与上面三个的纵向堆叠。
-        yield SessionHud(self._on_hud_toggle, classes="hud")
+        yield SessionHud(self._toggle_hud_local, classes="hud")
 
     def on_session_hud_prompt_selected(self, event: SessionHud.PromptSelected) -> None:
         event.stop()
@@ -389,6 +404,8 @@ class PaneCell(Vertical):
         `cell_id` 必须沿用旧的：格子里的 EmbedPane 的 DOM id 是 compose 时按它
         生成的，换了会和 `_cell_for_spec` 的匹配对不上。
         """
+        if spec.session_key != self.spec.session_key:
+            self._hud_override = None
         spec.cell_id = self.spec.cell_id
         self.spec = spec
         self._bind_renderers(detail_renderer, hosted=bool(spec.keepalive_name))
@@ -471,13 +488,42 @@ class PaneCell(Vertical):
         return None
 
     def update_hud(self, data, *, expanded: bool) -> None:
+        self._hud_global_expanded = expanded
+        self._hud_data = data
+        self._apply_hud()
+
+    def _hud_effective_expanded(self) -> bool:
+        if self._hud_override is not None:
+            return self._hud_override
+        width = self.size.width
+        # 尚未布局（宽 0）时先按全局；布局后 on_resize 会再算一次。
+        return self._hud_global_expanded and (width == 0 or width >= HUD_EXPAND_MIN_PANE_WIDTH)
+
+    def _apply_hud(self) -> None:
         hud = self.session_hud()
         if hud is None:
             return
-        if data is None:
+        if self._hud_data is None:
             hud.hide()
         else:
-            hud.update_data(data, expanded=expanded)
+            width = self.size.width
+            hud.update_data(
+                self._hud_data,
+                expanded=self._hud_effective_expanded(),
+                compact=0 < width < HUD_EXPAND_MIN_PANE_WIDTH,
+            )
+
+    def _toggle_hud_local(self) -> None:
+        """点小窗只切本格；其它格与全局开关不动。"""
+        self._hud_override = not self._hud_effective_expanded()
+        self._apply_hud()
+
+    def clear_hud_override(self) -> None:
+        self._hud_override = None
+
+    def on_resize(self, event) -> None:
+        if self._hud_data is not None:
+            self._apply_hud()
 
     def update_terminal_background(self, osc_report: bytes) -> None:
         self._osc_report = osc_report
@@ -604,9 +650,8 @@ class PaneCell(Vertical):
                 # 重启中占位：标题栏常驻「正在重启…」，不许被常规重算盖掉。
                 header.set_restart_hint(t("pane.restarting"))
             else:
-                header.set_restart_hint(
-                    t("pane.restart_hint") if restart_target else ""
-                )
+                # 「Enter restart」只放底条（2026-10-25）：标题栏只留临时的「正在重启…」。
+                header.set_restart_hint("")
         footer = self._pane_footer()
         if footer is not None:
             footer.set_state(
@@ -741,13 +786,8 @@ class SplitPaneArea(Vertical):
                 header.set_restart_hint(t("pane.restarting"))
             else:
                 cell._restarting_hint = False  # noqa: SLF001
-                pane = cell.embed_pane()
-                restart_target = (
-                    pane is not None and pane._is_restart_target()  # noqa: SLF001
-                )
-                header.set_restart_hint(
-                    t("pane.restart_hint") if restart_target else ""
-                )
+                # 「Enter restart」只放底条（2026-10-25）：标题栏只留临时的「正在重启…」。
+                header.set_restart_hint("")
 
     def rebind_keepalive(self, old_name: str, new_name: str) -> None:
         """重启换绑：把绑着旧 tmux 名的格子改到新名，不销毁重建。
@@ -883,6 +923,11 @@ class SplitPaneArea(Vertical):
         if row.size.width <= 0 or row.size.height <= 0:
             return None
         return projected_embed_sizes(row.size.width, row.size.height, count)
+
+    def clear_hud_overrides(self) -> None:
+        """Ctrl+G：全局开关改了，各格单独的展开/收起选择一起作废。"""
+        for cell in self._cells():
+            cell.clear_hud_override()
 
     def sync_hud(self, payloads: dict[str, object] | None, *, expanded: bool) -> None:
         """每个右栏格画自己的会话小窗；payloads 里没有的格一律收掉。

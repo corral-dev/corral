@@ -19,6 +19,98 @@
 | §8 | 关联文档 | 进入相邻领域时联读 |
 | §9 | 覆盖度与待补充项 | 了解证据边界与未确认事项 |
 
+### Owner correction to the redesign (2026-10-25, same day)
+
+After using the installed preview the owner corrected two parts of the redesign
+below; this supersedes item 6 and refines item 2:
+
+- **Cards keep three rows** with breathing room: title row, runtime right-aligned,
+  time right-aligned, each on its own row so runtime names form one aligned
+  column. Two-row cards felt cramped and misaligned. Split cards keep three rows
+  as before the redesign.
+- **The one filter row stays** (`Agent: All ▾  Project: All ▾  ▐X▌ Active`), but
+  its pickers drop down **in place**, anchored directly below the clicked chip,
+  not as a centered dialog that forces the pointer to travel. Options are
+  clickable immediately; outside click or Escape closes. Keep at least one blank
+  cell between the Project chip and the checkbox.
+
+Lesson: density must not cost scanability (aligned columns, breathing room), and
+a popup for a frequent action must open where the pointer already is.
+
+### One-pass visual redesign (owner decision 2026-10-25)
+
+Owner request after the 2026-10-25 TUI review ("一步到位改完"): the sidebar
+header was unreadable and too colorful. This section supersedes conflicting
+earlier rules below: the inline quick-filter rows (2026-10-15), the Active row
+and native Switch of the header capsules (2026-10-11), three-row session and
+split cards, pane-header and detail-header restart hints, warning-yellow filter
+selection, brand-colored top-bar add-pane chips and the "Advanced" naming.
+
+1. **Header order and size.** `+ New session` (one row with a muted
+   right-aligned `^N`, plus its owned blank row) is the only sticky list item
+   (`STICKY_IDS == (NEW_SESSION_ID,)`), above the filter group. The filter group
+   is the filter input (one row) and one filter row owning the blank row before
+   sessions. Header height drops from seven rows to five. Creation is visibly
+   separated from filtering by the owned blank row.
+2. **One filter row.** `Agent: All ▾`, `Project: All ▾` and an `Active`
+   checkbox share one row at the default 39-cell width. Agent/Project chips
+   show the dimension and current value: `All`, one name, or `name +N`; values
+   truncate before the checkbox loses space. Clicking opens a multi-select
+   dropdown anchored directly under the clicked chip, never a centered dialog;
+   Project is searchable and the option list scrolls. At least one blank cell
+   separates the Project chip from the checkbox. Clear and Done stay in the
+   dropdown; outside click or Escape closes it. Selection semantics are
+   unchanged: union within a dimension, intersection across Agent, Project,
+   text and Active.
+3. **Active** is the native Textual `Checkbox` (compact, no border), replacing
+   the `ActiveFilterCard` row and its two-block Switch. It shows no count; the
+   input's count already reports the result, so no number can disagree with the
+   visible list.
+4. **Count.** The input shows the total when nothing narrows the list and
+   `visible/total` while any filter is active.
+5. **Color roles.** Brand colors only identify which assistant a session, pane,
+   message or picker option belongs to. Filter controls, add-pane actions and
+   selection are neutral: chosen chips and a non-empty filter input use the
+   `$primary-muted` fill with bold `$foreground`. Warning yellow is reserved for
+   warnings and the waiting-answer dot; status dots keep yellow/green/red.
+6. **Session card: three rows.** Row 1 is unchanged (dot, dim project, bold
+   title). Row 2 is the right-aligned runtime in its brand color. Row 3 is the
+   right-aligned relative time keeping the four freshness tiers. Runtime names
+   form one aligned column and the rows keep breathing room; the same-day owner
+   correction below keeps three rows. Split card: row 1
+   `▼ Split view · project`; row 2 the member count; row 3 is the tree
+   continuation when expanded, or the attention summary plus latest member time
+   right-aligned when collapsed. Member tree lines continue through all three
+   rows. The Older stack keeps its framed three rows.
+7. **Top bar.** A muted `+ New pane` label precedes neutral `Terminal` and
+   assistant chips; Dragon is muted. When the chips do not fit, Dragon hides
+   first; if they still do not fit, the row collapses into one `+ New pane` chip
+   that opens the existing runtime menu with the same choices.
+8. **Pane chrome.** The pane footer bar is the single home of `Enter restart`.
+   Pane headers show only the transient `Restarting…`; the detail header no
+   longer repeats the restart sentence.
+9. **Your prompts.** Panes narrower than 60 cells start collapsed. Clicking a
+   panel toggles that pane only; `Ctrl+G` toggles every pane and clears per-pane
+   choices. When no prompt has a timestamp, the time column (`N/A`) is omitted.
+10. **Actions menu (`Ctrl+T`).** Title `Session actions`; disabled section rows
+    `This session` (Export, Fork, Restart) and `New session from this history`
+    (assistants, the source marked `same assistant`) are skipped by the keyboard.
+    Only assistant names carry brand color; descriptions are muted; unavailable
+    rows are dimmed with their reason. The footer reads `^n New`, `^f Search`,
+    `^p Pin`, `^t Actions`, `^x Delete` in that order.
+
+Inspected references: the existing `ui/quick_filters.py` `ProjectFilterModal`
+(SelectionList picker, reused and generalized), `FilterChip` (Button renderer),
+`ui/modals.py` `RuntimePickerModal`/`OutsideClickDismiss`, and installed
+Textual 8.2.8 `Checkbox`/`ToggleButton` and `ListView` disabled-item skipping
+([Checkbox](https://textual.textualize.io/widgets/checkbox/),
+[ListView](https://textual.textualize.io/widgets/list_view/)). The Mac sidebar
+(`apple/macOS/Sidebar/MacSidebarFilters.swift`) keeps its native inline filter
+buttons; iPhone keeps its filter rows. This is a TUI shell redesign with no
+SessKit or Apple change. Preview code blocks were checked: their black boxes in
+SVG captures come from the exporter painting the terminal-default background;
+real terminals show their own background, so the preview is unchanged.
+
 ### Neutral surfaces with client-green accents (2026-10-23)
 
 Owner correction after reviewing v0.24.346: green-washed backgrounds, selection
@@ -177,7 +269,7 @@ corral 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 侧边栏会话列表 | 左栏的搜索框、新建入口、会话组三行卡和会话三行卡 | `SessionListView`、`SessionGroupCard`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话；有关键字时框体高亮（`-active`） | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式。索引正文去掉行内 Markdown 标记（粗体、行内代码、删除线、标题/引用/列表前缀、代码围栏、表格分隔线、链接地址），Corral 接力提示词只索引继承的任务、不索引摘录的他人会话正文（2026-10-18，与 Mac ⌘F 共用；改清洗规则须递增 `search.py` 的条目格式号让派生缓存失效） |
-| Runtime and project quick filters | Two adjacent inline-labeled rows at the default 39-cell width; overflow projects stay in More projects. The unfiltered recent-project snapshot retains its order across selection, deselection and refresh. Hidden selections never replace or move quick choices. More projects reserves count width. No All entries or added selection markers. Runtime names retain brand colors; selection changes the fill. Hover/focus never adds white fill, underlines or frames. | Owner correction 2026-10-15 supersedes unlabeled wrapping rows; see Inline quick-filter labels above. Reuse Button/Grid with terminal-cell measurement. Multi-select unions intersect with text and Active. Mouse and native keyboard selection remain available. Only five active runtimes appear. Apple ordering is governed by the Apple UI KB. |
+| Runtime and project quick filters | One row at the default 39-cell width: `Agent: All ▾` and `Project: All ▾` picker chips plus the native `Active` checkbox. Chips show `All`, one name or `name +N`; values truncate before the checkbox. Pickers are multi-select dialogs (Project searchable) with Clear/Done and backdrop dismissal. Neutral colors in the row; brand colors only inside the Agent picker. Hover/focus never adds white fill, underlines or frames. | Owner redesign 2026-10-25 supersedes the inline quick-choice rows; see One-pass visual redesign above. Reuse Button/Grid with terminal-cell measurement. Multi-select unions intersect with text and Active. Mouse and native keyboard selection remain available. Only five active runtimes appear. Apple ordering is governed by the Apple UI KB. |
 | 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提示词，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或任意焦点按 `Ctrl+N`（与 `Ctrl+F` / `Ctrl+P` 同级的全局键），或右栏顶栏点助手加格；打开弹窗时光标必须在项目筛选框，立刻可打字；单字母 `n` 不绑 |
 | Runtime names in dialogs | New Session and the runtime handoff picker reuse `theme.runtime_label_style` for Agent names, including focused and selected rows. Unavailable runtimes keep their brand color with dim styling; project labels and action hints retain their existing styles. | Owner correction 2026-10-11. Reuse the existing Rich Text labels and native Textual ListView selection background; do not recolor every row uniformly. |
@@ -637,7 +729,7 @@ assert that the reporting user's other computer has already upgraded.
 - **Keyboard smoke-test contract:** use the live pane’s `Ctrl+\` handler to return to the list, `/` for search focus, Esc to clear the query, then press Enter once to leave the search input for the list and a second time to reopen the selected session before testing input forwarding; Ctrl+Q quits. Retired `c` / Esc-exit bindings must not produce false passing assertions. Pane-close mouse behavior is verified through Pilot with real isolated tmux panes.
 
 - **AI 易错点**【禁止】恢复旧的全屏预览或纯列表第二套界面。非进行中会话在右栏直接展示完整对话，已托管会话在右栏挂接内嵌实时终端；「运行中(其他窗口)」走完整对话那一路（它不在任何 tmux 里，抓不到画面）。Space 全屏预览已经退役。原因：双入口会使按键、滚动、选择和展示语义重新分叉。
-- **AI 易错点**【侧边栏末行间隔与关注圆点】独立的新建会话项和未来新增的左栏控件，最后一行是控件自身高度内的间隔空行；顶部完整筛选组是例外：搜索框高 1，助手与项目各一行且无尾空行，仅活跃会话开关高 2 并拥有组后的空行，之后才是高 2 的新建项（2026-10-16；见文首布局约定）。会话卡固定高 3，三行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
+- **AI 易错点**【侧边栏末行间隔与关注圆点】独立的新建会话项和未来新增的左栏控件，最后一行是控件自身高度内的间隔空行；头部顺序（2026-10-25；见文首 One-pass visual redesign）：高 2 的新建项在最上，然后搜索框高 1、筛选行高 2（助手 / 项目选择 + 活跃勾选，拥有组后的空行）。会话卡固定高 2，两行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 第二行靠右「运行时 · 时间」），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
 - **AI 易错点**【斑马纹是块级、画在卡片层、必须半透明、相位锚段尾】相位按块交替：独立会话一块，会话组（组卡 + 全部成员）一块；`＋ 新建` 与分隔线不参与；跨过分隔线重置，展开/收起不会翻转其后块的条纹。**锚在段尾而非段首**：段首插块零翻转，代价只是视觉上「段末无条纹」而非「段首无条纹」，详见性能知识库的 set_class 成本记录。类标在 `SessionCard` / `SessionGroupCard` 上，背景用 `$foreground 8%`——Textual 子类 `DEFAULT_CSS` 的 tie-breaker 高于基类，写到 `ListItem.-stripe` 会压过 `ListView` 自带的 `.-highlight`，把选中底色吃掉。失焦选中色 `block-cursor-blurred-background` 必须够不透明（约 `CC`），否则条纹会把它压平，焦点在右栏时分不清哪行是选中。全量重建与原地更新都要 `_apply_stripes()`。回归：`SidebarStripeTests`。
 - **AI 易错点**【时间行是四档亮度，不是二值 dim】第三行时间按「多久以前」分四档（半小时 / 三小时 / 一天为界），最新一档与标题同色以示着重，越旧越暗。档位色必须用 `$foreground` + 透明度经组件样式解析（深浅色主题各自与背景混合），不要写死灰值、也不要退回单级 `dim`；`SessionCard._time_style()` 只取混色后的**前景**，带上背景色会把整行的选中/分屏底色盖出一块缺口。档位本身要进 `_compute_signature()`：`mtime` 不变但会话「变旧」跨档时，原地更新路径不重绘就会一直亮着。文案阈值另算：`JUST_NOW_SECONDS`（3 分钟）内显示「刚刚」并在卡片上加粗；相对时间字符串也要进签名，否则「刚刚」↔「Xm ago」与加粗不会随墙钟更新。
 - **AI 易错点**【会话组树、圆点和高亮不要重复表达】右栏形成两到四格后，侧边栏必须出现独立三行组卡，并把成员从顶层移到树形子项；组卡第一行只有三角、可选置顶标记和组名，**绝不能再画关注圆点**。右栏 ≥2 格时给当前组卡和全部成员铺 `-in-split`，激活格对应成员再叠 `-split-active`。**光标停在组卡上时不得把 `active_key` 清成 `None`**，并且必须给组卡和全部成员贴 `-group-selected`——ListView 的 `.-highlight` 只落在当前一行，不贴这层的话成员看起来像没被选中。激活格对应成员在整组选中态下仍要更重（`-split-active.-group-selected`）。改选某个成员后立刻清掉 `-group-selected`。**光标停到组卡 / 激活子项上时必须比不停更重**：仍需 `:focus > ListItem.-in-split.-highlight` / `.-split-active.-highlight` 与 `-group-selected` 合成色，由 `_SIDEBAR_SPLIT_LADDER` 统一给值。**独立项与组内成员选中底色必须同档（2026-09-12）**：`block-cursor-background` 必须等于 `sidebar-split-cursor-background`（对齐组内选中色）；两色分叉会出现「组内选中深、组外选中淡」。组卡在成员也贴了 `-in-split` 时仍要能贴 `-in-split`（`_apply_split_marks` 只看 keys ⊆ group）。全量重建会换掉全部 `ListItem`，末尾必须重新贴标。回归：`SessionGroupSidebarTests`、`SidebarSplitHighlightTests.test_selecting_group_card_highlights_whole_group`、`test_standalone_and_group_member_selection_share_cursor_color`。
@@ -676,7 +768,7 @@ assert that the reporting user's other computer has already upgraded.
 - **AI 易错点**【强停必须吞 KeyboardInterrupt 并同步关掉鼠标跟踪】**禁止**把 `app.run()` 的 `KeyboardInterrupt` 漏到外壳：Warp 等终端会把 Ctrl+C 打成 SIGINT（绕过界面自己的按键处理），`asyncio.run` 收尾还要等默认线程池（Python 3.14 最长 300 秒），第二次 Ctrl+C 就会打出堆栈，并且 Textual 写线程已经停了、关不掉鼠标跟踪，点击变成 `^[[<0;21;2M`。`run_app()` 必须 catch 后调用 `restore_terminal()`（直接 `os.write` 关闭序列，**禁止**再走 Textual 写线程）。**不要把 Ctrl+R 绑成全文搜索**：那是 Warp / zsh 的命令搜索，绑了会从托管助手的 readline 反搜里抢走该键；正文搜索仍是 Ctrl+F。回归：`InterruptTerminalRestoreTests`。
 - **AI 易错点**【右栏刷新线程边界】Textual 后台 worker 不得直接读写 Widget/DOM；扫描、读取对话和托管启动等阻塞工作在后台进行，结果通过 `call_from_thread()` 回到主线程。退出时 worker 必须可取消，不能用不可打断的无限等待或长 `sleep`。
 - **AI 易错点**【列表刷新策略】会话键的成员与顺序不变时，`SessionListView.rebuild()` 必须原地替换卡片数据，只刷新有变化的卡片；仅新增、删除或重排才清空重建。后台重扫、标题轮询和交互动作可能在同一帧要求重建，并发执行 `clear()` / `extend()` 会重复挂载固定 ID 的「新建会话」条目，Textual 直接抛 `DuplicateIds` 打崩整个 TUI。**串行闸门必须在 `SessionListView.rebuild()` 内部（`_rebuild_lock`），不能只放在主屏**：调用方分布在两条互不相让的消息泵上——后台重扫经 `app.call_from_thread(_rebuild_list)` 跑在 App 泵，搜索框输入经 `on_input_changed` 直接调 `rebuild()` 跑在 Screen 泵，`MainScreen._rebuild_lock` 只挡得住同泵重入。真机崩溃（2026-07-26）：连续退格清空搜索词，命中数 50→57→71 连做全量重建（单次已到 2s 量级），与后台重扫交错必崩。同一把锁顺带做请求合并——排队期间来了更新的请求且本次不带 `select_key` 时直接让位，避免每个中间筛选态都全量重建一遍。标题生成中不在侧边栏画任何加载动画，标题只在缓存轮询命中变化时原地刷新。回归：`test_list_rebuild_serialized_across_message_pumps`、`test_screen_serializes_concurrent_list_rebuilds`。
-- **AI 易错点**【原地刷新捷径必须先查固定头还在不在】`_rebuild_locked()` 的「会话集合没变就原地刷新」捷径，前置条件是固定头（＋新建 / 活跃筛选开关）已经挂载；全新环境（零会话）首次重建前后会话集合都是空列表，漏查 `_sticky_intact()` 会误判「没变化」直接返回，「＋ 新建」与活跃筛选开关永远不出现（2026-08-18 空 HOME 启动真机复现，v0.24.137 修复）。凡给 rebuild 加早退捷径，先想清「首帧固定头还没挂」这条路径。回归：`test_empty_store_still_mounts_sticky_header`。
+- **AI 易错点**【原地刷新捷径必须先查固定头还在不在】`_rebuild_locked()` 的「会话集合没变就原地刷新」捷径，前置条件是固定头（＋新建）已经挂载；全新环境（零会话）首次重建前后会话集合都是空列表，漏查 `_sticky_intact()` 会误判「没变化」直接返回，「＋ 新建」永远不出现（2026-08-18 空 HOME 启动真机复现，v0.24.137 修复）。凡给 rebuild 加早退捷径，先想清「首帧固定头还没挂」这条路径。回归：`test_empty_store_still_mounts_sticky_header`。
 - **AI 易错点**【推导原选中条目必须以 DOM 为准】后台重扫是先 `store.refresh()` 再触发 `rebuild()`，这一刻 store 已经变了但 DOM 还是旧的。`rebuild()` 必须用 `_displayed_selected_identity()` 从当前 `ListItem` 子控件读取会话键或组身份，不能用新的扁平会话数组去索引 `self.index`；会话组卡和子项插入后，下标更不再等于 `visible_sessions()` 下标。真实复现过：后台刷出新会话后高亮串到相邻会话。用户交互期的 `selected_session()` / `selected_group()` 同样直接读取高亮 DOM 控件。
 - **AI 易错点**【详情缓存失效】对话预览按历史文件 mtime 失效；列表扫描后右栏详情也必须失效并按稳定会话键重新读取当前快照。否则标题、状态、摘要或对话会停留在旧字典闭包里。
 - **AI 易错点**【右栏滚动语义】静态对话的 `detail_offset`（0 为顶部，增大表示更靠后）与实时画面的 `history_offset`（0 为直播底部）方向相反。滚轮进入静态对话时必须取反，保证“下滚看更晚内容”。选中预览默认钉在最新（`_detail_stick_bottom`）；用户离开底部后刷新不得强行钉回。
@@ -697,7 +789,7 @@ assert that the reporting user's other computer has already upgraded.
 - **AI 易错点**【Your prompts 必须二次过滤注入，不要相信 `role == "user"`】扫描层只丢掉 Claude/Kimi 的 `origin.kind` 系统事件；Cursor 计划附件、Codex `<skill>`/`<turn_aborted>`、OpenConductor「你是…」角色提示仍会以 user 进 `load_conversation`（导出要原文）。Codex 还会注入从不显示为提问的上下文（`<codex_internal_context`、`<recommended_plugins>`、`<codex_delegation>` 等），Claude 有压缩摘要；小窗列表必须与助手实际显示的提问一一对应，否则原生按序号跳转会错位（清单与依据见[内嵌终端知识库 Current navigation design](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md#current-navigation-design-2026-10-19-no-native-find)）。小窗在 `is_injected_user_prompt` 再滤。corral 自身的跨运行时接力提示词视作真人提问，不在这里过滤。Every normalized user turn, including identical consecutive text, remains selectable with its own source index and prefix identity; native duplicate-record normalization belongs upstream.不要把 `$doc-update`、`/grilling`、带 `<image>` 配文的提问当成注入；也不要把这层过滤下沉到扫描器。回归：`test_injected_runtime_prompts_are_dropped`、`test_image_wrapper_keeps_the_caption`、`test_consecutive_duplicate_prompts_retain_identity`。
 - **AI 易错点**【小窗顺序恒为由旧到新；展开态保留全部提问，靠高度封顶滚动】两种形态都按时间从上到下排，不得改成"最新在最前"——那和右栏完整对话、和人读聊天记录的方向都相反。`summarize_user_messages` 必须把过滤后的提问**全部**放进 `entries`（`entries[0]` 仍为本会话最早那条）；条数再多也**禁止**砍中间或画「中间省略 N 条」——遮挡面积只靠 `_MAX_EXPANDED_HEIGHT` + `_scroll` 控制。收起态仍只画两头摘要。回归：`test_long_session_keeps_every_prompt_in_order`、`test_expanded_lists_every_prompt_and_scrolls_when_capped`、`test_expanded_caps_height_and_scrolls_instead_of_dropping_content`。
 - **AI 易错点**【小窗对每个右栏格都画，不只激活格、也不跳过静态预览】实时托管格与历史消息预览格都要画 Your prompts：长对话里完整预览仍要翻很久，小窗用来扫提问脉络。多分屏时每一格画自己的提问摘要。判定入口是 `MainScreen._hud_live_targets()`（遍历 `pane_specs()`，要求 store 能找到会话），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次；不要再加回「只认 `keepalive_name`」的过滤。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。回归：`test_every_live_pane_draws_its_own_hud`、`test_static_preview_pane_also_draws_hud`。
-- **AI 易错点**【置顶只改变排序，禁止冻在视口里】**`#sidebar-sticky` 只许放「＋ 新建」和活跃筛选开关**；置顶块、Pinned 线、未置顶日期段必须都在 `#sidebar-scroll` 里一起滚。不要把置顶项塞回固定头，也不要给固定头加 `max-height` + `overflow: hidden` 去“给未置顶留缝”——钉多了会裁切已钉项，未置顶只剩底下一条缝，指针在固定头上滚轮还带动那条缝，看起来像坏了。置顶的产品语义是「打开列表或滚回顶部时永远在最前」，不是「浏览未置顶时始终钉在屏幕上」。回归：`test_filter_and_new_stay_fixed_when_session_list_scrolls`、`test_many_pinned_sessions_scroll_with_unpinned`。
+- **AI 易错点**【置顶只改变排序，禁止冻在视口里】**`#sidebar-sticky` 只许放「＋ 新建」**（筛选框与筛选行是插在它与滚动区之间的头部控件，也不滚）；置顶块、Pinned 线、未置顶日期段必须都在 `#sidebar-scroll` 里一起滚。不要把置顶项塞回固定头，也不要给固定头加 `max-height` + `overflow: hidden` 去“给未置顶留缝”——钉多了会裁切已钉项，未置顶只剩底下一条缝，指针在固定头上滚轮还带动那条缝，看起来像坏了。置顶的产品语义是「打开列表或滚回顶部时永远在最前」，不是「浏览未置顶时始终钉在屏幕上」。回归：`test_filter_and_new_stay_fixed_when_session_list_scrolls`、`test_many_pinned_sessions_scroll_with_unpinned`。
 - **AI 易错点**【钉过的会话不筛就不在 pinned、一筛项目名又出现 → 不是滚动/折叠，也不是 Pi 判活】**置顶是会话属性**：`set_group` / `_normalize_store` 不得 `pop` 组成员的独立 pin；有成员已钉时 promote 整组 pin，sqlite 里独立键保留。侧栏 `_sidebar_rows` 必须按**当前筛选看得见的成员**决定是否当组：全量 ≥ 2 但可见 < 2 时 skip 组、不写 `grouped_keys`，让独立 pin 生效。跨项目分屏 + 按项目名筛到只剩 1 人时，旧逻辑仍当组展示，独立 pin 被忽略——不筛时人在组里（组若没 pin 就不在 pinned），一筛组解散、独立 pin 回来。不要为这个症状去改 `_apply_live_flags` 或拆 `--session-id`。回归：`test_grouping_keeps_independent_pin_and_promotes_group`、`test_project_filter_restores_independent_pin_when_group_collapses`。
 - **AI 易错点**【取消置顶一个已钉分组无效、右下弹出 Pinned / 已置顶 → 不是 toast 写反，是 promote 把组钉回去】**显式取消整组置顶必须同时清掉成员独立 pin**：`toggle_group_pin` 若只从 `pinned_group_ids` 删除，随后 `_mutate` / `_read_conn` 必跑 `_normalize_store` → `_promote_member_pins_to_group`。Pi 尤其容易踩——先钉独立会话再分屏进组（或 `keep_ids` 钉过的旧 Pi），独立键还在 sqlite 里，一按 `p` 组 pin 被删立刻被 promote 写回，toast 读到的快照仍是 pinned。进组保留独立 pin 的规则仍然成立（筛选解散后还能回 pinned）；只有用户明确 unpin 整组时才清成员键。不要把 toast 改成「已取消置顶」来掩盖。回归：`test_unpin_group_clears_promoted_member_pins`、`test_unpin_promoted_group_survives_reload`、`test_p_unpins_group_promoted_from_member_pin`。
 - **AI 易错点**【侧边栏未置顶区禁止按 mtime 整列重排】`SessionStore._order` 已保证进入后已有会话位置固定；`_sidebar_rows()` 必须跟这份顺序走（组卡落在最先出现的成员位置），不要再按成员当前 mtime / `group.updated_at` 对未置顶块排序——否则运行中会话一写盘，组卡就会在侧边栏里上下飘。唯一例外是 **按本地日历日分桶**（今天 / 昨天 / 近 7 日星期几 / 更早无标签）：按原序扫一遍再分桶，桶内相对顺序不变；`live` 算今天。不要退回滚动 24 小时，也不要把日期分隔线跟时间行 `TODAY_SECONDS` 绑死。区尾标签必须是 `{名字}↑`（置顶线同样），箭头在 `PinSeparatorCard.render` 追加，禁止写进 `_MESSAGES`，也禁止漏掉箭头让人分不清线标的是上面还是下面。新会话仍由 store 插最前。回归：`test_sidebar_order_stable_when_member_mtime_updates`、`test_newer_independent_session_sorts_above_unpinned_group`、`test_today_separator_*`、`test_yesterday_and_weekday_separators`。
@@ -727,7 +819,7 @@ assert that the reporting user's other computer has already upgraded.
 - **AI 易错点**【Markdown 预览有两个会静默出错的地方】① **必须关掉 HTML 解析**（`_markdown_renderable` 里 `MarkdownIt("commonmark", {"html": False})`）：CommonMark 把 `<foo>…</foo>` 当 HTML 块，而 Rich 的 markdown 没有 HTML 元素处理器，整段会被**静默丢弃**——助手/用户消息里 `<system-reminder>`、`<Thinking>`、`<urlopen error>` 极常见，实测整条消息渲染成空白。历史查看器丢内容比不支持 markdown 严重得多。回归：`test_preview_markdown_never_swallows_angle_bracket_text`。② **正文是按宽度预排好的 Segment，不会再被上层重新折行**，所以 `_render_detail` 必须用「真正要渲染它的那一格」的宽度（`SplitPaneArea.pane_width_for()`），不能图省事取第一格——多分屏各格不等宽时，分隔线长度和正文折行都会按别人的宽度排。已知且接受的取舍：没包反引号的 `__init__.py` 会按 CommonMark 语义变成加粗的 `init.py`（GitHub 同样如此），文字不丢、只是下划线被当成标记。
 - **AI 易错点**【右栏静态内容不再保证是 `Text`】`EmbedPane._static_renderable()` 现在可能返回任意 Rich 可渲染对象（对话预览是 `Group`）。别再对它 `str()` ——那会把整篇排版压成一行对象 repr；`render()` 里也要先判 `Text`，不是 `Text` 就经 `_detail_full_strips()` 整篇编译成纯文本（既有测试大量断言 `pane.render().plain`）。
 - **AI 易错点**【活跃是筛选，不是看板】2026-10-11 起「活跃 / Active」只是侧栏固定头第二项的筛选开关，**不得**再自动往右栏铺格、分页或登记观看尺寸，也不写水果组；旧看板（`ActivityBoard`、`[` / `]` 翻页、看板空态格、`BOARD_LINGER_SECONDS`）已整体移除，不要加回来。成员只认 `resolve_active_marker`（与圆点同源）加右栏当前开着的会话；**禁止**为了对齐人数去砍「刚刚」档。开关状态存在 `NavState.active_only`，与 `project_query` 一样是筛选状态的单一来源：侧栏行、页头数量、筛后不足两人解散分屏都按两者交集计算。固定头只有「＋ 新建」和这个开关；筛选框无选中时 Down/Enter 的回落仍要跳过全部固定项（`STICKY_IDS`），禁止写死下标。
-- 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、单击/回车会话组卡、后台重扫一律不抢焦点。进入 corral 时默认高亮列表第一条会话或会话组（跳过「＋ 新建」和活跃筛选开关），焦点在侧边栏。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
+- 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、单击/回车会话组卡、后台重扫一律不抢焦点。进入 corral 时默认高亮列表第一条会话或会话组（跳过「＋ 新建」），焦点在侧边栏。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
 - **分屏标题带项目（2026-10-20 机主实报「顶部看不出来是哪个项目」）**：格子标题栏固定为 `助手 · 项目 · 标题`（`SplitPaneArea._pane_title`；项目取 `session_project_label`，即侧栏同款 cwd 末级目录名，不写整条路径），与手机顶栏「● 助手 · 项目」、Mac 格子顶栏标题后的项目名同一口径（见 Apple [会话顶栏设计](../../apple/docs/design/SESSION_HEADER_DESIGN.md)）。标题过长时省略号截在尾部。
 - **重启会话要有即时反馈（2026-10-20 机主实报「所有客户端重启会话都没有即时反馈」）**：高级操作选「重启会话」后，当场在标题栏挂「正在重启…」（`set_restarting`，已有），并在格子不在右栏时仍弹出 `notify`（`modal.restart_started`）。成功收尾弹 `modal.restart_done`；失败除响铃外必须弹 `modal.restart_failed` 讲清楚（原先只响铃，等于没有反馈）。手机 / Mac 端的反馈见 Apple [UI 知识库](../../apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md#send-failure-feedback-and-session-restart-2026-10-02-requirement)。
 - Delivery evidence (2026-10-20): CLI `v0.24.337` (`f8bfded`) was published with installable assets and loaded by the local command; the remote service restarted afterward. The release full gate passed 2,629 tests. Real tmux frames show `Codex · corral-phone-acceptance-restart · Reply READY` in the pane header and `Restarted Reply READY` after selecting Restart session, with the same two-member split retained. During the original real Codex restart, parallel private stores collected 69 samples each: the old implementation showed an extra provisional key in 19 samples (about 19 seconds), while the fixed implementation retained only the original full session key throughout. This is host-store and TUI evidence; it does not establish physical iPhone rendering or post-install Mac menu interaction. The later installed-store probe contained only OpenCode and is excluded from Codex acceptance. The [Apple UI knowledge base](../../apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md#send-failure-feedback-and-session-restart-2026-10-02-requirement) records the separately verified client builds and remaining capture limits.

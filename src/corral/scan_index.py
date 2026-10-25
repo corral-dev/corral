@@ -8,6 +8,7 @@ through to a local scan.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -37,6 +38,9 @@ MAX_UNCOVERABLE_KEEP_IDS = 2000
 # A killed publisher can leave its tmp file behind; entries older than this are
 # removed best-effort on the next publish.
 STALE_TMP_MAX_AGE_SECONDS = 300.0
+# Index files from other provider cohorts are kept while their process is
+# alive (it keeps rewriting them); an untouched one is abandoned.
+FOREIGN_INDEX_MAX_AGE_SECONDS = 7 * 24 * 3600.0
 
 # Last publish by this process: monotonic time, result limit, and per-runtime
 # session-key fingerprint used for the throttle above. Module-level because
@@ -104,7 +108,19 @@ def _shared_index_enabled() -> bool:
 
 
 def index_path():
-    return cache_dir() / "scan-index.json"
+    """Cohort-scoped shared index path.
+
+    A long-lived process from an older provider cohort (a TUI that was running
+    across an upgrade) still publishes the old contract while new processes
+    publish theirs. A single fixed file would make them overwrite each other
+    every refresh: consumers reject the foreign cohort and cold-scan (5–28 s)
+    in a loop even though a same-cohort worker is healthy. Scoping the file by
+    cohort keeps each generation's publishers and consumers together; foreign
+    index files are bounded derived data and cleaned up by ``publish``.
+    """
+    cohort = provider_cohort()
+    digest = hashlib.sha256(cohort.encode("utf-8")).hexdigest()[:10]
+    return cache_dir() / f"scan-index-{digest}.json"
 
 
 def published_meta() -> tuple[float, int] | None:
@@ -327,8 +343,30 @@ def publish(
             json.dump(payload, handle, ensure_ascii=False)
         os.replace(tmp, path)
         _cleanup_stale_tmps(path)
+        _cleanup_foreign_indexes(path)
     except Exception:  # noqa: BLE001 — index is optional acceleration
         return
+
+
+def _cleanup_foreign_indexes(path) -> None:
+    """Drop index files no live publisher of the current cohort owns.
+
+    Older-cohort TS/Daemon processes write their own file while they run, so a
+    recently touched foreign file is kept; only abandoned generations older than
+    a week are removed. Derived data only. Never raises.
+    """
+    try:
+        now = time.time()
+        for candidate in path.parent.glob("scan-index*.json"):
+            if candidate == path:
+                continue
+            try:
+                if now - candidate.stat().st_mtime > FOREIGN_INDEX_MAX_AGE_SECONDS:
+                    candidate.unlink()
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001 — cleanup must never fail a publish
+        pass
 
 
 def _cleanup_stale_tmps(path) -> None:

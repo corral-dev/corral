@@ -166,12 +166,22 @@ class IndexCohortTests(unittest.TestCase):
             "file_mtime": mtime, "mtime": mtime, "cwd": "/tmp", "live": False,
         }
 
+    def test_index_path_is_scoped_by_provider_cohort(self) -> None:
+        current = self.scan_index.index_path()
+        with mock.patch(
+            "corral.scan_index.provider_cohort",
+            return_value="2026-09-29.3+sesskit-0.0.1",
+        ):
+            other = self.scan_index.index_path()
+        self.assertNotEqual(current, other)
+        self.assertTrue(current.name.startswith("scan-index-"))
+
     def _read_payload(self) -> dict:
-        with open(self.cache / "scan-index.json", encoding="utf-8") as handle:
+        with open(self.scan_index.index_path(), encoding="utf-8") as handle:
             return json.load(handle)
 
     def _write_payload(self, payload: dict) -> None:
-        with open(self.cache / "scan-index.json", "w", encoding="utf-8") as handle:
+        with open(self.scan_index.index_path(), "w", encoding="utf-8") as handle:
             json.dump(payload, handle)
 
     def test_current_cohort_roundtrips(self) -> None:

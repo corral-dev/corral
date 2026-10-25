@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -65,6 +66,14 @@ QUIET_RESET_SECONDS = 30.0
 RESPAWN_MIN_INTERVAL_SECONDS = 30.0
 HEARTBEAT_FILENAME = "scan-worker.json"
 LOCK_FILENAME = "scan-worker.lock"
+# A worker that loaded the previous provider/code contract keeps stamping its
+# memoized cohort and can never be reused: every consumer rejects its snapshot
+# and cold-scans locally (5–28 s, CPU pegged) while the stale worker also holds
+# the singleton flock, so no current worker can take over. It self-exits on a
+# fresh on-disk version check; a consumer reaps it when that code predates the
+# check (2026-10-25 freeze).
+WORKER_MODULE_MARKER = "corral.scan_worker"
+REAP_TERM_TIMEOUT_SECONDS = 2.0
 
 _ENSURE_LOCK = threading.Lock()
 _LAST_SPAWN_MONO = 0.0
@@ -86,6 +95,169 @@ def _paths() -> tuple[object, object]:
 
     directory = cache_dir()
     return directory / HEARTBEAT_FILENAME, directory / LOCK_FILENAME
+
+
+def _installed_provider_version() -> str:
+    """Distribution version of SessKit installed on disk right now.
+
+    ``cache.sesskit_provider_version()`` is memoized on purpose (a process's
+    cached rows must match the parser it actually loaded), so a long-lived
+    worker needs this disk read to notice an upgrade that happened after it
+    started. Never raises.
+    """
+    try:
+        from importlib import metadata
+
+        return str(metadata.version("sesskit") or "").strip()
+    except Exception:  # noqa: BLE001 — drift detection is best-effort
+        return ""
+
+
+def provider_drift() -> bool:
+    """True when the install on disk no longer matches this process's parser.
+
+    A parser-version bump in Corral does not have to ship a new SessKit, so the
+    package version is checked as well. Never raises.
+    """
+    try:
+        from corral.cache import sesskit_provider_version
+
+        loaded = str(sesskit_provider_version() or "").strip()
+        installed = _installed_provider_version()
+        if loaded and loaded != "unknown" and installed and installed != loaded:
+            return True
+    except Exception:  # noqa: BLE001 — fall through to the package check
+        pass
+    try:
+        from corral import updater
+
+        return bool(updater.install_replaced())
+    except Exception:  # noqa: BLE001 — unknown install state is not drift
+        return False
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _singleton_free() -> bool:
+    """True when no process currently holds the worker singleton lock.
+
+    A terminated child stays visible to ``kill(pid, 0)`` while it is a zombie;
+    the released flock is the authoritative "worker is gone" signal.
+    """
+    try:
+        _heartbeat_path, lock_path = _paths()
+        with open(lock_path, "a", encoding="utf-8") as handle:
+            try:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (ImportError, OSError):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 — unknown lock state keeps the wait
+        return False
+
+
+def _read_heartbeat() -> dict | None:
+    try:
+        heartbeat_path, _lock_path = _paths()
+        with open(heartbeat_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 — absence of a worker is normal
+        return None
+
+
+def _process_command(pid: int) -> str:
+    """Command line for ``pid`` via POSIX ``ps``; empty when unavailable."""
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, read-only query
+            ["ps", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def _is_scan_worker_process(pid: int) -> bool:
+    """Guard against killing a recycled pid that is not our helper."""
+    return WORKER_MODULE_MARKER in _process_command(pid)
+
+
+def obsolete_worker_pid() -> int | None:
+    """PID of a registered worker whose heartbeat cohort is obsolete.
+
+    Only a live process that still runs ``corral.scan_worker`` qualifies.
+    Heartbeats without a cohort (pre-cohort installs) qualify too: no current
+    consumer can reuse them, and they hold the same singleton slot.
+    """
+    if not _worker_enabled():
+        return None
+    payload = _read_heartbeat()
+    if payload is None:
+        return None
+    try:
+        pid = int(payload.get("pid") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid() or not _pid_alive(pid):
+        return None
+    try:
+        from corral.cache import provider_cohort
+
+        current = provider_cohort()
+    except Exception:  # noqa: BLE001 — cannot judge; leave the process alone
+        return None
+    if payload.get("cohort") == current:
+        return None
+    if not _is_scan_worker_process(pid):
+        return None
+    return pid
+
+
+def reap_obsolete_worker(*, timeout: float = REAP_TERM_TIMEOUT_SECONDS) -> int | None:
+    """Terminate a verified obsolete scan worker; returns its pid or ``None``.
+
+    Safety: the pid must come from our heartbeat, be alive, carry a mismatched
+    (or missing) cohort, and its command line must run ``corral.scan_worker``.
+    Anything else — recycled pid, unrelated process, unreadable state — is left
+    untouched. Never raises.
+    """
+    pid = obsolete_worker_pid()
+    if pid is None:
+        return None
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return None
+    try:
+        from corral import observe
+
+        observe.event("scan_worker_reaped", worker_pid=pid)
+    except Exception:  # noqa: BLE001 — diagnostics are best-effort
+        pass
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid) or _singleton_free():
+            break
+        time.sleep(0.05)
+    return pid
 
 
 def is_active(*, max_age: float = HEARTBEAT_MAX_AGE_SECONDS) -> bool:
@@ -417,6 +589,21 @@ def run_loop(
                 return 0
             last_action_mono = now_mono = time.monotonic()
             if now_mono - last_heartbeat_mono >= HEARTBEAT_MIN_INTERVAL_SECONDS:
+                if provider_drift():
+                    # The install moved on while this process kept the old
+                    # parser loaded. Its rows/snapshots can never satisfy the
+                    # new cohort, so exit before holding the slot any longer.
+                    try:
+                        from corral import observe
+
+                        observe.event(
+                            "scan_worker_provider_drift",
+                            installed=str(_installed_provider_version() or ""),
+                            worker_pid=os.getpid(),
+                        )
+                    except Exception:  # noqa: BLE001 — exit regardless
+                        pass
+                    return 0
                 _write_heartbeat()
                 last_heartbeat_mono = now_mono
             now_wall = time.time()
@@ -543,6 +730,31 @@ def worker_limit(tui_limit: int) -> int:
         return PUBLISH_LIMIT_FLOOR
 
 
+def _reap_child_later(proc) -> None:
+    """Collect a spawned worker so a long-lived parent cannot keep a zombie.
+
+    The caller ignores the returned Popen; nobody would call ``wait`` until the
+    parent exits. A terminated obsolete worker otherwise stays visible to
+    ``kill(pid, 0)`` and clutters process state for the rest of the session.
+    """
+    wait = getattr(proc, "wait", None)
+    if not callable(wait):
+        return
+
+    def _wait() -> None:
+        try:
+            wait()
+        except Exception:  # noqa: BLE001 — collection is best-effort
+            pass
+
+    try:
+        threading.Thread(
+            target=_wait, daemon=True, name="corral-scan-worker-wait",
+        ).start()
+    except Exception:  # noqa: BLE001 — no thread means the OS still reaps at exit
+        pass
+
+
 def ensure_scan_worker(tui_limit: int):
     """Start the singleton worker if none is live. Returns Popen/None.
 
@@ -560,6 +772,12 @@ def ensure_scan_worker(tui_limit: int):
             if now_mono - _LAST_SPAWN_MONO < RESPAWN_MIN_INTERVAL_SECONDS:
                 return None
             _LAST_SPAWN_MONO = now_mono
+        # An obsolete worker (previous provider/code cohort) still holds the
+        # singleton flock and can never be reused; it would otherwise keep the
+        # consumer on multi-second local scans forever. Verified before killing
+        # (see reap_obsolete_worker): the counter resets only after it is gone
+        # or after the 30 s retry window.
+        reap_obsolete_worker()
         proc = subprocess.Popen(  # noqa: S603 — fixed argv, same-install python
             [
                 sys.executable,
@@ -575,6 +793,7 @@ def ensure_scan_worker(tui_limit: int):
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _reap_child_later(proc)
         return proc
     except Exception:  # noqa: BLE001 — no worker is a valid state
         return None

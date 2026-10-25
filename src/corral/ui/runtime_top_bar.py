@@ -1,4 +1,9 @@
-"""右侧助手顶栏：侧栏显隐开关 + 已安装运行时加格按钮。"""
+"""右侧助手顶栏：侧栏显隐开关 + 「新分屏」加格按钮（终端与已安装助手）。
+
+2026-10-25 改版：加格按钮前有淡色「＋ 新分屏」标签说明用途；按钮一律中性色
+（助手品牌色只用来标明会话 / 格子属于哪个助手，不用于动作按钮）；彩蛋 Dragon
+淡显。放不下时先藏 Dragon，仍放不下就收成一个「＋ 新分屏 ▾」，点开是同一组选项。
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,8 @@ from textual.widget import Widget
 
 from corral.i18n import t
 
-_SHELL_CHIP_STYLE = "dim bold"
+_CHIP_STYLE = "bold"
+_SHELL_CHIP_ID = "__shell__"
 
 if TYPE_CHECKING:
     from corral.runtime.registry import RuntimeRegistry
@@ -94,7 +100,7 @@ class _DragonChip(Widget):
         padding: 0 1;
         margin: 0 0 0 1;
         content-align: center middle;
-        color: $error;
+        color: $text-muted;
         pointer: pointer;
     }
     _DragonChip:hover {
@@ -108,7 +114,7 @@ class _DragonChip(Widget):
         self._on_click = on_click
 
     def render(self) -> Text:
-        return Text("Dragon", style="bold red")
+        return Text("Dragon")
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -141,11 +147,61 @@ class _ShellChip(Widget):
         self._on_pick = on_pick
 
     def render(self) -> Text:
-        return Text(t("shell.chip_label"), style=_SHELL_CHIP_STYLE)
+        return Text(t("shell.chip_label"), style=_CHIP_STYLE)
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
         self._on_pick()
+
+
+class _NewPaneLabel(Widget):
+    """加格按钮前的淡色标签：说明右边这排按钮是「开一个新分屏」。"""
+
+    ALLOW_SELECT = False
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _NewPaneLabel {
+        height: 1;
+        width: auto;
+        margin: 0 1 0 0;
+        color: $text-muted;
+    }
+    """
+
+    def render(self) -> Text:
+        return Text(t("topbar.new_pane"))
+
+
+class _NewPaneMenuChip(Widget):
+    """窄栏收起态：一个「＋ 新分屏 ▾」，点开列出终端与已安装助手。"""
+
+    ALLOW_SELECT = False
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _NewPaneMenuChip {
+        height: 1;
+        width: auto;
+        padding: 0 1;
+        content-align: center middle;
+        pointer: pointer;
+    }
+    _NewPaneMenuChip:hover {
+        background: $boost;
+    }
+    """
+
+    def __init__(self, on_open: Callable[[], None], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._on_open = on_open
+
+    def render(self) -> Text:
+        return Text(f"{t('topbar.new_pane')} ▾", style=_CHIP_STYLE)
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._on_open()
 
 
 class _RuntimeChip(Widget):
@@ -232,13 +288,12 @@ class RuntimeTopBar(Horizontal):
             pass
 
     def compose(self):
-        import corral
-
         yield _SidebarToggleChip(
             self._sidebar_visible,
             id="sidebar-toggle",
         )
         yield _TopBarSpacer()
+        yield _NewPaneLabel(id="new-pane-label")
         if self._on_shell_pick is not None:
             yield _ShellChip(self._on_shell_pick, id="shell-chip")
         from corral.runtime.registry import ACTIVE_RUNTIME_IDS
@@ -251,9 +306,75 @@ class RuntimeTopBar(Horizontal):
             yield _RuntimeChip(
                 runtime.id,
                 runtime.display_name,
-                corral.runtime_label_style(runtime.id),
+                _CHIP_STYLE,
                 self._on_runtime_pick,
                 id=f"runtime-chip-{runtime.id}",
             )
+        yield _NewPaneMenuChip(self._open_new_pane_menu, id="new-pane-menu")
         if self._on_dragon_click is not None:
             yield _DragonChip(self._on_dragon_click, id="dragon-chip")
+
+    # ---- 窄栏收起 ----
+
+    def _pane_chips(self) -> list[Widget]:
+        return [*self.query(_ShellChip), *self.query(_RuntimeChip)]
+
+    @staticmethod
+    def _chip_cells(text: str, *, padding: int = 2, margin: int = 1) -> int:
+        from corral.textutil import text_width
+
+        return text_width(text) + padding + margin
+
+    def _fit(self) -> None:
+        """按可用宽度决定：全展开 / 藏 Dragon / 收成一个菜单。"""
+        if not self.is_mounted:
+            return
+        width = self.content_size.width
+        if width <= 0:
+            return
+        toggle = 4  # ◀ + padding + margin
+        label = self._chip_cells(t("topbar.new_pane"), padding=0)
+        chips = sum(
+            self._chip_cells(
+                t("shell.chip_label") if isinstance(chip, _ShellChip) else chip._label
+            )
+            for chip in self._pane_chips()
+        )
+        dragon = self._chip_cells("Dragon") if self._on_dragon_click is not None else 0
+        expanded = toggle + label + chips <= width
+        show_dragon = expanded and toggle + label + chips + dragon <= width
+        for widget in self._pane_chips():
+            widget.display = expanded
+        for widget in self.query(_NewPaneLabel):
+            widget.display = expanded
+        for widget in self.query(_NewPaneMenuChip):
+            widget.display = not expanded
+        for widget in self.query(_DragonChip):
+            widget.display = show_dragon
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._fit)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._fit()
+
+    def _open_new_pane_menu(self) -> None:
+        from corral.runtime.registry import ACTIVE_RUNTIME_IDS
+        from corral.ui.modals import RuntimeChoice, RuntimePickerModal
+
+        choices: list[RuntimeChoice] = []
+        if self._on_shell_pick is not None:
+            choices.append(RuntimeChoice(_SHELL_CHIP_ID, t("shell.chip_label"), "", True))
+        for runtime in self._registry:
+            if runtime.id in ACTIVE_RUNTIME_IDS and runtime.is_available():
+                choices.append(RuntimeChoice(runtime.id, runtime.display_name, "", True))
+        if not choices:
+            return
+
+        def picked(choice: str | None) -> None:
+            if choice == _SHELL_CHIP_ID and self._on_shell_pick is not None:
+                self._on_shell_pick()
+            elif choice:
+                self._on_runtime_pick(choice)
+
+        self.app.push_screen(RuntimePickerModal(t("topbar.new_pane"), choices), picked)

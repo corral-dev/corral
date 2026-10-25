@@ -326,12 +326,20 @@ class SessionHud(Widget):
         self._scroll = 0
         self._max_scroll = 0
         self._stick_bottom = True
+        # 窄格收起时只留「▶ N 条提示词」一行（2026-10-25）：三行摘要在窄格里
+        # 几乎和格子一样宽，会把详情头盖成残字。
+        self._compact = False
 
     # ---- 外部驱动 ----
 
-    def update_data(self, data: HudData | None, *, expanded: bool) -> None:
+    def update_data(self, data: HudData | None, *, expanded: bool, compact: bool = False) -> None:
         """喂新数据；data 为空（没有提问）时整个小窗不出现。"""
-        changed = (data or HudData(0, ())) != self._data or expanded != self._expanded
+        changed = (
+            (data or HudData(0, ())) != self._data
+            or expanded != self._expanded
+            or compact != self._compact
+        )
+        self._compact = compact
         if changed:
             self._pressed_entry = None
         if expanded != self._expanded:
@@ -415,7 +423,8 @@ class SessionHud(Widget):
         line.append(fit_cell(body, max(1, width - text_width(prefix)), ellipsis=True))
         return line
 
-    def _entry_lines(self, stamp: str, body: str, width: int, status: tuple[str, str] | None = None) -> list[Text]:
+    def _entry_lines(self, stamp: str, body: str, width: int, status: tuple[str, str] | None = None,
+                     *, show_time: bool = True) -> list[Text]:
         """展开态的一条提问：最多 `_MAX_PROMPT_LINES` 行，超出末行加 `...`。
 
         续行缩进到与首行正文对齐。时间列固定 5 格 + 2 格间距，续行前缀用等宽
@@ -423,7 +432,8 @@ class SessionHud(Widget):
         逐条时间的会话看起来像列坏了。
         """
         cell = stamp if stamp else _MISSING_TIME
-        prefix = f"{cell}  "
+        # 整个会话都没有逐条时间（如 Cursor）时不画时间列：一列 N/A 只占地方。
+        prefix = f"{cell}  " if show_time else ""
         indent = " " * text_width(prefix)
         body_width = max(1, width - text_width(prefix))
         wrapped = wrap_preview_text(body, body_width) or [""]
@@ -455,10 +465,11 @@ class SessionHud(Widget):
     def _expanded_body(self, width: int, stripe_on: str = "") -> list[Text]:
         """展开态除页眉/页脚外的全部内容行（未按可见高度裁切）。"""
         out: list[Text] = []
+        show_time = any(stamp for stamp, _ in self._data.entries)
         for index, (stamp, body) in enumerate(self._data.entries):
             paint = stripe_on if index % 2 else ""
             status = self._entry_status(index)
-            for line in self._entry_lines(stamp, body, width, status):
+            for line in self._entry_lines(stamp, body, width, status, show_time=show_time):
                 self._paint_stripe(line, paint)
                 if index == self._pressed_entry or (status is not None and status[0] == "locating"):
                     line.pad_right(max(0, width - text_width(line.plain)))
@@ -486,6 +497,8 @@ class SessionHud(Widget):
                 fit_cell(_plural("hud.count", data.count), width, ellipsis=True),
                 style="bold", no_wrap=True,
             )]
+            if self._compact:
+                return out
             label_width = max(
                 text_width(t("hud.label_first")), text_width(t("hud.label_latest")),
             ) + 2
@@ -572,8 +585,9 @@ class SessionHud(Widget):
         width = self.content_size.width or self._inner_width(self.container_size.width)
         self.lines(width, self.content_size.height or None)
         row = local_y - 1 + self._scroll
+        show_time = any(stamp for stamp, _ in self._data.entries)
         for index, (stamp, body) in enumerate(self._data.entries):
-            count = len(self._entry_lines(stamp, body, width))
+            count = len(self._entry_lines(stamp, body, width, show_time=show_time))
             if 0 <= row < count:
                 return index
             row -= count

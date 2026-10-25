@@ -74,7 +74,6 @@ from corral.ui.pointer_shape import (
 from corral.ui.runtime_top_bar import _SidebarToggleChip, _TopBarSpacer
 from corral.ui.search_modal import FullTextSearchModal, SearchResultRow
 from corral.ui.session_list import (
-    ACTIVE_FILTER_ID,
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
     OLDER_STACK_ID,
@@ -82,7 +81,6 @@ from corral.ui.session_list import (
     STICKY_IDS,
     TODAY_SEP_ID,
     YESTERDAY_SEP_ID,
-    ActiveFilterCard,
     NewSessionCard,
     OlderStackCard,
     PinSeparatorCard,
@@ -1977,7 +1975,7 @@ class SessionCardVisualTests(unittest.TestCase):
             display_title=display_title,
         )
 
-    def test_runtime_is_right_aligned_on_second_line_at_fixed_width(self) -> None:
+    def test_runtime_and_time_share_right_aligned_second_line(self) -> None:
         card = self._card()
         with mock.patch.object(
             SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
@@ -1987,11 +1985,31 @@ class SessionCardVisualTests(unittest.TestCase):
         lines = rendered.plain.splitlines()
         self.assertEqual(len(lines), 3)
         self.assertNotIn("OpenCode", lines[0])
-        self.assertTrue(lines[1].endswith("OpenCode"))
-        self.assertEqual(corral._text_width(lines[0]), 39)
-        self.assertEqual(corral._text_width(lines[1]), 39)
         relative_time = corral._format_relative_time(card.session["mtime"])
+        self.assertTrue(lines[1].endswith("OpenCode"))
         self.assertTrue(lines[2].endswith(relative_time))
+        self.assertEqual([corral._text_width(line) for line in lines], [39, 39, 39])
+        # Brand color covers only the runtime name, not the separator or time.
+        start = len(lines[0]) + 1 + lines[1].index("OpenCode")
+        runtime_spans = [span for span in rendered.spans if span.start <= start < span.end]
+        self.assertTrue(runtime_spans)
+        self.assertTrue(any("#34D399" in str(span.style).upper() for span in runtime_spans))
+        time_start = len(lines[0]) + len(lines[1]) + 2 + lines[2].index(relative_time)
+        self.assertFalse(
+            any(span.start <= time_start < span.end and "#34D399" in str(span.style).upper()
+                for span in rendered.spans)
+        )
+
+    def test_narrow_card_keeps_time_and_truncates_runtime_name(self) -> None:
+        card = self._card()
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(14, 3),
+        ):
+            rendered = card.render()
+        third = rendered.plain.splitlines()[2]
+        relative_time = corral._format_relative_time(card.session["mtime"])
+        self.assertTrue(third.endswith(relative_time))
+        self.assertLessEqual(corral._text_width(third), 14)
 
     def test_just_now_time_is_bold_older_relative_time_is_not(self) -> None:
         """「刚刚」加粗；跨过 3 分钟阈值后的相对时间保持常规字重。"""
@@ -2044,7 +2062,7 @@ class SessionCardVisualTests(unittest.TestCase):
 
         lines = rendered.plain.splitlines()
         self.assertNotIn("OpenCode", lines[0])
-        self.assertTrue(lines[1].endswith("OpenCode"))
+        self.assertIn("OpenCode", lines[1])
         self.assertNotIn("...", lines[0])
         self.assertNotIn("…", lines[0])
         # 截断处仍是标题正文的字符，且整行铺满可用宽度
@@ -2155,7 +2173,7 @@ class SessionCardVisualTests(unittest.TestCase):
         )
         first_line, runtime_line, time_line = rendered.plain.splitlines()
         self.assertTrue(first_line.startswith("├─ "))
-        # 三行第 0 列都是竖向框线，终端里才能连成一条不断的树干。
+        # 续行第 0 列是竖向框线，终端里才能连成一条不断的树干。
         self.assertTrue(runtime_line.startswith("│"))
         self.assertTrue(time_line.startswith("│"))
 
@@ -2213,7 +2231,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [ACTIVE_FILTER_ID, NEW_SESSION_ID])
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID])
             self.assertIsNotNone(app.screen.query_one(NewSessionCard))
 
     async def test_search_and_card_spacing_are_explicit(self) -> None:
@@ -2232,23 +2250,22 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(search.region.height, 1)
             self.assertEqual(search.parent.region.height, 1)
             self.assertGreaterEqual(len(items), 3)
-            # 分隔空行画在卡片自身内，两项 region 紧挨、无外边距空隙
-            self.assertEqual(items[1].region.y - items[0].region.bottom, 0)
+            # 分隔空行画在卡片自身内，相邻会话卡 region 紧挨、无外边距空隙
+            # （items[0] 是「＋ 新建」，它与首卡之间隔着筛选框与筛选行）。
             self.assertEqual(items[2].region.y - items[1].region.bottom, 0)
             self.assertTrue(cards)
             self.assertTrue(all(card.region.height == 3 for card in cards))
             new_card = app.screen.query_one(NewSessionCard)
             self.assertEqual(new_card.region.height, 2)
-            active_card = app.screen.query_one(ActiveFilterCard)
-            self.assertEqual(active_card.region.height, 2)
-            # Search, both fixed filter rows and New abut without unclickable gaps.
+            # 2026-10-25: New on top, then the filter input and one filter row
+            # owning the blank row before sessions; no unclickable gaps.
             filters = app.screen.query_one("#quick-filters")
+            self.assertEqual(new_card.region.y, list_view.region.y)
+            self.assertEqual(search.parent.region.y, new_card.region.bottom)
             self.assertEqual(filters.region.y, search.parent.region.bottom)
-            self.assertEqual(filters.region.height,
-                             sum(row.region.height for row in filters.query("Grid")))
-            self.assertEqual(active_card.region.y, filters.region.bottom)
-            self.assertEqual(new_card.region.y, active_card.region.bottom)
-            self.assertEqual(items[0].region.y, filters.region.bottom)
+            self.assertEqual(filters.region.height, 2)
+            first_session = items[1]
+            self.assertEqual(first_session.region.y, filters.region.bottom)
 
     async def test_ended_card_title_is_dimmed_to_80_percent(self) -> None:
         """已结束会话标题吃卡片基础色：主题前景压到 8 成，不用满亮白字铺整栏。
@@ -2273,7 +2290,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(sum(resolved), theme_fg.r + theme_fg.g + theme_fg.b)
 
     async def test_time_line_brightness_steps_down_with_age(self) -> None:
-        """第三行时间按新鲜度分四档亮度：半小时内与标题同亮，越旧越暗。"""
+        """第二行时间按新鲜度分四档亮度：半小时内与标题同亮，越旧越暗。"""
         now = time.time()
         ages = [60, 3600, 7 * 3600, 3 * 86400]  # fresh / recent / today / old
         sessions = [
@@ -2785,7 +2802,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(card.apply_update(group, sessions))
             sessions[0]["mtime"] = sessions[1]["mtime"] = None
             self.assertTrue(card.apply_update(group, sessions))
-            self.assertEqual(card.render().plain.splitlines()[2].strip(), "2 read")
+            self.assertEqual(card.render().plain.splitlines()[1].strip(), "2 sessions")
 
     async def test_collapsed_group_card_summarizes_member_attention(self) -> None:
         store, app = await self._grouped_app()
@@ -2804,6 +2821,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group_text = group_cards[0].render().plain
             lines = group_text.splitlines()
             self.assertEqual(len(lines), 3)
+            self.assertEqual(lines[2].rstrip(), "│")
             # 分屏不起名、不拼成员标题：首行只写「分屏 · 项目」，内部水果名不展示。
             self.assertEqual(lines[0].rstrip(), "▼ Split view · tmp")
             self.assertNotIn("Group", lines[0])
@@ -2812,19 +2830,20 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             from rich.cells import cell_len
 
             group_col = cell_len("▼ ")
+            # 组标题下的树干从第二行起无缝接到首个成员分叉。
             self.assertTrue(lines[1].startswith("│"))
-            self.assertTrue(lines[2].startswith("│"))
             self.assertEqual(lines[1].rstrip(), "│ 2 sessions")
             self.assertEqual(cell_len(lines[1][: lines[1].find("2 sessions")]), group_col)
-            # 组标题下的树干要无缝接到首个成员分叉。
-            self.assertEqual(lines[2].strip(), "│")
 
             group_cards[0].group.collapsed = True
             collapsed_lines = group_cards[0].render().plain.splitlines()
-            self.assertIn("● Waiting 1", collapsed_lines[2])
-            self.assertIn("● Working 1", collapsed_lines[2])
+            self.assertEqual(len(collapsed_lines), 3)
+            summary = collapsed_lines[2]
+            self.assertTrue(summary.lstrip().startswith("● "))
+            self.assertIn("● Waiting 1", summary)
+            self.assertIn("● Working 1", summary)
             latest = max(session["mtime"] for session in sessions[:2])
-            self.assertTrue(collapsed_lines[2].endswith(corral._format_relative_time(latest)))
+            self.assertTrue(summary.endswith(corral._format_relative_time(latest)))
 
             child_cards = [
                 card
@@ -3192,7 +3211,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [ACTIVE_FILTER_ID, NEW_SESSION_ID])
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID])
             self.assertEqual(pinned_card.parent.parent, scroll)
             search_y = search.region.y
             new_y = new_card.region.y
@@ -3249,7 +3268,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             self.assertEqual(
                 [child.id for child in sticky.children],
-                [ACTIVE_FILTER_ID, NEW_SESSION_ID],
+                [NEW_SESSION_ID],
             )
             pinned_cards = [
                 card
@@ -4597,10 +4616,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(list_view.selected_group())
             self.assertTrue(list_view.has_focus)
 
-    async def test_runtime_project_quick_filters_intersect_and_preserve_workspace(self) -> None:
-        from textual.widgets import Button
+    async def test_agent_project_pickers_intersect_and_preserve_workspace(self) -> None:
+        from textual.widgets import Button, SelectionList
 
-        from corral.ui.quick_filters import QuickFilters
+        from corral.ui.quick_filters import FilterPickerModal, QuickFilters
 
         sessions = [_claude_session(f"f{i}", time.time() - i) for i in range(3)]
         for session, path in zip(sessions, ["/tmp/alpha", "/tmp/beta", "/tmp/alpha"], strict=True):
@@ -4617,31 +4636,39 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             before = area.ordered_session_keys()
             filters = app.screen.query_one(QuickFilters)
             view = app.screen.query_one(SessionListView)
-            await pilot.click("#runtime-codex")
+            agent = filters.query_one("#agent-filter", Button)
+            self.assertEqual(str(agent.label), "Agent: All ▾")
+            await pilot.click("#agent-filter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, FilterPickerModal)
+            choices = app.screen.query_one(SelectionList)
+            self.assertEqual(choices.option_count, 2)
+            choices.select("codex")
             await pilot.pause()
             self.assertEqual([s["source"] for s in view.visible_sessions()], ["codex"])
-            self.assertEqual(area.ordered_session_keys(), before)
-            self.assertTrue(filters.query_one("#runtime-codex", Button).has_class("-chosen"))
-            # Keyboard activation adds Claude to the OR set.
-            filters.query_one("#runtime-claude", Button).focus()
-            await pilot.press("enter")
+            self.assertEqual(str(agent.label), "Agent: Codex ▾")
+            self.assertTrue(agent.has_class("-chosen"))
+            choices.select("claude")
             await pilot.pause()
-            self.assertEqual(app.screen.nav.runtime_filters, {"claude", "codex"})
-            project = next(b for b in filters.query(".project-choice") if b.name == "/tmp/alpha")
-            project.press()
+            self.assertEqual(filters.nav.runtime_filters, {"claude", "codex"})
+            self.assertEqual(str(agent.label), "Agent: Claude +1 ▾")
+            await pilot.click("#picker-clear")
+            await pilot.pause()
+            self.assertEqual(filters.nav.runtime_filters, set())
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertNotIsInstance(app.screen, FilterPickerModal)
+            self.assertEqual(area.ordered_session_keys(), before)
+            filters.set_selected("project", {"/tmp/alpha"})
             await pilot.pause()
             self.assertEqual({s["id"] for s in view.visible_sessions()}, {"f0", "f2"})
+            self.assertEqual(str(filters.query_one("#project-filter", Button).label), "Project: alpha ▾")
             self.assertEqual(area.ordered_session_keys(), before)
-            await pilot.click("#runtime-codex")
-            await pilot.click("#runtime-claude")
-            await pilot.pause()
-            self.assertEqual(app.screen.nav.project_filters, {"/tmp/alpha"})
-            self.assertEqual(app.screen.nav.runtime_filters, set())
-            # A zero-result text intersection keeps all filter controls usable.
+            # A zero-result text intersection keeps the filter row usable.
             app.screen.query_one("#project-search", Input).value = "absent-project"
             await pilot.pause()
             self.assertEqual(view.visible_sessions(), [])
-            self.assertTrue(filters.query_one("#project-more", Button).display)
+            self.assertTrue(filters.query_one("#project-filter", Button).display)
             app.screen.nav.runtime_filters = {"codex"}
             await app.screen._reveal_session("claude:f0")
             await pilot.pause()
@@ -4649,14 +4676,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.screen.nav.project_filters, {"/tmp/alpha"})
             self.assertIn("f0", {s["id"] for s in view.visible_sessions()})
 
-    async def test_quick_filters_single_line_visible_and_color_only_under_focus_hover(self) -> None:
-        from textual.widgets import Button
+    async def test_filter_row_is_one_neutral_row_that_truncates_values(self) -> None:
+        from textual.widgets import Button, Checkbox
 
         from corral.ui.quick_filters import QuickFilters
 
-        sessions = [_claude_session(f"q{i}", time.time() - i) for i in range(6)]
-        paths = ["/tmp/Codes", "/tmp/Corral", "/tmp/agent-runtime-long-name", "/tmp/other", "/tmp/fifth", "/tmp/sixth"]
-        for session, path in zip(sessions, paths, strict=True):
+        sessions = [_claude_session(f"q{i}", time.time() - i) for i in range(3)]
+        for session, path in zip(sessions, ["/tmp/a", "/tmp/agent-runtime-very-long-name", "/tmp/c"],
+                                 strict=True):
             session["cwd"] = path
         runtimes = []
         for rid, label in [("codex", "Codex"), ("opencode", "OpenCode"), ("cursor", "Cursor"), ("pi", "Pi")]:
@@ -4665,153 +4692,86 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             runtime.scan_sessions.return_value = []
             runtimes.append(runtime)
         store, _ = _make_store(sessions, extra_runtimes=tuple(runtimes))
-        app = CorralApp(store, embed_ok=True)
-        async with app.run_test(size=(120, 32)) as pilot:
-            await pilot.pause(delay=0.3)
-            filters = app.screen.query_one(QuickFilters)
-            agents = list(filters.query("#runtime-quick-row Button"))
-            projects = [button for button in filters.query(".project-choice") if button.display]
-            self.assertEqual(len(agents), 5)
-            self.assertEqual(len({button.region.y for button in agents}), 1)
-            self.assertEqual(agents[0].region.x, projects[0].region.x)
-            self.assertEqual(agents[0].region.y, app.screen.query_one("#project-search-row").region.bottom)
-            self.assertEqual(filters.region.height, 2)
-            for row_id in ("runtime-quick-row", "project-quick-row"):
-                row = filters.query_one(f"#{row_id}")
-                for button in (button for button in row.query(Button) if button.display):
-                    self.assertEqual(button.region.height, 1)
-                    self.assertTrue(row.region.contains_region(button.region))
-                    self.assertNotIn("*", str(button.label))
-                    self.assertNotEqual(str(button.label), "All")
-            codex = filters.query_one("#runtime-codex", Button)
-            pi = filters.query_one("#runtime-pi", Button)
-            await pilot.click("#runtime-codex")
-            await pilot.pause(delay=0.2)
-            neutral_colors = (pi.styles.color, pi.styles.background)
-            pi.focus()
-            await pilot.hover("#runtime-pi")
-            await pilot.pause(delay=0.2)
-            self.assertEqual((pi.styles.color, pi.styles.background), neutral_colors)
-            self.assertNotEqual(pi.get_component_rich_style("filter-chip--fill").bgcolor,
-                                codex.get_component_rich_style("filter-chip--fill").bgcolor)
-            self.assertEqual(str(codex.label), "Codex")
-            self.assertFalse(pi.has_class("-chosen"))
-            # More selections never replace or move the stable quick choices.
-            before = [(button.name, button.region) for button in filters.query(".project-choice")]
-            filters.nav.project_filters = set(paths[3:])
-            await filters.sync()
-            await pilot.pause()
-            self.assertEqual([(button.name, button.region) for button in filters.query(".project-choice")], before)
-            self.assertEqual(str(filters.query_one("#project-more", Button).label), "More projects… (3)")
-            for button in filters.query(".project-choice"):
-                if not button.display:
-                    continue
-                self.assertEqual(button.region.height, 1)
-                self.assertTrue(filters.region.contains_region(button.region))
+        for theme in ("corral-dark", "corral-light"):
+            app = CorralApp(store, embed_ok=True)
+            async with app.run_test(size=(120, 32)) as pilot:
+                app.theme = theme
+                await pilot.pause(delay=0.3)
+                filters = app.screen.query_one(QuickFilters)
+                agent = filters.query_one("#agent-filter", Button)
+                project = filters.query_one("#project-filter", Button)
+                active = filters.query_one("#active-filter", Checkbox)
+                self.assertEqual(filters.region.height, 2)
+                self.assertEqual(len({agent.region.y, project.region.y, active.region.y}), 1)
+                self.assertEqual(agent.region.y, app.screen.query_one("#project-search-row").region.bottom)
+                for control in (agent, project, active):
+                    self.assertTrue(filters.region.contains_region(control.region))
+                # The filter row never uses brand colors.
+                for chip in (agent, project):
+                    self.assertTrue(all(span.style in ("", None) for span in chip.label.spans))
+                # Long selections truncate the pickers; the checkbox keeps its room.
+                filters.set_selected("agent", {"opencode", "cursor", "pi"})
+                filters.set_selected("project", {"/tmp/agent-runtime-very-long-name"})
+                await filters.sync()
+                await pilot.pause()
+                self.assertEqual(len({agent.region.y, project.region.y, active.region.y}), 1)
+                self.assertTrue(filters.region.contains_region(active.region))
+                self.assertLess(agent.region.right, project.region.x + 1)
+                self.assertLessEqual(project.region.right, active.region.x)
+                self.assertIn("Active", active.render().plain)
+                chosen = agent.get_component_rich_style("filter-chip--fill")
+                self.assertTrue(chosen.bold)
+                warning = Color.parse(app.get_css_variables()["warning"]).rich_color
+                self.assertNotEqual(chosen.color, warning)
 
-    async def test_header_metadata_capsules_and_native_switch(self) -> None:
-        from textual.widgets import Button, Static, Switch
-
-        from corral.ui.quick_filters import FilterChip, QuickFilters
+    async def test_header_metadata_and_native_checkbox(self) -> None:
+        from textual.widgets import Checkbox, Static
 
         for theme in ("corral-dark", "corral-light"):
             store, _ = _make_store()
             app = CorralApp(store, embed_ok=True)
-            with mock.patch.object(store, "refresh_age_seconds", return_value=45):
-                async with app.run_test(size=(100, 32)) as pilot:
-                    app.theme = theme
-                    await pilot.pause()
+            async with app.run_test(size=(100, 32)) as pilot:
+                app.theme = theme
+                await pilot.pause()
+                app.screen._update_header()
+                await pilot.pause()
+                row = app.screen.query_one("#project-search-row")
+                metadata = app.screen.query_one("#filter-count", Static)
+                search = app.screen.query_one("#project-search", Input)
+                self.assertEqual(row.region.width, 39)
+                self.assertEqual(str(metadata.render()), "3")
+                self.assertTrue(row.region.contains_region(metadata.region))
+                await pilot.click(search)
+                self.assertTrue(search.has_focus)
+                search.value = "会话0"
+                await pilot.pause()
+                self.assertEqual(str(metadata.render()), "1/3")
+                clear = app.screen.query_one("#project-search-clear")
+                self.assertTrue(row.region.contains_region(clear.region))
+                await pilot.click(clear)
+                await pilot.pause()
+                self.assertTrue(search.has_focus)
+                self.assertEqual(str(metadata.render()), "3")
+                with mock.patch.object(store, "get_load_error", return_value="Permission denied"):
                     app.screen._update_header()
                     await pilot.pause()
-                    row = app.screen.query_one("#project-search-row")
-                    metadata = app.screen.query_one("#filter-count", Static)
-                    search = app.screen.query_one("#project-search", Input)
-                    self.assertEqual(row.region.width, 39)
-                    self.assertEqual(str(metadata.render()), "3")
-                    self.assertGreaterEqual(metadata.content_size.width, len("3"))
-                    self.assertTrue(row.region.contains_region(metadata.region))
-                    await pilot.click(search)
-                    self.assertTrue(search.has_focus)
-                    search.value = "会话0"
-                    await pilot.pause()
-                    self.assertEqual(str(metadata.render()), "1")
-                    clear = app.screen.query_one("#project-search-clear")
-                    self.assertTrue(row.region.contains_region(clear.region))
-                    await pilot.click(clear)
-                    await pilot.pause()
-                    self.assertTrue(search.has_focus)
-                    with mock.patch.object(store, "get_load_error", return_value="Permission denied"):
-                        app.screen._update_header()
-                        await pilot.pause()
-                        self.assertEqual(str(metadata.render()), "")
-                        self.assertTrue(search.placeholder.startswith("Load failed:"))
-                        self.assertIn("Permission denied", search.placeholder[:search.content_size.width])
-                    app.screen._update_header()
-                    filters = app.screen.query_one(QuickFilters)
-                    project_chip = filters.query_one("#project-choice-0", FilterChip)
-                    await pilot.click(project_chip)
-                    await pilot.pause()
-                    self.assertTrue(project_chip.has_class("-chosen"))
-                    self.assertEqual(project_chip.render().plain.strip(), str(project_chip.label))
-                    await pilot.click(project_chip)
-                    chip = filters.query_one("#runtime-claude", FilterChip)
-                    await pilot.hover("#project-search")
-                    search.focus()
-                    await pilot.pause()
-                    neutral = chip.get_component_rich_style("filter-chip--fill")
-                    chip.focus()
-                    await pilot.pause()
-                    focused = chip.get_component_rich_style("filter-chip--fill")
-                    self.assertNotEqual(neutral.bgcolor, focused.bgcolor)
-                    strip = list(chip.render_line(0))
-                    self.assertEqual("".join(segment.text for segment in strip).strip(), "Claude")
-                    self.assertNotIn("▐", chip.render().plain)
-                    self.assertFalse(chip.styles.text_style.underline)
-                    filters.nav.project_filters = {f"/tmp/p{n}" for n in range(120)}
-                    await filters.sync()
-                    more = filters.query_one("#project-more", Button)
-                    self.assertEqual(more.region.width, 20)
-                    self.assertIn("99+", more.render().plain)
-                    filters.nav.project_filters.clear()
-                    await filters.sync()
-                    switch = app.screen.query_one("#active-filter-switch", Switch)
-                    self.assertFalse(switch.value)
-                    await pilot.click(switch)
-                    await pilot.pause()
-                    self.assertTrue(app.screen.nav.active_only)
-                    self.assertTrue(switch.value)
-                    self.assertIs(app.screen.query_one(Switch), switch)
-                    await pilot.click(app.screen.query_one(ActiveFilterCard), offset=(1, 1))
-                    await pilot.pause()
-                    self.assertFalse(app.screen.nav.active_only)
-                    self.assertFalse(switch.value)
-
-    async def test_project_shortcuts_fit_one_row_and_do_not_move_after_toggling(self) -> None:
-
-        from corral.ui.quick_filters import QuickFilters
-
-        sessions = [_claude_session(f"p{i}", time.time() - i) for i in range(3)]
-        for session, path in zip(sessions, ["/tmp/Codes", "/tmp/Corral", "/tmp/SessKit"], strict=True):
-            session["cwd"] = path
-        store, _ = _make_store(sessions)
-        app = CorralApp(store, embed_ok=True)
-        async with app.run_test(size=(120, 32)) as pilot:
-            await pilot.pause(delay=0.3)
-            filters = app.screen.query_one(QuickFilters)
-            choices = [button for button in filters.query(".project-choice") if button.display]
-            self.assertTrue(choices)
-            self.assertLess(len(choices), 3)
-            self.assertEqual(len({button.region.y for button in choices}), 1)
-            positions = [button.region for button in choices]
-            choices[-1].focus()
-            await pilot.press("enter")
-            await pilot.pause(delay=0.2)
-            self.assertEqual([button.region for button in choices], positions)
-            await pilot.press("enter")
-            await pilot.pause(delay=0.2)
-            self.assertEqual([button.region for button in choices], positions)
-            self.assertFalse(choices[-1].styles.text_style.underline)
-            self.assertEqual(filters.nav.project_filters, set())
+                    self.assertEqual(str(metadata.render()), "")
+                    self.assertTrue(search.placeholder.startswith("Load failed:"))
+                app.screen._update_header()
+                checkbox = app.screen.query_one("#active-filter", Checkbox)
+                self.assertFalse(checkbox.value)
+                # Unchecked boxes draw no mark (a faint X reads as checked).
+                off = checkbox.get_component_rich_style("toggle--button")
+                self.assertEqual(off.color, off.bgcolor)
+                await pilot.click(checkbox)
+                await pilot.pause()
+                self.assertTrue(app.screen.nav.active_only)
+                self.assertTrue(checkbox.value)
+                self.assertEqual(str(metadata.render()), "0/3")
+                await pilot.click(checkbox)
+                await pilot.pause()
+                self.assertFalse(app.screen.nav.active_only)
+                self.assertFalse(checkbox.value)
 
     async def test_active_filter_excludes_ended_unread_and_idle_open_sessions(self) -> None:
         from corral.activity_board import resolve_active_marker
@@ -4830,13 +4790,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             view.set_open_keys(["claude:a0", "claude:a2"])
             app.screen.nav.active_only = True
             self.assertEqual([session["id"] for session in view.visible_sessions()], ["a1"])
-            self.assertEqual(view.active_count(), 1)
             self.assertEqual(resolve_active_marker(sessions[0]), "unread")
 
-    async def test_project_more_search_preserves_hidden_selections_and_full_paths(self) -> None:
+    async def test_project_picker_search_preserves_hidden_selections_and_full_paths(self) -> None:
         from textual.widgets import SelectionList
 
-        from corral.ui.quick_filters import ProjectFilterModal, QuickFilters, project_options
+        from corral.ui.quick_filters import FilterPickerModal, QuickFilters, project_options
 
         sessions = [_claude_session(f"m{i}", time.time() - i) for i in range(6)]
         paths = ["/tmp/one/same", "/tmp/two/same", "/tmp/c", "/tmp/d", "/tmp/e", ""]
@@ -4850,9 +4809,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.3)
             owner = app.screen.query_one(QuickFilters)
             owner.nav.project_filters = {paths[0]}
-            await pilot.click("#project-more")
+            await pilot.click("#project-filter")
             await pilot.pause()
-            self.assertIsInstance(app.screen, ProjectFilterModal)
+            self.assertIsInstance(app.screen, FilterPickerModal)
             app.screen.query_one(Input).value = "two/same"
             await pilot.pause()
             choices = app.screen.query_one(SelectionList)
@@ -4866,8 +4825,24 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                              {paths[0], paths[1]})
             self.assertEqual(owner.nav.project_filters, {paths[0], paths[1]})
 
+    async def test_filter_picker_closes_on_backdrop_click(self) -> None:
+        from corral.ui.quick_filters import FilterPickerModal
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            await pilot.click("#agent-filter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, FilterPickerModal)
+            await pilot.click(app.screen, offset=(0, 0))
+            await pilot.pause()
+            self.assertNotIsInstance(app.screen, FilterPickerModal)
+
     async def test_active_filter_toggle_narrows_list_without_touching_panes(self) -> None:
         """Active toggles only real activity and leaves open workspace panes untouched."""
+        from textual.widgets import Checkbox
+
         store, _ = _make_store()
         marked = {"claude:s1"}
 
@@ -4881,38 +4856,27 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
                 sticky = list_view.query_one("#sidebar-sticky")
-                self.assertEqual(
-                    [child.id for child in sticky.children],
-                    [ACTIVE_FILTER_ID, NEW_SESSION_ID],
-                )
+                self.assertEqual([child.id for child in sticky.children], [NEW_SESSION_ID])
                 area = app.screen.query_one(SplitPaneArea)
                 await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
                 unfiltered = len(list_view.visible_sessions())
-                list_view.index = STICKY_IDS.index(ACTIVE_FILTER_ID)
-                await pilot.pause(delay=0.2)
-                self.assertTrue(list_view.is_active_filter_selected())
-                # 方向键经过开关不动右栏。
-                self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
-
-                await pilot.press("enter")
+                checkbox = app.screen.query_one("#active-filter", Checkbox)
+                checkbox.focus()
+                await pilot.press("space")
                 await pilot.pause(delay=0.2)
                 self.assertTrue(app.screen.nav.active_only)
-                self.assertTrue(list_view.is_active_filter_selected())
+                self.assertTrue(checkbox.has_focus)
                 # Only s1 has real activity; idle open s0 is excluded.
                 self.assertEqual(
                     [corral.session_key(s) for s in list_view.visible_sessions()],
                     ["claude:s1"],
                 )
-                card = app.screen.query_one(ActiveFilterCard)
-                self.assertTrue(card.has_class("-on"))
-                self.assertIn("1", card.render().plain)
                 self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
                 self.assertEqual(app.screen._split_store.groups, {})
 
-                await pilot.press("enter")
+                await pilot.press("space")
                 await pilot.pause(delay=0.2)
                 self.assertFalse(app.screen.nav.active_only)
-                self.assertFalse(card.has_class("-on"))
                 self.assertEqual(len(list_view.visible_sessions()), unfiltered)
 
     async def test_escape_exits_with_no_result(self) -> None:
@@ -5111,7 +5075,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app.return_value)
 
     async def test_list_item_gap_padding_is_part_of_hit_area(self) -> None:
-        """会话卡第三行（时间行）仍属本卡命中区；不要用 ListItem margin/padding 做分隔。"""
+        """会话卡第三行（时间）仍属本卡命中区；不要用 ListItem margin/padding 做分隔。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         self.assertNotIn("margin-bottom:", CorralApp.CSS)
@@ -5121,7 +5085,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             cards = list(app.screen.query(SessionCard))
             self.assertEqual(cards[0].region.height, 3)
-            # 点第三行时间行，应等价于点该会话卡（选中要挪过去）
+            # 点第三行，应等价于点该会话卡（选中要挪过去）
             clicked = await pilot.click(cards[1], offset=(5, 2))
             await pilot.pause()
             self.assertTrue(clicked)
@@ -6254,9 +6218,13 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
-                # 默认高亮在接力项；上移两次落到「复制会话」（上面依次是重启、导出）
-                await pilot.press("up")
-                await pilot.press("up")
+                # Select the "copy session" choice directly: the default row is the
+                # source runtime now, and section headers shift raw row numbers.
+                from textual.widgets import ListView
+
+                modal = app.screen
+                modal.query_one(ListView).index = modal.row_for_choice(1)
+                await pilot.pause()
                 await pilot.press("enter")
                 await _wait_until(lambda: host_mock.call_count == 1)
                 await _wait_until(lambda: app.screen._host_pending == 0)
@@ -6296,7 +6264,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, RuntimePickerModal)
             self.assertEqual(app.screen._choices[0].id, EXPORT_SESSION_CHOICE)
             self.assertEqual(app.screen._choices[1].id, COPY_SESSION_CHOICE)
-            app.screen.query_one(ListView).index = 0
+            app.screen.query_one(ListView).index = app.screen.row_for_choice(0)
             await pilot.press("enter")
             await _wait_until(lambda: bool(app._clipboard))
             path = app._clipboard
@@ -6399,7 +6367,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(choice.available)
                 self.assertIn("waiting for session history", choice.unavailable_text)
                 self.assertNotIn("not hosted", choice.unavailable_text)
-                app.screen.query_one(ListView).index = 2
+                app.screen.query_one(ListView).index = app.screen.row_for_choice(2)
                 await pilot.press("enter")
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 host_mock.assert_not_called()
@@ -6436,7 +6404,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 choices = app.screen._choices
                 self.assertEqual(choices[2].id, RESTART_SESSION_CHOICE)
                 self.assertFalse(choices[2].available)
-                app.screen.query_one(ListView).index = 2
+                app.screen.query_one(ListView).index = app.screen.row_for_choice(2)
                 await pilot.press("enter")
                 await pilot.pause()
                 # 置灰项回车只响铃，弹窗不关、不启动任何会话
@@ -8894,18 +8862,21 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 pane = await _wait_for_embed_session(app.screen, "corral-s1")
                 await _wait_until(lambda: pane.has_focus)
 
-    async def test_preview_header_shows_restart_hint(self) -> None:
-        """已结束会话的详情头要写明回车可重启，否则用户找不到入口。"""
+    async def test_restart_hint_appears_once_in_footer_only(self) -> None:
+        """已结束会话的回车重启提示只在格子底条出现一次，详情头不重复。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             pane = _primary_embed_pane(app.screen)
-            hint = i18n.t("detail.restart_hint")
-            await _wait_until(lambda: hint in pane.render().plain)
+            cell = app.screen.query_one(SplitPaneArea)._cells()[0]  # noqa: SLF001
+            footer = cell.query_one(".footer")
+            await _wait_until(lambda: i18n.t("pane.restart_hint") in footer.render().plain)
+            await _wait_until(lambda: "测试回复" in pane.render().plain)
+            self.assertNotIn(i18n.t("detail.restart_hint"), pane.render().plain)
 
     async def test_preview_pane_chrome_shows_enter_restart_hint(self) -> None:
-        """预览默认钉底，详情头提示会滚出视野；顶/底 chrome 必须常驻 Enter 重启。"""
+        """Enter 重启只常驻底条（2026-10-25）：标题栏与详情头不再重复。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
         app = CorralApp(store, embed_ok=True)
@@ -8923,11 +8894,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 short = i18n.t("pane.restart_hint")
 
                 await _wait_until(lambda: short in footer.render().plain)
-                self.assertTrue(header.query_one(".restart-hint").display)
-                self.assertEqual(
-                    header.query_one(".restart-hint").render().plain.strip(),
-                    short,
-                )
+                self.assertFalse(header.query_one(".restart-hint").display)
                 # 列表仍持焦、预览已结束会话：顶底条和 Your prompts 仍走激活高光。
                 self.assertTrue(header.has_class("-active"))
                 self.assertTrue(footer.has_class("-active"))
@@ -9591,12 +9558,16 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
             self.assertNotIn("kimi", {c.id for c in app.screen._choices})  # noqa: SLF001
-            await pilot.press("down")  # 移到未安装的 cursor
-            with mock.patch.object(app, "bell") as bell:
-                await pilot.press("enter")
-                await pilot.pause()
-            bell.assert_called_once()
-            self.assertIsInstance(app.screen, RuntimePickerModal)  # 未安装项不应关闭弹窗
+            # 未安装项整行禁用：键盘跳过它，也不能被选中关闭弹窗。
+            items = list(app.screen.query_one(ListView).children)
+            labels = [item.children[0].render().plain for item in items]
+            cursor_row = next(i for i, label in enumerate(labels) if "Cursor" in label)
+            self.assertTrue(items[cursor_row].disabled)
+            self.assertIn("not installed", labels[cursor_row])
+            for _ in range(len(items)):
+                await pilot.press("down")
+                self.assertNotEqual(app.screen.query_one(ListView).index, cursor_row)
+            self.assertIsInstance(app.screen, RuntimePickerModal)
 
     async def test_confirm_modal_other_key_cancels(self) -> None:
         store, _ = _make_store()
@@ -10739,9 +10710,9 @@ class SessionHudSummaryTests(unittest.TestCase):
         for stamp in (_short_time(today, now), _short_time(earlier, now)):
             self.assertEqual(corral._text_width(stamp), 5)
 
-    def test_expanded_shows_na_when_timestamp_missing(self) -> None:
-        """Cursor 等没有逐条时间的历史：展开态用 N/A 占位，列宽与真实时间对齐。"""
-        from corral.ui.session_hud import _MISSING_TIME, SessionHud, summarize_user_messages
+    def test_expanded_omits_time_column_when_no_prompt_has_time(self) -> None:
+        """Cursor 等整个会话都没有逐条时间：不画一列 N/A，正文顶格。"""
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
         hud = SessionHud()
         hud.update_data(
@@ -10749,9 +10720,40 @@ class SessionHudSummaryTests(unittest.TestCase):
             expanded=True,
         )
         body = hud.lines(40)[1].plain
+        self.assertTrue(body.startswith("无时间提问"), body)
+        self.assertNotIn("N/A", body)
+
+    def test_expanded_keeps_na_placeholder_when_some_prompts_have_time(self) -> None:
+        """同一会话里有的提问有时间、有的没有：缺的那条用 N/A 占位，列宽对齐。"""
+        from corral.ui.session_hud import _MISSING_TIME, SessionHud, summarize_user_messages
+
+        hud = SessionHud()
+        hud.update_data(
+            summarize_user_messages([
+                corral.ConversationMessage("user", "无时间提问"),
+                corral.ConversationMessage("user", "有时间提问", timestamp=time.time()),
+            ]),
+            expanded=True,
+        )
+        body = hud.lines(40)[1].plain
         self.assertEqual(corral._text_width(_MISSING_TIME), 5)
         self.assertTrue(body.startswith(_MISSING_TIME), body)
         self.assertEqual(body[7:7 + len("无时间提问")], "无时间提问")
+
+    def test_compact_collapsed_hud_is_one_line(self) -> None:
+        """窄格收起态只留条数一行，不把三行摘要盖在详情头上。"""
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
+
+        hud = SessionHud()
+        hud.update_data(
+            summarize_user_messages([
+                corral.ConversationMessage("user", "第一条"),
+                corral.ConversationMessage("user", "第二条"),
+            ]),
+            expanded=False,
+            compact=True,
+        )
+        self.assertEqual(len(hud.lines(40)), 1)
 
     def test_multiline_prompt_collapsed_to_single_line(self) -> None:
         from corral.ui.session_hud import summarize_user_messages
@@ -10884,7 +10886,9 @@ class SessionHudRenderTests(unittest.TestCase):
                     body = character * (20 // cells * line_count)
                     hud = SessionHud()
                     hud.update_data(
-                        summarize_user_messages([corral.ConversationMessage("user", body)]),
+                        summarize_user_messages(
+                            [corral.ConversationMessage("user", body, timestamp=time.time())],
+                        ),
                         expanded=True,
                     )
                     lines = hud.lines(27)[1:-1]
@@ -11206,7 +11210,8 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         """多分屏时每个实时托管格都画自己的 Your prompts，不只激活格。"""
         sessions = self._live_sessions(2)
         store, app = await self._hosted_app(sessions)
-        async with app.run_test(size=(160, 30)) as pilot:
+        # Wide enough that each pane is at least HUD_EXPAND_MIN_PANE_WIDTH.
+        async with app.run_test(size=(200, 30)) as pilot:
             await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             key0 = corral.session_key(sessions[0])
@@ -11237,6 +11242,47 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: all(h.display for h in huds))
             self.assertTrue(huds[0].display)
             self.assertTrue(huds[1].display)
+
+    async def test_narrow_panes_start_collapsed_and_toggle_individually(self) -> None:
+        """窄格（< 60 列）默认收起成一行；点某格小窗只切这一格，Ctrl+G 清掉单独选择。"""
+        from corral.ui.split_pane_area import HUD_EXPAND_MIN_PANE_WIDTH
+
+        sessions = self._live_sessions(2)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(140, 30)) as pilot:
+            await pilot.pause()
+            area = app.screen.query_one(SplitPaneArea)
+            key0 = corral.session_key(sessions[0])
+            key1 = corral.session_key(sessions[1])
+            app.screen._apply_layout_change(  # noqa: SLF001
+                lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
+            )
+            area.show_hosted_group(
+                "/tmp",
+                [(s, s["keepalive_name"], lambda: "") for s in sessions],
+                focus_key=key0,
+            )
+            await _wait_until(
+                lambda: len(area._cells()) == 2  # noqa: SLF001
+                and all(cell.size.width > 0 for cell in area._cells())  # noqa: SLF001
+            )
+            cells = area._cells()  # noqa: SLF001
+            self.assertTrue(all(cell.size.width < HUD_EXPAND_MIN_PANE_WIDTH for cell in cells))
+            app.screen._sync_hud()  # noqa: SLF001
+            huds = [cell.session_hud() for cell in cells]
+            await _wait_until(lambda: all(h.display and h.region.height == 1 for h in huds))
+            self.assertFalse(any(h.expanded for h in huds))
+            await pilot.click(huds[0])
+            await _wait_until(lambda: huds[0].expanded and huds[0].region.height > 1)
+            self.assertFalse(huds[1].expanded)
+            app.screen._sync_hud()  # noqa: SLF001
+            await pilot.pause()
+            self.assertTrue(huds[0].expanded, "per-pane choice survives periodic sync")
+            app.screen.action_toggle_hud()  # global collapse clears the choice
+            await _wait_until(lambda: not huds[0].expanded)
+            app.screen.action_toggle_hud()  # global expand: narrow panes stay compact
+            await pilot.pause()
+            self.assertFalse(any(h.expanded for h in huds))
 
     async def test_hud_background_follows_pane_chrome(self) -> None:
         """Your prompts 底色是高光的一部分：选中蓝条，没选中跟灰条同色（面板深灰）。"""

@@ -93,10 +93,14 @@ class HudControllerMixin:
         self.app.call_from_thread(self._sync_hud)
 
     def action_toggle_hud(self) -> None:
-        """展开/收起会话小窗；展开状态所有格共用一份。"""
+        """Ctrl+G：展开/收起全部格的会话小窗，并清掉各格单独的选择。"""
         if not self.embed_ok:
             return
         self._hud_expanded = not self._hud_expanded
+        try:
+            self._split_area().clear_hud_overrides()
+        except Exception:
+            pass
         self._sync_hud()
 
     def jump_to_terminal_prompt(self, key: str, body: str, cell, message_index: int | None = None,

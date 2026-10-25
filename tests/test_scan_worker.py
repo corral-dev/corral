@@ -148,6 +148,48 @@ class ScanWorkerTests(unittest.TestCase):
 
     # -- worker passes --
 
+    def test_provider_drift_detects_installed_upgrade(self) -> None:
+        with mock.patch(
+            "corral.cache.sesskit_provider_version", return_value="0.2.17",
+        ), mock.patch.object(
+            self.scan_worker, "_installed_provider_version", return_value="0.2.18",
+        ), mock.patch(
+            "corral.updater.install_replaced", return_value=False,
+        ):
+            self.assertTrue(self.scan_worker.provider_drift())
+
+    def test_provider_drift_false_when_provider_matches(self) -> None:
+        with mock.patch(
+            "corral.cache.sesskit_provider_version", return_value="0.2.17",
+        ), mock.patch.object(
+            self.scan_worker, "_installed_provider_version", return_value="0.2.17",
+        ), mock.patch(
+            "corral.updater.install_replaced", return_value=False,
+        ):
+            self.assertFalse(self.scan_worker.provider_drift())
+
+    def test_provider_drift_detects_replaced_corral_install(self) -> None:
+        with mock.patch(
+            "corral.cache.sesskit_provider_version", return_value="0.2.17",
+        ), mock.patch.object(
+            self.scan_worker, "_installed_provider_version", return_value="0.2.17",
+        ), mock.patch(
+            "corral.updater.install_replaced", return_value=True,
+        ):
+            self.assertTrue(self.scan_worker.provider_drift())
+
+    def test_run_loop_exits_when_provider_drifted(self) -> None:
+        registry = _StubRegistry({"claude": []})
+        with mock.patch.object(
+            self.scan_worker, "provider_drift", return_value=True,
+        ):
+            code = self.scan_worker.run_loop(
+                limit=50, interval=0.01, parent_pid=os.getppid(),
+                max_passes=100, registry=registry,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(registry.calls, [])
+
     def test_run_once_publishes_consumable_index(self) -> None:
         registry = _StubRegistry(
             {"claude": [self._session("claude", "a", 30)]}
@@ -207,6 +249,76 @@ class ScanWorkerTests(unittest.TestCase):
         self.assertIsNotNone(self.scan_index.try_consume(50, {}))
 
     # -- ensure --
+
+    def test_obsolete_worker_pid_returns_stale_live_worker(self) -> None:
+        self._write_heartbeat(424242, cohort="2026-09-29.3+sesskit-0.2.3")
+        with mock.patch.object(
+            self.scan_worker, "_pid_alive", return_value=True,
+        ), mock.patch.object(
+            self.scan_worker, "_is_scan_worker_process", return_value=True,
+        ):
+            self.assertEqual(self.scan_worker.obsolete_worker_pid(), 424242)
+
+    def test_obsolete_worker_pid_ignores_current_cohort(self) -> None:
+        self._write_heartbeat(424242)
+        with mock.patch.object(
+            self.scan_worker, "_pid_alive", return_value=True,
+        ), mock.patch.object(
+            self.scan_worker, "_is_scan_worker_process", return_value=True,
+        ):
+            self.assertIsNone(self.scan_worker.obsolete_worker_pid())
+
+    def test_obsolete_worker_pid_requires_worker_command_line(self) -> None:
+        self._write_heartbeat(424242, cohort="2026-09-29.3+sesskit-0.2.3")
+        with mock.patch.object(
+            self.scan_worker, "_pid_alive", return_value=True,
+        ), mock.patch.object(
+            self.scan_worker, "_is_scan_worker_process", return_value=False,
+        ):
+            self.assertIsNone(self.scan_worker.obsolete_worker_pid())
+
+    def test_reap_obsolete_worker_terminates_verified_pid(self) -> None:
+        import signal
+
+        self._write_heartbeat(424242, cohort="2026-09-29.3+sesskit-0.2.3")
+        alive = {"value": True}
+
+        def fake_kill(_pid: int, _sig: int) -> None:
+            alive["value"] = False
+
+        with mock.patch.object(
+            self.scan_worker,
+            "_pid_alive",
+            side_effect=lambda _pid: alive["value"],
+        ), mock.patch.object(
+            self.scan_worker, "_is_scan_worker_process", return_value=True,
+        ), mock.patch.object(self.scan_worker.os, "kill", side_effect=fake_kill) as kill:
+            pid = self.scan_worker.reap_obsolete_worker(timeout=0.2)
+        self.assertEqual(pid, 424242)
+        kill.assert_called_once_with(424242, signal.SIGTERM)
+
+    def test_reap_skips_current_worker_without_signalling(self) -> None:
+        self._write_heartbeat(424242)
+        with mock.patch.object(
+            self.scan_worker, "_pid_alive", return_value=True,
+        ), mock.patch.object(
+            self.scan_worker, "_is_scan_worker_process", return_value=True,
+        ), mock.patch.object(self.scan_worker.os, "kill") as kill:
+            self.assertIsNone(self.scan_worker.reap_obsolete_worker(timeout=0.01))
+        kill.assert_not_called()
+
+    def test_ensure_reaps_obsolete_worker_then_spawns(self) -> None:
+        with mock.patch.object(
+            self.scan_worker, "is_active", return_value=False,
+        ), mock.patch.object(
+            self.scan_worker, "reap_obsolete_worker",
+        ) as reap, mock.patch.object(
+            subprocess, "Popen", return_value=mock.sentinel.proc,
+        ) as popen:
+            proc = self.scan_worker.ensure_scan_worker(50)
+        self.assertIs(proc, mock.sentinel.proc)
+        reap.assert_called_once_with()
+        self.assertEqual(popen.call_count, 1)
 
     def test_ensure_reuses_live_worker_without_spawning(self) -> None:
         self._write_heartbeat(os.getpid())
@@ -302,7 +414,7 @@ class ScanWorkerTests(unittest.TestCase):
             capture_output=True, text=True, timeout=180, env=env,
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr[-2000:])
-        index = self.cache / "scan-index.json"
+        index = self.scan_index.index_path()
         self.assertTrue(index.exists())
         with open(index, encoding="utf-8") as handle:
             payload = json.load(handle)
@@ -532,7 +644,7 @@ class WorkerBackoffLoopTests(unittest.TestCase):
         # Backed-off passes keep-alive republish on schedule (gap 8 s).
         self.assertTrue(republished)
         # The republished payload still carries the worker's buckets.
-        payload_path = self.cache / "scan-index.json"
+        payload_path = self.scan_index.index_path()
         with open(payload_path, encoding="utf-8") as handle:
             payload = json.load(handle)
         self.assertEqual(

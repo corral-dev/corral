@@ -2,10 +2,11 @@
 
 侧边栏布局硬约定（凡往左栏加控件都必须遵守，见 AGENTS.md / MAINTAINER_GUIDE）：
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
-或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、活跃筛选开关高 2（名称与开关 / 末行留白）、会话卡高 3（标题 / 运行时 /
-时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。筛选框在列表外固定；`＋ 新建` 和活跃筛选开关在 `#sidebar-sticky` 里也不随
-列表滚。置顶块、Pinned 分隔线与未置顶日期段都在 `#sidebar-scroll`
+或兄弟空隙做分隔。当前（2026-10-25）：新建项高 2 在最上，其下筛选框高 1、筛选行
+高 2（助手 / 项目下拉胶囊 + 活跃勾选，末行留白）；会话卡高 3（标题 / 运行时 / 时间；
+首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，无末行空行）。
+`＋ 新建` 是 `#sidebar-sticky` 唯一一项，筛选框与筛选行作为头部插在固定区与
+`#sidebar-scroll` 之间，都不随列表滚。置顶块、Pinned 分隔线与未置顶日期段都在 `#sidebar-scroll`
 里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
 仍带动会话列表，顶部位置不变。
 置顶块与未置顶块都非空时，中间插一行居中 `Pinned↑`/`置顶↑` 的
@@ -17,7 +18,7 @@
 点击或回车展开。项目筛选命中时
 自动展开，避免搜到的旧会话被藏住。斑马纹按**块**交替，
 不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块，三层叠卡也是一块；
-`＋ 新建`、活跃筛选开关与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
+`＋ 新建`与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` / `OlderStackCard` 上，用
 `$foreground` 的半透明底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类
 DEFAULT_CSS 会压过 ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，
@@ -46,7 +47,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import ListItem, ListView, Switch
+from textual.widgets import ListItem, ListView
 
 if TYPE_CHECKING:
     import corral
@@ -61,8 +62,7 @@ from corral.i18n import t
 from corral.projects import normalize_cwd
 
 NEW_SESSION_ID = "__new_session__"
-ACTIVE_FILTER_ID = "__active_filter__"
-STICKY_IDS = (ACTIVE_FILTER_ID, NEW_SESSION_ID)
+STICKY_IDS = (NEW_SESSION_ID,)
 _STICKY_ID_SET = frozenset(STICKY_IDS)
 PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
@@ -795,73 +795,20 @@ class NewSessionCard(Widget):
 
     def render(self) -> Text:
         from corral.i18n import t
+        from corral.textutil import text_width
 
-        # 第二行空行：与会话卡同样把分隔算进本项命中区
+        # 第二行空行：与会话卡同样把分隔算进本项命中区，也把「新建」和下面的
+        # 筛选组隔开（动作与筛选是两组）。快捷键靠右淡显，点和键两条路都看得见。
+        width = max(10, self.size.width or 39)
         out = Text(" ")
         label = t("list.new_session")
         out.append(label[0], style=self.app.get_css_variables()["accent"])
         out.append(label[1:], style="bold")
-        return out + Text("\n")
-
-
-class ActiveFilterCard(Widget):
-    """列表顶部「活跃」筛选开关：名称 + 有圆点的会话数，末行间隔（总高 2）。
-
-    开启时贴 `-on`（与筛选框有关键字时同一套 `$warning` 字 + `$primary-muted` 底），
-    用户一眼看出列表为什么变少。回车 / 单击切换，由主屏处理。
-    """
-
-    ALLOW_SELECT = False
-
-    DEFAULT_CSS = """
-    ActiveFilterCard {
-        height: 2;
-        width: 1fr;
-        pointer: pointer;
-    }
-    ActiveFilterCard Switch {
-        dock: right; width: 4; height: 1; margin: 0 1 0 0; padding: 0;
-        border: none; background: transparent; background-tint: transparent;
-    }
-    ActiveFilterCard Switch:hover, ActiveFilterCard Switch:focus {
-        border: none; background: transparent; background-tint: transparent;
-    }
-    ActiveFilterCard.-on {
-        color: $warning;
-        background: $primary-muted;
-    }
-    """
-
-    def __init__(self, owner: SessionListView, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._owner = owner
-
-    def compose(self) -> ComposeResult:
-        switch = Switch(value=self._owner.nav.active_only, id="active-filter-switch")
-        switch.can_focus = False
-        yield switch
-
-    def on_mount(self) -> None:
-        self.sync()
-
-    def sync(self) -> None:
-        on = self._owner.nav.active_only
-        self.set_class(on, "-on")
-        switch = self.query_one(Switch)
-        with switch.prevent(Switch.Changed):
-            switch.value = on
-        self.refresh()
-
-    async def on_switch_changed(self, event: Switch.Changed) -> None:
-        event.stop()
-        if event.value != self._owner.nav.active_only:
-            await self.screen._toggle_active_filter()
-
-    def render(self) -> Text:
-        on = self._owner.nav.active_only
-        out = Text()
-        out.append(t("list.active_filter"), style="bold")
-        out.append(f"  {self._owner.active_count()}", style="bold" if on else "dim")
+        key = "^N"
+        gap = width - text_width(out.plain) - text_width(key) - 1
+        if gap >= 2:
+            out.append(" " * gap)
+            out.append(key, style="dim")
         return out + Text("\n")
 
 
@@ -1014,7 +961,7 @@ class OlderStackCard(Widget):
 
 
 class _SidebarList(ListView):
-    """侧边栏一段列表：固定头（新建 + 活动看板）或会话滚动区（置顶与未置顶一起滚）。"""
+    """侧边栏一段列表：固定头（新建）或会话滚动区（置顶与未置顶一起滚）。"""
 
     ALLOW_SELECT = False
 
@@ -1148,7 +1095,7 @@ class _SidebarList(ListView):
 
 
 class SessionListView(Vertical):
-    """会话列表外壳：固定头（新建 + 活动看板）+ 会话滚动区（置顶与未置顶一起滚）。
+    """会话列表外壳：固定头（新建）+ 头部（筛选框与筛选行）+ 会话滚动区（置顶与未置顶一起滚）。
 
     对外仍是一个控件：统一 `index` 从「＋ 新建」起算。真正滚动的只有
     `#sidebar-scroll`。鼠标在固定头上滚轮转发到会话列表，顶部不动。
@@ -1188,9 +1135,13 @@ class SessionListView(Vertical):
         *,
         group_store: SplitLayoutStore | None = None,
         on_layout_change: Callable[[Callable[[SplitLayoutStore], object]], SplitLayoutStore] | None = None,
+        header: tuple[Widget, ...] = (),
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        # 固定区（＋ 新建）与会话滚动区之间的头部控件：筛选框与筛选行。它们不是
+        # 列表项，不参与 index 与键盘上下移动，只在视觉上排在「新建」下面。
+        self._header = header
         self._index: int | None = None
         self._index_gen = 0
         self._syncing_index = False
@@ -1227,6 +1178,7 @@ class SessionListView(Vertical):
         self._sticky_list = _SidebarList(self, sticky=True, id="sidebar-sticky")
         self._scroll_list = _SidebarList(self, sticky=False, id="sidebar-scroll")
         yield self._sticky_list
+        yield from self._header
         yield self._scroll_list
 
     def begin_preserve_scroll(self) -> None:
@@ -1285,10 +1237,18 @@ class SessionListView(Vertical):
         if screen is not None:
             screen.set_focus(self.focus_target())
 
+    def _lists_have_focus(self) -> bool:
+        """键盘焦点在两段列表之一上。头部的筛选框 / 筛选行虽在本控件内，
+        但不算「列表持焦」——否则在筛选框打字触发的重建会把焦点抢回列表。"""
+        return any(
+            inner is not None and inner.has_focus
+            for inner in (self._sticky_list, self._scroll_list)
+        )
+
     @property
     def has_focus(self) -> bool:
         try:
-            return bool(self.has_focus_within)
+            return self._lists_have_focus()
         except Exception:
             return False
 
@@ -1327,12 +1287,12 @@ class SessionListView(Vertical):
             if value < sticky_n:
                 self._sticky_list.index = value
                 self._scroll_list.index = None
-                if self.has_focus_within and not self._sticky_list.has_focus:
+                if self._lists_have_focus() and not self._sticky_list.has_focus:
                     self._focus_inner(self._sticky_list)
             else:
                 self._sticky_list.index = None
                 self._scroll_list.index = value - sticky_n
-                if self.has_focus_within and not self._scroll_list.has_focus:
+                if self._lists_have_focus() and not self._scroll_list.has_focus:
                     self._focus_inner(self._scroll_list)
         finally:
             if not was_syncing:
@@ -1376,7 +1336,7 @@ class SessionListView(Vertical):
         finally:
             if not was_syncing:
                 self._syncing_index = False
-        if self.has_focus_within:
+        if self._lists_have_focus():
             self._focus_inner(scroll)
         self._apply_split_marks()
 
@@ -1402,7 +1362,7 @@ class SessionListView(Vertical):
         finally:
             if not was_syncing:
                 self._syncing_index = False
-        if self.has_focus_within:
+        if self._lists_have_focus():
             self._focus_inner(sticky)
         self._apply_split_marks()
 
@@ -1424,7 +1384,7 @@ class SessionListView(Vertical):
     def _partition_items(
         self, items: list[ListItem]
     ) -> tuple[list[ListItem], list[ListItem]]:
-        """固定头只留「＋ 新建」和活跃筛选开关；置顶与未置顶都进滚动区。"""
+        """固定头只留「＋ 新建」；置顶与未置顶都进滚动区。"""
         sticky_n = len(STICKY_IDS)
         return items[:sticky_n], items[sticky_n:]
 
@@ -1441,8 +1401,6 @@ class SessionListView(Vertical):
             await self._scroll_list.clear()
             if sticky_items and not preserve_sticky:
                 await self._sticky_list.extend(sticky_items)
-            elif preserve_sticky:
-                self.refresh_active_card()
             if scroll_items:
                 await self._scroll_list.extend(scroll_items)
         finally:
@@ -1869,9 +1827,6 @@ class SessionListView(Vertical):
     def is_new_session_selected(self) -> bool:
         return self._selected_item_id() == NEW_SESSION_ID
 
-    def is_active_filter_selected(self) -> bool:
-        return self._selected_item_id() == ACTIVE_FILTER_ID
-
     def is_older_stack_selected(self) -> bool:
         return self._selected_item_id() == OLDER_STACK_ID
 
@@ -1945,7 +1900,6 @@ class SessionListView(Vertical):
     def toggle_active_filter(self) -> None:
         """切换「活跃」筛选；与筛选框关键字一样只改展示，不动会话与分屏。"""
         self.nav.active_only = not self.nav.active_only
-        self.refresh_active_card()
 
     def set_open_keys(self, keys) -> None:
         """右栏开着的会话；活跃筛选开启时变化了才需要重建。"""
@@ -1956,24 +1910,15 @@ class SessionListView(Vertical):
         if self.nav.active_only:
             self.call_next(self.rebuild)
 
-    def active_count(self) -> int:
-        """Activity count, excluding unread-only state; independent of other filters."""
+    def total_count(self) -> int:
+        """筛选前的会话总数（与 `visible_sessions()` 同一口径，只去掉全部筛选）。"""
         from corral.models import SHELL_RUNTIME_ID
 
         return sum(
             1
             for session in self.store.all_sessions()
-            if session.get("source") != SHELL_RUNTIME_ID and is_active_session(session)
+            if session.get("source") != SHELL_RUNTIME_ID
         )
-
-    def refresh_active_card(self) -> None:
-        for item in self._list_items():
-            if item.id != ACTIVE_FILTER_ID or not item.children:
-                continue
-            card = item.children[0]
-            if isinstance(card, ActiveFilterCard):
-                card.sync()
-            return
 
     def multi_count(self) -> int:
         return len(self._multi_keys)
@@ -2040,7 +1985,7 @@ class SessionListView(Vertical):
             item.set_class(key in selected_members, "-group-selected")
 
     def _apply_stripes(self, rows: list[_SidebarRow]) -> None:
-        """把块级斑马纹贴到卡片上；＋新建、活动看板与分隔线不参与。幂等。"""
+        """把块级斑马纹贴到卡片上；＋新建与分隔线不参与。幂等。"""
         widgets = [
             item.children[0]
             for item in self._list_items()
@@ -2345,7 +2290,7 @@ class SessionListView(Vertical):
         return None
 
     def _sticky_intact(self) -> bool:
-        """固定头（＋新建 / 活动看板）还在：不在则只能走全量重建回补它们。
+        """固定头（＋新建）还在：不在则只能走全量重建回补它们。
 
         clear() 会把固定头一并清掉；区段路径只动滚动区，若在此时命中，
         会留下一张没有固定头的侧栏。"""
@@ -2460,7 +2405,6 @@ class SessionListView(Vertical):
         # 否则「＋ 新建」永远不会出现（2026-08-18 空 HOME 启动真机复现）。
         if new_identities == current_identities and self._sticky_intact():
             self._update_rows_in_place(rows)
-            self.refresh_active_card()
             if select_key is not None:
                 target_index = self._target_index_after_rows(
                     previous_identity, new_identities, had_rows=True
@@ -2504,7 +2448,6 @@ class SessionListView(Vertical):
                 self._apply_split_marks()
                 # 区段增删会翻转后续块的斑马纹相位，同步重贴一遍（只改 class，不动 DOM）。
                 self._apply_stripes(rows)
-                self.refresh_active_card()
                 from corral import observe
                 observe.event(
                     "list_rebuild",
@@ -2518,7 +2461,6 @@ class SessionListView(Vertical):
 
         display_titles = self.store.snapshot()
         items = [
-            NoSelectListItem(ActiveFilterCard(self), id=ACTIVE_FILTER_ID),
             NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID),
         ]
         for row in rows:
@@ -2557,7 +2499,6 @@ class SessionListView(Vertical):
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()
         self._apply_stripes(rows)
-        self.refresh_active_card()
         # Textual 已知问题（issue #6300）：clear()+extend() 后紧接着设置 index，
         # 高亮理论上可能只在内部状态里正确、要等用户交互才真正刷新到屏幕。在当前
         # 锁定版本（8.2.8）下用 Pilot 直接探查过 compositor 的增量重绘路径，没有

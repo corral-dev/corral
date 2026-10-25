@@ -51,7 +51,7 @@ class I18nCatalogTests(unittest.TestCase):
 
     def test_english_and_chinese_strings(self) -> None:
         i18n.set_lang("en")
-        self.assertEqual(t("action.advanced"), "Advanced")
+        self.assertEqual(t("action.advanced"), "Actions")
         self.assertEqual(t("list.new_session"), "+ New session")
         self.assertEqual(t("list.active_filter"), "Only active")
         self.assertEqual(t("list.sep_pinned"), "Pinned")
@@ -62,7 +62,7 @@ class I18nCatalogTests(unittest.TestCase):
         self.assertEqual(t("time.minutes_ago", n=2), "2m ago")
 
         i18n.set_lang("zh")
-        self.assertEqual(t("action.advanced"), "高级操作")
+        self.assertEqual(t("action.advanced"), "操作")
         self.assertEqual(t("list.new_session"), "＋ 新建会话")
         self.assertEqual(t("list.active_filter"), "仅活跃会话")
         self.assertEqual(t("list.sep_pinned"), "置顶")
@@ -89,13 +89,13 @@ class I18nCatalogTests(unittest.TestCase):
     def test_corrected_catalog_entries(self) -> None:
         i18n.set_lang("en")
         self.assertEqual(t("modal.column_runtime"), "Assistant")
-        self.assertEqual(t("modal.handoff_title"), "Advanced: choose handoff assistant")
+        self.assertEqual(t("modal.handoff_title"), "Session actions")
         self.assertEqual(t("detail.new_session_hint"), "New session: pick a project and assistant")
         self.assertEqual(t("detail.preview_end"), "──── END ────")
         self.assertEqual(t("pane.restart_hint"), "Enter restart")
         i18n.set_lang("zh")
         self.assertEqual(t("modal.column_runtime"), "助手")
-        self.assertEqual(t("modal.handoff_title"), "高级操作：选择接力助手")
+        self.assertEqual(t("modal.handoff_title"), "会话操作")
         self.assertEqual(t("detail.new_session_hint"), "新建会话：选择项目与助手")
         self.assertEqual(t("status.running_hosted"), "运行中（托管）")
         self.assertEqual(t("status.running_external"), "运行中（其他窗口）")

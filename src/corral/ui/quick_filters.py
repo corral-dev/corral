@@ -1,4 +1,9 @@
-"""Fixed, presentation-only runtime/project filters over the unfiltered catalog."""
+"""Sidebar filter row: Agent and Project pickers plus the Active checkbox.
+
+One row at the default 39-cell width (owner redesign 2026-10-25). Filters are
+presentation-only over the unfiltered catalog and use neutral colors; brand
+colors appear only inside the Agent picker, where they identify assistants.
+"""
 
 from __future__ import annotations
 
@@ -12,13 +17,14 @@ from textual.content import Content
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style
-from textual.widgets import Button, Input, Label, SelectionList, Static
+from textual.widgets import Button, Checkbox, Input, SelectionList, Static
 
 from corral.i18n import t
 from corral.projects import disambiguate_labels, fuzzy_match, normalize_cwd
 from corral.runtime.registry import active_runtimes
-from corral.textutil import fit_cell, text_width
+from corral.textutil import text_width
 from corral.theme import runtime_label_style
+from corral.ui.dismiss import OutsideClickDismiss
 from corral.ui.nav import NavState
 
 
@@ -37,71 +43,127 @@ class FilterChanged(Message):
     """Selections changed; rebuild rows without following selection into a pane."""
 
 
-class ProjectFilterModal(ModalScreen[None]):
-    BINDINGS = [("escape", "dismiss", "Close")]
-    DEFAULT_CSS = """
-    ProjectFilterModal { align: center middle; }
-    ProjectFilterModal > Vertical {
-        width: 64; max-width: 90%; height: auto; max-height: 85%;
-        background: $surface; padding: 1 2;
-    }
-    ProjectFilterModal Label { height: 2; text-style: bold; }
-    ProjectFilterModal Input { height: 2; border: none; padding: 0 0 1 0; }
-    ProjectFilterModal Input:focus { border: none; }
-    ProjectFilterModal SelectionList { height: auto; min-height: 3; max-height: 12; border: none; }
-    ProjectFilterModal SelectionList:focus { border: none; }
-    ProjectFilterModal Horizontal { height: 1; }
-    ProjectFilterModal Button { height: 1; min-width: 8; border: none; }
+class FilterPickerModal(OutsideClickDismiss, ModalScreen[None]):
+    """In-place multi-select dropdown for one filter dimension (Agent or Project).
+
+    Opens directly below the clicked chip (owner correction 2026-10-25: a centered
+    dialog made the pointer travel), over an undimmed screen. Selections apply
+    immediately; Clear empties the dimension (= All); Done, Escape or a click
+    outside closes. Project lists are searchable; selections hidden by the search
+    are kept.
     """
 
-    def __init__(self, owner: QuickFilters) -> None:
+    BINDINGS = [("escape", "dismiss", "Close")]
+    DEFAULT_CSS = """
+    FilterPickerModal { align: left top; background: transparent; }
+    FilterPickerModal > Vertical {
+        width: auto; min-width: 24; height: auto; max-height: 80%;
+        background: $surface; padding: 0 1;
+    }
+    FilterPickerModal Input { height: 1; width: 1fr; border: none; padding: 0; }
+    FilterPickerModal Input:focus { border: none; }
+    FilterPickerModal SelectionList {
+        height: auto; max-height: 12; width: auto; min-width: 22;
+        border: none; padding: 0;
+    }
+    FilterPickerModal SelectionList:focus { border: none; }
+    FilterPickerModal #picker-box.-searchable { width: 40; }
+    /* Unselected options draw no mark (a faint X reads as selected). */
+    FilterPickerModal SelectionList > .selection-list--button,
+    FilterPickerModal SelectionList > .selection-list--button-highlighted {
+        color: $panel;
+    }
+    FilterPickerModal SelectionList > .selection-list--button-selected,
+    FilterPickerModal SelectionList > .selection-list--button-selected-highlighted {
+        color: $foreground;
+    }
+    FilterPickerModal Horizontal { height: 1; width: auto; }
+    FilterPickerModal Button { height: 1; min-width: 6; border: none; margin-right: 2; }
+    """
+
+    def __init__(self, owner: QuickFilters, dimension: str, anchor=None) -> None:
         super().__init__()
         self.owner = owner
-        self.options = owner.all_projects()
-        self._visible_paths = {path for path, _ in self.options}
+        self.dimension = dimension
+        self.searchable = dimension == "project"
+        self.options = owner.options(dimension)
+        self._visible_values = {value for value, _ in self.options}
+        # Screen region of the chip that opened the dropdown.
+        self._anchor = anchor
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(t("filter.projects"))
-            yield Input(placeholder=t("filter.projects_search"), id="projects-query")
-            yield SelectionList(*self._selections(""), id="projects-choices")
+        with Vertical(id="picker-box", classes="-searchable" if self.searchable else ""):
+            if self.searchable:
+                yield Input(placeholder=t("filter.projects_search"), id="picker-query")
+            yield SelectionList(*self._selections(""), id="picker-choices")
             with Horizontal():
-                yield Button(t("filter.done"), compact=True, id="projects-done")
+                yield Button(t("filter.done"), compact=True, id="picker-done")
+                yield Button(t("filter.clear_all"), compact=True, id="picker-clear")
 
     def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        if self.searchable:
+            self.query_one(Input).focus()
+        else:
+            self.query_one(SelectionList).focus()
+        self.call_after_refresh(self._place)
+
+    def _place(self) -> None:
+        """Pin the box under the anchor chip, shifted left/up only to stay on screen."""
+        if self._anchor is None:
+            return
+        box = self.query_one("#picker-box")
+        width, height = box.outer_size
+        screen_w, screen_h = self.size
+        x = max(0, min(self._anchor.x, screen_w - width))
+        y = self._anchor.bottom
+        if y + height > screen_h:
+            y = max(0, self._anchor.y - height)
+        box.styles.offset = (x, y)
+
+    def _selected(self) -> set[str]:
+        return self.owner.selected(self.dimension)
 
     def _selections(self, query: str) -> list[tuple[Text, str, bool]]:
-        visible = [(path, label) for path, label in self.options if fuzzy_match(query, label, path)]
-        self._visible_paths = {path for path, _ in visible}
-        return [(Text(label), path, path in self.owner.nav.project_filters) for path, label in visible]
+        visible = [(value, label) for value, label in self.options
+                   if not self.searchable or fuzzy_match(query, str(label), value)]
+        self._visible_values = {value for value, _ in visible}
+        selected = self._selected()
+        return [(label if isinstance(label, Text) else Text(label), value, value in selected)
+                for value, label in visible]
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    def _reload(self, query: str) -> None:
         choices = self.query_one(SelectionList)
-        # Replacing visible options must never clear selected hidden projects.
+        # Replacing visible options must never clear selected hidden values.
         with choices.prevent(SelectionList.SelectedChanged):
             choices.clear_options()
-            choices.add_options(self._selections(event.value))
+            choices.add_options(self._selections(query))
             choices.highlighted = 0 if choices.option_count else None
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._reload(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.query_one(SelectionList).focus()
 
     def on_key(self, event: events.Key) -> None:
-        if event.key == "down" and self.query_one(Input).has_focus:
+        if event.key == "down" and self.searchable and self.query_one(Input).has_focus:
             event.stop()
             self.query_one(SelectionList).focus()
 
     def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
-        selected = self.owner.nav.project_filters
-        next_selected = (selected - self._visible_paths) | set(event.selection_list.selected)
+        selected = self._selected()
+        next_selected = (selected - self._visible_values) | set(event.selection_list.selected)
         if next_selected != selected:
-            self.owner.nav.project_filters = next_selected
-            self.owner.changed()
+            self.owner.set_selected(self.dimension, next_selected)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "projects-done":
+        event.stop()
+        if event.button.id == "picker-done":
             self.dismiss(None)
+        elif event.button.id == "picker-clear":
+            self.owner.set_selected(self.dimension, set())
+            query = self.query_one(Input).value if self.searchable else ""
+            self._reload(query)
 
 
 class FilterChip(Button):
@@ -126,7 +188,7 @@ class FilterChip(Button):
     FilterChip:light:hover .filter-chip--fill,
     FilterChip:light:focus .filter-chip--fill { background: $panel-darken-1; }
     FilterChip.-chosen .filter-chip--fill {
-        background: $primary-muted; color: $warning; text-style: bold;
+        background: $primary-muted; color: $foreground; text-style: bold;
     }
     FilterChip.-chosen:hover .filter-chip--fill,
     FilterChip.-chosen:focus .filter-chip--fill { background: $primary-muted; background-tint: $foreground 8%; }
@@ -152,47 +214,51 @@ class FilterChip(Button):
         return Content.assemble(("▐", side), body, ("▌", side))
 
 
-class QuickFilters(Vertical):
+class QuickFilters(Horizontal):
+    """`Agent: All ▾  Project: All ▾  [ ] Active` plus its owned blank row."""
+
     DEFAULT_CSS = """
-    QuickFilters { height: auto; padding: 0; }
-    QuickFilters > Horizontal { height: auto; }
-    QuickFilters .filter-dimension {
-        width: auto; height: 1; margin-right: 1; color: $text-muted;
+    /* Chips start at the left edge like the cards; the checkbox's trailing cell
+       is the right inset. At 39 cells: 12 + gap + 14 + gap + 11 fit exactly. */
+    QuickFilters { height: 2; width: 1fr; padding: 0; }
+    QuickFilters > FilterChip { width: auto; }
+    QuickFilters > .filter-gap { width: 1; height: 1; }
+    QuickFilters > Checkbox {
+        dock: right; height: 1; width: auto; margin: 0; padding: 0;
+        background: transparent; border: none;
     }
-    QuickFilters Grid { grid-rows: 1; grid-columns: 1; height: auto; }
-    QuickFilters .filter-gap { height: 1; }
+    QuickFilters > Checkbox:focus { border: none; background-tint: transparent; }
+    QuickFilters > Checkbox > .toggle--label { color: $text-muted; }
+    QuickFilters > Checkbox:hover > .toggle--label,
+    QuickFilters > Checkbox:focus > .toggle--label {
+        color: $foreground; background: $panel-lighten-1; text-style: none;
+    }
+    QuickFilters > Checkbox:light:hover > .toggle--label,
+    QuickFilters > Checkbox:light:focus > .toggle--label { background: $panel-darken-1; }
+    QuickFilters > Checkbox.-on > .toggle--label { color: $foreground; text-style: bold; }
+    /* 未勾选时框内不画字（Textual 默认画一个淡 X，终端里容易被看成已勾选）。 */
+    QuickFilters > Checkbox > .toggle--button { color: $panel; }
+    QuickFilters > Checkbox.-on > .toggle--button { color: $foreground; }
     """
 
     def __init__(self, store, nav: NavState, **kwargs) -> None:
         super().__init__(**kwargs)
         self.store = store
         self.nav = nav
-        self._recent: list[str] = []
-        self._project_signature = None
         self._sync_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
-        dimension_width = max(text_width(t(key)) for key in ("filter.agent_label", "filter.project_label"))
-        with Horizontal():
-            label = Label(t("filter.agent_label"), classes="filter-dimension")
-            label.styles.width = dimension_width
-            yield label
-            with Grid(id="runtime-quick-row"):
-                for runtime in active_runtimes(self.store.registry):
-                    label = "Claude" if runtime.id == "claude" else runtime.display_name
-                    yield Static("", id=f"runtime-{runtime.id}-gap", classes="filter-gap")
-                    yield FilterChip(Text(label, style=runtime_label_style(runtime.id)),
-                                     id=f"runtime-{runtime.id}", classes="-inline", compact=True)
-        with Horizontal():
-            label = Label(t("filter.project_label"), classes="filter-dimension")
-            label.styles.width = dimension_width
-            yield label
-            with Grid(id="project-quick-row"):
-                yield Static("", id="project-more-gap", classes="filter-gap")
-                yield FilterChip(t("filter.more"), id="project-more", classes="-inline", compact=True)
+        yield FilterChip("", id="agent-filter", classes="-inline", compact=True)
+        yield Static("", classes="filter-gap")
+        yield FilterChip("", id="project-filter", classes="-inline", compact=True)
+        checkbox = Checkbox(t("filter.active"), self.nav.active_only,
+                            id="active-filter", compact=True)
+        yield checkbox
 
     def on_mount(self) -> None:
         self.call_next(self.sync)
+
+    # ---- dimension data ----
 
     def all_projects(self) -> list[tuple[str, str]]:
         options = project_options(self.store.all_sessions())
@@ -203,75 +269,89 @@ class QuickFilters(Vertical):
             (path, labels.get(path, t("filter.no_project"))) for path in sorted(missing)
         ]
 
+    def _runtime_names(self) -> list[tuple[str, str]]:
+        return [(runtime.id, "Claude" if runtime.id == "claude" else runtime.display_name)
+                for runtime in active_runtimes(self.store.registry)]
+
+    def options(self, dimension: str) -> list[tuple[str, Text | str]]:
+        if dimension == "agent":
+            # Brand color identifies the assistant inside its own picker.
+            return [(rid, Text(name, style=runtime_label_style(rid)))
+                    for rid, name in self._runtime_names()]
+        return self.all_projects()
+
+    def selected(self, dimension: str) -> set[str]:
+        return self.nav.runtime_filters if dimension == "agent" else self.nav.project_filters
+
+    def set_selected(self, dimension: str, values: set[str]) -> None:
+        if dimension == "agent":
+            self.nav.runtime_filters = set(values)
+        else:
+            self.nav.project_filters = set(values)
+        self.changed()
+
+    def _value_text(self, dimension: str) -> str:
+        selected = self.selected(dimension)
+        if not selected:
+            return t("filter.all")
+        names = self._runtime_names() if dimension == "agent" else self.all_projects()
+        chosen = [label for value, label in names if value in selected]
+        if not chosen:
+            return t("filter.all")
+        if len(chosen) == 1:
+            return chosen[0]
+        return t("filter.more_selected", name=chosen[0], count=len(chosen) - 1)
+
+    def _chip_label(self, dimension: str) -> Text:
+        key = "filter.agent_label" if dimension == "agent" else "filter.project_label"
+        label = Text()
+        label.append(t(key) + t("filter.dimension_sep"))
+        label.append(self._value_text(dimension))
+        label.append(" ▾")
+        return label
+
+    # ---- layout ----
+
     async def sync(self) -> None:
         async with self._sync_lock:
-            await self._sync()
+            self._sync()
 
-    async def _sync(self) -> None:
-        for button in self.query("#runtime-quick-row Button"):
-            runtime = button.id.removeprefix("runtime-")
-            self._mark(button, runtime in self.nav.runtime_filters)
-        options = self.all_projects()
-        labels = dict(options)
-        # Keep surviving choices in place while filling vacancies from recent data.
-        self._recent = [path for path in self._recent if path in labels]
-        self._recent += [path for path, _ in options if path not in self._recent][:max(0, 3 - len(self._recent))]
-        paths = self._recent
-        signature = tuple((path, labels[path]) for path in paths)
-        row = self.query_one("#project-quick-row", Grid)
-        more = self.query_one("#project-more", Button)
-        if signature != self._project_signature:
-            await row.query(".project-choice, .project-gap").remove()
-            choices = []
-            for i, path in enumerate(paths):
-                choices.extend([
-                    Static("", id=f"project-choice-{i}-gap", classes="filter-gap project-gap"),
-                    FilterChip(Text(fit_cell(labels[path], 16, ellipsis=True).rstrip()), name=path,
-                           id=f"project-choice-{i}", classes="project-choice -inline",
-                           tooltip=path or t("filter.no_project"), compact=True),
-                ])
-            await row.mount(*choices, before=self.query_one("#project-more-gap"))
-            self._project_signature = signature
-        count = len(self.nav.project_filters)
-        more.label = t("filter.more") + (" (99+)" if count > 99 else f" ({count})" if count else "")
-        for button in row.query(".project-choice"):
-            self._mark(button, button.name in self.nav.project_filters)
-        self._pack(self.query_one("#runtime-quick-row", Grid), spacing=1)
-        self._pack_projects(row)
+    def _sync(self) -> None:
+        if not self.is_mounted:
+            return
+        agent = self.query_one("#agent-filter", FilterChip)
+        project = self.query_one("#project-filter", FilterChip)
+        agent.label = self._chip_label("agent")
+        project.label = self._chip_label("project")
+        self._mark(agent, bool(self.nav.runtime_filters))
+        self._mark(project, bool(self.nav.project_filters))
+        checkbox = self.query_one("#active-filter", Checkbox)
+        if checkbox.value != self.nav.active_only:
+            with checkbox.prevent(Checkbox.Changed):
+                checkbox.value = self.nav.active_only
+        self._layout(agent, project, checkbox)
+
+    def _layout(self, agent: FilterChip, project: FilterChip, checkbox: Checkbox) -> None:
+        """Fit both pickers before the checkbox; long values truncate, never wrap."""
+        width = self.content_size.width
+        if width <= 0:
+            return
+        # Native Checkbox renders "▐X▌ " + label + one trailing cell.
+        check_width = 5 + text_width(t("filter.active"))
+        # Gaps: between the two pickers and before the checkbox (breathing room).
+        room = max(2, width - check_width - 2)
+        natural_agent = text_width(str(agent.label))
+        natural_project = text_width(str(project.label))
+        if natural_agent + natural_project <= room:
+            agent_width, project_width = natural_agent, natural_project
+        else:
+            agent_width = min(natural_agent, max(room // 2, room - natural_project))
+            project_width = max(1, room - agent_width)
+        agent.styles.width = max(1, agent_width)
+        project.styles.width = max(1, project_width)
 
     def on_resize(self, event: events.Resize) -> None:
         self.call_next(self.sync)
-
-    @staticmethod
-    def _pack_projects(row: Grid) -> None:
-        """Keep one project line, reserving the picker before exposing shortcuts."""
-        width = max(1, row.content_size.width)
-        row.styles.grid_size_columns = width
-        row.styles.grid_rows = "1"
-        row.styles.height = 1
-        more = row.query_one("#project-more", Button)
-        more_width = min(width, text_width(t("filter.more") + " (99+)"))
-        cursor = 0
-        overflow = False
-        for button in row.query(".project-choice"):
-            cells = text_width(str(button.label))
-            gap = row.query_one(f"#{button.id}-gap")
-            separation = 1 if cursor else 0
-            overflow = overflow or cursor + separation + cells + 1 + more_width > width
-            button.display = not overflow
-            gap.display = not overflow and bool(separation)
-            if not overflow:
-                gap.styles.column_span = 1
-                button.styles.column_span = cells
-                button.styles.width = cells
-                cursor += separation + cells
-            elif button.has_focus:
-                more.focus()
-        gap = row.query_one("#project-more-gap")
-        gap.display = bool(cursor)
-        gap.styles.column_span = 1
-        more.styles.column_span = more_width
-        more.styles.width = more_width
 
     @staticmethod
     def _pack(row: Grid, *, spacing: int = 0, row_spacing: int = 0) -> None:
@@ -322,43 +402,22 @@ class QuickFilters(Vertical):
         self.post_message(FilterChanged())
 
     def on_key(self, event: events.Key) -> None:
+        delta = {"left": -1, "right": 1}.get(event.key)
         focused = self.screen.focused
-        if not isinstance(focused, Button):
+        if delta is None or focused is None or focused.parent is not self:
             return
-        if focused.parent.id == "runtime-quick-row":
-            buttons = list(self.query("#runtime-quick-row Button"))
-            delta = {"left": -1, "right": 1}.get(event.key)
-        elif focused.parent.id == "project-quick-row":
-            buttons = [button for button in self.query("#project-quick-row Button") if button.display]
-            delta = {"left": -1, "right": 1}.get(event.key)
-        else:
-            return
-        if event.key in ("up", "down"):
-            direction = -1 if event.key == "up" else 1
-            candidates = [b for b in buttons if (b.region.y - focused.region.y) * direction > 0]
-            if candidates:
-                target = min(candidates, key=lambda b: (abs(b.region.y - focused.region.y),
-                                                       abs(b.region.center.x - focused.region.center.x)))
-                event.stop()
-                target.focus()
-        if delta is not None:
+        controls = [self.query_one("#agent-filter"), self.query_one("#project-filter"),
+                    self.query_one("#active-filter")]
+        if focused in controls:
             event.stop()
-            buttons[(buttons.index(focused) + delta) % len(buttons)].focus()
+            controls[(controls.index(focused) + delta) % len(controls)].focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
-        button = event.button
-        if button.id == "project-more":
-            self.app.push_screen(ProjectFilterModal(self))
-            return
-        if button.id.startswith("runtime-"):
-            selected = self.nav.runtime_filters
-            value = button.id.removeprefix("runtime-")
-        else:
-            selected = self.nav.project_filters
-            value = button.name
-        if value in selected:
-            selected.remove(value)
-        else:
-            selected.add(value)
-        self.changed()
+        dimension = "agent" if event.button.id == "agent-filter" else "project"
+        self.app.push_screen(FilterPickerModal(self, dimension, anchor=event.button.region))
+
+    async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        event.stop()
+        if event.value != self.nav.active_only:
+            await self.screen._toggle_active_filter()

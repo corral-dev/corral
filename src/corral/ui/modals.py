@@ -9,9 +9,8 @@ import os
 from dataclasses import dataclass
 
 from rich.text import Text
-from textual import errors, events
+from textual import events
 from textual.app import ComposeResult
-from textual.await_complete import AwaitComplete
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -22,41 +21,9 @@ from corral.i18n import t
 from corral.projects import fuzzy_match
 from corral.textutil import fit_cell, text_width
 from corral.theme import runtime_label_style
+from corral.ui.dismiss import OutsideClickDismiss
 from corral.ui.quick_filters import FilterChip, QuickFilters
 from corral.ui.session_list import NoSelectListItem
-
-
-class OutsideClickDismiss:
-    """点弹窗主体以外的空白处＝取消，和 Esc 等价。
-
-    弹窗铺满整屏、内容居中，中间那块框之外全是背景。鼠标用户对这块区域的直觉
-    就是「点一下关掉」；只留 Esc 一条出口，用鼠标操作时会觉得界面卡住了。
-
-    判定必须**现查落点控件**（`get_widget_at`），不能只看事件有没有到这里：
-    Click 会从列表项、输入框一路冒泡上来，光凭「收到了」会把点在弹窗内容上的
-    每一下都当成点在外面，弹窗一点就关。
-
-    子类用 `outside_click_result` 声明取消时回给调用方的值（默认 `None`，
-    确认框这种返回布尔的要改成 `False`）。放在 `ModalScreen` 之前继承。
-    """
-
-    outside_click_result = None
-
-    def dismiss(self, result=None) -> AwaitComplete:
-        # pop_screen updates the stack before queued input and DOM removal finish.
-        # An old modal must never pop the main screen or a newer dialog.
-        if not self.is_active:
-            return AwaitComplete.nothing()
-        return super().dismiss(result)
-
-    def on_click(self, event: events.Click) -> None:
-        try:
-            hit, _ = self.get_widget_at(event.screen_x, event.screen_y)
-        except errors.NoWidget:
-            return
-        if hit is self:
-            event.stop()
-            self.dismiss(self.outside_click_result)
 
 
 class _ChoiceItem(Static):
@@ -71,12 +38,21 @@ class _ChoiceItem(Static):
     """
 
     def __init__(self, main: str, hint: str, available: bool, main_style: str = "") -> None:
+        # 只给主文案上色：`Text(main, style=…)` 会把样式设成整行底样式，连后面的
+        # 说明一起染成助手品牌色。
         style = main_style if available else f"{main_style} dim".strip()
-        text = Text(main, style=style)
+        text = Text()
+        text.append(main, style=style or None)
         if hint:
             text.append("  " + hint, style="dim")
         super().__init__(text)
         self.available = available
+
+
+class _SectionItem(Static):
+    """菜单分组标题：禁用、键盘跳过，只说明下面几项属于哪一组。"""
+
+    ALLOW_SELECT = False
 
 
 _MENU_CSS = """
@@ -95,6 +71,11 @@ _MENU_CSS = """
         height: auto;
         max-height: 20;
     }
+    RuntimePickerModal ListView > ListItem.-section {
+        color: $text-muted;
+        text-style: bold;
+        background: transparent;
+    }
     """
 
 
@@ -107,6 +88,8 @@ class RuntimeChoice:
     # 不可用时的提示文案；默认用「未安装」，但不可用原因不是没装（如重启会话
     # 需要会话正被 corral 托管）时得换说法，不能误导用户去装东西。
     unavailable_text: str | None = None
+    # 所属分组标题；相邻同组只画一次组标题（禁用行，键盘跳过）。
+    section: str | None = None
 
 
 class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
@@ -124,24 +107,45 @@ class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
         with Vertical():
             yield Label(f" {self._title} ", classes="title")
             items = []
-            for choice in self._choices:
+            # ListView 行号 → 选项下标；组标题行是 None。
+            self._row_choice: list[int | None] = []
+            label_width = max((text_width(choice.label) for choice in self._choices), default=0)
+            section = None
+            initial = 0
+            for index, choice in enumerate(self._choices):
+                if choice.section and choice.section != section:
+                    section = choice.section
+                    items.append(NoSelectListItem(_SectionItem(section), classes="-section",
+                                                  disabled=True))
+                    self._row_choice.append(None)
                 if choice.available:
                     action = choice.action_text
                 else:
                     action = choice.unavailable_text or t(
                         "modal.not_installed", action=choice.action_text
-                    )
-                items.append(NoSelectListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available,
-                                                         runtime_label_style(choice.id))))
-            yield ListView(*items, initial_index=self._default_index)
+                    ).strip()
+                indent = "  " if choice.section else ""
+                main = indent + choice.label + " " * (label_width - text_width(choice.label))
+                if index == self._default_index:
+                    initial = len(items)
+                # 不可用项整行禁用：变淡且键盘跳过，原因仍写在行尾。
+                items.append(NoSelectListItem(_ChoiceItem(main, action, choice.available,
+                                                         runtime_label_style(choice.id)),
+                                              disabled=not choice.available))
+                self._row_choice.append(index)
+            yield ListView(*items, initial_index=initial)
             yield Label(t("modal.menu_hint"), classes="hint")
+
+    def row_for_choice(self, choice_index: int) -> int:
+        """选项下标 → ListView 行号（组标题行会让两者错开）。"""
+        return self._row_choice.index(choice_index)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         list_view = self.query_one(ListView)
         index = list_view.index
-        if index is None:
+        if index is None or self._row_choice[index] is None:
             return
-        choice = self._choices[index]
+        choice = self._choices[self._row_choice[index]]
         if not choice.available:
             self.app.bell()
             return
@@ -723,20 +727,23 @@ async def choose_target_runtime(
 
     runtimes = active_runtimes(store.registry)
     source_runtime = store.registry.get(source)
-    source_name = source_runtime.display_name
     restart_action = t("modal.restart_session_action")
+    session_section = t("modal.section_session")
+    handoff_section = t("modal.section_handoff")
     choices = [
         RuntimeChoice(
             EXPORT_SESSION_CHOICE,
             t("modal.export_session"),
             t("modal.export_session_action"),
             True,
+            section=session_section,
         ),
         RuntimeChoice(
             COPY_SESSION_CHOICE,
             t("modal.copy_session"),
             t("modal.copy_session_action"),
             source_runtime.is_available(),
+            section=session_section,
         ),
         RuntimeChoice(
             RESTART_SESSION_CHOICE,
@@ -744,11 +751,14 @@ async def choose_target_runtime(
             restart_action,
             restart_available,
             unavailable_text=restart_unavailable_text or t("modal.not_hosted", action=restart_action),
+            section=session_section,
         ),
     ]
     for runtime in runtimes:
-        action = t("modal.read_history_new", source=source_name)
-        choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
+        # 组标题已经说明动作；每行只写助手名，来源助手标注「同一助手」。
+        action = t("modal.same_runtime") if runtime.id == source else ""
+        choices.append(RuntimeChoice(runtime.id, runtime.display_name, action,
+                                     runtime.is_available(), section=handoff_section))
     default_index = _handoff_default_index(choices, source)
     return await app.push_screen_wait(
         RuntimePickerModal(t("modal.handoff_title"), choices, default_index)
