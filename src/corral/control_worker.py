@@ -34,7 +34,33 @@ _BUSY_POLL = 3.0
 # working signal for this long; native completion evidence settles at once.
 _SETTLE_QUIET = 8.0
 _DISPATCH_TIMEOUT = 150.0
+# Upper bound on a *continuous* span without usable native history: the brief
+# may already be out there, pane liveness can stay "unknown" forever when the
+# hosted tmux socket is unreachable, and an unbound supervisor must not live on
+# that uncertainty. Shares the dispatch budget on purpose; the outcome is a
+# recoverable ``unknown`` and nothing is resent or judged dead. Any successful
+# bind or readable poll restarts the wait, so elapsed task time alone never
+# times out a valid long-running agent. See MEMORY_OPTIMIZATION_DESIGN §1.
+_HISTORY_WAIT_TIMEOUT = _DISPATCH_TIMEOUT
 _FINAL = {"completed": "completed", "failed": "failed", "rejected": "failed", "interrupted": "interrupted"}
+
+# Evidence-specific wording for the bounded no-usable-history outcome; the run
+# itself stays recoverable and its delivery/host/session ownership untouched.
+_HISTORY_WAIT_ERRORS = {
+    "native_history_missing": (
+        "No native history appeared within {seconds}s of the submitted brief. Its outcome is unknown "
+        "and stays recoverable; the terminal was not judged dead and the brief was not resent."
+    ),
+    "native_history_unavailable": (
+        "The session's native history stayed unreadable for {seconds}s. Its outcome is unknown and "
+        "stays recoverable; nothing was resent or interrupted."
+    ),
+}
+
+
+def _history_wait_error(code: str) -> dict:
+    """Persisted evidence for the bounded no-usable-history outcome."""
+    return {"code": code, "message": _HISTORY_WAIT_ERRORS[code].format(seconds=int(_HISTORY_WAIT_TIMEOUT))}
 
 
 @contextmanager
@@ -459,6 +485,11 @@ class Supervisor:
         last_follow = started
         quiet_since = time.monotonic()
         screen, screen_since = None, time.monotonic()
+        # Continuous spans without usable native history; both restart the
+        # moment history binds or a poll is readable. Task duration alone is
+        # never evidence, so a valid long agent keeps its supervisor.
+        missing_since: float | None = None
+        unavailable_since: float | None = None
         while True:
             self.heartbeat()
             record = self.record()
@@ -466,14 +497,27 @@ class Supervisor:
                 return
             if not self.session.get("path") or self.session.get("provisional"):
                 self._process_messages(None)
+                if self.record()["execution"] in SETTLED:
+                    return
                 if self.pane_dead():
                     self.fail("unknown" if record["delivery"] != "rejected" else "rejected", "terminal_exited",
                               "The hosted terminal exited before native history appeared.")
                     return
-                if time.monotonic() - last_bind >= _BIND_REFRESH:
-                    last_bind = time.monotonic()
+                now = time.monotonic()
+                if missing_since is None:
+                    missing_since = now
+                if now - last_bind >= _BIND_REFRESH:
+                    last_bind = now
                     if self._bind_native():
                         self._bind_target_lock()
+                        missing_since = None
+                        continue
+                if now - missing_since >= _HISTORY_WAIT_TIMEOUT:
+                    # Positive death is never inferred here: an absent socket
+                    # also reads as unknown, so only the absence of history
+                    # for this bounded span is recorded.
+                    self.update(execution="unknown", error=_history_wait_error("native_history_missing"))
+                    return
                 time.sleep(_POLL)
                 continue
             if reader is None:
@@ -500,15 +544,30 @@ class Supervisor:
                 if dead:
                     self.fail("unknown", "terminal_exited", "The terminal exited before the brief was recorded.")
                     return
+                if poll.state == "unavailable" and not events:
+                    # A bound history that has never been readable is the same
+                    # missing evidence as an unbound one: bounded, recoverable
+                    # unknown, never inferred death or a replay.
+                    now = time.monotonic()
+                    if unavailable_since is None:
+                        unavailable_since = now
+                    if now - unavailable_since >= _HISTORY_WAIT_TIMEOUT:
+                        self.update(execution="unknown",
+                                    error=_history_wait_error("native_history_unavailable"))
+                        return
+                else:
+                    unavailable_since = None
                 now = time.monotonic()
                 if self.spec["mode"] == "submit" and now - started > 4.0 and now - last_follow >= _BIND_REFRESH:
                     last_follow = now
                     if self._follow_continuation():
                         self._bind_target_lock()
                         reader, events, published = None, {}, -1
+                        unavailable_since = None
                         base_seq = -1  # the run id in the marker is unique; a new file has no older copy
                 time.sleep(_POLL)
                 continue
+            unavailable_since = None
             for event in observation["events"]:
                 if event.seq > published:
                     self.store.append(self.run_id, f"activity:{poll.generation}:{event.seq}",
