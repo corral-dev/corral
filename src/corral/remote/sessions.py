@@ -81,6 +81,14 @@ USER_PROMPT_TEXT_LIMIT = 500
 USER_PROMPT_SHORT_TEXT_LIMIT = 160
 USER_PROMPTS_BYTES = 1024 * 1024
 _MAX_IN_MEMORY_TRANSCRIPTS = 48
+# Byte-weighted admission beside the count cap above. Estimates include full
+# tool bodies and the reader's materialized generation (see richmsg); watched
+# conversations and the single most recent entry are never evicted to satisfy
+# it, so an oversized open history stays readable instead of thrashing.
+_MAX_IN_MEMORY_TRANSCRIPT_BYTES = 64 * 1024 * 1024
+# Ending the last watcher releases reconstructible heavyweight reader state
+# only above this weight; small warm sessions keep their fast reopen path.
+_IDLE_READER_RELEASE_BYTES = 4 * 1024 * 1024
 _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
 # New session keys that first appear already terminal still notify if this fresh.
 _STATUS_NOTIFY_FRESH_SECONDS = 300.0
@@ -377,6 +385,9 @@ class _Transcript:
     generation: int
     reader: richmsg.RichReader
     messages: list[richmsg.RichMessage]
+    # Retained-memory bookkeeping (richmsg policy estimate, not allocator data).
+    bytes_estimate: int = 0
+    last_used: float = 0.0
 
 
 @dataclass
@@ -424,6 +435,45 @@ class _KeyedLocks:
         """Number of live entries (diagnostics and tests)."""
         with self._guard:
             return len(self._entries)
+
+    @contextlib.contextmanager
+    def hold_if_idle(self, key: str):
+        """Yield ``True`` while holding the key lock iff nobody else uses it.
+
+        Used by idle state release: acquiring must never wait behind a cold
+        parse or page, so a busy transcript is skipped and retried on the next
+        release/eviction opportunity. A false result still participates in the
+        entry's user count, keeping the lock object from being dropped while
+        this check is in flight.
+        """
+        with self._guard:
+            entry = self._entries.get(key)
+            if entry is not None and entry.users > 0:
+                acquired = False
+                entry = None
+            elif entry is None:
+                entry = _LockEntry()
+                self._entries[key] = entry
+                acquired = True
+            else:
+                acquired = True
+            if entry is not None:
+                entry.users += 1
+        if not acquired or entry is None:
+            yield False
+            return
+        try:
+            acquired = entry.lock.acquire(blocking=False)
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    entry.lock.release()
+        finally:
+            with self._guard:
+                entry.users -= 1
+                if entry.users <= 0 and self._entries.get(key) is entry:
+                    del self._entries[key]
 
 
 def _same_identity(
@@ -1436,21 +1486,94 @@ class SessionHub:
             self._announced_migrations.add(pair)
             self._on_event("sessions", {"old_key": pair[0], "new_key": pair[1]})
 
+    def _watched_transcript_keys_locked(self) -> set[str]:
+        watched: set[str] = set()
+        for item in self._conversations.values():
+            if item.watchers > 0:
+                watched.add(item.key)
+                if item.canonical_key:
+                    watched.add(item.canonical_key)
+        return watched
+
     def _remember_transcript(self, transcript: _Transcript) -> None:
+        # Compute outside the hub lock: a full-history estimate walks every
+        # retained message and must not block event dispatch.
+        transcript.bytes_estimate = richmsg.estimate_transcript_bytes(
+            transcript.messages, transcript.reader
+        )
         with self._lock:
+            transcript.last_used = time.monotonic()
             self._transcripts[transcript.key] = transcript
-            watched: set[str] = set()
-            for item in self._conversations.values():
-                if item.watchers > 0:
-                    watched.add(item.key)
-                    if item.canonical_key:
-                        watched.add(item.canonical_key)
-            if len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS:
-                for cached_key in list(self._transcripts):
-                    if len(self._transcripts) <= _MAX_IN_MEMORY_TRANSCRIPTS:
-                        break
-                    if cached_key not in watched:
-                        self._transcripts.pop(cached_key, None)
+        self._trim_transcripts()
+
+    def _trim_transcripts(self) -> None:
+        """Byte/count eviction of inactive transcripts, oldest use first.
+
+        Eviction drops the whole entry. Python reference counting frees it
+        once any in-flight caller is done, so a concurrent ``message_page``
+        keeps its local transcript intact; nobody observes a half-cleared
+        reader cursor. The single newest candidate is retained even when it
+        alone exceeds the byte budget, because a page/tool detail request
+        still needs it and reconstructing it on every call would thrash.
+        """
+        with self._lock:
+            total = sum(item.bytes_estimate for item in self._transcripts.values())
+            count_over = len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS
+            bytes_over = total > _MAX_IN_MEMORY_TRANSCRIPT_BYTES
+            if not count_over and not bytes_over:
+                return
+            watched = self._watched_transcript_keys_locked()
+            candidates = sorted(
+                (
+                    (key, item)
+                    for key, item in self._transcripts.items()
+                    if key not in watched
+                ),
+                key=lambda pair: pair[1].last_used,
+            )
+            while candidates and (
+                len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS
+                or total > _MAX_IN_MEMORY_TRANSCRIPT_BYTES
+            ):
+                if len(candidates) <= 1:
+                    break
+                key, item = candidates.pop(0)
+                if self._transcripts.get(key) is not item:
+                    continue
+                self._transcripts.pop(key, None)
+                total -= item.bytes_estimate
+
+    def _release_idle_reader(self, key: str) -> None:
+        """Drop heavyweight reader state once a session has no watcher left.
+
+        The keyed lock check is non-blocking: if a poll/page/userPrompts walk
+        is in flight, release is skipped rather than delaying the control
+        channel or interrupting cursor work.
+        """
+        with self._transcript_locks.hold_if_idle(key) as acquired:
+            if not acquired:
+                return
+            with self._lock:
+                transcript = self._transcripts.get(key)
+                if transcript is None:
+                    return
+                if any(
+                    watch.watchers > 0 and watch.reader is transcript.reader
+                    for watch in self._conversations.values()
+                ):
+                    return
+            reader = transcript.reader
+            if not reader.has_cached_reader_state():
+                return
+            if richmsg.estimate_reader_bytes(reader, transcript.messages) < (
+                _IDLE_READER_RELEASE_BYTES
+            ):
+                return
+            reader.release_cached_state()
+            transcript.bytes_estimate = richmsg.estimate_transcript_bytes(
+                transcript.messages, transcript.reader
+            )
+        self._trim_transcripts()
 
     def _persist_transcript(self, transcript: _Transcript) -> None:
         runtime = str(transcript.reader.session.get("source") or "")
@@ -1483,20 +1606,31 @@ class SessionHub:
             if current is None or not new_messages:
                 return
             by_seq = {item.seq: index for index, item in enumerate(current.messages)}
+            added = 0
             for item in new_messages:
                 index = by_seq.get(item.seq)
                 if index is None:
                     by_seq[item.seq] = len(current.messages)
                     current.messages.append(item)
+                    added += richmsg.estimate_message_bytes(item)
                 else:
                     # Same seq with updated tool status (Claude/Pi result fill-in).
+                    added += richmsg.estimate_message_bytes(item)
+                    added -= richmsg.estimate_message_bytes(current.messages[index])
                     current.messages[index] = item
+            # Native typed-event/fingerprint growth is proportional to the poll
+            # batch; a cheap allowance keeps the retention estimate current
+            # without walking the full materialized generation on every poll.
+            current.bytes_estimate = max(
+                0, current.bytes_estimate + added + 256 * len(new_messages)
+            )
             current.signature = (
                 signature if signature is not None
                 else (history_signature(current.path) if current.path else None)
             )
             snapshot = current
         self._persist_transcript(snapshot)
+        self._trim_transcripts()
 
     def _publish_new_messages(
         self,
@@ -1561,7 +1695,11 @@ class SessionHub:
                 replacement, limit=MESSAGE_PAGE_LIMIT, generation=transcript.generation,
                 has_earlier=reader.has_earlier(),
             )
+        transcript.bytes_estimate = richmsg.estimate_transcript_bytes(
+            transcript.messages, transcript.reader
+        )
         self._persist_transcript(transcript)
+        self._trim_transcripts()
         for watch in targets:
             self._on_event(f"session:{watch.key}", {
                 **page, "kind": "history_reset", "session": watch.key, "resume": "tail",
@@ -1576,6 +1714,7 @@ class SessionHub:
         with self._lock:
             current = self._transcripts.get(key)
             if current is not None and current.path == path and current.signature == signature:
+                current.last_used = time.monotonic()
                 return current
         return None
 
@@ -1737,7 +1876,12 @@ class SessionHub:
                 added = True
                 scoped = [item for item in transcript.messages if item.seq < before_seq]
             if added:
+                transcript.bytes_estimate = richmsg.estimate_transcript_bytes(
+                    transcript.messages, transcript.reader
+                )
                 self._persist_transcript(transcript)
+        if added:
+            self._trim_transcripts()
 
     def tool_detail(
         self,
@@ -1910,7 +2054,11 @@ class SessionHub:
                 transcript.messages = earlier + transcript.messages
             chunks += 1
         if chunks:
+            transcript.bytes_estimate = richmsg.estimate_transcript_bytes(
+                transcript.messages, transcript.reader
+            )
             self._persist_transcript(transcript)
+            self._trim_transcripts()
         return chunks
 
     def _save_prompts(
@@ -2213,6 +2361,16 @@ class SessionHub:
         transcript = self._ensure_transcript(session)
         replayed: list[richmsg.RichMessage] | None = None
         with self._lock:
+            stored = self._transcripts.get(transcript.key)
+            if stored is None:
+                # An admission/append trim could evict the transcript between
+                # `_ensure_transcript` returning and this watcher being counted.
+                # Re-admit it before the watch exists, or its polls would update
+                # an orphan object while the phone sees nothing.
+                transcript.last_used = time.monotonic()
+                self._transcripts[transcript.key] = transcript
+            elif stored is not transcript:
+                transcript = stored
             watch = self._conversations.get(key)
             canonical = session_key(session)
             if watch is None:
@@ -2232,6 +2390,7 @@ class SessionHub:
             watch.watchers += 1
             if after_seq is not None:
                 replayed = _try_replay(watch, transcript, int(after_seq), generation)
+        self._trim_transcripts()
         if after_seq is not None and replayed is not None:
             page = _replay_page(
                 replayed,
@@ -2252,13 +2411,21 @@ class SessionHub:
         return page
 
     def unwatch_conversation(self, key: str) -> None:
+        release_key = ""
         with self._lock:
             watch = self._conversations.get(key)
             if watch is None:
                 return
             watch.watchers -= 1
-            if watch.watchers <= 0:
-                self._conversations.pop(key, None)
+            if watch.watchers > 0:
+                return
+            self._conversations.pop(key, None)
+            release_key = watch.canonical_key or key
+            transcript = self._transcripts.get(release_key)
+            if transcript is not None:
+                transcript.last_used = time.monotonic()
+        self._release_idle_reader(release_key)
+        self._trim_transcripts()
 
     def watch_screen(self, key: str) -> dict | None:
         """订阅终端画面。返回首帧（整屏）；会话没有托管在 tmux 里则返回 None。"""

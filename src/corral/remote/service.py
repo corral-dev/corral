@@ -189,6 +189,24 @@ _CONCURRENT_READ_METHODS = frozenset(
 # Concurrent slow reads one connection may run. Excess requests get a retryable
 # `unavailable` immediately; they are never queued behind the current read.
 _MAX_CONCURRENT_READS = 8
+# History/image/search reads that can materialize large native state. The
+# per-connection slots above do not bound two phones opening cold histories at
+# once, so these methods additionally share one process-wide budget. A single
+# connection's full allowance remains available; a second bulk loader is told
+# to retry instead of multiplying cold parses. Metadata-only reads
+# (`session.get`, `projects.list`, `runtimes.list`) stay outside this gate.
+_GLOBAL_HISTORY_READ_METHODS = frozenset(
+    {
+        protocol.M_SESSION_MESSAGES,
+        protocol.M_SESSION_TOOL_DETAIL,
+        protocol.M_SESSION_PROMPTS,
+        protocol.M_SESSION_USER_PROMPTS,
+        protocol.M_MEDIA_IMAGE,
+        protocol.M_SEARCH,
+        protocol.M_SEARCH_FULLTEXT,
+    }
+)
+_MAX_GLOBAL_HISTORY_READS = 8
 
 
 class _DataBind:
@@ -309,6 +327,11 @@ class RemoteService:
         self._input_slots = threading.BoundedSemaphore(32)
         self._prompt_slots = threading.BoundedSemaphore(4)
         self._startup_slots = threading.BoundedSemaphore(_MAX_STARTUP_QUERIES)
+        # Process-wide admission for generated-history/image/search reads.
+        # Saturation refuses immediately; no waiter queue is created.
+        self._history_read_slots = threading.BoundedSemaphore(
+            _MAX_GLOBAL_HISTORY_READS
+        )
         self._input_targets: set[str] = set()
         self._input_lock = threading.Lock()
         self._input_target_free = threading.Condition(self._input_lock)
@@ -661,6 +684,16 @@ class RemoteService:
         if not connection.read_slots.acquire(blocking=False):
             inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
             return
+        global_slot = method in _GLOBAL_HISTORY_READ_METHODS
+        if global_slot and not self._history_read_slots.acquire(blocking=False):
+            connection.read_slots.release()
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+            return
+
+        def release() -> None:
+            connection.read_slots.release()
+            if global_slot:
+                self._history_read_slots.release()
 
         def run() -> None:
             try:
@@ -680,12 +713,12 @@ class RemoteService:
                 except Exception:
                     pass
             finally:
-                connection.read_slots.release()
+                release()
 
         try:
             threading.Thread(target=run, daemon=True, name="remote-read-rpc").start()
         except RuntimeError:
-            connection.read_slots.release()
+            release()
             inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
 
     def handle(self, connection: Connection, message: dict, *, reply=None) -> None:
@@ -731,10 +764,12 @@ class RemoteService:
                 ready = wait_ready(_HUB_READY_WAIT)
                 if not connection.closed:
                     # Re-enter admission too (native prompt requests have their
-                    # own bound). A timeout never queues another wait or exposes
+                    # own bound, and history reads must take the per-connection
+                    # and process-wide slots that the original dispatch
+                    # released). A timeout never queues another wait or exposes
                     # a partial catalog, even if readiness changes just after it.
                     if ready:
-                        self.handle(connection, message, reply=inbound)
+                        self.dispatch(connection, message, reply=inbound)
                     else:
                         inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.host_starting")))
             finally:

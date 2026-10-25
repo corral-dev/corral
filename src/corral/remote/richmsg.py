@@ -562,6 +562,33 @@ class RichReader:
         self._replacement_messages = None
         return replacement
 
+    def release_cached_state(self) -> None:
+        """Drop reconstructible heavyweight reader state, keeping cursors valid.
+
+        Callers must hold this transcript's keyed lock and have verified that
+        no conversation watcher remains. Cursors, fingerprints, pending tool
+        pairing and ``transcript.messages`` stay untouched, so a later poll or
+        backward page rebuilds through SessKit exactly like a restored cache
+        entry; no client-visible sequence or generation changes.
+        """
+        self._pi_reader = None
+        self._pi_by_mid = {}
+        self._cc_reader = None
+        self._cc_full = None
+        self._co_reader = None
+        self._co_full = None
+
+    def has_cached_reader_state(self) -> bool:
+        """Whether heavyweight SessKit/native reader state is still resident."""
+        return any(
+            getattr(self, attr, None) is not None
+            for attr in ("_pi_reader", "_cc_reader", "_co_reader")
+        ) or bool(
+            getattr(self, "_pi_by_mid", None)
+            or getattr(self, "_cc_full", None)
+            or getattr(self, "_co_full", None)
+        )
+
     def reset(self) -> None:
         self._replacement_messages = None
         self._offset = 0
@@ -1013,6 +1040,234 @@ class RichReader:
             return _cursor_consume_rows(self, rows)
         finally:
             self._offset, self._rowid, self._seq, self._pending, self._host_by_call = saved
+
+
+# ---------------------------------------------------------------------------
+# Retained-memory accounting
+# ---------------------------------------------------------------------------
+#
+# These are policy estimates, not allocator measurements. They exist so the
+# host can compare one cached transcript with another and evict by weight
+# instead of entry count alone, without reaching into SessKit's private parser
+# state. Text lengths, full tool bodies, question projections and the reader's
+# materialized generation are included; tuple/dict/list/object overhead is a
+# fixed allowance. Budgets are internal acceleration policy, never a user
+# setting and never a cap on readable history.
+
+_MESSAGE_BYTES = 256
+_TOOL_BYTES = 256
+_STRING_BYTES = 49
+_CONTAINER_BYTES = 64
+# One open SessKit reader (JSONL/SQLite) plus one coarse allowance per typed
+# event it has materialized. `event_total` is a public counter; the typed event
+# payloads are upstream-owned, so this deliberately stays an estimate.
+_NATIVE_READER_BYTES = 16 * 1024
+_NATIVE_EVENT_BYTES = 1024
+# The same audit that motivated the byte budget measured roughly 31-53 MiB of
+# retained Python allocations for 61-63 MiB Claude/Codex sources (and a similar
+# order for Pi/OpenCode). A materialized native generation therefore scales
+# with the logical session payload, not with the visible page. Count a
+# runtime-calibrated share of that source while a native reader/full projection
+# is resident; cap it so a shared database or corrupt stat cannot dominate.
+# Cursor's SQLite file carries much more than its typed activity (66 MiB source
+# measured ~4.6 MiB retained), hence the smaller factor.
+_NATIVE_SOURCE_BYTES_CAP = 256 * 1024 * 1024
+_NATIVE_SOURCE_FACTORS = {
+    "claude": 0.5,
+    "codex": 0.75,
+    "pi": 1.0,
+    "opencode": 1.0,
+    "cursor": 0.125,
+}
+_NATIVE_SOURCE_FACTOR_DEFAULT = 0.5
+
+
+def _string_bytes(value: object) -> int:
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if not text:
+        return 0
+    # ASCII is one byte per code point in CPython's compact form; BMP
+    # non-ASCII needs two. Never undercount the common ASCII case.
+    return _STRING_BYTES + (len(text) if text.isascii() else len(text) * 2)
+
+
+def _value_bytes(value: object, depth: int = 0) -> int:
+    if depth > 6:
+        return _CONTAINER_BYTES
+    if isinstance(value, str):
+        return _string_bytes(value)
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return 28
+    if isinstance(value, dict):
+        return _CONTAINER_BYTES + sum(
+            _string_bytes(key) + _value_bytes(item, depth + 1)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return _CONTAINER_BYTES + sum(
+            _value_bytes(item, depth + 1) for item in value
+        )
+    return 64
+
+
+def estimate_message_bytes(message: RichMessage) -> int:
+    """Approximate retained bytes for one projected phone message."""
+    total = _MESSAGE_BYTES + _string_bytes(message.text)
+    for tool in message.tools:
+        total += _TOOL_BYTES
+        total += _string_bytes(tool.call_id)
+        total += _string_bytes(tool.name)
+        total += _string_bytes(tool.kind)
+        total += _string_bytes(tool.summary)
+        total += _string_bytes(tool.detail)
+        total += _string_bytes(tool.output)
+        if tool.options:
+            total += _value_bytes(tool.options)
+        if tool.question_groups:
+            total += _value_bytes(tool.question_groups)
+        if tool.questions_meta:
+            total += _value_bytes(tool.questions_meta)
+    return total
+
+
+def estimate_messages_bytes(messages: list[RichMessage]) -> int:
+    return sum(estimate_message_bytes(item) for item in messages)
+
+
+def _fingerprint_bytes(
+    fingerprints: object,
+    text_ids: set[int],
+) -> int:
+    """Bytes for a ``seq -> fingerprint`` map, avoiding shared-string double count.
+
+    Live fingerprints reuse the projected message's string objects; restored
+    fingerprints carry fresh JSON-decoded copies. Checking object identity keeps
+    the estimate honest in both cases without inspecting parser internals.
+    """
+    if not isinstance(fingerprints, dict):
+        return 0
+    total = 0
+    for value in fingerprints.values():
+        total += 96
+        if not isinstance(value, (tuple, list)) or len(value) < 3:
+            continue
+        _role, text, tools = value
+        if isinstance(text, str) and id(text) not in text_ids:
+            total += _string_bytes(text)
+        for entry in tools or ():
+            total += 64
+            if not isinstance(entry, (tuple, list)):
+                continue
+            for part in entry[:3]:
+                if isinstance(part, str) and id(part) not in text_ids:
+                    total += _string_bytes(part)
+    return total
+
+
+def estimate_reader_bytes(
+    reader: RichReader,
+    messages: list[RichMessage] | None = None,
+) -> int:
+    """Approximate bytes the reader retains beyond ``messages``.
+
+    Includes Corral's materialized full lists (``_cc_full`` / ``_co_full`` /
+    ``_pi_by_mid``), fingerprint maps, a pending replacement, the upstream
+    reader's event generation and a coarse proxy for its parsed native graph.
+    Message objects shared with ``messages`` are counted once by identity.
+    """
+    known = [item for item in (messages or ()) if isinstance(item, RichMessage)]
+    seen = {id(item) for item in known}
+    text_ids: set[int] = set()
+
+    def note_text(item: RichMessage) -> None:
+        text_ids.add(id(item.text))
+        for tool in item.tools:
+            text_ids.add(id(tool.call_id))
+            text_ids.add(id(tool.summary))
+
+    extras: list[RichMessage] = []
+    for item in known:
+        note_text(item)
+    for attr in ("_cc_full", "_co_full"):
+        for item in getattr(reader, attr, None) or ():
+            if not isinstance(item, RichMessage) or id(item) in seen:
+                continue
+            seen.add(id(item))
+            extras.append(item)
+            note_text(item)
+    for item in (getattr(reader, "_pi_by_mid", None) or {}).values():
+        if not isinstance(item, RichMessage) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        extras.append(item)
+        note_text(item)
+    replacement = getattr(reader, "_replacement_messages", None)
+    for item in replacement or ():
+        if not isinstance(item, RichMessage) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        extras.append(item)
+        note_text(item)
+
+    total = estimate_messages_bytes(extras)
+    for attr in ("_pi_fps", "_cc_fps", "_co_fps"):
+        total += _fingerprint_bytes(getattr(reader, attr, None), text_ids)
+    total += 64 * len(getattr(reader, "_pending", None) or {})
+    total += 64 * len(getattr(reader, "_host_by_call", None) or {})
+    native_resident = bool(
+        getattr(reader, "_cc_full", None)
+        or getattr(reader, "_co_full", None)
+        or getattr(reader, "_pi_by_mid", None)
+    )
+    for attr in ("_pi_reader", "_cc_reader", "_co_reader"):
+        wire_reader = getattr(reader, attr, None)
+        if wire_reader is None:
+            continue
+        native_resident = True
+        total += _NATIVE_READER_BYTES
+        try:
+            events = int(getattr(wire_reader, "event_total", 0) or 0)
+        except (TypeError, ValueError):
+            events = 0
+        total += max(0, events) * _NATIVE_EVENT_BYTES
+    if native_resident:
+        total += _native_materialized_bytes(reader)
+    return total
+
+
+def _native_materialized_bytes(reader: RichReader) -> int:
+    """Coarse size of the native generation a resident reader has parsed."""
+    session = getattr(reader, "session", None)
+    session = session if isinstance(session, dict) else {}
+    runtime = str(session.get("source") or getattr(reader, "runtime_id", "") or "")
+    value = session.get("size_bytes")
+    if not value:
+        # OpenCode's `path` is the shared history database, not this session's
+        # payload; without the scanner's logical size, counting that file would
+        # eject every OpenCode session for one unrelated database size.
+        if runtime == "opencode":
+            return 0
+        path = str(session.get("path") or "")
+        if path:
+            try:
+                value = os.path.getsize(path)
+            except OSError:
+                value = 0
+    try:
+        size = int(value or 0)
+    except (TypeError, ValueError):
+        size = 0
+    size = min(max(size, 0), _NATIVE_SOURCE_BYTES_CAP)
+    factor = _NATIVE_SOURCE_FACTORS.get(runtime, _NATIVE_SOURCE_FACTOR_DEFAULT)
+    return int(size * factor)
+
+
+def estimate_transcript_bytes(
+    messages: list[RichMessage],
+    reader: RichReader,
+) -> int:
+    """Approximate retained bytes of one in-memory transcript + its reader."""
+    return estimate_messages_bytes(messages) + estimate_reader_bytes(reader, messages)
 
 
 _JSONL_CHUNK = 256 * 1024
