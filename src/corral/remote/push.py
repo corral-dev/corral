@@ -5,6 +5,10 @@
 - **等你回答**：关注状态变成 waiting（原有行为）。
 - **一轮结束**：SessKit ``status_tag`` 变为已完成 / 已中断（产品方向 2026-09-15）。
   禁止用进程退出或裸「有新消息」当触发——长任务会刷屏，用户很快关掉通知。
+- **临时异常**：中断行的原生失败证据标记为可重试（``terminal_error_retryable``
+  为 True）时归 ``transient``，设备偏好 ``notify_transient`` 默认关；
+  可重试/未分类的中断还要经过 SessionHub 的沉降窗口才到这里（见 sessions.py）。
+  禁止在本模块重新解析文本判断错误类型。
 
 因为通道是端到端加密的，中继读不到内容，所以推送发出去的是一层加密壳：手机上的
 通知服务扩展在本地解开，再渲染出真实的标题与正文。中继全程只知道「给哪个设备令牌
@@ -72,6 +76,18 @@ _PERMANENT_CODES = frozenset({"bad_token", "bad_request", "rejected"})
 _KIND_WAITING = "waiting"
 _KIND_COMPLETED = "completed"
 _KIND_ABORTED = "aborted"
+# Retryable failure the runtime may recover from (SessKit terminal_error_retryable).
+# Device pref notify_transient defaults off; aborted stays for terminal failures.
+_KIND_TRANSIENT = "transient"
+
+
+def abort_kind(session: dict) -> str:
+    """Notification kind for an ABORTED session: transient or terminal.
+
+    Only ``terminal_error_retryable is True`` becomes transient; missing or
+    unknown evidence stays terminal so the settle window, not silence, decides.
+    """
+    return _KIND_TRANSIENT if session.get("terminal_error_retryable") is True else _KIND_ABORTED
 
 
 class PushNotifier:
@@ -145,7 +161,7 @@ class PushNotifier:
         elif current == sesskit_titles.STATUS_ABORTED and (
             previous != sesskit_titles.STATUS_ABORTED or previous == current
         ):
-            self._emit(session, kind=_KIND_ABORTED)
+            self._emit(session, kind=abort_kind(session))
 
     @staticmethod
     def _round_key(session: dict, kind: str) -> str:
@@ -638,6 +654,8 @@ class PushNotifier:
             return getattr(device, "notify_completed", True) is not False
         if kind == _KIND_ABORTED:
             return getattr(device, "notify_aborted", True) is not False
+        if kind == _KIND_TRANSIENT:
+            return getattr(device, "notify_transient", False) is True
         return True
 
     def _render(self, session: dict, *, kind: str) -> bytes:
@@ -647,6 +665,8 @@ class PushNotifier:
             body = last_agent or "助手在等你回答"
         elif kind == _KIND_ABORTED:
             body = last_agent or "Session stopped with an error"
+        elif kind == _KIND_TRANSIENT:
+            body = last_agent or "Session hit a retryable error"
         else:
             body = last_agent or "Session finished"
         payload = {

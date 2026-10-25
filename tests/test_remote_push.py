@@ -257,6 +257,53 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             aborted, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_ABORTED
         )
         self.assertEqual(self.sent, [])
+
+    def test_transient_pref_defaults_off(self) -> None:
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "Request timed out.",
+            "completion_id": "300:30:aborted:tttt",
+            "terminal_error_retryable": True,
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_ABORTED
+        )
+        self.assertEqual(self.sent, [])
+        # Opt in: the same classified transient failure now sends, as its own kind.
+        self.notifier.state.devices[0].notify_transient = True
+        self.notifier.on_status_change(
+            dict(session, completion_id="301:30:aborted:tttt"),
+            sesskit_titles.STATUS_PENDING,
+            sesskit_titles.STATUS_ABORTED,
+        )
+        self.assertEqual(len(self.sent), 1)
+        payload = self._open(self.sent[0][2])
+        self.assertEqual(payload["kind"], "transient")
+        self.assertEqual(payload["body"], "Request timed out.")
+
+    def test_transient_pref_does_not_affect_terminal_abort(self) -> None:
+        self.notifier.state.devices[0].notify_transient = True
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "401 API key is invalid.",
+            "completion_id": "400:40:aborted:aaaa",
+            "terminal_error_retryable": False,
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_ABORTED
+        )
+        self.assertEqual(len(self.sent), 1)
+        payload = self._open(self.sent[0][2])
+        self.assertEqual(payload["kind"], "aborted")
+
+    def test_abort_kind_uses_only_positive_retryable_evidence(self) -> None:
+        from corral.remote.push import abort_kind
+
+        self.assertEqual(abort_kind({"terminal_error_retryable": True}), "transient")
+        self.assertEqual(abort_kind({"terminal_error_retryable": False}), "aborted")
+        self.assertEqual(abort_kind({}), "aborted")
         done = {
             "key": "pi:s1",
             "title": "probe",
@@ -914,6 +961,8 @@ class SessionHubStatusHookTests(unittest.TestCase):
         self.assertEqual(len(events), 2)  # Identical text in a second round still alerts.
         session["status_tag"] = sesskit_titles.STATUS_ABORTED
         session["completion_id"] = "native-error"
+        # Classified terminal failure: no settle window.
+        session["terminal_error_retryable"] = False
         self.hub._detect_status_changes()
         self.assertEqual(events[-1][1]["notification_kind"], "aborted")
 
@@ -993,6 +1042,7 @@ class SessionHubStatusHookTests(unittest.TestCase):
         self.hub._snapshot_status()
         session["status_tag"] = sesskit_titles.STATUS_ABORTED
         session["last_agent_msg"] = "quota"
+        session["terminal_error_retryable"] = False
         self.hub._detect_status_changes()
         self.assertEqual(self.calls[-1][1], sesskit_titles.STATUS_ABORTED)
 

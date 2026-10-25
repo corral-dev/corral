@@ -438,6 +438,34 @@ Slice 1/2 可先按“有 `completion_id` 则用、无则对 DONE 保守静默�
 
 <!-- 该文档整理/压缩于 2026-09-29 -->
 
+### Transient abort classification and settle window (owner decision 2026-10-25)
+
+机主反馈：agent runtime 抛出的网络中断、超时一类异常多数会自行重试，这类“临时异常”
+不必叫回手机；而真正的失败（鉴权、额度耗尽、崩溃）仍要通知。此前只有
+`completed` / `aborted` 两个开关，任何 `ABORTED` 都会立刻推送，两者无法区分。
+
+- **分类来源**：SessKit 在终局证据里输出 `terminal_error_kind` 与
+  `terminal_error_retryable`，复用 `sesskit.errors` 的封闭分类与 `retryable`
+  语义；只从决定 `STATUS_ABORTED` 的同一份有界尾部证据推导，禁止 Corral 对
+  `last_agent` 文本做第二套正则判断。仅 `aborted` 行带这两个字段；其它状态省略。
+- **Corral 口径**：`retryable is True` → `transient`；`False` → `aborted`
+  （立即）；缺失或 `None` → 按 `aborted`，但要等沉降窗口。
+- **沉降窗口**：`transient` 与未知结局在 `ABORTED` 持续 75 秒、期间没有新一轮
+  或状态回转后才发；同一轮只发一次，身份用 `completion_id or status`。
+  窗口的目的：挡掉重试中的一闪而过，也避免同一轮先推「中断」、重试成功后
+  再推「完成」。已分类的终局失败（`retryable is False`）不等待。
+- **开关与默认**：新增设备偏好 `devices[].notify_transient`，缺字段＝关
+  （机主明确不想被这类异常打扰）；`waiting` 不受影响；`aborted` /
+  `completed` 语义与默认值不变。iPhone 设置页新增第三行
+  「临时异常时通知」，随 `push.register` 上报；Mac 本地通知新增同名开关。
+  `hello capabilities.transient_notify` 标注开发机支持该偏好。
+- **兼容**：老 SessKit 没有分类字段 → 走沉降窗口后仍按 `aborted` 推，行为
+  只延迟不丢失；老手机不发 `notify_transient` → 开发机保持默认关；老开发机
+  忽略该字段 → 新手机上的开关不生效，升级开发机后一致。
+- **验收**：分类单测（每个活跃运行时至少一条真实异常历史）、hub 沉降/恢复/
+  同轮只发、设备偏好与老客户端兼容、TUI 不受影响（仍不发系统通知）、
+  iPhone 真机开关与通知展示、Mac 设置与本地通知。
+
 ### Invisible device mute correction (2026-10-05)
 
 Both owned hosts were verified to retain disabled completion/abort preferences for their paired iPhones. The client registration only supplied token/environment, and its Settings screen did not expose these preferences. Apple clients now show device-local completed/aborted switches, default on, and include both in every registration. Explicit local off choices persist. Do not reset unrelated devices (the iPad's retained BadDeviceToken records are a separate problem). Desktop notification events are independent of APNs device preferences and list pagination; see the remote knowledge base.

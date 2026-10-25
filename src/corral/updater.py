@@ -312,7 +312,7 @@ def is_updatable(channel: Channel | None = None) -> bool:
 # Linux 更新实踩）。唯一权威是 scripts/sesskit_dep.py；updater 随包发到用户
 # 机器、手边没有 scripts/，只能在这里镜像 pin。升级 SessKit 时两处同步改，
 # 并同步 install.sh 的 curl|bash 硬编码 fallback。
-_SESSKIT_VERSION = "0.2.16"
+_SESSKIT_VERSION = "0.2.17"
 _SESSKIT_WHEEL_NAME = f"sesskit-{_SESSKIT_VERSION}-py3-none-any.whl"
 _SESSKIT_WHEEL_SHA256 = "d38fa6ca0a57d5cef0bab9dad9088cdb1c2bd46e730bbfd9b8d12e4d5ab4944e"
 _SESSKIT_WHEEL_URL = (

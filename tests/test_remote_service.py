@@ -522,6 +522,7 @@ class RemoteServiceTests(unittest.TestCase):
         reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone"})
         self.assertTrue(reply["ok"])
         self.assertTrue(reply["d"]["capabilities"]["completion_notify"])
+        self.assertTrue(reply["d"]["capabilities"]["transient_notify"])
 
     def test_push_register_stores_notify_prefs(self) -> None:
         connection = self._paired()
@@ -540,6 +541,7 @@ class RemoteServiceTests(unittest.TestCase):
         assert device is not None
         self.assertFalse(device.notify_completed)
         self.assertTrue(device.notify_aborted)
+        self.assertFalse(device.notify_transient)
 
     def test_push_register_without_prefs_keeps_defaults(self) -> None:
         connection = self._paired()
@@ -553,6 +555,33 @@ class RemoteServiceTests(unittest.TestCase):
         assert device is not None
         self.assertTrue(device.notify_completed)
         self.assertTrue(device.notify_aborted)
+        self.assertFalse(device.notify_transient)
+
+    def test_push_register_stores_transient_pref(self) -> None:
+        connection = self._paired()
+        reply = self._call(
+            connection,
+            protocol.M_PUSH_REGISTER,
+            {
+                "token": "b" * 64,
+                "env": "sandbox",
+                "notify_transient": True,
+            },
+        )
+        self.assertTrue(reply["ok"])
+        device = remote_config.find_device(self.service.state, connection.device_public_key)
+        assert device is not None
+        self.assertTrue(device.notify_transient)
+        # Later registrations that omit the field must not reset the opt-in.
+        reply = self._call(
+            connection,
+            protocol.M_PUSH_REGISTER,
+            {"token": "b" * 64, "env": "sandbox"},
+        )
+        self.assertTrue(reply["ok"])
+        device = remote_config.find_device(self.service.state, connection.device_public_key)
+        assert device is not None
+        self.assertTrue(device.notify_transient)
 
     def test_hello_with_want_data_plane_issues_bind_token(self):
         connection = self._paired()

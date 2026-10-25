@@ -203,6 +203,8 @@ class PairedDevice:
     # 完成/中断通知偏好：缺字段=开（老设备不受影响）。False 才不发。
     notify_completed: bool = True
     notify_aborted: bool = True
+    # 可自动重试的临时异常：缺字段=关（机主 2026-10-25 决定），显式 True 才发。
+    notify_transient: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict) -> PairedDevice:
@@ -221,6 +223,7 @@ class PairedDevice:
             access=access,
             notify_completed=False if raw.get("notify_completed") is False else True,
             notify_aborted=False if raw.get("notify_aborted") is False else True,
+            notify_transient=raw.get("notify_transient") is True,
         )
 
 

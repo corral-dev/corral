@@ -35,6 +35,7 @@ from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
 from corral.projects import normalize_cwd
 from corral.remote import questions, richmsg, shell_terminal, terminal_stream, transcript_cache
+from corral.remote.push import abort_kind
 from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
@@ -83,6 +84,9 @@ _MAX_IN_MEMORY_TRANSCRIPTS = 48
 _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
 # New session keys that first appear already terminal still notify if this fresh.
 _STATUS_NOTIFY_FRESH_SECONDS = 300.0
+# Retryable or unclassified aborts must persist this long before notifying:
+# filters mid-retry flicker and one turn's abort-then-completed double push.
+_ABORT_SETTLE_SECONDS = 75.0
 
 def _scan_index_stamp() -> tuple | None:
     """Cheap change stamp of the shared scan index (stat only, no JSON parse)."""
@@ -653,6 +657,9 @@ class SessionHub:
         self._last_markers: dict[str, str] = {}
         self._last_status: dict[str, str] = {}
         self._last_completion: dict[str, str] = {}
+        # key -> (first_seen, abort identity) for retryable/unknown aborts that
+        # must persist before notifying (settle window).
+        self._pending_abort: dict[str, tuple[float, str]] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
         # Refresh loop -> state loop handoff; the state loop alone publishes.
         self._state_wake = threading.Event()
@@ -1069,6 +1076,10 @@ class SessionHub:
             "last_agent": str(session.get("last_agent_msg") or "")[:160],
             # 完成通知去重与事后核对用：只读透传，不进排序/筛选/版本指纹。
             "completion_id": str(session.get("completion_id") or ""),
+            # 终局失败分类（仅 aborted 行有值）：推送层据此区分可重试探险
+            # 与真正失败；不进排序/筛选/版本指纹。
+            "terminal_error_kind": str(session.get("terminal_error_kind") or ""),
+            "terminal_error_retryable": session.get("terminal_error_retryable"),
             "file_mtime": self._wire_float(session.get("file_mtime") or session.get("mtime")),
             "size_bytes": int(session.get("size_bytes") or 0),
             "rich": richmsg.supports_tool_calls(str(session.get("source") or "")),
@@ -3478,11 +3489,17 @@ class SessionHub:
         说明新一轮结束了（DONE→DONE 也要推，由 PushNotifier 按轮去重）。
         若新会话在两次扫描之间已经结束（首次出现就是已完成/已中断），
         只要历史很新仍要推——否则短会话会漏通知。
+
+        可重试或未分类的异常结束先进入沉降队列：ABORTED 持续
+        `_ABORT_SETTLE_SECONDS` 且期间没有新一轮/状态回转才通知，
+        避免重试中的一闪而过；已分类的终局失败（retryable=False）立即通知。
         """
         hook = self._status_hook
         layout = self._layout()
         now = time.time()
         terminal_payloads: list[dict] = []
+        # key -> (identity, session) for every ABORTED row seen this scan.
+        seen_aborts: dict[str, tuple[str, dict]] = {}
         for session in self.store.all_sessions():
             key = session_key(session)
             current = str(session.get("status_tag") or "")
@@ -3491,28 +3508,26 @@ class SessionHub:
             current_cid = str(session.get("completion_id") or "")
             previous_cid = self._last_completion.get(key)
             self._last_completion[key] = current_cid
-            if current in (
+            terminal = current in (
                 sesskit_titles.STATUS_DONE,
                 sesskit_titles.STATUS_ABORTED,
-            ):
+            )
+            if terminal:
                 terminal_payloads.append(self.session_payload(session, layout))
+            identity = str(current_cid or current)
+            if current == sesskit_titles.STATUS_ABORTED:
+                seen_aborts[key] = (identity, session)
             if previous is not None and current == previous:
                 # 同标签但新一轮（completion_id 变了）：DONE→DONE 也推。
                 # 非终端态没有 completion_id，不在此列。
                 if not current_cid or current_cid == (previous_cid or ""):
                     continue
-                if current not in (
-                    sesskit_titles.STATUS_DONE,
-                    sesskit_titles.STATUS_ABORTED,
-                ):
+                if not terminal:
                     continue
             if previous is None:
                 # First sight of this key after start: only notify if it is already
                 # terminal and the history is fresh (completed between scans).
-                if current not in (
-                    sesskit_titles.STATUS_DONE,
-                    sesskit_titles.STATUS_ABORTED,
-                ):
+                if not terminal:
                     continue
                 try:
                     mtime = float(session.get("mtime") or 0.0)
@@ -3521,13 +3536,42 @@ class SessionHub:
                 if mtime <= 0 or (now - mtime) > _STATUS_NOTIFY_FRESH_SECONDS:
                     continue
             payload = self.session_payload(session, layout)
-            if current == sesskit_titles.STATUS_DONE and current_cid:
-                self._emit_notification(payload, "completed")
+            if current == sesskit_titles.STATUS_DONE:
+                # Empty completion_id is a weak verdict: no completion push, but
+                # the hook still records the deliberate skip.
+                if current_cid:
+                    self._emit_notification(payload, "completed")
             elif current == sesskit_titles.STATUS_ABORTED:
-                self._emit_notification(payload, "aborted")
+                if session.get("terminal_error_retryable") is not False:
+                    existing = self._pending_abort.get(key)
+                    if existing is None or existing[1] != identity:
+                        self._pending_abort[key] = (now, identity)
+                    continue
+                self._emit_notification(payload, abort_kind(payload))
             try:
                 if hook is not None:
                     hook(payload, previous or "", current)
+            except Exception:
+                continue
+        # Deferred aborts: emit once when the same identity is still aborted
+        # after the window; drop anything recovered, superseded or vanished.
+        for key, (first_seen, identity) in list(self._pending_abort.items()):
+            seen = seen_aborts.get(key)
+            if seen is None or seen[0] != identity:
+                self._pending_abort.pop(key, None)
+                continue
+            if now - first_seen < _ABORT_SETTLE_SECONDS:
+                continue
+            payload = self.session_payload(seen[1], layout)
+            self._pending_abort.pop(key, None)
+            self._emit_notification(payload, abort_kind(payload))
+            try:
+                if hook is not None:
+                    hook(
+                        payload,
+                        sesskit_titles.STATUS_ABORTED,
+                        sesskit_titles.STATUS_ABORTED,
+                    )
             except Exception:
                 continue
         # 有界重试：待确认回执超时/失败、且仍是最新轮次的，按设备重发。

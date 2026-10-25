@@ -812,6 +812,7 @@ class RemoteService:
                 protocol.CAPABILITY_COMMAND_RECEIPTS: True,
                 protocol.CAPABILITY_TOOL_DETAIL: True,
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
+                protocol.CAPABILITY_TRANSIENT_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
                 protocol.CAPABILITY_SESSION_INTERRUPT: True,
@@ -1525,11 +1526,14 @@ class RemoteService:
         if env and env not in ("sandbox", "production"):
             raise ActionError(protocol.E_USAGE, t("remote.err.bad_push_env"))
         # 完成/中断通知偏好：字段出现才覆盖（缺字段=开，老手机不受影响）。
+        # 临时异常偏好相反：缺字段保持默认关，只有显式 true 才打开。
         updates: dict = {"push_token": token, "push_env": env}
         if "notify_completed" in params:
             updates["notify_completed"] = bool(params.get("notify_completed"))
         if "notify_aborted" in params:
             updates["notify_aborted"] = bool(params.get("notify_aborted"))
+        if "notify_transient" in params:
+            updates["notify_transient"] = bool(params.get("notify_transient"))
         device = remote_config.touch_device(
             self.state,
             connection.device_public_key,

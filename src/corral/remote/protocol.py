@@ -202,6 +202,9 @@ CAPABILITY_SESSION_CREATE_RECEIPTS = "session_create_receipts"
 CAPABILITY_TOOL_DETAIL = "tool_detail"
 # Host supports per-device completion/abort notification prefs via push.register.
 CAPABILITY_COMPLETION_NOTIFY = "completion_notify"
+# Host supports the separate per-device "transient error" notification pref
+# (`notify_transient`) and sends kind="transient" for retryable aborts.
+CAPABILITY_TRANSIENT_NOTIFY = "transient_notify"
 # Message-referenced images are previewed through media.image (downscaled on the host).
 CAPABILITY_MEDIA_IMAGE = "media_image"
 # Host supports session.restart (remote access to the desktop advanced-restart).
