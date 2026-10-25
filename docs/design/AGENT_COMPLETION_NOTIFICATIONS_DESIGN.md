@@ -486,10 +486,19 @@ Both owned hosts were verified to retain disabled completion/abort preferences f
   `notify_transient: false` for it (the Mac test device also defaults off).
   iPhone IPA is on AppShelf (release 337). The new Settings row itself needs a
   manual open on the phone; that visual check is not claimed here.
-- **Mac**: 0.3.148 (152) Debug Settings was opened with
-  `-CorralInspectSettings` and the new “When a retryable error stops the work”
-  switch inspected in the off state. The installed Release app remains
-  0.3.147; public Mac publication follows the Mac release task.
+- **Mac**: 0.3.148 (152) is published as `mac-v0.3.148` from private source
+  `39a41f3` / public `e8010d5`; receipt
+  `~/.config/corral/development/mac-releases/20261025-155001` records the
+  anonymous DMG/ZIP checksums (`9fb1c802…`, `b69f1bf6…`), the DMG and its app
+  staple validate, and the signed feed serves build 152. The installed
+  `/Applications/Corral.app` executable matches the published ZIP byte for
+  byte, and the installed client reports ready local transport with data
+  attached. A same-source Debug Settings window opened with
+  `-CorralInspectSettings` shows “When a retryable error stops the work” off;
+  the installed Release ships the same localized key and keeps
+  `transient: false`. Limit: the Release has no inspection entry, so its
+  Settings window itself was not opened, and the 0.3.148 release notes cover
+  the menu/split work without advertising this switch.
 - **Verification**: SessKit 565 tests, Corral full gate 2765 tests with
   complete coverage (known flakes passed on retry), Apple Core 422 tests,
   Ruff clean, Mac/iOS Release builds without new warnings.
