@@ -22,6 +22,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from dataclasses import dataclass
 
@@ -31,6 +32,7 @@ from corral.remote import protocol, ratelimit
 from corral.remote.config import RemoteState
 from corral.remote.service import RemoteService
 from corral.remote.transport.channel import UNCONFIRMED_TTL, HostChannel
+from corral.remote.transport.writer import LaneBudget, LaneWriter
 
 _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 60.0
@@ -146,6 +148,11 @@ class RelayClient:
         self._lanes: dict[bytes, object] = {}
         self._socket = None
         self._bulk_socket = None
+        # One ordered, byte-accounted writer per physical socket (see
+        # `transport/writer.py`); the two relay sockets share an aggregate cap.
+        self._writers: dict[object, LaneWriter] = {}
+        self._writers_lock = threading.Lock()
+        self._budget = LaneBudget()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = asyncio.Event()
         self.connected_at: float | None = None
@@ -223,11 +230,12 @@ class RelayClient:
                 self.connected_at = None
                 await self._stop_bulk_task()
                 await self._close_bulk()
-                self._socket = None
+                socket, self._socket = self._socket, None
                 self._registration_generation = 0
                 self._registration_node = ""
                 self._host_lane_attach = False
                 self._drop_channels()
+                self._close_writer(socket)
             if stop.is_set():
                 break
             if attempt.ready is not None:
@@ -300,6 +308,7 @@ class RelayClient:
                 self._close_channel(cid)
         with contextlib.suppress(Exception):
             await socket.close()
+        self._close_writer(socket)
 
     def _headers(self) -> dict:
         from corral.remote import crypto as remote_crypto
@@ -532,7 +541,13 @@ class RelayClient:
         self._lanes.clear()
 
     def _write(self, frame_type: int, channel_id: bytes, payload: bytes) -> None:
-        """由通道工作线程调用，必须把发送动作转投回事件循环。"""
+        """由通道工作线程调用，必须把发送动作转投回事件循环。
+
+        每一帧都经过该 socket 的唯一有序 lane writer：它按提交顺序串行发送、
+        按字节与条数准入（在途帧同样计入），并在溢出时只重置对应通道，让手机
+        带新计数器重绑。**禁止**再退回「每帧一个 run_coroutine_threadsafe」——
+        sink 卡住时那些任务没有上限，正是内存被线性吃满的原因。
+        """
         loop = self._loop
         if loop is None:
             return
@@ -556,7 +571,67 @@ class RelayClient:
                     return
                 socket = pinned
         frame = protocol.encode_frame(frame_type, channel_id, payload)
-        asyncio.run_coroutine_threadsafe(_safe_send(socket, frame), loop)
+        writer = self._writer_for(socket)
+        if writer is None:  # pragma: no cover - loop vanished mid-write
+            return
+        writer.submit(frame, None if channel_id == protocol.ZERO_CHANNEL else channel_id)
+
+    def _lane_name(self, socket) -> str:
+        if socket is self._bulk_socket:
+            return protocol.LANE_BULK
+        if socket is self._socket:
+            return protocol.LANE_INTERACTION
+        return "lane"
+
+    def _writer_for(self, socket) -> LaneWriter | None:
+        loop = self._loop
+        if loop is None or socket is None:
+            return None
+        with self._writers_lock:
+            writer = self._writers.get(socket)
+            if writer is not None:
+                # A socket whose lane failed is dead until the transport rebuilds
+                # it; never start a second lane for the same physical socket.
+                return None if writer.closed else writer
+            writer = LaneWriter(
+                loop,
+                socket,
+                lane=self._lane_name(socket),
+                budget=self._budget,
+                # Only the affected channel resets: other phones sharing this
+                # socket keep their streams and their counters.
+                on_channel_reset=lambda channel_id, _reason: self._close_channel(channel_id),
+                on_lane_reset=lambda _reason, sock=socket: self._on_lane_failed(sock),
+            )
+            self._writers[socket] = writer
+            return writer
+
+    def _close_writer(self, socket) -> None:
+        if socket is None:
+            return
+        with self._writers_lock:
+            writer = self._writers.pop(socket, None)
+        if writer is not None:
+            writer.close("relay_lane_closed")
+
+    def _on_lane_failed(self, socket) -> None:
+        """A lane's socket send failed: drop its channels and rebuild the lane.
+
+        Runs on the event loop. Channels pinned to the failed socket are closed
+        so their clients rebind with fresh counters instead of waiting for a
+        heartbeat timeout; the interaction lane reconnects through `run`, the
+        bulk lane through `_run_bulk_lane`.
+        """
+        for channel_id, pinned in list(self._lanes.items()):
+            if pinned is socket:
+                self._close_channel(channel_id)
+        loop = self._loop
+        if loop is None:
+            return
+        if socket is self._bulk_socket:
+            loop.create_task(self._close_bulk())
+        elif socket is self._socket:
+            loop.create_task(_abort_socket(socket))
 
     def send_push(self, token: str, env: str, payload: bytes, push_id: str = "") -> None:
         """请中继代发一条推送。载荷已经是加密壳，中继读不懂里面写了什么。
@@ -578,8 +653,7 @@ class RelayClient:
         self._write(protocol.FRAME_PUSH, protocol.ZERO_CHANNEL, body)
 
 
-async def _safe_send(socket, frame: bytes) -> None:
-    try:
-        await socket.send(frame)
-    except Exception:
-        pass  # 连接刚好断了：重连后手机会重新订阅，这一帧丢掉无害
+async def _abort_socket(socket) -> None:
+    """Close a socket whose ordered writer failed, so its reader reconnects."""
+    with contextlib.suppress(Exception):
+        await socket.close()

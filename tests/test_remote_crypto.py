@@ -298,7 +298,9 @@ class HostChannelBackpressureTests(unittest.TestCase):
         channel._connection = control
         channel._queue.put_nowait((protocol.FRAME_DATA, b"fill"))
         channel.submit(protocol.FRAME_DATA, b"overflow")
-        self.assertFalse(channel._closed)
+        # The overflowing data plane resets itself explicitly (close/rebind);
+        # the control connection and its close hook stay untouched.
+        self.assertTrue(channel._closed)
         self.assertFalse(control.closed)
         self.assertIn(control, self.service._connections)
         self.assertEqual(self.closed, [])

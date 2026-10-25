@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
 import time
@@ -26,6 +27,10 @@ _STOP = object()
 # 首条密文若带毫秒时间戳，允许的时钟偏差（防重放 HELLO+旧 DATA）
 _CONFIRM_SKEW_MS = 5 * 60 * 1000
 _DEFAULT_QUEUE_SIZE = 256
+# Item counts alone are a weak memory budget: one legal frame is 8 MiB. The
+# budget counts queued *and* in-flight payload bytes and admits one legal
+# maximum frame, matching the outbound lane writer's accounting.
+_DEFAULT_QUEUE_BYTES = int(getattr(protocol, "_MAX_FRAME_BYTES", 8 * 1024 * 1024))
 # A channel that never sends a decryptable frame must not hold a slot forever.
 # Handshake losers on the phone (parallel LAN/relay race) can leave the socket
 # open after HELLO; the transport closes them once this many seconds pass
@@ -71,6 +76,7 @@ class HostChannel:
         address: str = "",
         close_transport=None,
         queue_size: int = _DEFAULT_QUEUE_SIZE,
+        queue_bytes: int = _DEFAULT_QUEUE_BYTES,
     ) -> None:
         self.service = service
         self.channel_id = channel_id
@@ -87,6 +93,12 @@ class HostChannel:
         self._closed = False
         self._lock = threading.Lock()
         self._queue: queue.Queue = queue.Queue(maxsize=max(1, queue_size))
+        self._queue_bytes_max = max(1, queue_bytes)
+        # Payload bytes accepted but not yet processed, including the frame the
+        # worker is currently handling. Guarded separately from the channel's
+        # encryption lock: producers run on the transport's event loop.
+        self._queued_bytes = 0
+        self._bytes_lock = threading.Lock()
         # 延迟到首帧再起线程：避免中继灌未知通道号时「建对象即占 OS 线程」
         self._worker: threading.Thread | None = None
 
@@ -98,6 +110,11 @@ class HostChannel:
     def is_data_plane(self) -> bool:
         return self._confirmed and not self._owns_logical_connection
 
+    @property
+    def queued_bytes(self) -> int:
+        with self._bytes_lock:
+            return self._queued_bytes
+
     def _ensure_worker(self) -> None:
         if self._worker is not None or self._closed:
             return
@@ -108,29 +125,60 @@ class HostChannel:
     def submit(self, frame_type: int, payload: bytes) -> None:
         """由网络侧调用，把一帧交给工作线程。
 
-        控制面队列满说明手机在灌数据，断开这一条（可能连带设备离线）。
-        数据面队列满只丢弃这一帧，禁止因此 close() 控制面。
+        准入按「条数 + 字节」双上限，且在途帧同样计入（工作线程处理完才
+        归还字节），因此一条慢调用不能让后续帧无限堆在内存里。
+
+        溢出一律只重置该平面：控制面队列满说明手机在灌数据，断开这一条
+        （可能连带设备离线）；数据面队列满只关数据面，控制连接保持可用。
+        **禁止只丢帧后继续**——加密计数器已经前进，后续帧会因顺序不连续
+        被判失败，客户端本来也保不住这条通道；显式关掉让手机带新计数器重绑
+        才是诚实的处理。
         """
         if self._closed:
             return
         self._ensure_worker()
-        try:
-            self._queue.put_nowait((frame_type, payload))
-        except queue.Full:
-            observe.event(
-                "remote_channel_overflow",
-                plane="data" if self.is_data_plane else "control",
-            )
-            if self.is_data_plane:
-                return
-            self.close()
+        size = len(payload)
+        overflow = ""
+        with self._bytes_lock:
+            if self._queued_bytes + size > self._queue_bytes_max:
+                overflow = "bytes"
+            else:
+                try:
+                    self._queue.put_nowait((frame_type, payload))
+                except queue.Full:
+                    overflow = "frames"
+                else:
+                    self._queued_bytes += size
+        if overflow:
+            self._overflow(overflow, size)
+
+    def _overflow(self, reason: str, size: int) -> None:
+        plane = "data" if self.is_data_plane else "control"
+        observe.event(
+            "remote_channel_overflow",
+            plane=plane,
+            reason=reason,
+            frame_bytes=size,
+            queued_bytes=self.queued_bytes,
+        )
+        # Control-plane overflow closes the device connection (today's
+        # behaviour). Data-plane overflow closes only that plane: `close()`
+        # detaches the data plane and keeps the control connection alive.
+        self.close()
+
+    def _release_bytes(self, size: int) -> None:
+        with self._bytes_lock:
+            self._queued_bytes = max(0, self._queued_bytes - size)
 
     def _run(self) -> None:
         while True:
             item = self._queue.get()
             if item is _STOP:
                 return
-            self._on_frame(*item)
+            try:
+                self._on_frame(*item)
+            finally:
+                self._release_bytes(len(item[1]))
 
     def _on_frame(self, frame_type: int, payload: bytes) -> None:
         """处理一帧。任何异常都只关闭这一条通道，不影响同一连接上的其他设备。"""
@@ -267,7 +315,16 @@ class HostChannel:
         try:
             self._queue.put_nowait(_STOP)
         except queue.Full:
-            pass
+            # A full queue must not strand the worker thread forever: this
+            # channel is closing, so the oldest queued frame is undeliverable
+            # anyway (the client rebinds with fresh counters). Drop exactly one
+            # to make room for the stop marker, and release its byte budget.
+            with contextlib.suppress(queue.Empty):
+                dropped = self._queue.get_nowait()
+                if dropped is not _STOP:
+                    self._release_bytes(len(dropped[1]))
+            with contextlib.suppress(queue.Full):
+                self._queue.put_nowait(_STOP)
         if self._close_transport is not None:
             try:
                 self._close_transport()

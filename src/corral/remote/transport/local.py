@@ -23,6 +23,7 @@ from corral.remote.lan import DEFAULT_LOCAL_PORT
 from corral.remote.service import RemoteService
 from corral.remote.transport.channel import UNCONFIRMED_TTL, HostChannel
 from corral.remote.transport.relay import _websockets
+from corral.remote.transport.writer import LaneBudget, LaneWriter
 
 # Deprecated: 用 `corral.remote.lan.DEFAULT_LOCAL_PORT`；这里只留别名兼容旧 import。
 _DEFAULT_PORT = DEFAULT_LOCAL_PORT
@@ -40,6 +41,9 @@ class LocalServer:
         self._server = None
         self._channels = 0
         self._channels_lock = asyncio.Lock()
+        # Outbound frames of every LAN socket share one aggregate byte ceiling;
+        # each socket additionally owns its own ordered lane writer.
+        self._budget = LaneBudget()
         self.listen_failed = False
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -95,25 +99,44 @@ class LocalServer:
         with contextlib.suppress(Exception):
             address = str(socket_conn.remote_address[0])
         closed = asyncio.Event()
+        channel_ref: dict[str, HostChannel] = {}
 
         def _close_transport() -> None:
             asyncio.run_coroutine_threadsafe(_close_ws(socket_conn, closed), loop)
+
+        def _reset_channel(_channel_id: bytes, _reason: str) -> None:
+            # One LAN socket carries exactly one channel. Resetting it means the
+            # phone must rebind this plane with fresh counters; the other plane
+            # lives on its own socket and is untouched.
+            channel = channel_ref.get("channel")
+            if channel is not None:
+                channel.close()
+            else:  # pragma: no cover - writer only exists after the channel does
+                _close_transport()
+
+        # One ordered, byte-accounted writer owns this socket. Every frame the
+        # channel produces goes through it in counter order, and a stalled phone
+        # can no longer accumulate unbounded pending send tasks.
+        writer = LaneWriter(
+            loop,
+            socket_conn,
+            lane="local",
+            budget=self._budget,
+            on_channel_reset=_reset_channel,
+            on_lane_reset=lambda _reason: _close_transport(),
+        )
 
         channel = HostChannel(
             self.service,
             self.static_private,
             channel_id,
-            lambda frame_type, payload: asyncio.run_coroutine_threadsafe(
-                _send(socket_conn, protocol.encode_frame(frame_type, channel_id, payload)), loop
+            lambda frame_type, payload: writer.submit(
+                protocol.encode_frame(frame_type, channel_id, payload), channel_id
             ),
             address=address,
             close_transport=_close_transport,
         )
-        # 每条 WebSocket 一条通道。同一手机的第二条连接（数据面）在 hello 里
-        # 用 data_bind 附着到已有逻辑 Connection，不会再登记成另一台设备。
-        # 直连时也先发一次通道分配，让手机端的收包逻辑与走中继时完全一致——
-        # 客户端不必为两种连接方式各写一套。
-        await _send(socket_conn, protocol.encode_frame(protocol.FRAME_DEVICE_OPEN, channel_id, b""))
+        channel_ref["channel"] = channel
 
         async def _expire_unconfirmed() -> None:
             # Phone-side handshake losers can sit here after HELLO without ever
@@ -125,6 +148,15 @@ class LocalServer:
 
         watchdog = asyncio.create_task(_expire_unconfirmed())
         try:
+            # 每条 WebSocket 一条通道。同一手机的第二条连接（数据面）在 hello 里
+            # 用 data_bind 附着到已有逻辑 Connection，不会再登记成另一台设备。
+            # 直连时也先发一次通道分配，让手机端的收包逻辑与走中继时完全一致——
+            # 客户端不必为两种连接方式各写一套。
+            if not writer.submit(
+                protocol.encode_frame(protocol.FRAME_DEVICE_OPEN, channel_id, b""), channel_id
+            ):
+                observe.event("remote_local_open_refused", address=address)
+                return
             async for raw in socket_conn:
                 if closed.is_set():
                     break
@@ -139,6 +171,7 @@ class LocalServer:
         except Exception:
             pass
         finally:
+            writer.close("local_closed")
             watchdog.cancel()
             channel.close()
             async with self._channels_lock:
@@ -158,13 +191,6 @@ async def _close_ws(socket_conn, closed: asyncio.Event) -> None:
     closed.set()
     with contextlib.suppress(Exception):
         await socket_conn.close()
-
-
-async def _send(socket_conn, frame: bytes) -> None:
-    try:
-        await socket_conn.send(frame)
-    except Exception:
-        pass
 
 
 # Deprecated: 真实现已搬到 `corral.remote.lan`；这里只做 re-export，
