@@ -1215,6 +1215,54 @@ def _scroll_search(profile, name, messages, prompts, target, is_current, settle,
 _NATIVE_LIMIT = 15.0
 
 
+def return_to_latest(name: str, runtime: str, *, is_current: Callable[[], bool] = lambda: True) -> None:
+    """Return the agent-owned viewport, not just its outer capture, to live output.
+
+    Only fullscreen agents own a second scroll position. Never send an editing
+    shortcut into a normal-screen composer/shell. Navigation keys preserve the
+    draft and do not interrupt an active turn or submit anything.
+    """
+    if not is_current():
+        raise PromptNavigationError("prompt_stale")
+    embed.cancel_navigation(name)
+    with embed.navigation_transaction(name, timeout=3.0) as owns_input:
+        def current():
+            return owns_input() and is_current()
+
+        if not current():
+            raise PromptNavigationError("prompt_stale")
+        alternate = _tmux(name, "display-message", "-p", "-t", name, "#{alternate_on}").strip()
+        if alternate == "0":
+            return  # The caller already returned its local history window.
+        if alternate != "1":
+            raise PromptNavigationError("prompt_unavailable")
+        keys = {"codex": "C-End", "claude": "C-End", "pi": "C-End", "opencode": "C-M-g"}
+        key = keys.get(runtime)
+        if key is None:
+            raise PromptNavigationError("prompt_unavailable")
+        # Legacy search can own the editor. Recognize real runtime chrome only,
+        # never quoted transcript text; the existing recovery preserves drafts.
+        before = _screen(name)
+        if runtime == "codex" and _codex_find(before):
+            embed.send_key(name, "Escape")
+            before = _await_screen(name, lambda value: not _codex_find(value), is_current=current)
+        elif runtime == "claude" and _claude_transcript(before):
+            embed.send_key(name, "C-o")
+            before = _await_screen(name, lambda value: not _claude_transcript(value), is_current=current)
+        if not current():
+            raise PromptNavigationError("prompt_stale")
+        embed.send_key(name, key)
+        # Keep frame suppression/input ownership through the native redraw.
+        # An unchanged screen is valid when already at the live edge.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            if not current():
+                raise PromptNavigationError("prompt_stale")
+            if _screen(name) != before:
+                return
+            time.sleep(0.02)
+
+
 def navigate_native(name: str, runtime: str, query: str, *, occurrence: int = 0, total: int = 1,
                     target: PromptTarget | None = None,
                     messages: Sequence = (), selected=None,

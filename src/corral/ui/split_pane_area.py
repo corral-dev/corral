@@ -521,9 +521,8 @@ class PaneCell(Vertical):
 
     def _jump_detail_latest(self) -> None:
         """HUD last row: return this cell only (End still scrolls every cell)."""
-        pane = self.embed_pane()
-        if pane is not None:
-            pane.return_to_latest()
+        if not self._pooled:
+            self.screen.jump_to_latest(self.spec.session_key, self)
 
     def clear_hud_override(self) -> None:
         self._hud_override = None

@@ -103,6 +103,46 @@ class HudControllerMixin:
             pass
         self._sync_hud()
 
+    def jump_to_latest(self, key: str, cell) -> None:
+        """Cancel prompt location now; return only this pane without blocking UI."""
+        from corral import embed
+
+        pane = cell.embed_pane()
+        if pane is None or cell.spec.session_key != key:
+            return
+        self._prompt_navigation_revision = getattr(self, "_prompt_navigation_revision", 0) + 1
+        revision = self._prompt_navigation_revision
+        previous = getattr(self, "_prompt_navigation_row", None)
+        if previous is not None and previous[0] is not None:
+            previous[0].set_prompt_status(previous[1], None)
+        self._prompt_navigation_row = None
+        pane.return_to_latest()
+        name = pane.session_name
+        if name and not pane._uses_detail_window():
+            embed.cancel_navigation(name)
+            self._return_terminal_latest(key, name, cell, revision)
+
+    @work(thread=True, group="prompt-navigation")
+    def _return_terminal_latest(self, key: str, name: str, cell, revision: int) -> None:
+        from corral.ui.terminal_prompt_navigation import return_to_latest
+
+        def current():
+            pane = cell.embed_pane()
+            return (revision == self._prompt_navigation_revision and cell.spec.session_key == key
+                    and pane is not None and pane.session_name == name)
+
+        session = self.store.find_session(key)
+        if not session or not current():
+            return
+        try:
+            return_to_latest(name, str(session.get("source") or ""), is_current=current)
+            self.app.call_from_thread(self._apply_prompt_jump, key, name, cell, revision, 0)
+        except Exception as exc:
+            from corral import observe
+
+            observe.event("terminal_latest_failed", runtime=str(session.get("source") or ""),
+                          reason=type(exc).__name__)
+
     def jump_to_terminal_prompt(self, key: str, body: str, cell, message_index: int | None = None,
                                 token: str | None = None) -> None:
         hud = self._cell_hud(cell)

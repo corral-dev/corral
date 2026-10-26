@@ -730,12 +730,20 @@ class RemoteService:
                 self._defer_startup_query(connection, message, wait_ready, reply=reply)
                 return
         params = message.get("p")
-        if (message.get("t") == "req" and message.get("m") == protocol.M_TERMINAL_PROMPT
-                and isinstance(params, dict) and params.get("native") is True):
+        if (message.get("t") == "req" and isinstance(params, dict)
+                and (method == protocol.M_TERMINAL_LATEST
+                     or (method == protocol.M_TERMINAL_PROMPT and params.get("native") is True))):
             inbound = reply if reply is not None else connection.send
             if not self._prompt_slots.acquire(blocking=False):
                 inbound(protocol.error(int(message.get("id") or 0), "unavailable", t("remote.err.prompt_unavailable")))
                 return
+
+            # Admit latest in wire order, before its worker can wait on the
+            # input lock. An older native prompt phase must not replace it.
+            if method == protocol.M_TERMINAL_LATEST and connection.paired and connection.access != "readonly":
+                key, request = params.get("key"), params.get("navigation")
+                if isinstance(key, str) and isinstance(request, str) and 1 <= len(request) <= 128:
+                    connection.terminal_prompt_requests[key] = request
 
             def locate():
                 try:
@@ -978,6 +986,7 @@ class RemoteService:
                 protocol.CAPABILITY_TERMINAL_STREAM: True,
                 protocol.CAPABILITY_TERMINAL_PROMPT: True,
                 protocol.CAPABILITY_TERMINAL_PROMPT_DIRECT: True,
+                protocol.CAPABILITY_TERMINAL_LATEST: True,
                 protocol.CAPABILITY_USER_PROMPTS: True,
                 protocol.CAPABILITY_PROJECT_SHELL: True,
             },
@@ -1195,7 +1204,10 @@ class RemoteService:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content")) from exc
         if len(data) > _TERMINAL_INPUT_MAX:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
-        self.hub.terminal_input(_key(params), data, _terminal_viewer(connection),
+        key = _key(params)
+        if data and params.get("passive") is not True:
+            connection.terminal_prompt_requests.pop(key, None)
+        self.hub.terminal_input(key, data, _terminal_viewer(connection),
                                 passive=params.get("passive") is True)
         return {"ok": True}
 
@@ -1235,6 +1247,18 @@ class RemoteService:
             native=native,
             **({"is_current": current} if request is not None else {}),
         )
+
+    def _terminal_latest(self, connection: Connection, params: dict):
+        if connection.access == "readonly":
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
+        key, request = _key(params), params.get("navigation")
+        if not isinstance(request, str) or not 1 <= len(request) <= 128:
+            raise ActionError(protocol.E_USAGE, t("remote.err.prompt_unavailable"))
+        def current():
+            return not connection.closed and connection.terminal_prompt_requests.get(key) == request
+        if not current():
+            raise ActionError("stale", t("remote.err.prompt_stale"))
+        return self.hub.terminal_latest(key, is_current=current)
 
     def _terminal_peek(self, connection: Connection, params: dict):
         return self.hub.terminal_peek(_key(params))
@@ -1816,6 +1840,7 @@ _HANDLERS = {
     protocol.M_TERMINAL_THEME: RemoteService._terminal_theme,
     protocol.M_TERMINAL_PEEK: RemoteService._terminal_peek,
     protocol.M_TERMINAL_PROMPT: RemoteService._terminal_prompt,
+    protocol.M_TERMINAL_LATEST: RemoteService._terminal_latest,
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,

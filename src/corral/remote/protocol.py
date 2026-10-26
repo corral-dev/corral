@@ -295,6 +295,8 @@ M_TERMINAL_DETACH = "terminal.detach"   # {key}
 # from terminal.attach and its snapshot events).
 M_TERMINAL_PEEK = "terminal.peek"
 M_TERMINAL_PROMPT = "terminal.prompt"
+M_TERMINAL_LATEST = "terminal.latest"  # {key, navigation}: draft-safe native live edge (write only)
+CAPABILITY_TERMINAL_LATEST = "terminal_latest"
 CAPABILITY_TERMINAL_PROMPT = "terminal_prompt"
 CAPABILITY_TERMINAL_PROMPT_DIRECT = "terminal_prompt_direct"
 # {key, background, foreground?} (#rrggbb): the viewer's terminal colours, answered to the

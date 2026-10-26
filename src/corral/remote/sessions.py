@@ -2659,6 +2659,26 @@ class SessionHub:
                           client="remote", duration_ms=int((time.monotonic() - started) * 1000))
             raise ActionError(code, t(f"remote.err.{exc}")) from exc
 
+    def terminal_latest(self, key: str, *, is_current=lambda: True) -> dict:
+        """Return an existing agent viewport; never launch or submit a message."""
+        from corral.ui.terminal_prompt_navigation import PromptNavigationError, return_to_latest
+
+        session = self.require_session(key)
+        name = self._hosted_name(key)
+        if not name:
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
+        try:
+            return_to_latest(name, str(session.get("source") or ""),
+                             is_current=lambda: is_current() and self._hosted_name(key) == name)
+        except PromptNavigationError as exc:
+            code = "stale" if str(exc) == "prompt_stale" else "unavailable"
+            raise ActionError(code, t(f"remote.err.{exc}")) from exc
+        with self._lock:
+            entry = self._terminals.get(key)
+        if entry is not None:
+            entry[0].request_snapshot()
+        return {"ok": True}
+
     def terminal_peek(self, key: str) -> dict:
         """One-shot raw screen without a size vote or subscription (cold reveal).
 

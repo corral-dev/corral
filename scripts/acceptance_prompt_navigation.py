@@ -80,7 +80,50 @@ def fixture(directory: Path, session_id: str) -> Path:
     return history
 
 
-async def exercise(directory, session_id, history, tmux, rows, columns):
+async def exercise_latest(app, pilot, pane, hud, directory, history, embed):
+    """Real native fullscreen history, actual production latest-row clicks."""
+    reports = []
+    for attempt in range(2):
+        embed.send_key("probe", "C-Home")
+        for _ in range(200):
+            await pilot.pause(.02)
+            if "CODEX_PROMPT_000" in pane.render().plain:
+                break
+        assert "CODEX_PROMPT_000" in pane.render().plain, "Native history setup failed"
+        assert pane.history_offset == 0, "Fixture must exercise native, not outer history"
+        app.save_screenshot(path=str(directory), filename=f"latest-{attempt}-before.svg")
+        y = hud._latest_local_y()
+        assert y is not None
+        started = time.monotonic()
+        await pilot.click(hud, offset=(3, y + hud.styles.padding.top))
+        for _ in range(200):
+            await pilot.pause(.02)
+            if "CODEX_ANSWER_049" in pane.render().plain:
+                break
+        assert "CODEX_ANSWER_049" in pane.render().plain, "Latest click did not return native output"
+        assert "UNSENT_DRAFT_CODEX" in embed.capture("probe", 0, 0), "Latest lost the draft"
+        assert hud.expanded and pane.has_focus, "Latest changed the card or keyboard ownership"
+        app.save_screenshot(path=str(directory), filename=f"latest-{attempt}-after.svg")
+        reports.append({"actualLatestClick": True, "nativeLatestVisible": True,
+                        "draftAndFocusPreserved": True, "elapsedMs": round((time.monotonic() - started) * 1000)})
+    # Idempotent return must not insert escape tails into the draft.
+    await pilot.click(hud, offset=(3, hud._latest_local_y() + hud.styles.padding.top))
+    await asyncio.wait_for(asyncio.gather(*(worker.wait() for worker in app.workers
+                                           if worker.group == "prompt-navigation")), timeout=5)
+    marker = "NEXT_AFTER_LATEST"
+    await pilot.press(*list(marker), "enter")
+    for _ in range(200):
+        await pilot.pause(.025)
+        data = [json.loads(line) for line in history.read_text().splitlines()]
+        users = [v["payload"]["message"] for v in data if v.get("type") == "event_msg"
+                 and v.get("payload", {}).get("type") == "user_message"]
+        if len(users) > 50:
+            break
+    assert len(users) == 51 and users[-1] == "UNSENT_DRAFT_CODEX" + marker, "Next ordinary message lost or modified"
+    return reports
+
+
+async def exercise(directory, session_id, history, tmux, rows, columns, latest_only=False, light=False):
     # Route only host resources to the disposable socket/history. Scanner,
     # SessKit reader, UI handler, navigation, capture and normal input are real.
     import corral
@@ -110,6 +153,8 @@ async def exercise(directory, session_id, history, tmux, rows, columns):
     store.hosted[key] = "probe"
     assert len([m for m in store.get_conversation(summary) if m.role == "user"]) == 50
     app = CorralApp(store, embed_ok=True)
+    if light:
+        app.theme = "textual-light"
     reports = []
     async with app.run_test(size=(columns + 60, rows + 7)) as pilot:
         area = app.screen.query_one(SplitPaneArea)
@@ -126,6 +171,8 @@ async def exercise(directory, session_id, history, tmux, rows, columns):
         pane.focus()  # Initial setup only. Never repair focus after a card click.
         await pilot.pause(.05)
         hud = cells[0].query_one(SessionHud)
+        if latest_only:
+            return await exercise_latest(app, pilot, pane, hud, directory, history, embed)
         for number in (17, 7, 27, 18):
             width = hud.content_size.width
             hud._stick_bottom = False
@@ -177,6 +224,8 @@ def main():
     parser.add_argument("--rows", type=int, default=28)
     parser.add_argument("--columns", type=int, default=100)
     parser.add_argument("--artifacts-dir", type=Path)
+    parser.add_argument("--latest-only", action="store_true", help="Exercise native latest-row clicks and next submit")
+    parser.add_argument("--light", action="store_true", help="Capture the light theme")
     args = parser.parse_args()
     if not args.codex or not shutil.which("tmux"):
         parser.error("Installed Codex and tmux are required")
@@ -212,7 +261,8 @@ def main():
         assert "CODEX_PROMPT_049" in command("capture-pane", "-p", "-t", "probe")
         assert command("display-message", "-p", "-t", "probe", "#{alternate_on}:#{history_size}").strip() == "1:0"
         command("send-keys", "-t", "probe", "-l", "UNSENT_DRAFT_CODEX")
-        reports = asyncio.run(exercise(directory, session_id, history, tmux, args.rows, args.columns))
+        reports = asyncio.run(exercise(directory, session_id, history, tmux, args.rows, args.columns,
+                                       latest_only=args.latest_only, light=args.light))
         report = {"ok": True, "nativeVersion": subprocess.check_output([binary, "--version"], text=True).strip(),
                   "cases": reports, "nextNativeUserMessages": 1, "artifacts": str(directory)}
         (directory / "result.json").write_text(json.dumps(report, indent=2))
