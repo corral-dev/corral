@@ -103,7 +103,10 @@ if gh release view "$TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1; then
   echo "==> Release ${TAG} 已存在"
 else
   echo "==> 创建 Release ${TAG}"
-  gh release create "$TAG" --repo "$SOURCE_REPO" --title "$TAG" --generate-notes --latest
+  # Release train: use the prepared bilingual notes when present.
+  notes_args=(--generate-notes)
+  if [[ -n "${RELEASE_NOTES_FILE:-}" && -f "${RELEASE_NOTES_FILE}" ]]; then notes_args=(--notes-file "$RELEASE_NOTES_FILE"); fi
+  gh release create "$TAG" --repo "$SOURCE_REPO" --title "$TAG" "${notes_args[@]}" --latest
 fi
 gh release edit "$TAG" --repo "$SOURCE_REPO" --latest
 
