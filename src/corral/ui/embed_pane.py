@@ -1366,11 +1366,22 @@ class EmbedPane(Widget):
         return self._is_detail_view() or self._is_hosted_fallback()
 
     def has_scrollable_detail(self) -> bool:
-        """Whether the HUD's latest row has a scroll position to return to.
-
-        A live terminal capture has none, so the row stays hidden there.
-        """
+        """Whether a static detail window is showing (no live screen to return to)."""
         return self._uses_detail_window()
+
+    def return_to_latest(self) -> bool:
+        """Return this pane to its latest position.
+
+        A static conversation preview scrolls to the end of the detail window;
+        a live capture leaves tmux scrollback and shows the live screen again.
+        """
+        if self._uses_detail_window():
+            return self.scroll_detail_end()
+        if self.history_offset:
+            self.history_offset = 0
+            self._request_immediate_capture()
+            return True
+        return False
 
     def _detail_full_strips(self) -> list[Strip]:
         """把详情全文编译成完整 Strip 列表（高度不限），供窗口切片与滚动上限计算。"""

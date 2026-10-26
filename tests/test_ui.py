@@ -10920,32 +10920,33 @@ class SessionHudRenderTests(unittest.TestCase):
         """展开态保留全部提问；高度封顶时靠滚动看中间与最早几条。"""
         hud = self._hud(10, expanded=True)
         full = [line.plain for line in hud.lines(40)]
-        # 标题 + 10 条 + 收起提示（未封顶时全部可见）
-        self.assertEqual(len(full), 12)
+        # 标题 + 10 条 + 回到最新 + 收起提示（未封顶时全部可见）
+        self.assertEqual(len(full), 13)
         self.assertIn("Your prompts (10)", full[0])
         self.assertIn("问题0", full[1], "最早那条必须排在最上面")
         self.assertIn("问题5", full[6], "中间提问必须保留，不得省略")
-        self.assertIn("问题9", full[-2], "最新那条必须排在最下面")
+        self.assertIn("问题9", full[-3], "最新那条必须排在回到最新行上面")
+        self.assertIn("Back to latest", full[-2])
         self.assertNotIn("in between", " ".join(full))
         self.assertNotIn("省略", " ".join(full))
         self.assertIn("Click to collapse", full[-1])
 
-        capped = hud.lines(40, 8)
-        self.assertEqual(len(capped), 8)
+        capped = hud.lines(40, 9)
+        self.assertEqual(len(capped), 9)
         self.assertGreater(hud._max_scroll, 0)  # noqa: SLF001
-        visible = " ".join(line.plain for line in capped[1:-1])
+        visible = " ".join(line.plain for line in capped[1:-2])
         self.assertIn("问题9", visible, "默认钉底应看到最新")
         self.assertNotIn("问题0", visible)
         while hud._scroll_by(-3):  # noqa: SLF001
             pass
-        top = " ".join(line.plain for line in hud.lines(40, 8)[1:-1])
+        top = " ".join(line.plain for line in hud.lines(40, 9)[1:-2])
         self.assertIn("问题0", top, "上滚必须能看到最早提问")
         self.assertIn("问题5", top, "上滚必须能看到中间提问")
 
     def test_expanded_without_truncation_lists_everything_in_order(self) -> None:
         hud = self._hud(3, expanded=True)
         lines = [line.plain for line in hud.lines(40)]
-        self.assertEqual(len(lines), 5)  # 标题 + 3 条 + 收起提示
+        self.assertEqual(len(lines), 6)  # 标题 + 3 条 + 回到最新 + 收起提示
         self.assertNotIn("in between", " ".join(lines))
         self.assertIn("问题0", lines[1])
         self.assertIn("问题1", lines[2])
@@ -10962,7 +10963,7 @@ class SessionHudRenderTests(unittest.TestCase):
             expanded=True,
         )
         lines = hud.lines(30)
-        body_lines = lines[1:-1]
+        body_lines = lines[1:-2]
         self.assertEqual(_MAX_PROMPT_LINES, 4)
         self.assertEqual(len(body_lines), 4)
         self.assertTrue(body_lines[-1].plain.rstrip().endswith("..."))
@@ -10986,7 +10987,7 @@ class SessionHudRenderTests(unittest.TestCase):
                         ),
                         expanded=True,
                     )
-                    lines = hud.lines(27)[1:-1]
+                    lines = hud.lines(27)[1:-2]
                     self.assertEqual(len(lines), line_count)
                     self.assertEqual("".join(line.plain[7:].rstrip() for line in lines), body)
                     self.assertNotIn("...", "".join(line.plain for line in lines))
@@ -10999,7 +11000,7 @@ class SessionHudRenderTests(unittest.TestCase):
             summarize_user_messages([corral.ConversationMessage("user", "短提问")]),
             expanded=True,
         )
-        body_lines = hud.lines(40)[1:-1]
+        body_lines = hud.lines(40)[1:-2]
         self.assertEqual(len(body_lines), 1)
         self.assertIn("短提问", body_lines[0].plain)
         self.assertNotIn("...", body_lines[0].plain)
@@ -11014,7 +11015,7 @@ class SessionHudRenderTests(unittest.TestCase):
             ]),
             expanded=True,
         )
-        body = hud.lines(40)[1:-1]
+        body = hud.lines(40)[1:-2]
         self.assertGreater(len(body), 1, "这么长的提问必须换行，不能一行装下")
         head_indent = len(body[0].plain) - len(body[0].plain.lstrip())
         for line in body[1:]:
@@ -11040,13 +11041,13 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("Click to collapse", capped[-1].plain, "页脚（唯一的收起出口）必须常驻")
         self.assertIn("scroll for more", capped[-1].plain)
         # 封顶窗口默认贴底：可见正文应包含最新那条，而不是最早那条
-        body = " ".join(line.plain for line in capped[1:-1])
+        body = " ".join(line.plain for line in capped[1:-2])
         self.assertIn("第5条", body)
         self.assertNotIn("第0条", body)
 
-        bottom = [line.plain for line in capped[1:-1]]
+        bottom = [line.plain for line in capped[1:-2]]
         self.assertTrue(hud._scroll_by(-3))  # noqa: SLF001
-        scrolled = [line.plain for line in hud.lines(40, 10)[1:-1]]
+        scrolled = [line.plain for line in hud.lines(40, 10)[1:-2]]
         self.assertNotEqual(bottom, scrolled, "上滚必须换到更早的正文")
         self.assertFalse(hud._stick_bottom)  # noqa: SLF001
         # 滚回底部后重新钉底，也不会滚出界
@@ -11199,6 +11200,37 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         ]
         app = CorralApp(store, embed_ok=True)
         return store, app
+
+    async def test_hosted_hud_offers_return_to_latest(self) -> None:
+        """Owner report 2026-10-26: a live hosted pane showed no latest row.
+
+        Both presentations have a latest position, so the row must never be
+        gated on the pane being a static preview.
+        """
+        from corral.i18n import t
+        from corral.ui.session_hud import SessionHud
+
+        sessions = self._live_sessions(1)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            area = app.screen.query_one(SplitPaneArea)
+            key = corral.session_key(sessions[0])
+            area.show_hosted_group(
+                "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
+                focus_key=key,
+            )
+            await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            hud = area._cells()[0].session_hud()  # noqa: SLF001
+            self.assertIsInstance(hud, SessionHud)
+            await _wait_until(lambda: hud.display and hud.region.height > 0)
+            self.assertTrue(hud.expanded)
+            # The reported pane is a live terminal, not a static preview.
+            pane = area._cells()[0].embed_pane()  # noqa: SLF001
+            self.assertFalse(pane._uses_detail_window())
+            self.assertIn(t("hud.jump_latest"), hud.render().plain)
+            self.assertIn(t("hud.collapse_hint"), hud.render().plain)
 
     async def test_collapsed_hud_sits_top_right_and_stays_small(self) -> None:
         from corral.ui.session_hud import SessionHud

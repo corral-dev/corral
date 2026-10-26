@@ -512,7 +512,6 @@ class PaneCell(Vertical):
                 self._hud_data,
                 expanded=self._hud_effective_expanded(),
                 compact=0 < width < HUD_EXPAND_MIN_PANE_WIDTH,
-                can_jump_latest=self._can_jump_latest(),
             )
 
     def _toggle_hud_local(self) -> None:
@@ -524,11 +523,7 @@ class PaneCell(Vertical):
         """HUD last row: return this cell only (End still scrolls every cell)."""
         pane = self.embed_pane()
         if pane is not None:
-            pane.scroll_detail_end()
-
-    def _can_jump_latest(self) -> bool:
-        pane = self.embed_pane()
-        return pane is not None and pane.has_scrollable_detail()
+            pane.return_to_latest()
 
     def clear_hud_override(self) -> None:
         self._hud_override = None

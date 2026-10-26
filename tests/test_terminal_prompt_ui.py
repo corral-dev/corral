@@ -105,7 +105,7 @@ class PromptHitTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             hud = app.hud
-            hud.update_data(hud.data, expanded=True, can_jump_latest=True)
+            hud.update_data(hud.data, expanded=True)
             await pilot.pause()
             rows = hud.size.height
             await pilot.click(hud, offset=(3, rows - 3))
@@ -124,15 +124,17 @@ class PromptHitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.toggles, 1)
             self.assertFalse(hud.expanded)
 
-    async def test_latest_row_only_lists_while_a_detail_window_can_scroll(self):
+    async def test_latest_row_lists_for_every_presentation(self):
+        """A live terminal capture has tmux scrollback, so the row is never hidden."""
         app = PromptApp()
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             hud = app.hud
-            hud.update_data(hud.data, expanded=True, can_jump_latest=False)
+            self.assertIn(t("hud.jump_latest"), hud.render().plain)
+            hud.update_data(hud.data, expanded=False)
             await pilot.pause()
             self.assertNotIn(t("hud.jump_latest"), hud.render().plain)
-            hud.update_data(hud.data, expanded=True, can_jump_latest=True)
+            hud.update_data(hud.data, expanded=True)
             await pilot.pause()
             self.assertIn(t("hud.jump_latest"), hud.render().plain)
 
@@ -142,7 +144,7 @@ class PromptHitTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             hud = app.hud
             data = HudData(30, tuple(("12:00", f"prompt {i}") for i in range(30)))
-            hud.update_data(data, expanded=True, can_jump_latest=True)
+            hud.update_data(data, expanded=True)
             await pilot.pause()
             self.assertGreater(hud._scroll, 0)
             plain = hud.render().plain
@@ -340,3 +342,34 @@ class PreviewNavigationTests(unittest.IsolatedAsyncioTestCase):
                 app.preview.jump_to_terminal_prompt("fixture", "继续", cell, 0, "stale-token")
                 self.assertEqual(pane.detail_offset, old_offset)
                 native.assert_not_called()
+
+
+class LatestReturnTests(unittest.TestCase):
+    """The HUD's last row returns either presentation to its latest position."""
+
+    def test_live_capture_leaves_tmux_scrollback(self):
+        from corral.ui.embed_pane import EmbedPane
+
+        pane = EmbedPane()
+        pane._uses_detail_window = lambda: False  # type: ignore[method-assign]
+        captures: list[int] = []
+        pane._request_immediate_capture = lambda: captures.append(1)  # type: ignore[method-assign]
+        pane.history_offset = 12
+        self.assertTrue(pane.return_to_latest())
+        self.assertEqual(pane.history_offset, 0)
+        self.assertEqual(captures, [1])
+        # Already live: nothing to move, and no extra capture is requested.
+        self.assertFalse(pane.return_to_latest())
+        self.assertEqual(captures, [1])
+
+    def test_static_preview_scrolls_its_detail_window(self):
+        from corral.ui.embed_pane import EmbedPane
+
+        pane = EmbedPane()
+        pane._uses_detail_window = lambda: True  # type: ignore[method-assign]
+        calls: list[int] = []
+        pane.scroll_detail_end = lambda: calls.append(1) or True  # type: ignore[method-assign]
+        pane.history_offset = 7
+        self.assertTrue(pane.return_to_latest())
+        self.assertEqual(calls, [1])
+        self.assertEqual(pane.history_offset, 7)

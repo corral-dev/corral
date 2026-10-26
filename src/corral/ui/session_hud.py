@@ -324,9 +324,8 @@ class SessionHud(Widget):
         self._on_toggle = on_toggle
         self._on_jump_latest = on_jump_latest
         # Expanded-only last row that returns the pane to the latest position
-        # (owner requirement 2026-10-25). Hidden while the pane has no scroll
-        # position to return to (a live terminal capture).
-        self._can_jump_latest = False
+        # (owner requirement 2026-10-25). Both presentations have one: a static
+        # preview scrolls to the end, a live capture leaves tmux scrollback.
         # 展开态正文的滚动位置（行）。`lines()` 每次按实际可见高度重算上限并夹紧，
         # 所以窗口变小、内容变少都不会滚出界。默认钉在最底（最新提问）；用户上滚
         # 后取消钉底，新内容到来不再强行跳回；滚回底部或重新展开后恢复钉底。
@@ -339,17 +338,14 @@ class SessionHud(Widget):
 
     # ---- 外部驱动 ----
 
-    def update_data(self, data: HudData | None, *, expanded: bool, compact: bool = False,
-                    can_jump_latest: bool = False) -> None:
+    def update_data(self, data: HudData | None, *, expanded: bool, compact: bool = False) -> None:
         """喂新数据；data 为空（没有提问）时整个小窗不出现。"""
         changed = (
             (data or HudData(0, ())) != self._data
             or expanded != self._expanded
             or compact != self._compact
-            or can_jump_latest != self._can_jump_latest
         )
         self._compact = compact
-        self._can_jump_latest = can_jump_latest
         if changed:
             self._pressed_entry = None
             self._pressed_latest = False
@@ -532,7 +528,7 @@ class SessionHud(Widget):
         # The latest row is fixed: it never scrolls out of the window and the
         # collapse hint below it stays the only exit (owner requirement
         # 2026-10-25).
-        latest = self._latest_row(width) if self._can_jump_latest else None
+        latest = self._latest_row(width)
         reserved = 2 + (1 if latest is not None else 0)
         capacity = len(body) if max_height is None else max(1, max_height - reserved)
         self._max_scroll = max(0, len(body) - capacity)
@@ -608,7 +604,7 @@ class SessionHud(Widget):
 
     def _latest_local_y(self) -> int | None:
         """Content-relative row of the fixed latest row, if it is shown."""
-        if not self._can_jump_latest or not self._expanded:
+        if not self._expanded:
             return None
         return self.content_size.height - 2
 
