@@ -83,7 +83,7 @@ Read the documents whose described content is relevant before deciding or changi
 用户报告的缺陷无论出现在哪一端（iPhone、原生 Mac、终端界面 TUI），都要按同一用户场景检查其余两端；同样存在的在同一任务里一并修复、逐端验收，交付说明写明每端的检查结论（已修 / 不复现 / 该端无此功能）。
 
 - **开发机侧**（`cli/`，含远程服务与 SessKit 扫描）的根因修一处，三端都受益，客户端无需发版，但仍要在受影响的端上验收。
-- **`apple/Shared/` 公用代码**修一处覆盖 iPhone 与 Mac：两端都要真机 / 真窗验收并一起安装（iPhone 走 `ios-deliver`，Mac 本机安装；Mac 公开发版由[发版管家](~/.config/agentsync/docs/RELEASE_TRAIN_GUIDE.md)执行）；只发一端，另一端继续跑旧代码，且公用改动可能改坏另一端。`#if os(...)` 平台分支与 `Shared/UI/Platform/` 只修到其中一端。
+- **`apple/Shared/` 公用代码**修一处覆盖 iPhone 与 Mac：两端都要真机 / 真窗验收并一起安装（iPhone 走 `ios-deliver`，Mac 本机安装；Mac 公开发版在机主要求时按发布脚本直接执行）；只发一端，另一端继续跑旧代码，且公用改动可能改坏另一端。`#if os(...)` 平台分支与 `Shared/UI/Platform/` 只修到其中一端。
 - **各端外壳**（`apple/iOS/`、`apple/macOS/`、TUI）代码互不共享；同类功能（分屏、侧栏、分组、焦点、搜索、状态点、提问面板等）要逐端对照行为，不能因代码不同就跳过。
 
 ## 运行时支持（Corral 产品边界，永久）
@@ -156,8 +156,8 @@ Read the documents whose described content is relevant before deciding or editin
 
 ## 发版要求
 
-- 每次改完（2026-10-25 机主决定，权威见 [发版管家指南](~/.config/agentsync/docs/RELEASE_TRAIN_GUIDE.md)）：验证后提交并推送自己的改动到 `origin` 与 `github`，确认本机 editable 安装（`corral --version` 的 `package_file`）已加载新代码，需要时重启远程服务并在受影响端验收。不得提交、搬走、隐藏或丢弃其他 Agent 未提交的文件；失败检查要查明归属并修复自己的部分。
-- 公开发版由发版管家执行（机主要求、每日空闲定时，或修复已发布版本的严重缺陷时运行 `python3 ~/.config/agentsync/scripts/release_train.py now corral-cli`），不要自己打 tag。发版步骤本身不变：补丁位递增并同步 `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`，以 `release: vX.Y.Z …` 提交、打 annotated tag、推送 `github` 与 `origin`，再运行 `bash scripts/publish-release.sh`；只发已提交的内容。
+- 每次改完：验证后提交并推送自己的改动到 `origin` 与 `github`，确认本机 editable 安装（`corral --version` 的 `package_file`）已加载新代码，需要时重启远程服务并在受影响端验收。不得提交、搬走、隐藏或丢弃其他 Agent 未提交的文件。平时不发版。
+- 机主要求发版（或修复已发布版本的严重缺陷）时直接发，不等其他会话的未提交改动：补丁位递增并同步 `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`，只提交这几个文件，以 `release: vX.Y.Z …` 提交、打 annotated tag、推送 `github` 与 `origin`，再运行 `bash scripts/publish-release.sh`，等到拿到下载链接再回复。
 - 本机发布路径必须完成完整验证和干净安装核验，不以 tag 或 CI 队列状态代替实际发布；具体顺序与远端核对见 `docs/MAINTAINER_GUIDE.md`「开源发布 / 多 Agent 并行时的发版卫生」。
 
 ## 验证要求
