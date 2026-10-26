@@ -190,6 +190,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "No sessions found ({names})",
         "zh": "未找到会话（{names}）",
     },
+    "filter.searching": {
+        "en": "Searching…",
+        "zh": "搜索中…",
+    },
+    "filter.incomplete": {
+        "en": "Incomplete",
+        "zh": "搜索未完成",
+    },
+    "search.failed": {
+        "en": "Search incomplete — edit the query to retry",
+        "zh": "搜索未完成；修改关键词重试",
+    },
     "filter.clear": {
         "en": "×",
         "zh": "×",

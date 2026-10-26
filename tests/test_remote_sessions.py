@@ -61,6 +61,10 @@ class SessionHubPayloadTests(unittest.TestCase):
         split_layout.reset_default_layout_db()
         self.addCleanup(split_layout.reset_default_layout_db)
         self.hub = SessionHub(scan_limit=10)
+        # Payload fixtures replace the current list; never discover user history.
+        prepare = mock.patch.object(self.hub.store, "prepare_search")
+        prepare.start()
+        self.addCleanup(prepare.stop)
         self.hub.layout_db = split_layout.SidebarLayoutDB()
         self.addCleanup(self.hub.layout_db.close)
 

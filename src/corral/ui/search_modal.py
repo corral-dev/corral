@@ -214,6 +214,7 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
         self._debounce_timer = None
         self._matches: list[SessionMatch] = []
         self._indexing = False
+        self._index_failed = False
         self._progress: tuple[int, int] | None = None
         # 结果列表重建的串行闸门：请求来自两条互不相让的消息泵——防抖定时器跑在
         # Screen 泵，建索引完成经 call_from_thread 跑在 App 泵。`clear()` 与
@@ -240,33 +241,52 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         self.query_one("#search-query", TextArea).focus()
-        # 索引已就绪就先用它立刻出结果（毫秒级），同时仍去后台补一次增量刷新：
-        # 首屏预热之后新产生的会话和新追加的消息只有这样才搜得到。签名没变的会话
-        # 直接复用，实测全命中时整轮只要 0.3ms，等于白捡。
-        self._indexing = not self.index.ready
-        if self.index.ready:
-            self._run_search()
-        else:
+        # A recent-window index is not complete history. Once the full corpus
+        # has a prepared snapshot, show it immediately while refreshing in the
+        # background; changed histories must not delay repeated queries.
+        catalog = getattr(self.store, "search_catalog", None)
+        sessions = getattr(self.store, "search_sessions", self.store.all_sessions)()
+        self._indexing = not (
+            (catalog is None or catalog.ready) and self.index.covers(sessions)
+        )
+        if self._indexing:
             self._update_status()
+        else:
+            self._run_search()
         self._build_index()
 
     # ---- 建索引 ----
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, group="search-index")
     def _build_index(self) -> None:
-        """后台线程建索引：正文解析要读磁盘，绝不能放在界面线程上做。"""
+        """Prepare historical metadata and body entries outside the UI thread."""
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
 
         def progress(done: int, total: int) -> None:
-            if not self._indexing:
+            if not self._indexing or worker.is_cancelled:
                 return  # 已就绪时这轮是静默增量刷新，不打扰状态行
             if done % _PROGRESS_STEP and done != total:
                 return
             self.app.call_from_thread(self._on_index_progress, done, total)
 
+        failed = False
         try:
-            self.index.refresh(self.store, progress=progress)
-        finally:
-            self.app.call_from_thread(self._on_index_done)
+            prepare = getattr(self.store, "prepare_search", None)
+            if callable(prepare):
+                prepare()
+            if worker.is_cancelled:
+                return
+            sessions = getattr(self.store, "search_sessions", self.store.all_sessions)()
+            self.index.refresh(self.store, sessions, progress=progress)
+        except Exception as exc:
+            import corral
+
+            corral._log_embed_error("Full-text search preparation", exc)
+            failed = True
+        if not worker.is_cancelled:
+            self.app.call_from_thread(self._on_index_done, failed)
 
     def _on_index_progress(self, done: int, total: int) -> None:
         if not self.is_attached:
@@ -274,12 +294,13 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
         self._progress = (done, total)
         self._update_status()
 
-    def _on_index_done(self) -> None:
+    def _on_index_done(self, failed: bool = False) -> None:
         # 弹窗可能在建索引期间就被关掉了；此时控件已卸载，再去 query_one 会抛错，
         # 而且这次刷新的结果也没人看。后台线程无法感知这一点，只能在回调里挡。
         if not self.is_attached:
             return
         self._indexing = False
+        self._index_failed = failed
         self._progress = None
         self._run_search()
 
@@ -288,6 +309,11 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "search-query":
             return
+        if self._index_failed and not self._indexing:
+            self._indexing = True
+            self._index_failed = False
+            self._update_status()
+            self._build_index()
         if self._debounce_timer is not None:
             self._debounce_timer.stop()
         self._debounce_timer = self.set_timer(_DEBOUNCE, self._run_search)
@@ -300,7 +326,7 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
         if self._indexing:
             return
         outcome = self.index.search(
-            self.store.all_sessions(),
+            getattr(self.store, "search_sessions", self.store.all_sessions)(),
             self._query(),
             titles=self.store.snapshot(),
             max_lines=DEFAULT_MAX_LINES,
@@ -339,8 +365,14 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
     def _update_status(self) -> None:
         status = self.query_one("#search-status", Static)
         if self._indexing:
-            done, total = self._progress or (0, 0)
-            status.update(t("search.indexing", done=done, total=total))
+            if self._progress is None:
+                status.update(t("filter.searching"))
+            else:
+                done, total = self._progress
+                status.update(t("search.indexing", done=done, total=total))
+            return
+        if self._index_failed:
+            status.update(t("search.failed"))
             return
         if not split_keywords(self._query()):
             status.update(_plural("search.idle", self.index.indexed_count))

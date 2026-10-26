@@ -336,6 +336,7 @@ def _filter_sessions_by_query(
             str(session.get("cwd_display") or ""),
             title,
             fallback,
+            str(session.get("native_title") or ""),
         ):
             out.append(session)
     return out

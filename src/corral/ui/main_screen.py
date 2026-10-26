@@ -458,6 +458,11 @@ class MainScreen(
         # 全文搜索索引：首屏卡片画完后再延后预热，Ctrl+F 打开弹窗时通常已就绪。
         self._search_index = None
         self._search_warm_scheduled = False
+        self._sidebar_filter_timer = None
+        self._history_search_timer = None
+        self._history_search_running = False
+        self._history_search_pending = False
+        self._history_search_failed = False
         # 右上角会话小窗：展开状态全局共用一份（切格不该让它一会儿开一会儿关），
         # 最近一次算好的摘要按会话键留着，历史文件正在被写、缓存暂时失效时继续
         # 显示旧摘要，避免小窗一秒一闪。
@@ -1053,6 +1058,10 @@ class MainScreen(
                 if self.store.loaded
                 else ""
             )
+            if active and self._history_search_pending:
+                metadata = t("filter.searching")
+            elif active and self._history_search_failed:
+                metadata = t("filter.incomplete")
             self.query_one("#filter-count", Static).update(metadata)
         if load_error or (self.store.loaded and count == 0 and not any(self.store.sessions.values())):
             self.query_one("#filter-count", Static).update("")
@@ -1411,6 +1420,7 @@ class MainScreen(
             return
         import corral
         session_key = corral.session_key(session)
+        self.store.reveal_search_session(session_key)
         if self._click_returns_focus_to_list(focus_before_click, session_key):
             self._focus_list()
             return
@@ -1934,6 +1944,7 @@ class MainScreen(
         """
         import corral
 
+        self.store.reveal_search_session(key)
         session_list = self.query_one(SessionListView)
         visible = {corral.session_key(s) for s in session_list.visible_sessions()}
         if key not in visible:
@@ -1982,6 +1993,66 @@ class MainScreen(
             self.call_after_refresh(self._release_selection_follow_suppress)
         self._update_header()
 
+    def _queue_history_search(self) -> None:
+        if self._history_search_timer is not None:
+            self._history_search_timer.stop()
+            self._history_search_timer = None
+        self._history_search_failed = False
+        if not self.nav.project_query.strip():
+            self._history_search_pending = False
+            return
+        if self.store.search_catalog.fresh:
+            self._history_search_pending = False
+            return
+        self._history_search_pending = True
+        if not self._history_search_running:
+            self._history_search_timer = self.set_timer(0.15, self._begin_history_search)
+
+    def _begin_history_search(self) -> None:
+        self._history_search_timer = None
+        if self.nav.project_query.strip() and not self._history_search_running:
+            self._history_search_running = True
+            self._prepare_history_search()
+
+    @work(thread=True, group="history-catalog")
+    def _prepare_history_search(self) -> None:
+        from textual.worker import get_current_worker
+
+        from corral.schedprio import demote_background
+
+        demote_background()
+        worker = get_current_worker()
+
+        def progress() -> None:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self._history_search_progress)
+
+        failed = False
+        try:
+            self.store.prepare_search(progress=progress)
+        except Exception as exc:
+            import corral
+
+            corral._log_embed_error("History search preparation", exc)
+            failed = True
+        if not worker.is_cancelled:
+            self.app.call_from_thread(self._history_search_done, failed)
+
+    async def _history_search_progress(self) -> None:
+        if self.is_attached and self.nav.project_query.strip():
+            await self.query_one(SessionListView).rebuild(keep_selection=True)
+            self._update_header()
+
+    async def _history_search_done(self, failed: bool) -> None:
+        if not self.is_attached:
+            return
+        self._history_search_running = False
+        self._history_search_pending = False
+        self._history_search_failed = failed
+        if self.nav.project_query.strip():
+            await self.query_one(SessionListView).rebuild(keep_selection=True)
+        self._update_header()
+
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "project-search":
             return
@@ -1995,21 +2066,43 @@ class MainScreen(
             await list_view.rebuild(keep_selection=True)
             self._update_header()
             return
-        self.nav.project_query = event.value
-        list_view = self.query_one(SessionListView)
-        list_view.clear_multi()
-        await list_view.rebuild(keep_selection=True)
+        query = event.input.value
+        if query == self.nav.project_query:
+            return
+        self.nav.project_query = query
+        self._queue_history_search()
+        self.query_one(SessionListView).clear_multi()
+        if self._sidebar_filter_timer is not None:
+            self._sidebar_filter_timer.stop()
+        # Coalesce intermediate input states before mounting result widgets.
+        # Metadata discovery has its own single-flight worker and debounce.
+        self._sidebar_filter_timer = self.set_timer(0.08, self._apply_sidebar_filter)
+        self._update_header()
+
+    async def _apply_sidebar_filter(self) -> None:
+        if self._sidebar_filter_timer is not None:
+            self._sidebar_filter_timer.stop()
+            self._sidebar_filter_timer = None
+        await self.query_one(SessionListView).rebuild(keep_selection=True)
         self._update_header()
         self._schedule_follow_selection()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "project-search":
             return
+        # Flush any debounced query before moving into its result rows.
+        if self._sidebar_filter_timer is not None:
+            await self._apply_sidebar_filter()
         # Enter：把焦点交回列表，方便继续用 j/k / 回车操作会话
         list_view = self.query_one(SessionListView)
         list_view.focus()
-        if list_view.index is None:
-            list_view.index = len(STICKY_IDS) if list_view.visible_sessions() else 0
+        matches = list_view.visible_sessions()
+        if self.nav.project_query.strip() and matches and list_view.is_new_session_selected():
+            from corral.models import session_key
+
+            list_view.select_session_key(session_key(matches[0]))
+        elif list_view.index is None:
+            list_view.index = len(STICKY_IDS) if matches else 0
 
     def on_text_selected(self, event: events.TextSelected) -> None:
         """划词抬起：有选区则经 OSC 52 自动复制（无需再按 Ctrl+C / ⌘C）。

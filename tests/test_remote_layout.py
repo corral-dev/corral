@@ -155,6 +155,13 @@ class LayoutHubTests(unittest.TestCase):
 
 class FulltextSearchTests(unittest.TestCase):
     def setUp(self) -> None:
+        # These tests inject their body corpus, not real native history sources.
+        def prepare(catalog, _cache, progress=None):
+            catalog.ready = True
+
+        catalog_patch = mock.patch("corral.search_catalog.SearchCatalog.refresh", prepare)
+        catalog_patch.start()
+        self.addCleanup(catalog_patch.stop)
         isolated = tempfile.TemporaryDirectory()
         self.addCleanup(isolated.cleanup)
         env = mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": isolated.name, "CORRAL_CACHE": "1"})

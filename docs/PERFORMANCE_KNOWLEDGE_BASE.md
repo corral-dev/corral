@@ -412,6 +412,86 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 ## 全文搜索索引
 
+### Complete search corpus (2026-10-26)
+
+Search must not inherit the recent-list scan limit. The reported exact-title miss
+was an eligible OpenCode session at position 82: a limit-50 scan omitted it,
+limit 100 found it, and the live sidebar snapshot did not contain its key.
+This is Corral-owned catalog scope, not a SessKit interpretation defect.
+
+Keep normal browsing and first paint bounded. Prepare a separate metadata-only
+history catalog off the UI thread, using the existing runtime/SessKit scanners
+and their eligibility rules (including missing-cwd and dormant exclusions).
+Widen each runtime's requested depth until its returned list is exhausted;
+there is no fixed search-depth ceiling. Serialize preparation, reuse successful
+catalogs briefly, and retain the last good snapshot on a failed refresh. Never
+parse conversation bodies for a sidebar title/project query or rescan on every
+keystroke. Display preparation/failure rather than a misleading complete zero.
+A fresh wider shared scan can seed provisional matches immediately; otherwise
+publish each runtime's first metadata batch while deeper discovery continues.
+Do not run expensive native signature validation before the first uncached
+batch, where nothing can be reused. Later reconciliations establish signatures.
+Warm TUI/Apple metadata/body queries use the last complete snapshot without
+waiting for catalog reconciliation; a failed refresh must not revoke that
+previously usable snapshot. First-ever preparation remains explicitly unavailable.
+Coalesce sidebar widget rebuilds with an 80 ms input debounce, ignore queued
+Changed events whose current value is already applied, and flush before Enter.
+When filtering removes the previous selection, Enter from the query must target
+the first result rather than leave the fixed New Session row selected. Focusing
+a result must not start a native agent.
+
+The sidebar's nonempty query uses the catalog plus current live list metadata;
+clearing it restores the normal bounded list. Opening an out-of-window result
+retains only that selected session in the browsing store. Cached generated,
+native and fallback titles are searchable without launching title generation.
+Full-text search and Apple host searches share the expanded corpus, retaining
+existing literal substring, short Chinese, keyword-AND and snippet limits.
+Persisted body entries and unretained conversation reads remain authoritative;
+metadata discovery must not populate the preview cache.
+
+Reference inspection: reuse `SessionListView.visible_sessions`, the existing
+`#filter-count` status, `FullTextSearchModal` and `ConversationIndex` rather than
+adding controls or merging sidebar filtering with body search. Textual 8.2.8's
+public `work(thread=True)` and `App.call_from_thread` provide background execution
+and UI publication. Its [worker guide](https://textual.textualize.io/guide/workers/)
+requires explicit thread-cancellation checks; do not spawn an exclusive thread
+for each edit, because cancellation does not stop its underlying scan. A single
+query-independent catalog build can serve the latest query after completion.
+
+Acceptance covers an exact-title match beyond the default window, typing and
+clearing while discovery is delayed, failed discovery/retry, out-of-window open,
+repeated-query scan reuse, default first-paint scope and full-text/Apple host
+parity. Record measured cold preparation separately from warm query latency.
+
+Measured on the real eligible corpus (2,235 records, isolated derived cache):
+a fresh existing shared scan supplied the reported title in 25 ms; exhausting
+all metadata took 21.5 s; twenty repeated exact-title queries had a 12.8 ms
+median and 13.5 ms maximum, with no preview conversations retained. These are
+host-side samples, not end-to-end UI percentiles. Without a usable shared seed,
+the first native scan can still take seconds, and first-ever full-body indexing
+is additional preparation. The UI remains usable and reports preparation rather
+than treating that window as a complete zero.
+
+Textual Pilot acceptance covers the default 50-row window, exact-title match
+at record 82, clearing back to 50 rows, opening the out-of-window result and
+retaining only that selected record. Light/dark captures were inspected using
+the maintained exporter with the shared [wide-text capture normalization](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#rich-svg-captures-with-wide-text).
+The first Cairo render had missing CJK glyphs; it is rejected as visual evidence.
+The normalized Chromium render preserves cell widths and shows the real title.
+No native client source or native history parser changed. Both Apple host search
+routes use this catalog; installed client-surface acceptance is separate.
+
+The final local full gate covered 2,950 test IDs exactly once in 111.9 s, no
+first-pass failures, clean Ruff and no Python warning classes. Existing skips:
+fish syntax could not run without fish; zeroconf-absent behavior was inapplicable
+because zeroconf is installed. Asyncio debug reported 62 scheduled UI callbacks
+at 0.10–0.236 s during the parallel suite; these remain observable scheduling
+diagnostics, not suppressed or treated as interactive latency measurements.
+The isolated real-tmux keyboard path found the historical title (`1/300`) in
+302 ms, entered its preview, found a body hit with Ctrl+F, and reopened it; its
+private server and socket were removed. Linux/other-Python matrix and physical
+Apple search screens were not established by this local Mac/Python 3.12 gate.
+
 ### Native search latency requirement (2026-10-07)
 
 The native Mac full-text search must return useful, complete results in under 500 ms on an indexed host. The reported nearly one-minute wait requires measuring first-use and repeated-query latency separately. Optimize the shared host search path (and its upstream parser only if measured necessary); preserve literal substring matching, one/two-character Chinese queries, whitespace-AND semantics, current titles, exact total counts, and updated conversations. Initial preparation must run outside the interactive request path and a daemon restart must reuse a persisted derived search index. Measured decision: keep the existing substring matcher (893 real sessions: warm queries 5–14 ms; isolated cold-cache profiling 28.6 s, of which 28.3 s is conversation loading). Persist prepared search entries in the existing private, bounded derived cache, restore them by signature/provider cohort, warm them after the host list becomes ready, and refresh on a separate background owner. Queries against a ready index read the last complete snapshot without waiting for changed histories to parse. Initial index creation may still need preparation; do not report a partial corpus as complete. Changed scans schedule refresh and completion remains atomic. Do not introduce FTS5/inverted indexing for this measured corpus: it cannot remove history parsing and adds short-query semantics without a query bottleneck. iPhone list filtering and TUI full-text search must be checked against the same scenario.

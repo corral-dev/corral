@@ -1583,12 +1583,16 @@ class SessionListView(Vertical):
                 )
         self._apply_stripes(rows)
 
+    def _query_sessions(self) -> list[dict]:
+        return (self.store.search_sessions() if self.nav.project_query.strip()
+                else self.store.all_sessions())
+
     def visible_sessions(self) -> list[dict]:
         import corral
         from corral.models import SHELL_RUNTIME_ID
 
         visible = corral._filter_sessions_by_query(
-            self.store.all_sessions(),
+            self._query_sessions(),
             self.nav.project_query,
             titles=self.store.snapshot(),
         )
@@ -1616,7 +1620,7 @@ class SessionListView(Vertical):
         """
         import corral
 
-        sessions = self.store.all_sessions()
+        sessions = self._query_sessions()
         by_key = {corral.session_key(session): session for session in sessions}
         filtered = self.visible_sessions()
         filtered_keys = {corral.session_key(session) for session in filtered}
@@ -1934,7 +1938,7 @@ class SessionListView(Vertical):
 
         return sum(
             1
-            for session in self.store.all_sessions()
+            for session in self._query_sessions()
             if session.get("source") != SHELL_RUNTIME_ID
         )
 

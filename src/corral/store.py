@@ -267,6 +267,10 @@ class SessionStore:
         # 有侧栏快照时：main() 推迟启动 load 线程，等首帧画完再扫，避免与铺表抢锁。
         self._load_deferred = False
         self.load_error: str | None = None
+        from corral.search_catalog import SearchCatalog
+
+        self.search_catalog = SearchCatalog(self.registry)
+        self._revealed_search_keys: set[str] = set()
         # 最近一次完整 `_merge_scanned`（非整表缓存命中后的轻量合并）的单调时钟。
         # 助手持续写 WAL 时签名仍可能命中；周期性全量合并兜住新会话与结束态。
         self._last_full_merge_at: float | None = None
@@ -386,9 +390,14 @@ class SessionStore:
         from corral.split_layout import remembered_ids_by_runtime
 
         try:
-            return remembered_ids_by_runtime()
+            remembered = remembered_ids_by_runtime()
         except Exception:
-            return {}
+            remembered = {}
+        with self.lock:
+            for key in self._revealed_search_keys - self._deleted:
+                runtime_id, ident = key.split(":", 1)
+                remembered.setdefault(runtime_id, set()).add(ident)
+        return remembered
 
     @staticmethod
     def _scan_worker_active() -> bool:
@@ -1664,14 +1673,46 @@ class SessionStore:
         with self.lock:
             return dict(self._session_key_migrations)
 
-    def find_session(self, key: str) -> dict | None:
-        """按跨运行时会话键返回当前扫描快照中的会话对象。"""
+    def prepare_search(self, progress=None) -> None:
+        """Background-only metadata discovery; normal browsing stays bounded."""
         with self.lock:
+            cache = dict(self.cache)
+        self.search_catalog.refresh(cache, progress=progress)
+
+    def search_sessions(self) -> list[dict]:
+        """Merge historical metadata with fresher live records, without I/O."""
+        current = self.all_sessions()
+        with self.lock:
+            deleted = set(self._deleted)
+        known = {session_key(session) for session in current} | deleted
+        return current + [session for session in self.search_catalog.sessions()
+                          if session_key(session) not in known]
+
+    def reveal_search_session(self, key: str) -> None:
+        """Keep a chosen historical result visible after its search is cleared."""
+        with self.lock:
+            if key in self._deleted:
+                return
+            session = self.search_catalog.find(key)
+            if session is None:
+                return
+            self._revealed_search_keys.add(key)
+            bucket = self.sessions.setdefault(str(session["source"]), [])
+            if any(session_key(item) == key for item in bucket):
+                return
+            bucket.append(dict(session))
+            self._rebuild_order_and_titles()
+
+    def find_session(self, key: str) -> dict | None:
+        """Resolve current records first, then discovered history metadata."""
+        with self.lock:
+            if key in self._deleted:
+                return None
             for bucket in self.sessions.values():
                 for session in bucket:
                     if session_key(session) == key:
                         return session
-        return None
+        return self.search_catalog.find(key)
 
     def canonical_session_key(self, key: str) -> str:
         """Follow placeholder→real identity hops recorded this process.
@@ -1988,7 +2029,7 @@ class SessionStore:
         """取「当前展示标题」快照供界面渲染；正在生成的会话只在标题落地后经
         poll_cache_updates 刷新，界面不再需要感知生成中状态。"""
         with self.lock:
-            return dict(self.display_titles)
+            return self.search_catalog.titles | self.display_titles
 
     @property
     def title_revision(self) -> int:
@@ -2004,6 +2045,11 @@ class SessionStore:
             self.title_state._mtime = object()
         changed = self.title_state.poll(sessions)
         self._cache_mtime = self.title_state._mtime
+        if self.cache is not self.title_state.cache:
+            before = self.search_catalog.titles
+            self.search_catalog.update_titles(self.title_state.cache)
+            changed.update(key for key, value in self.search_catalog.titles.items()
+                           if before.get(key) != value)
         self.cache = self.title_state.cache
         with self.lock:
             for bucket in self.sessions.values():
@@ -2030,7 +2076,10 @@ class SessionStore:
 
     def get_title(self, session: dict) -> str:
         with self.lock:
-            return self.display_titles.get(session_key(session), session["fallback_title"])
+            key = session_key(session)
+            return self.display_titles.get(
+                key, self.search_catalog.titles.get(key, session["fallback_title"]),
+            )
 
     @staticmethod
     def _conversation_version(session: dict) -> object | None:

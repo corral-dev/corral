@@ -865,7 +865,7 @@ class SessionHub:
             return index
 
     def _search_sessions(self) -> list[dict]:
-        return [session for session in self.store.all_sessions()
+        return [session for session in self.store.search_sessions()
                 if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS]
 
     def _search_loop(self) -> None:
@@ -878,6 +878,7 @@ class SessionHub:
         while not self._stop.is_set():
             self._search_refresh.clear()
             try:
+                self.store.prepare_search()
                 index.refresh(self.store, self._search_sessions())
             except Exception as exc:
                 observe.event("search_index_refresh_failed", error=str(exc))
@@ -1246,7 +1247,9 @@ class SessionHub:
         cwd = str(session.get("cwd_display") or session.get("cwd") or "")
         last_user = str(session.get("last_user_msg") or "")
         last_agent = str(session.get("last_agent_msg") or "")
-        haystack = f"{title}\n{cwd}\n{last_user}\n{last_agent}".lower()
+        native = str(session.get("native_title") or "")
+        fallback = str(session.get("fallback_title") or "")
+        haystack = f"{title}\n{native}\n{fallback}\n{cwd}\n{last_user}\n{last_agent}".lower()
         return needle in haystack
 
     def _window_version(self, sessions: list[dict], layout) -> str:
@@ -1278,7 +1281,21 @@ class SessionHub:
         self, query: str = "", limit: int = 0, layout=None
     ) -> tuple[list[dict], int, bool]:
         layout = self._layout() if layout is None else layout
-        sessions = self.store.all_sessions()
+        if query.strip():
+            if self._threads:
+                if not self.store.search_catalog.ready:
+                    raise ActionError("unavailable", t("filter.searching"))
+                # A reconciliation may be doing slow native reads. Serve the
+                # last complete catalog, never wait on its preparation lock.
+                self._search_refresh.set()
+            else:
+                try:
+                    self.store.prepare_search()
+                except RuntimeError as exc:
+                    raise ActionError("unavailable", t("search.failed")) from exc
+            sessions = self._search_sessions()
+        else:
+            sessions = self.store.all_sessions()
         total = len(sessions)
         if query:
             needle = query.strip().lower()
@@ -2330,8 +2347,12 @@ class SessionHub:
         Library callers without start() retain synchronous refresh semantics.
         """
         index = self._search_index()
+        if not self._threads:
+            self.store.prepare_search()
+        elif not index.ready or not self.store.search_catalog.ready:
+            raise ActionError("unavailable", t("filter.searching"))
         sessions = self._search_sessions()
-        if not self._threads or not index.ready:
+        if not self._threads:
             index.refresh(self.store, sessions)
         titles = {session_key(session): self.store.get_title(session) for session in sessions}
         outcome = index.search(sessions, query, titles=titles, top=max(1, min(int(top), 100)))

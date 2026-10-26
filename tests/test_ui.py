@@ -4762,6 +4762,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.click(search)
                 self.assertTrue(search.has_focus)
                 search.value = "会话0"
+                await _wait_until(lambda metadata=metadata: str(metadata.render()) == "1/3")
                 await pilot.pause()
                 self.assertEqual(str(metadata.render()), "1/3")
                 clear = app.screen.query_one("#project-search-clear")

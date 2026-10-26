@@ -245,6 +245,11 @@ class ConversationIndex:
     def indexed_count(self) -> int:
         return len(self._entries)
 
+    def covers(self, sessions: list[dict]) -> bool:
+        """Whether a prepared snapshot covers this corpus, without disk reads."""
+        entries = self._entries
+        return self._ready and all(session_key(session) in entries for session in sessions)
+
     def refresh(self, store, sessions: list[dict] | None = None, progress=None) -> int:
         """按需重建索引；签名没变的会话直接复用上一轮结果。
 
@@ -332,6 +337,7 @@ def _meta_text(session: dict, title: str) -> str:
     parts = [
         title,
         str(session.get("fallback_title") or ""),
+        str(session.get("native_title") or ""),
         session_project_label(session),
         str(session.get("cwd") or ""),
         str(session.get("cwd_display") or ""),
