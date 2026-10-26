@@ -124,6 +124,38 @@ class SessionHubPayloadTests(unittest.TestCase):
             {"idle": "", "recent": "recent", "external": "", "working": "working"},
         )
 
+    def test_list_rows_carry_attention_membership(self) -> None:
+        import time as _time
+
+        now = _time.time()
+        rows = {
+            "working": _session(sid="working", attention="working", mtime=now - 86_400),
+            "unread": _session(sid="unread", attention="unread", mtime=now - 7_200),
+            "ended": _session(sid="ended", attention="none", mtime=now - 600),
+            "stale": _session(sid="stale", attention="none", mtime=now - 7_200),
+        }
+        rows["viewed"] = _session(sid="viewed", attention="none", mtime=now - 7_200)
+        rows["viewed"]["viewed_at"] = now - 60
+        with mock.patch.object(self.hub.store, "get_title", return_value="t"):
+            flags = {
+                sid: self.hub.session_payload(item, None)["needs_attention"]
+                for sid, item in rows.items()
+            }
+        self.assertEqual(
+            flags,
+            {"working": True, "unread": True, "ended": True, "stale": False, "viewed": True},
+        )
+
+    def test_attention_expiry_is_detected_without_history_change(self) -> None:
+        import time as _time
+
+        session = _session(sid="a", attention="none", mtime=_time.time() - 600)
+        self.hub.store.sessions = {"claude": [session]}
+        self.assertTrue(self.hub._detect_marker_changes())
+        self.assertFalse(self.hub._detect_marker_changes())
+        session["mtime"] = _time.time() - 7_200
+        self.assertTrue(self.hub._detect_marker_changes())
+
     def test_marker_expiry_is_detected_without_history_change(self) -> None:
         import time as _time
 

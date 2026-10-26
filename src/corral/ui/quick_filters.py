@@ -1,4 +1,4 @@
-"""Sidebar filter row: Agent and Project pickers plus the Active checkbox.
+"""Sidebar filter row: Agent and Project pickers plus the Attention checkbox.
 
 One row at the default 39-cell width (owner redesign 2026-10-25). Filters are
 presentation-only over the unfiltered catalog and use neutral colors; brand
@@ -251,7 +251,7 @@ class FilterChip(Button):
 
 
 class QuickFilters(Horizontal):
-    """`Agent: All ▾  Project: All ▾  [ ] Active` plus its owned blank row."""
+    """`Agent: All ▾  Project: All ▾  [ ] Focus` plus its owned blank row."""
 
     DEFAULT_CSS = """
     /* Chips start at the left edge like the cards; the checkbox's trailing cell
@@ -287,8 +287,8 @@ class QuickFilters(Horizontal):
         yield FilterChip("", id="agent-filter", classes="-inline", compact=True)
         yield Static("", classes="filter-gap")
         yield FilterChip("", id="project-filter", classes="-inline", compact=True)
-        checkbox = Checkbox(t("filter.active"), self.nav.active_only,
-                            id="active-filter", compact=True)
+        checkbox = Checkbox(t("filter.attention"), self.nav.attention_only,
+                            id="attention-filter", compact=True)
         yield checkbox
 
     def on_mount(self) -> None:
@@ -351,10 +351,10 @@ class QuickFilters(Horizontal):
         value = self._value_text(dimension)
         if width is not None:
             budget = max(0, width - text_width(prefix) - text_width(suffix))
-            # If the dimension prefix would leave only dots for the value, drop
-            # the prefix instead: the fixed chip order still identifies it, and
-            # the real value is more useful than "Agent: ...".
-            if text_width(value) > budget and budget < 4:
+            # If the dimension prefix would leave only a letter or two of the
+            # value, drop the prefix instead: the fixed chip order still
+            # identifies it, and "Codex" is more useful than "Agent: C...".
+            if text_width(value) > budget and budget < 6:
                 prefix = ""
                 budget = max(0, width - text_width(suffix))
             value = fit_cell(value, budget, ellipsis=True).rstrip() if budget else ""
@@ -379,10 +379,10 @@ class QuickFilters(Horizontal):
         project.label = self._chip_label("project")
         self._mark(agent, bool(self.nav.runtime_filters))
         self._mark(project, bool(self.nav.project_filters))
-        checkbox = self.query_one("#active-filter", Checkbox)
-        if checkbox.value != self.nav.active_only:
+        checkbox = self.query_one("#attention-filter", Checkbox)
+        if checkbox.value != self.nav.attention_only:
             with checkbox.prevent(Checkbox.Changed):
-                checkbox.value = self.nav.active_only
+                checkbox.value = self.nav.attention_only
         self._layout(agent, project, checkbox)
 
     def _layout(self, agent: FilterChip, project: FilterChip, checkbox: Checkbox) -> None:
@@ -391,7 +391,7 @@ class QuickFilters(Horizontal):
         if width <= 0:
             return
         # Native Checkbox renders "▐X▌ " + label + one trailing cell.
-        check_width = 5 + text_width(t("filter.active"))
+        check_width = 5 + text_width(t("filter.attention"))
         # Gaps: between the two pickers and before the checkbox (breathing room).
         room = max(2, width - check_width - 2)
         natural_agent = text_width(str(agent.label))
@@ -480,7 +480,7 @@ class QuickFilters(Horizontal):
         if delta is None or focused is None or focused.parent is not self:
             return
         controls = [self.query_one("#agent-filter"), self.query_one("#project-filter"),
-                    self.query_one("#active-filter")]
+                    self.query_one("#attention-filter")]
         if focused in controls:
             event.stop()
             controls[(controls.index(focused) + delta) % len(controls)].focus()
@@ -492,5 +492,5 @@ class QuickFilters(Horizontal):
 
     async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         event.stop()
-        if event.value != self.nav.active_only:
-            await self.screen._toggle_active_filter()
+        if event.value != self.nav.attention_only:
+            await self.screen._toggle_attention_filter()

@@ -3,7 +3,7 @@
 侧边栏布局硬约定（凡往左栏加控件都必须遵守，见 AGENTS.md / MAINTAINER_GUIDE）：
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前（2026-10-25）：新建项高 2 在最上，其下筛选框高 1、筛选行
-高 2（助手 / 项目下拉胶囊 + 活跃勾选，末行留白）；会话卡高 3（标题 / 运行时 / 时间；
+高 2（助手 / 项目下拉胶囊 + 关注勾选，末行留白）；会话卡高 3（标题 / 运行时 / 时间；
 首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，无末行空行）。
 `＋ 新建` 是 `#sidebar-sticky` 唯一一项，筛选框与筛选行作为头部插在固定区与
 `#sidebar-scroll` 之间，都不随列表滚。置顶块、Pinned 分隔线与未置顶日期段都在 `#sidebar-scroll`
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
 from corral.activity_board import (
     active_marker_style,
-    is_active_session,
+    needs_attention,
     resolve_active_marker,
 )
 from corral.i18n import t
@@ -552,7 +552,7 @@ class SessionCard(Widget):
         runtime_name = runtime.display_name
         runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
 
-        # 与 Active sessions 同源：含「刚刚」托管会话的绿点，不得只认三态待办。
+        # 与远程列表 marker 同源：含「刚刚」托管会话的绿点，不得只认三态待办。
         dot_style = active_marker_style(resolve_active_marker(session))
         # 有圆点才让出「圆点 + 空格」这两列；没有圆点的卡片不留占位空格，标题
         # 直接顶到最左并吃满整行宽度。
@@ -1165,8 +1165,9 @@ class SessionListView(Vertical):
         self._tail_items: list[ListItem] = []
         self._tail_rows: list[_SidebarRow] | None = None
         self._tail_token = -1
-        # 右栏当前开着的会话：活跃筛选开启时也照列（打开未读会话会变已读）。
+        # 右栏当前开着的会话（打开即记一次打开时间，关注筛选靠它续期）。
         self._open_keys: frozenset[str] = frozenset()
+        self._attention_members: frozenset[str] | None = None
         self._older_stack_expanded = False
         # 筛选中的折叠覆盖：筛选不改变折叠状态，沿用普通列表；
         # 筛选中手动收起/展开只记在筛选覆盖里，不污染普通列表。
@@ -1481,10 +1482,27 @@ class SessionListView(Vertical):
         clock_changed = abs((wall - self._calendar_wall_time) - (monotonic - self._calendar_monotonic)) > 2
         self._calendar_wall_time, self._calendar_monotonic = wall, monotonic
         if key == self._calendar_key and not clock_changed:
+            if self._attention_members_changed(wall):
+                await self.rebuild(keep_selection=True)
             return
         self._calendar_key = key
         self._schedule_calendar_boundary()
         await self.rebuild(keep_selection=True)
+
+    def _attention_members_changed(self, now: float) -> bool:
+        """Attention windows expire with time alone; report when membership moved."""
+        if not self.nav.attention_only:
+            self._attention_members = None
+            return False
+        import corral
+
+        members = frozenset(
+            corral.session_key(session)
+            for session in self.store.all_sessions()
+            if needs_attention(session, now=now)
+        )
+        previous, self._attention_members = self._attention_members, members
+        return previous is not None and members != previous
 
     def _session_items(self) -> list[tuple[ListItem, SessionCard]]:
         """按当前显示顺序返回 (列表项, 会话卡)（跳过顶部固定项）。
@@ -1574,7 +1592,7 @@ class SessionListView(Vertical):
             self.nav.project_query,
             titles=self.store.snapshot(),
         )
-        active_only = self.nav.active_only
+        attention_only = self.nav.attention_only
         return [
             session
             for session in visible
@@ -1582,8 +1600,8 @@ class SessionListView(Vertical):
             and (not self.nav.runtime_filters or session.get("source") in self.nav.runtime_filters)
             and (not self.nav.project_filters or normalize_cwd(session.get("cwd")) in self.nav.project_filters)
             and (
-                not active_only
-                or is_active_session(session)
+                not attention_only
+                or needs_attention(session)
             )
         ]
 
@@ -1602,7 +1620,7 @@ class SessionListView(Vertical):
         by_key = {corral.session_key(session): session for session in sessions}
         filtered = self.visible_sessions()
         filtered_keys = {corral.session_key(session) for session in filtered}
-        # 关键字或活跃筛选任一生效都算「在筛」：组只认看得见的成员；
+        # 关键字或关注筛选任一生效都算「在筛」：组只认看得见的成员；
         # 筛选不改变折叠状态，之后用户可自由收起/展开。
         narrowing = self._sync_filtered_scope()
         pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
@@ -1833,7 +1851,7 @@ class SessionListView(Vertical):
     def _filter_scope_signature(self) -> tuple:
         return (
             self.nav.project_query.strip(),
-            self.nav.active_only,
+            self.nav.attention_only,
             frozenset(self.nav.runtime_filters),
             frozenset(self.nav.project_filters),
         )
@@ -1897,17 +1915,17 @@ class SessionListView(Vertical):
         identity = f"{GROUP_ID_PREFIX}{group.group_id}"
         return identity if identity in identities else None
 
-    def toggle_active_filter(self) -> None:
-        """切换「活跃」筛选；与筛选框关键字一样只改展示，不动会话与分屏。"""
-        self.nav.active_only = not self.nav.active_only
+    def toggle_attention_filter(self) -> None:
+        """切换「关注」筛选；与筛选框关键字一样只改展示，不动会话与分屏。"""
+        self.nav.attention_only = not self.nav.attention_only
 
     def set_open_keys(self, keys) -> None:
-        """右栏开着的会话；活跃筛选开启时变化了才需要重建。"""
+        """右栏开着的会话；关注筛选开启时变化了才需要重建。"""
         keys = frozenset(key for key in keys if not key.startswith("__"))
         if keys == self._open_keys:
             return
         self._open_keys = keys
-        if self.nav.active_only:
+        if self.nav.attention_only:
             self.call_next(self.rebuild)
 
     def total_count(self) -> int:

@@ -26,6 +26,7 @@ AttentionKind = Literal["none", "unread", "working", "waiting"]
 
 _SCHEMA_VERSION = 1
 _DEFAULT_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
+_VIEW_RETENTION_SECONDS = 24 * 60 * 60
 _SOURCE_RANK: dict[AttentionSource, int] = {"history": 0, "observer": 1}
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,14 @@ class AttentionStore:
             );
             CREATE INDEX IF NOT EXISTS session_attention_updated
             ON session_attention(updated_at);
+            CREATE TABLE IF NOT EXISTS session_views (
+                runtime_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                viewed_at REAL NOT NULL,
+                PRIMARY KEY(runtime_id, session_id)
+            );
+            CREATE INDEX IF NOT EXISTS session_views_viewed
+            ON session_views(viewed_at);
             """
         )
         conn.execute(
@@ -718,6 +727,54 @@ class AttentionStore:
         except (OSError, sqlite3.Error) as error:
             conn.rollback()
             self._report_degraded(error)
+        finally:
+            conn.close()
+
+    def record_view(self, runtime_id: str, session_id: str, at: float | None = None) -> float:
+        """Record a deliberate open; the Attention filter keeps it for a while.
+
+        Views live apart from unread tokens: reading state and the open time
+        answer different questions. Rows older than a day are dropped here so
+        the table stays bounded without a separate maintenance pass.
+        """
+        stamp = time.time() if at is None else float(at)
+        conn = self._open()
+        if conn is None:
+            return 0.0
+        try:
+            conn.execute(
+                "INSERT INTO session_views(runtime_id,session_id,viewed_at) VALUES(?,?,?) "
+                "ON CONFLICT(runtime_id,session_id) DO UPDATE SET "
+                "viewed_at=max(viewed_at, excluded.viewed_at)",
+                (str(runtime_id), str(session_id), stamp),
+            )
+            conn.execute(
+                "DELETE FROM session_views WHERE viewed_at < ?",
+                (stamp - _VIEW_RETENTION_SECONDS,),
+            )
+            conn.commit()
+            return stamp
+        except (OSError, sqlite3.Error, ValueError) as error:
+            conn.rollback()
+            self._report_degraded(error)
+            return 0.0
+        finally:
+            conn.close()
+
+    def recent_views(self, since: float) -> dict[tuple[str, str], float]:
+        """Open times at or after ``since``, keyed by (runtime, session id)."""
+        conn = self._open()
+        if conn is None:
+            return {}
+        try:
+            rows = conn.execute(
+                "SELECT runtime_id,session_id,viewed_at FROM session_views WHERE viewed_at >= ?",
+                (float(since),),
+            ).fetchall()
+            return {(str(row[0]), str(row[1])): float(row[2]) for row in rows}
+        except (OSError, sqlite3.Error, ValueError, TypeError) as error:
+            self._report_degraded(error)
+            return {}
         finally:
             conn.close()
 

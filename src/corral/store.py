@@ -7,6 +7,7 @@ import threading
 import time
 
 from corral import liveness, titles
+from corral.activity_board import ATTENTION_RECENT_SECONDS
 from corral.attention import AttentionEvidence, AttentionState, AttentionStore
 from corral.attention_signals import inspect_session
 from corral.cache import cache_dir, get_cache
@@ -187,6 +188,9 @@ class SessionStore:
         self.sessions: dict[str, list[dict]] = {runtime_id: [] for runtime_id in self.registry.ids}
         self.attention_store = attention_store or AttentionStore()
         self.attention_states: dict[str, AttentionState] = {}
+        # Deliberate opens within the Attention window, shared across processes
+        # through the attention cache; injected into sessions as ``viewed_at``.
+        self.session_views: dict[str, float] = {}
         # Cursor 正文库只在会话存活或轻量 stat 签名变化后探测。首轮仅登记签名，
         # 禁止为所有历史会话打开 store.db，避免状态圆点拖慢首屏。
         self._cursor_attention_signatures: dict[str, tuple] = {}
@@ -607,6 +611,7 @@ class SessionStore:
             ]
         states = self._reconcile_attention(attention_sessions)
         self._inject_attention_states(states)
+        self._refresh_session_views()
 
     def refresh_state(self, *, list_hosts: bool = False) -> bool:
         """Cheap state probe between full scans; True when list state changed.
@@ -992,6 +997,7 @@ class SessionStore:
         self._migrate_provisional_attention(attention_migrations)
         states = self._reconcile_attention(attention_sessions)
         self._inject_attention_states(states)
+        self._refresh_session_views()
         # 运行中新出现的待生成会话也要拉后台；只靠启动时那一次 spawn 会永久漏生成。
         if has_pending_titles:
             self.request_title_generation()
@@ -1467,6 +1473,48 @@ class SessionStore:
                         self.attention_states[key] = state
                     self._inject_attention(session, state)
 
+    def _refresh_session_views(self) -> None:
+        """Load recent opens (any process) and stamp them on the current sessions."""
+        try:
+            rows = self.attention_store.recent_views(time.time() - ATTENTION_RECENT_SECONDS)
+        except Exception:
+            rows = {}
+        if not isinstance(rows, dict):
+            rows = {}
+        views = {f"{runtime_id}:{session_id}": at for (runtime_id, session_id), at in rows.items()}
+        with self.lock:
+            self.session_views = views
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    self._inject_view(session, views.get(session_key(session)))
+
+    @staticmethod
+    def _inject_view(session: dict, viewed_at: float | None) -> None:
+        if viewed_at:
+            session["viewed_at"] = viewed_at
+        else:
+            session.pop("viewed_at", None)
+
+    def record_session_view(self, key: str) -> None:
+        """A deliberate open restarts the session's Attention window."""
+        runtime_id, separator, session_id = key.partition(":")
+        if not separator or not runtime_id or not session_id:
+            return
+        try:
+            at = self.attention_store.record_view(runtime_id, session_id)
+        except Exception:
+            at = 0.0
+        if not isinstance(at, float) or not at:
+            return
+        # No dirty flag: an open never changes what a row shows. Focus membership
+        # is re-evaluated by the TUI's periodic check and the host's marker pass.
+        with self.lock:
+            self.session_views[key] = at
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    if session_key(session) == key:
+                        self._inject_view(session, at)
+
     def _inject_partial_attention_states(self, states: dict[str, AttentionState]) -> None:
         """Like ``_inject_attention_states`` for a subset; other sessions keep theirs."""
         with self.lock:
@@ -1560,6 +1608,8 @@ class SessionStore:
                     for field in _ATTENTION_FIELDS:
                         if field in old:
                             session[field] = old[field]
+                if "viewed_at" not in session:
+                    self._inject_view(session, self.session_views.get(key))
                 probe = self._turn_probe.get(key)
                 if probe is not None and probe[0] == _turn_evidence_stamp(session):
                     session.update(probe[1])
@@ -1703,6 +1753,8 @@ class SessionStore:
             state = self.attention_store.mark_read(runtime_id, session_id)
         except Exception:
             state = AttentionState()
+        # Every read acknowledgement comes from an open (client open, TUI visible content).
+        self.record_session_view(key)
         with self.lock:
             previous = self.attention_states.get(key)
             self.attention_states[key] = state

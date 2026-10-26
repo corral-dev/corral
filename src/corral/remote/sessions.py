@@ -29,7 +29,7 @@ from pathlib import Path
 from sesskit import titles as sesskit_titles
 
 from corral import embed, keepalive, liveness, titles
-from corral.activity_board import resolve_active_marker
+from corral.activity_board import needs_attention, resolve_active_marker
 from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
@@ -776,7 +776,7 @@ class SessionHub:
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
         self._media = None  # media.PreviewService, created on first image request
         self._last_live: dict[str, bool] = {}
-        self._last_markers: dict[str, str] = {}
+        self._last_markers: dict[str, tuple[str, bool]] = {}
         self._last_status: dict[str, str] = {}
         self._last_completion: dict[str, str] = {}
         # key -> (first_seen, abort identity) for retryable/unknown aborts that
@@ -1020,14 +1020,19 @@ class SessionHub:
             return 0
 
     def _detect_marker_changes(self) -> bool:
-        """True when any row's TUI marker flipped since the last pass.
+        """True when any row's TUI marker or Attention membership flipped.
 
-        A ``recent`` mark expires with time alone, without any history change,
-        so the list push cannot rely on ``store.refresh()`` reporting a change.
+        A ``recent`` mark and the Attention windows expire with time alone,
+        without any history change, so the list push cannot rely on
+        ``store.refresh()`` reporting a change.
         """
         sessions = self.store.all_sessions()
+        now = time.time()
         current = {
-            session_key(session): resolve_active_marker(session) or ""
+            session_key(session): (
+                resolve_active_marker(session, now=now) or "",
+                needs_attention(session, now=now),
+            )
             for session in sessions
         }
         changed_keys = {
@@ -1212,6 +1217,8 @@ class SessionHub:
             # Same dot as the TUI sidebar / Active sessions; the phone must not
             # derive green from ``live``.
             "marker": resolve_active_marker(session) or "",
+            # Attention filter membership, decided once here for every client.
+            "needs_attention": needs_attention(session),
             "last_user": str(session.get("last_user_msg") or "")[:160],
             "last_agent": str(session.get("last_agent_msg") or "")[:160],
             # 完成通知去重与事后核对用：只读透传，不进排序/筛选/版本指纹。
@@ -1262,6 +1269,7 @@ class SessionHub:
                     bool(session.get("live")),
                     pinned,
                     resolve_active_marker(session) or "",
+                    needs_attention(session),
                 ]
             )
         return _list_version_blob(rows)

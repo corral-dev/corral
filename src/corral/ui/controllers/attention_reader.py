@@ -1,5 +1,8 @@
 """关注已读跟踪器：红点会话在右侧真实可见（内容就绪）后立即标已读。
 
+同一时机也记录用户主动打开的会话（关注筛选的 30 分钟续期）；重新聚焦窗口、
+后台重扫或格子一直开着都不算再次打开。
+
 从 `main_screen.MainScreen` 拆出的方法组（架构整改阶段四）：只依赖屏幕提供的
 `embed_ok` / `_app_focused` / `_split_area()` / `store` / `set_timer` / `query_one`。
 状态（`_attention_read_keys` / `_app_focused`）仍挂在 MainScreen 实例上，这里只是
@@ -108,7 +111,7 @@ class AttentionReaderMixin:
             return
         watched = self._visible_attention_keys()
         cleared = False
-        pending = False
+        pending = self._record_attention_open(watched)
         for key in sorted(watched):
             session = self.store.find_session(key)
             if session is None or session.get("attention_kind") != "unread":
@@ -132,3 +135,18 @@ class AttentionReaderMixin:
             )
             return
         self._attention_read_keys = set()
+
+    def _record_attention_open(self, watched: set[str]) -> bool:
+        """Record the selected session's open once its content is visible.
+
+        Returns True while still waiting for the content to be ready.
+        """
+        key = next(iter(self._attention_read_keys), None)
+        if key is None or key == self._attention_viewed_key or key not in watched:
+            return False
+        cell = self._attention_cell_for(key)
+        if cell is None or not self._attention_pane_ready(cell):
+            return True
+        self._attention_viewed_key = key
+        self.store.record_session_view(key)
+        return False

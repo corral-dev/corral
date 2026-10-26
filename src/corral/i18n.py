@@ -29,7 +29,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "filter.done": {"en": "Done", "zh": "完成"},
     "filter.agents": {"en": "Agents", "zh": "助手"},
     "filter.clear_all": {"en": "Clear", "zh": "清除"},
-    "filter.active": {"en": "Active", "zh": "活跃"},
+    "filter.attention": {"en": "Focus", "zh": "关注"},
     "filter.dimension_sep": {"en": ": ", "zh": "："},
     "filter.more_selected": {"en": "{name} +{count}", "zh": "{name} +{count}"},
     "topbar.new_pane": {"en": "+ New pane", "zh": "＋ 新分屏"},

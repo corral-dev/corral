@@ -1,9 +1,10 @@
-"""Status dots and the independent Active list-filter predicate.
+"""Status dots and the Attention list-filter predicate.
 
 Sidebar dots include waiting, working, unread and real recent hosted activity.
-Active excludes unread-only state and idle open panes. Native completion or
-interruption evidence blocks the recent fallback; fresh working/waiting wins.
-Remote clients consume the same normalized marker evidence.
+Native completion or interruption evidence blocks the recent fallback; fresh
+working/waiting wins. The Attention filter adds recent unread results and
+sessions that ended or were opened within the last half hour. Remote clients
+consume the same host-computed evidence.
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ ACTIVE_MARKER_STYLES: dict[str, str] = {
 # 「刚刚还在活跃」与侧栏时间行「刚刚」共用同一条界（display.JUST_NOW_SECONDS）
 # 和同一时间源（会话最近真实活动时间）：侧栏显示「刚刚」的托管会话，也算活跃。
 RECENT_ACTIVE_SECONDS = JUST_NOW_SECONDS
+# Attention filter windows (owner decision 2026-10-26): a session stays in view
+# for half an hour after its last activity or open; unread results for a week.
+ATTENTION_RECENT_SECONDS = 30 * 60
+ATTENTION_UNREAD_SECONDS = 7 * 24 * 60 * 60
 
 
 def resolve_active_marker(
@@ -46,8 +51,7 @@ def resolve_active_marker(
         当前轮已原生结束（中断，或带完成标识的已完成）时不给
       - 否则无标记
 
-      Active filtering excludes unread-only dots via ``is_active_session``. Preserve ``recent``;
-      也禁止再给这一档单独画青/蓝点。
+      Preserve ``recent``; 也禁止再给这一档单独画青/蓝点。
     """
     if session is not None:
         if attention_kind is None:
@@ -79,9 +83,28 @@ def resolve_active_marker(
     return "recent"
 
 
-def is_active_session(session: dict) -> bool:
-    """Unread is a reading state; an open/retained pane alone is not activity."""
-    return resolve_active_marker(session) in {"waiting", "working", "recent"}
+def needs_attention(session: dict, *, now: float | None = None) -> bool:
+    """Attention filter membership, shared by the TUI and remote rows.
+
+    Any yellow/green dot, an unread result from the last week, or a session
+    whose last activity or deliberate open (``viewed_at``) is within half an
+    hour. A pane that merely stays open is not an open.
+    """
+    if now is None:
+        now = time.time()
+    marker = resolve_active_marker(session, now=now)
+    if marker in {"waiting", "working", "recent"}:
+        return True
+    mtime = float(session.get("mtime") or 0.0)
+    if marker == "unread" and _within(mtime, now, ATTENTION_UNREAD_SECONDS):
+        return True
+    anchor = max(mtime, float(session.get("viewed_at") or 0.0))
+    return _within(anchor, now, ATTENTION_RECENT_SECONDS)
+
+
+def _within(stamp: float, now: float, seconds: float) -> bool:
+    # Future stamps from clock drift count as fresh, like relative times.
+    return bool(stamp) and now - stamp <= seconds
 
 
 def active_marker_style(marker: str | None) -> str | None:

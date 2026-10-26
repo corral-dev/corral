@@ -448,6 +448,9 @@ class MainScreen(
         # 内容真实就绪即清；切换、失焦会取消观察。
         self._attention_read_timer = None
         self._attention_read_keys: set[str] = set()
+        # Last session whose open was recorded for the Attention filter; refocusing
+        # or rescans showing the same selection are not a new open.
+        self._attention_viewed_key: str | None = None
         self._app_focused = True
         self._update_channel: str | None = None
         self._update_latest: str | None = None
@@ -1943,7 +1946,7 @@ class MainScreen(
                     self.nav.runtime_filters.clear()
                 if normalize_cwd(target.get("cwd")) not in self.nav.project_filters:
                     self.nav.project_filters.clear()
-            self.nav.active_only = False
+            self.nav.attention_only = False
             self.query_one("#project-search", Input).value = ""
             session_list.clear_multi()
         await self._rebuild_list(key)
@@ -1951,11 +1954,11 @@ class MainScreen(
         if self.sidebar_visible:
             session_list.focus()
 
-    async def _toggle_active_filter(self) -> None:
-        """筛选行「活跃」勾选：只收窄列表，右栏与焦点不动（焦点留在勾选框上便于再按）。"""
+    async def _toggle_attention_filter(self) -> None:
+        """筛选行「关注」勾选：只收窄列表，右栏与焦点不动（焦点留在勾选框上便于再按）。"""
         list_view = self.query_one(SessionListView)
         list_view.clear_multi()
-        list_view.toggle_active_filter()
+        list_view.toggle_attention_filter()
         self._cancel_follow_selection()
         self._suppress_selection_follow += 1
         try:

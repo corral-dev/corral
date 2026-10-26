@@ -23,6 +23,22 @@ class AttentionStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_views_are_recorded_separately_and_bounded(self):
+        self.assertEqual(self.store.record_view("codex", "one", at=1_000.0), 1_000.0)
+        # An older stamp never moves the open time backwards.
+        self.store.record_view("codex", "one", at=900.0)
+        self.store.record_view("pi", "two", at=1_500.0)
+        self.assertEqual(
+            self.store.recent_views(950.0),
+            {("codex", "one"): 1_000.0, ("pi", "two"): 1_500.0},
+        )
+        self.assertEqual(self.store.recent_views(1_200.0), {("pi", "two"): 1_500.0})
+        # Recording prunes rows older than a day.
+        self.store.record_view("pi", "three", at=1_000.0 + 2 * 86_400)
+        self.assertNotIn(("codex", "one"), self.store.recent_views(0.0))
+        # Views never create or change unread state.
+        self.assertEqual(self.store.mark_read("pi", "two").kind, "none")
+
     def test_state_priority_and_mark_read_only_clear_unread(self):
         states = self.store.reconcile(
             [_session("codex", "one")],
