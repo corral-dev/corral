@@ -7,3 +7,21 @@ larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
 ## Unreleased
+
+### English
+
+- The quick-filter switch is now Focus (关注): it lists sessions that need you or are worth keeping in view — waiting, working or recently active sessions, unread results from the last 7 days, and sessions touched in the last 30 minutes.
+- Full-text search now finds matches in history beyond the recently loaded window.
+- The Your prompts card's last row returns the conversation to its newest message, including live sessions.
+- Idle CPU and memory are lower: the host service skips redundant state work, list loads reuse the shared scan index, and inactive transcripts, readers and outbound frames are bounded.
+- Handoffs write a verbatim package under the Corral cache with every user message, recent conversation and tool activity, the in-flight call and the source Git state, without calling a model.
+- Updated the pinned SessKit reader, terminal classification and warm-scan caching.
+
+### 简体中文
+
+- 快捷筛选开关改为「关注」：列出需要你处理或值得留在视野里的会话——等待、运行中或刚有活动的会话、最近 7 天的未读结果，以及 30 分钟内碰过的会话。
+- 会话全文搜索现在能命中最近加载范围之外的历史。
+- 提问卡片最后一行可让会话回到最新消息，运行中的会话也可用。
+- 降低空闲 CPU 与内存：宿主服务跳过重复状态计算，列表加载复用共享扫描索引，并限制非活跃对话、读取器和外发帧的保留量。
+- 交接会在 Corral 缓存下写出逐字交接包：全部用户消息、最近的对话与工具活动、进行中的调用和源仓库 Git 状态，不调用模型。
+- 更新 SessKit 读取器、终端识别与热扫描缓存。
