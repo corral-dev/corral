@@ -492,6 +492,18 @@ The isolated real-tmux keyboard path found the historical title (`1/300`) in
 private server and socket were removed. Linux/other-Python matrix and physical
 Apple search screens were not established by this local Mac/Python 3.12 gate.
 
+Installed acceptance: source `aba03c6`, active pipx Corral 0.24.355, pinned SessKit
+0.2.21, successful native-extension import and `pip check`. The installed
+interpreter repeated the isolated real-tmux title/body/preview path in 286 ms
+for the title step, and light/dark rendered search/clear/open checks passed.
+The existing launchd remote host was restarted and the installed Mac client
+returned to ready with its data plane attached. A live encrypted search probe
+was not established: both saved probe identities were no longer paired, so no
+new device was paired and no user identity was replaced. Host search semantics
+are covered by real-corpus reads and protocol-handler regressions, not claimed
+as a physical iPhone/Mac search-screen pass. Public release remains on the
+normal release train; this task installed the committed local CLI source only.
+
 ### Native search latency requirement (2026-10-07)
 
 The native Mac full-text search must return useful, complete results in under 500 ms on an indexed host. The reported nearly one-minute wait requires measuring first-use and repeated-query latency separately. Optimize the shared host search path (and its upstream parser only if measured necessary); preserve literal substring matching, one/two-character Chinese queries, whitespace-AND semantics, current titles, exact total counts, and updated conversations. Initial preparation must run outside the interactive request path and a daemon restart must reuse a persisted derived search index. Measured decision: keep the existing substring matcher (893 real sessions: warm queries 5–14 ms; isolated cold-cache profiling 28.6 s, of which 28.3 s is conversation loading). Persist prepared search entries in the existing private, bounded derived cache, restore them by signature/provider cohort, warm them after the host list becomes ready, and refresh on a separate background owner. Queries against a ready index read the last complete snapshot without waiting for changed histories to parse. Initial index creation may still need preparation; do not report a partial corpus as complete. Changed scans schedule refresh and completion remains atomic. Do not introduce FTS5/inverted indexing for this measured corpus: it cannot remove history parsing and adds short-query semantics without a query bottleneck. iPhone list filtering and TUI full-text search must be checked against the same scenario.
