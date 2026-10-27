@@ -6,7 +6,7 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
-## Unreleased
+## 0.24.357
 
 ### English
 
