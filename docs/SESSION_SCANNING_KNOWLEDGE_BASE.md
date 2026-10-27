@@ -509,6 +509,16 @@ print(f'{(time.perf_counter()-t)*1000:.0f}ms')
 - 修改 OpenCode：在数据库处于 WAL 写入条件下确认单次失败不清空上一份列表；恢复可读后确认新签名触发重新扫描。
 - 修改 OpenCode / Pi 判活：用含 `session` / `run` / `list` 的接力原文确认仍算交互窗口；`--prompt hello` 即使用旧逻辑也会过，不能当验收。对本机仍在跑、命令行带 `--prompt`（或 Pi 位置参数提问）的进程实扫一遍，确认标成运行中、且不会绑到说明里提到的那条旧历史上。
 
+### 7.5 Native OpenCode terminal is empty while Your prompts has history
+
+For the 2026-10-22 report, read-only SQLite inspection confirmed all 85 native rows remained (3 user, 80 assistant, 1 system, 1 idle). Corral's prompt/history projection and the hosted OpenCode terminal are different read paths. A live process and an empty terminal do not establish lost native history or a SessKit parser defect. Inspect the exact hosted pane and native export before changing Corral or SessKit.
+
+The upstream TUI independently loads session metadata and message history. Its initial metadata failure navigates home; its initial message failure is swallowed and can leave an empty transcript. The controlled 2026-10-26 renderer experiment reproduced the latter with one HTTP 503 followed by an available transcript, without any concurrent writer. Concurrent API activity in the original cases remains correlation: the original failing request/status was not captured, so do not claim a proven writer race.
+
+Accepted repair scope: recover transient failures in both initial reads with bounded retries; stop terminal not-found/authorization errors promptly; cancel obsolete retries when leaving the session or reconnecting; expose an exhausted transcript read as an error. Verify history rendering, the actual home fallback, exact attempt limits and cancellation separately. Keep the implementation upstream in OpenCode; this incident does not authorize another Corral parser or restart heuristic. Upstream contribution and issue publication remain separate from local verification.
+
+Installed native-terminal acceptance on 2026-10-27 confirmed recovery in the same CLI process after two injected metadata failures and two injected transcript failures. The isolated HTTP fixture used synthetic history and separate XDG directories; no original session/server was restarted or written. Renderer coverage also verified permanent-error fallback, exhausted reads, route cancellation and reconnect recovery. This establishes transient-read recovery, not attribution of the original failing request. Corral's iPhone/Mac history projections remain outside this native TUI implementation; no Corral or SessKit runtime change was needed.
+
 ## §8 关联文档
 
 - [新助手接入知识库](NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md)：新增助手的扫描、预览、恢复、接力和注册验收时联读；本域提供其历史读取与性能边界。
