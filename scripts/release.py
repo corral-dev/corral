@@ -19,7 +19,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -331,7 +330,12 @@ def plan() -> dict:
 
 # ---------- state ----------
 
-LOCK = threading.Lock()
+@contextlib.contextmanager
+def locked(workspace: Path):
+    """Serialize read-modify-write of state.json across the per-lane driver processes."""
+    with (workspace / "state.lock").open("a+b") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
 
 
 def state_path(workspace: Path) -> Path:
@@ -357,17 +361,20 @@ def latest_state(release_id: str | None = None) -> dict | None:
     return read_state(candidates[-1]) if candidates else None
 
 
-def driver_alive(state: dict) -> bool:
-    pid = state.get("driver_pid")
+def lane_alive(state: dict, lane: str) -> bool:
+    pid = (state.get("driver_pids") or {}).get(lane)
+    if not pid and state.get("driver_pid"):
+        # Workspaces started before per-lane drivers ran every lane in one process.
+        return legacy_driver_alive(state)
     if not pid:
         return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    if time.time() - state.get("driver_spawned", 0) < 10:
-        return True  # The new driver may not hold its lock yet.
-    with contextlib.suppress(OSError), (Path(state["workspace"]) / "driver.lock").open("a+b") as stream:
+    if time.time() - (state.get("driver_spawned") or {}).get(lane, 0) < 10:
+        return True  # A new driver may not hold its lock yet.
+    with contextlib.suppress(OSError), (Path(state["workspace"]) / f"driver-{lane}.lock").open("a+b") as stream:
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -376,15 +383,32 @@ def driver_alive(state: dict) -> bool:
     return False
 
 
+def legacy_driver_alive(state: dict) -> bool:
+    with contextlib.suppress(OSError), (Path(state["workspace"]) / "driver.lock").open("a+b") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+def lanes_of(state: dict) -> list[str]:
+    return sorted({phase["lane"] for phase in state["phases"].values()})
+
+
+def driver_alive(state: dict) -> bool:
+    return any(lane_alive(state, lane) for lane in lanes_of(state))
+
+
 def update_phase(workspace: Path, name: str, **values) -> None:
-    with LOCK:
+    with locked(workspace):
         state = read_state(workspace)
         state["phases"][name].update(values)
         write_state(workspace, state)
 
 
 def note(workspace: Path, key: str, value) -> None:
-    with LOCK:
+    with locked(workspace):
         state = read_state(workspace)
         state.setdefault("results", {})[key] = value
         write_state(workspace, state)
@@ -439,7 +463,7 @@ def start(args, rehearse: bool) -> dict:
     write_state(workspace, state)
     if not rehearse:
         taskboard(release_id, f"进行中: {', '.join(selected)}")
-    spawn_driver(workspace)
+    spawn_drivers(workspace, lanes_of(state))
     return status_view(read_state(workspace))
 
 
@@ -489,13 +513,20 @@ def bump(repo: Path, versions: dict, workspace: Path, *, rehearse: bool) -> None
     git(repo, "commit", "-q", "-m", message, "--", *files, "CHANGELOG.md")
 
 
-def spawn_driver(workspace: Path) -> None:
+def spawn_drivers(workspace: Path, lanes: list[str]) -> None:
+    """One detached driver per lane, so a failed lane can resume while the others keep running."""
     log = (workspace / "driver.log").open("ab")
-    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_drive", str(workspace)],
-                               stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-    with LOCK:
+    with locked(workspace):
         state = read_state(workspace)
-        state.update(driver_pid=process.pid, driver_spawned=time.time(), status="running")
+        for key in ("driver_pids", "driver_spawned"):
+            if not isinstance(state.get(key), dict):
+                state[key] = {}  # Single-driver workspaces stored scalars here.
+        for lane in lanes:
+            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_drive", str(workspace), lane],
+                                       stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+            state["driver_pids"][lane] = process.pid
+            state["driver_spawned"][lane] = time.time()
+        state.update(status="running", finished=None)
         write_state(workspace, state)
 
 
@@ -620,7 +651,8 @@ def phase_cli_linux(ctx: Context) -> str:
               "uv sync -q --frozen --no-install-project --extra remote && "
               "uv pip install -q --python .venv/bin/python --no-deps ../wheels/*.whl && "
               ".venv/bin/python -c 'import corral, corral._native; print(\"installed\", corral.__version__)' && "
-              "env -u TEXTUAL_DISABLE_KITTY_KEY .venv/bin/python scripts/ci-test.py")
+              # The suite runs Ruff from PATH, as an activated environment would provide.
+              "env -u TEXTUAL_DISABLE_KITTY_KEY PATH=\"$PWD/.venv/bin:$PATH\" .venv/bin/python scripts/ci-test.py")
     run_logged(["ssh", host, script], log, timeout=3600)
     text = log.read_text(errors="replace")
     if f"installed {ctx.version('cli')}" not in text:
@@ -860,7 +892,7 @@ def run_lane(ctx: Context, lane: str) -> None:
         phase = read_state(ctx.workspace)["phases"].get(name)
         if not phase or phase["status"] in {"succeeded", "skipped"}:
             continue
-        update_phase(ctx.workspace, name, status="running", started=time.time(), error=None)
+        update_phase(ctx.workspace, name, status="running", started=time.time(), finished=None, error=None)
         try:
             summary = PHASES[name](ctx)
         except Skip as skipped:
@@ -878,23 +910,51 @@ def run_lane(ctx: Context, lane: str) -> None:
         update_phase(ctx.workspace, name, status="succeeded", finished=time.time(), summary=summary)
 
 
-def drive(workspace: Path) -> None:
-    with (workspace / "driver.lock").open("a+b") as lock:
+def drive(workspace: Path, lane: str) -> None:
+    with (workspace / f"driver-{lane}.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        ctx = Context(workspace)
-        lanes = sorted({phase["lane"] for phase in ctx.state["phases"].values()})
-        threads = [threading.Thread(target=run_lane, args=(ctx, lane)) for lane in lanes]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        with LOCK:
-            state = read_state(workspace)
-            failed = [n for n, p in state["phases"].items() if p["status"] != "succeeded" and p["status"] != "skipped"]
-            state.update(status="failed" if failed else "succeeded", finished=time.time())
-            write_state(workspace, state)
-        if state["mode"] == "release":
-            taskboard(state["id"], f"失败: {', '.join(failed)}; resume" if failed else None)
+        run_lane(Context(workspace), lane)
+    finish_if_done(workspace, lane)
+
+
+def finish_if_done(workspace: Path, finished_lane: str) -> None:
+    with locked(workspace):
+        state = read_state(workspace)
+        if any(lane_alive(state, lane) for lane in lanes_of(state) if lane != finished_lane):
+            return
+        open_phases = [n for n, p in state["phases"].items() if p["status"] not in {"succeeded", "skipped"}]
+        state.update(status="failed" if open_phases else "succeeded", finished=time.time())
+        write_state(workspace, state)
+    if state["mode"] == "release":
+        taskboard(state["id"], f"失败: {', '.join(open_phases)}; resume" if open_phases else None)
+
+
+def refresh(workspace: Path, repo_name: str) -> None:
+    """Take committed fixes into a pinned clone before anything from its lanes is published."""
+    lanes = {"cli": {"cli"}, "apple": {"ios", "mac"}}[repo_name]
+    with locked(workspace):
+        state = read_state(workspace)
+        phases = {n: p for n, p in state["phases"].items() if p["lane"] in lanes}
+        if not phases:
+            raise Failure(f"this release has no {repo_name} lanes")
+        if any(lane_alive(state, lane) for lane in lanes):
+            raise Failure(f"{repo_name} lanes are still running", hint="wait")
+        if any(n in PUBLISHING and p["status"] == "succeeded" for n, p in phases.items()):
+            raise Failure("part of this lane is already published; start a new release instead")
+        clone = workspace / repo_name
+        source = CLI if repo_name == "cli" else APPLE
+        git(clone, "fetch", "-q", str(source), "main")
+        if state["mode"] == "rehearsal":
+            # The scratch clone carries its own uncommitted-upstream bump; rebuild it on the fix.
+            git(clone, "reset", "-q", "--hard", "FETCH_HEAD")
+            bump(clone, state["versions"], workspace, rehearse=True)
+        else:
+            git(clone, "merge", "-q", "--ff-only", "FETCH_HEAD")
+        state["commits"][repo_name] = git(clone, "rev-parse", "HEAD")
+        for phase in phases.values():
+            if phase["status"] != "skipped":
+                phase.update(status="pending", error=None, summary=None, started=None, finished=None)
+        write_state(workspace, state)
 
 
 # ---------- views ----------
@@ -993,15 +1053,19 @@ def parser() -> argparse.ArgumentParser:
         s.add_argument("--release", help="Release id (default: latest)")
         if name == "wait":
             s.add_argument("--timeout", type=float, default=WAIT_SECONDS)
+        if name == "resume":
+            s.add_argument("--refresh", choices=["cli", "apple"],
+                           help="Fast-forward that pinned clone to its main checkout and rerun its lanes")
     drive_parser = sub.add_parser("_drive")
     drive_parser.add_argument("workspace", type=Path)
+    drive_parser.add_argument("lane", choices=sorted(LANES))
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "_drive":
-        drive(args.workspace)
+        drive(args.workspace, args.lane)
         return 0
     try:
         if args.command == "plan":
@@ -1019,18 +1083,23 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "summary":
                 data = summary(state)
             else:
-                if driver_alive(state):
-                    raise Failure("the release driver is still running", hint="wait")
                 workspace = Path(state["workspace"])
-                with LOCK:
+                if args.refresh:
+                    refresh(workspace, args.refresh)
+                with locked(workspace):
+                    state = read_state(workspace)
+                    stopped = [lane for lane in lanes_of(state) if not lane_alive(state, lane)
+                               and any(p["lane"] == lane and p["status"] in {"failed", "running", "pending"}
+                                       for p in state["phases"].values())]
                     for phase in state["phases"].values():
-                        if phase["status"] in {"failed", "running"}:
+                        if phase["lane"] in stopped and phase["status"] in {"failed", "running"}:
                             phase.update(status="pending", error=None)
-                    state["status"] = "running"
                     write_state(workspace, state)
+                if not stopped:
+                    raise Failure("nothing to resume: every unfinished lane is still running", hint="wait")
                 if state["mode"] == "release":
                     taskboard(state["id"], f"进行中: {', '.join(state['components'])}")
-                spawn_driver(workspace)
+                spawn_drivers(workspace, stopped)
                 data = status_view(read_state(workspace))
     except Failure as failure:
         emit(error={"message": str(failure), **({"hint": failure.hint} if failure.hint else {}),

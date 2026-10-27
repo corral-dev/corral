@@ -12,6 +12,7 @@ Read the documents whose described content is relevant before deciding or changi
 
 - [Agent workflow](~/Codes/Corral/cli/docs/AGENT_WORKFLOW_GUIDE.md): Readiness, resource ownership, resumable delivery and checkpoints.
 - [Product task routing](~/Codes/Corral/cli/docs/PROJECT_TASK_ROUTING_GUIDE.md): Detailed cross-component preconditions and investigation routes.
+- [Release runbook](~/Codes/Corral/cli/docs/RELEASE_RUNBOOK.md): One-command CLI, Mac and iPhone releases: default scope, gates and known issues, failure recovery and private configuration.
 - [CLI instructions](~/Codes/Corral/cli/AGENTS.md): Terminal UI, runtime integration, local development and CLI delivery.
 - [Apple instructions](~/Codes/Corral/apple/AGENTS.md): Shared iPhone/Mac client, native UI, signing and device delivery.
 - [Relay instructions](~/Codes/Corral/relay/AGENTS.md): Encrypted relay service, APNs and self-hosting.
@@ -66,7 +67,7 @@ Read the documents whose described content is relevant before deciding or changi
 | Apple 客户端（iPhone + 原生 Mac） | apple/ · apple/AGENTS.md · apple/Shared/（两端共享代码）· apple/macOS/ · apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md · apple/docs/design/MACOS_CLIENT_DESIGN.md（局域网优先；自建中继才换网；开源与自编译版禁止内置共享中继，仅官方付费版可用托管中继，见远程知识库开源中继硬规则第 6 条） |
 | 零知识中继与 APNs | relay/ · relay/docs/PROTOCOL_V2.md · 开源自建见 relay/README；个人多租户公网运维只在私有 agentsync（禁止写入公开门面当默认） |
 | Windows / WSL 兼容（已裁定不做） | cli/docs/design/WINDOWS_COMPATIBILITY_DESIGN.md |
-| 开源发布与一键安装 | cli/install.sh · cli/.github/workflows/ · cli/scripts/publish-release.sh |
+| 开源发布与一键安装 | cli/scripts/release.py · cli/docs/RELEASE_RUNBOOK.md · cli/install.sh · cli/.github/workflows/ · cli/scripts/publish-release.sh |
 | CI 流水线 | cli/.github/workflows/test.yml · cli/scripts/ci-test.py · cli/.githooks/pre-push · cli/scripts/install-git-hooks.sh |
 | 客户端自动更新 | cli/src/corral/updater.py · cli/src/corral/ui/update_toast.py |
 | 隐私与本地数据边界 | cli/PRIVACY.md |
@@ -126,6 +127,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md](docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md): Runtime adapters, scanning, hosting and integration boundaries.
 - [docs/OBSERVABILITY_KNOWLEDGE_BASE.md](docs/OBSERVABILITY_KNOWLEDGE_BASE.md): Local diagnostics, event logs and error evidence.
 - [docs/MAINTAINER_GUIDE.md](docs/MAINTAINER_GUIDE.md): Development, CI, dependency pins, installation and release verification.
+- [docs/RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md): One-command CLI/Mac/iPhone release procedure, gates, known issues and recovery.
 - [docs/REMOTE_KNOWLEDGE_BASE.md](docs/REMOTE_KNOWLEDGE_BASE.md): Pairing, encrypted remote protocol, delivery, relay boundaries and remote acceptance.
 - [docs/TCC_KNOWLEDGE_BASE.md](docs/TCC_KNOWLEDGE_BASE.md): macOS permission attribution (Python/tmux vs corral), `corral tcc` launcher scope and limits.
 - [docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live-data isolation, pagination and recovery.
@@ -157,8 +159,8 @@ Read the documents whose described content is relevant before deciding or editin
 ## 发版要求
 
 - 每次改完：验证后提交并推送自己的改动到 `origin` 与 `github`，确认本机 editable 安装（`corral --version` 的 `package_file`）已加载新代码，需要时重启远程服务并在受影响端验收。不得提交、搬走、隐藏或丢弃其他 Agent 未提交的文件。平时不发版。
-- 机主要求发版（或修复已发布版本的严重缺陷）时直接发，不等其他会话的未提交改动：补丁位递增并同步 `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/corral/__init__.py`，只提交这几个文件，以 `release: vX.Y.Z …` 提交、打 annotated tag、推送 `github` 与 `origin`，再运行 `bash scripts/publish-release.sh`，等到拿到下载链接再回复。
-- 本机发布路径必须完成完整验证和干净安装核验，不以 tag 或 CI 队列状态代替实际发布；具体顺序与远端核对见 `docs/MAINTAINER_GUIDE.md`「开源发布 / 多 Agent 并行时的发版卫生」。
+- 机主要求发版（或修复已发布版本的严重缺陷）时直接发，不等其他会话的未提交改动：CLI、Mac、iPhone 一律只按 [发版手册](docs/RELEASE_RUNBOOK.md) 用 `scripts/release.py` 执行（范围、版本号与更新日志、固定快照、门禁、发布、安装与核验），等 `summary` 给出下载链接再回复。不要手改版本文件，不要另写构建、安装或核验脚本。
+- 本机发布路径必须完成完整验证和干净安装核验，不以 tag 或 CI 队列状态代替实际发布；门禁与已知问题规则见发版手册，背后原因见 `docs/MAINTAINER_GUIDE.md`「开源发布」。
 
 ## 验证要求
 
@@ -245,7 +247,7 @@ command -v corral
 | 命令拦截（shim） | src/corral/shim.py · src/corral/bootstrap.py · src/corral/runtime/registry.py |
 | 标题补全 | src/corral/titles.py · src/corral/titlegen.py |
 | Agent 只读查询 | src/corral/agent_api.py |
-| 开源发布与一键安装 | install.sh · .github/workflows/ · scripts/publish-release.sh |
+| 开源发布与一键安装 | scripts/release.py · docs/RELEASE_RUNBOOK.md · install.sh · .github/workflows/ · scripts/publish-release.sh |
 | CI 流水线 | .github/workflows/test.yml · scripts/ci-test.py · .githooks/pre-push · scripts/install-git-hooks.sh |
 | 客户端自动更新 | src/corral/updater.py · src/corral/ui/update_toast.py |
 | 隐私与本地数据边界 | PRIVACY.md |

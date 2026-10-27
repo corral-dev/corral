@@ -29,9 +29,9 @@ Run from the Corral workspace root. Every command prints one compact JSON object
 python3 cli/scripts/release.py plan                    # versions, changes, notes, recommendation
 python3 cli/scripts/release.py start                   # bump, commit, snapshot, start background run
 python3 cli/scripts/release.py start --components cli,ios
-python3 cli/scripts/release.py wait                    # blocks up to 9 minutes; repeat until terminal
+python3 cli/scripts/release.py wait                    # until done, a new failure, or 9 minutes
 python3 cli/scripts/release.py status                  # one-shot state without waiting
-python3 cli/scripts/release.py resume                  # after fixing the failed phase's cause
+python3 cli/scripts/release.py resume                  # restart stopped lanes after fixing the cause
 python3 cli/scripts/release.py summary                 # links and limits for the final reply
 python3 cli/scripts/release.py rehearse --components mac,ios   # non-publishing phases only
 ```
@@ -51,23 +51,29 @@ GitHub, Homebrew and AppShelf release notes.
 ## Phases
 
 `start` commits only the version files and changelogs, clones each repository at that commit
-into `~/.config/corral/development/releases/<id>/`, and runs two lanes in the background
-through `agent_workflow.py` resource locks:
+into `~/.config/corral/development/releases/<id>/`, and runs one detached driver per lane.
+Each phase runs through `agent_workflow.py`, so the machine-wide resource locks shared with other
+agents apply, and a busy resource is awaited rather than failed:
 
 | Lane | Phases |
 |---|---|
-| CLI | `cli.env` → `cli.gate` (full macOS suite) → `cli.build` (macOS universal2 plus four Linux wheels and sdist; warnings gate) → `cli.linux` (installed manylinux wheel and full suite on the Linux host; failures gate) → `cli.tag` → `cli.publish` (GitHub assets, checksums, Homebrew formula) → `cli.verify` → `cli.install` (local editable install and Homebrew upgrade/test) |
-| Apple | `apple.export` (sanitized public tree; privacy preflight) → `apple.ios_build` / `apple.mac_analyze` / `apple.mac_prepare` (warnings gate) → `apple.ios_deliver` → `apple.mac_install` → `apple.mac_publish` (notarization, GitHub release, update feed, Homebrew Cask) |
+| CLI | `cli.env` → `cli.gate` (full macOS suite) → `cli.build` (macOS universal2 plus four Linux wheels and sdist; warnings gate) → `cli.linux` (built manylinux wheel and full suite on the Linux host; failures gate) → `cli.tag` → `cli.publish` (GitHub assets, checksums, Homebrew formula) → `cli.verify` → `cli.install` (local editable install and Homebrew upgrade/test) |
+| iPhone | `ios.build` (Release device build; warnings gate) → `ios.deliver` (`ios-deliver`: AppShelf upload plus direct install when the phone is reachable) → `ios.push` (only without a Mac release, which pushes the commit itself) |
+| Mac | `mac.export` (sanitized public tree; privacy preflight) → `mac.public` (public checkout commit) → `mac.analyze` (Debug build and static analysis; warnings gate) → `mac.prepare` (Developer ID archive; warnings gate) → `mac.install` (local install, relaunch, host connection check) → `mac.publish` (notarization, GitHub release, update feed, Homebrew Cask) |
 
-A gate failure stops its own lane before anything is published. The other lane continues.
+A gate failure stops its own lane before anything is published. The other lanes continue.
 `rehearse` runs the same phases in a scratch workspace with versions bumped only inside the
 clones. It skips tagging, pushing, uploading, publishing and installing.
 
 ## When a phase fails
 
 `wait` and `status` report the failed phase, the reason, the log path and at most 20 relevant
-lines. Read the full log only when those lines do not explain the failure. Fix the cause, then
-run `resume`. Phases that already succeeded are not repeated.
+lines. Read the full log only when those lines do not explain the failure. `wait` returns as soon
+as a phase fails, so you can fix that lane while the others keep running. Fix the cause, then run
+`resume`: it restarts only stopped lanes and skips phases that already succeeded. Code fixes to
+`release.py` itself take effect on resume. For a source fix the release needs, commit it on
+`main`, then run `resume --refresh cli` (or `apple`): the pinned clone fast-forwards to it and
+that repository's lanes rerun from the start. Refresh is refused once a lane has published.
 
 - Privacy preflight: add the value to `replace_all` in the private recipe so every exported
   file is covered, or add a per-path rule there. If a `replacement_file` is stale, refresh the

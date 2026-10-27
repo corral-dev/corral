@@ -661,6 +661,12 @@ class CiTestParallelHelpers(unittest.TestCase):
         self.assertIn("_Sample", next(iter(result.class_seconds)))
 
 
+class RetryIdTests(unittest.TestCase):
+    def test_subtest_ids_retry_their_test_method(self) -> None:
+        ids = ["m.C.test_a (model=None)", "m.C.test_a (model='x')", "m.C.test_b"]
+        self.assertEqual(ci_test._retry_ids(ids), ["m.C.test_a", "m.C.test_b"])
+
+
 class CheckoutInterpreterTests(unittest.TestCase):
     def test_symlinked_system_python_is_not_the_venv(self) -> None:
         import tempfile

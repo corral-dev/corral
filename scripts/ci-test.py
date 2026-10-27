@@ -1064,6 +1064,12 @@ def _final_wall_seconds(ctx: dict) -> float:
     return time.perf_counter() - ctx["suite_start"]
 
 
+def _retry_ids(failed_ids: list[str]) -> list[str]:
+    """Loadable ids for the retry: a failed subtest reports as ``test.id (param=value)``,
+    which the unittest loader cannot resolve, so retry its whole test method."""
+    return sorted({test_id.split(" (", 1)[0] for test_id in failed_ids})
+
+
 def _retry_failed(failed_ids: list[str]) -> bool:
     if not failed_ids:
         return False
@@ -1074,8 +1080,9 @@ def _retry_failed(failed_ids: list[str]) -> bool:
     # Retry runs through the isolated worker (UI ids isolated too when the
     # helper exists; without it the semantics match the old single-process
     # retry, only carried by a subprocess).
-    shard = _spawn_worker("--run-tests", sorted(set(failed_ids)), kind="retry")
-    _LAST_RETRY_FAILED[:] = list(shard.failed_ids) or ([] if shard.ok else sorted(set(failed_ids)))
+    retry_ids = _retry_ids(failed_ids)
+    shard = _spawn_worker("--run-tests", retry_ids, kind="retry")
+    _LAST_RETRY_FAILED[:] = list(shard.failed_ids) or ([] if shard.ok else retry_ids)
     if shard.ok and not shard.failed_ids:
         print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
         return True

@@ -75,7 +75,19 @@ Rules:
   stale recipes fail loudly instead of silently shipping secrets.
 - `remove_lines_containing` drops whole lines holding any listed substring.
 - `replacement_file` supplies the complete new file content from a path relative to the recipe
-  file, and cannot combine with other edits for the same path.
+  file, and cannot combine with other edits for the same path. An optional `source_sha256` beside
+  it names the private file's digest the copy was reconciled against; when the committed file
+  differs, the export fails as stale instead of silently shipping an outdated copy.
+- `structural: true` on a per-path rule marks edits whose patterns are ordinary source text, such
+  as dropping signing lines from a project file. Its patterns are then not private values for the
+  tree-wide preflight. Real secrets belong in `replace_all` or `forbidden_strings`.
+- Top-level `replace_all` (`[{old, new}]`) applies to every exported non-UI UTF-8 file after its
+  per-path rules, and a miss is not an error. Use it for private values that recur in new
+  documents, such as an install address or a device name. UI source stays copy-only, so a value
+  there still fails the preflight.
+- Every recipe `old` value and removal marker (except `structural` rules) is a private value: the
+  preflight rejects any that survives in any output. Failures report every finding at once as
+  `kind in path:line`, never the value, and stale per-path rules are reported together.
 - Every non-excluded path without a replacement is copied byte-identically, so untransformed
   public bytes equal `git show <commit>:<path>`.
 - The recipe may carry private values locally, but they never appear in the receipt or stdout.
