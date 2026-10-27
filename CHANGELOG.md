@@ -1,14 +1,22 @@
 # Changelog
 
 Release notes are bilingual: English first, then complete Simplified Chinese.
-Development adds entries under `## 0.24.355`; at release time they become the
+Development adds entries under `## Unreleased`; at release time they become the
 next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
-## Unreleased
+## 0.24.356
 
-Release: hold installed Mac terminal-latest acceptance
+### English
+
+- Fixed Your prompts → latest in native terminal mode: return the agent-owned viewport to live output without losing the draft or interrupting the running task. Guard stale navigation replies and require write permission for the host action.
+
+### 简体中文
+
+- 修复原生终端模式下「提问 → 最新」：将助手自己的滚动位置带回实时输出，保留草稿且不打断正在执行的任务；过期导航响应不再覆盖新操作，宿主动作也会检查写入权限。
+
+## 0.24.355
 
 ### English
 
