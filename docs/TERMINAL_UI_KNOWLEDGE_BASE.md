@@ -512,20 +512,25 @@ same blank-session launch path; project filtering and the selected runtime in
 other controls do not change that pair. Keep the project path available as help.
 These are launch actions, with no selected state.
 
-Layout correction (owner capture, 2026-10-16) supersedes the previous
-three-cell/blank-row spacing: Quick Start is one compact, leading-aligned group.
-Use two empty terminal cells between neighboring capsule actions, wrap in recent
-order onto the immediately following row, and start every row at the same left
-edge as its heading, divider and project-filter surface. Do not distribute spare
-width across buttons or retain empty rows between wrapped lines. The title uses
-the same leading content edge. Only the runtime name uses its brand color; the
-separator is muted and the project name is bold neutral foreground.
+Layout correction (owner capture, 2026-10-27) supersedes the October 16
+content-width-only layout: Quick Start is one compact group whose every row fills
+the available width. Determine wrapping in recent order from natural label widths,
+then share each row's remaining cells evenly across its capsule actions (integer
+remainders go to leading actions). A lone final action fills the whole row.
+Keep two empty terminal cells between actions and no empty rows between lines;
+recompute on resize and removal without remounting the surviving controls.
+Every row starts at the same left edge as its heading, divider and project-filter
+surface and ends at the grid's right edge. The title uses the same leading edge.
+Only the runtime name uses its brand color; the separator is muted and the project
+name is bold neutral foreground.
 
 Inspected references: the existing `ui/modals.py` Quick Start and
 `ui/quick_filters.py` FilterChip/QuickFilters._pack, plus
 `apple/Shared/UI/Sessions/NewSessionSheet.swift` macContent's leading-aligned
 Quick Start group. Reuse the native Textual Button/capsule renderer and
-character-width Grid packing, adapting only the modal's spacing and alignment.
+character-width Grid packing, adapting only the modal's spacing, alignment and
+opt-in per-row expansion. Use the existing public `column_span` and `width` styles
+for both geometry and the full clickable area; leave default packing unchanged.
 The [public Grid contract](https://textual.textualize.io/guide/layout/#grid)
 provides ordered left-to-right placement. Keep native gutters at zero for the
 installed Textual 8.2.8, following the
@@ -536,12 +541,23 @@ Preserve click/Enter launch, right-click/Delete removal, and the initially
 focused project filter. Validate single and wrapped rows at 80/100/120 columns,
 including five combinations, mixed runtimes, long/CJK labels, resize, removal,
 hover and keyboard focus in both themes. Check actual mounted row starts and
-vertical adjacency as well as rendered captures. Apple Mac capsules already use
-a leading-aligned horizontal row; iPhone recent entries use separate full-width rows.
-Inspect both implementations for the reported cause; do not claim physical
-Apple acceptance from source comparison.
+vertical adjacency and both outer row edges as well as rendered captures.
+Cross-client source comparison: Mac `MacFilterChoices` uses a single horizontally
+scrolling row, so it has no wrapped second row; iPhone `NewSessionChoiceFlow`
+uses independent native touch-sized wrapping, not the affected terminal Grid.
+This correction is scoped to terminal-cell packing; Apple layouts are unchanged.
+Do not claim physical Apple acceptance from source comparison.
 
-The v0.24.314 verification covered five combinations in both themes at
+October 27 acceptance: mounted modal captures in both themes at 80/100/120
+columns show every row reaching both grid edges, including the lone second-row
+action. Hover/focus and removal down to one full-width button passed; regressions
+also cover CJK/oversized labels and right-click at the expanded trailing edge.
+Complete Ruff/compile checks and 2,961 tests passed without warnings or retries;
+two environment-conditional skips (installed zeroconf and absent fish).
+Warm first-screen scan: 8 ms, not cold-cache performance.
+
+Historical v0.24.314 (before full-row expansion) verification covered five
+combinations in both themes at
 80/100/120 columns, including hover/focus, Click/Enter launch, removal and
 resize reflow. Mounted regions prove adjacent rows, two-cell button gaps and
 matching leading edges. Chinese/long-label captures use the

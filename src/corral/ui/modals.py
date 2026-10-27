@@ -481,7 +481,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     def _pack_quick_starts(self) -> None:
         grids = self.query("#ns-quick-grid")
         if grids:
-            QuickFilters._pack(grids.first(), spacing=2)
+            QuickFilters._pack(grids.first(), spacing=2, expand=True)
 
     def on_resize(self) -> None:
         self.call_after_refresh(self._pack_quick_starts)

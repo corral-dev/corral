@@ -427,14 +427,34 @@ class QuickFilters(Horizontal):
         self.call_next(self.sync)
 
     @staticmethod
-    def _pack(row: Grid, *, spacing: int = 0, row_spacing: int = 0) -> None:
-        """Pack native grid cells by label width without remounting controls."""
+    def _pack(
+        row: Grid, *, spacing: int = 0, row_spacing: int = 0, expand: bool = False,
+    ) -> None:
+        """Pack by label width, optionally sharing spare cells within each row."""
         width = max(1, row.content_size.width)
         row.styles.grid_size_columns = width
+        buttons = list(row.query(Button))
+        sizes = [
+            min(width, text_width(str(button.label)) + (0 if button.has_class("-inline") else 2))
+            for button in buttons
+        ]
+        if expand:
+            # Choose line breaks before expansion so resizing always starts from
+            # natural label widths, not the previous frame's stretched controls.
+            start = 0
+            while start < len(sizes):
+                end = start + 1
+                used = sizes[start]
+                while end < len(sizes) and used + spacing + sizes[end] <= width:
+                    used += spacing + sizes[end]
+                    end += 1
+                share, remainder = divmod(width - used, end - start)
+                for index in range(start, end):
+                    sizes[index] += share + (index - start < remainder)
+                start = end
         cursor = 0
         lines = 1
-        for button in row.query(Button):
-            cells = min(width, text_width(str(button.label)) + (0 if button.has_class("-inline") else 2))
+        for button, cells in zip(buttons, sizes, strict=True):
             gap = row.query_one(f"#{button.id}-gap")
             if cursor == width:
                 cursor = 0

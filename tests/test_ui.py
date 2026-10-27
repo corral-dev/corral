@@ -9264,9 +9264,11 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(heading.region.height, 1)
             divider = modal.query_one("#ns-quick-divider")
             self.assertEqual(divider.region.y, grid.region.y + 1)
+            self.assertEqual(chips[-1].region.right, grid.region.right)
 
-    async def test_quick_start_wrapping_stays_compact_and_left_aligned(self) -> None:
+    async def test_quick_start_wrapping_fills_every_row(self) -> None:
         from corral.recent_starts import RecentStart
+        from corral.textutil import text_width
         from corral.ui.modals import _QuickStartChip
 
         store, _ = _make_store()
@@ -9303,11 +9305,45 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                     left = modal.query_one("#ns-project-filter").region.x
                     for row in rows.values():
                         self.assertEqual(row[0].region.x, left)
+                        self.assertEqual(row[-1].region.right, grid.region.right)
+                        growth = [chip.region.width - text_width(str(chip.label)) - 2 for chip in row]
+                        self.assertLessEqual(max(growth) - min(growth), 1)
                         for previous, following in zip(row, row[1:], strict=False):
                             self.assertEqual(following.region.x - previous.region.right, 2)
                     for selector in (".title", "#ns-quick-heading", "#ns-quick-divider"):
                         self.assertEqual(modal.query_one(selector).region.x, left)
                     self.assertEqual(modal.query_one("#ns-quick-divider").region.y, grid.region.bottom)
+
+    async def test_quick_start_expands_after_removal_in_both_themes(self) -> None:
+        from corral.recent_starts import RecentStart
+        from corral.ui.modals import _QuickStartChip
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        modal = NewSessionModal(
+            [("/tmp", "Corral", "/tmp")],
+            [RuntimeChoice("codex", "Codex", "", True)],
+            recent_combos=[RecentStart("codex", "/tmp", label) for label in
+                           ("Short", "很长的项目名称" * 12, "Final")],
+        )
+        async with app.run_test(size=(80, 30)) as pilot:
+            await app.push_screen(modal, lambda *a: None)
+            for theme in ("corral-light", "corral-dark"):
+                app.theme = theme
+                await pilot.pause()
+                grid = modal.query_one("#ns-quick-grid")
+                for chip in modal.query(_QuickStartChip):
+                    self.assertEqual(chip.region.x, grid.region.x)
+                    self.assertEqual(chip.region.right, grid.region.right)
+            # The expanded area is a real button hit target, not empty padding.
+            with mock.patch("corral.recent_starts.remove"):
+                for selector in ("#ns-quick-1", "#ns-quick-2"):
+                    chip = modal.query_one(selector)
+                    self.assertTrue(await pilot.click(chip, offset=(chip.region.width - 1, 0), button=3))
+                    await pilot.pause()
+            remaining = modal.query_one("#ns-quick-0")
+            self.assertEqual(remaining.region, modal.query_one("#ns-quick-grid").region)
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
 
     async def test_new_session_has_no_function_key_launches(self):
         store, _ = _make_store()
