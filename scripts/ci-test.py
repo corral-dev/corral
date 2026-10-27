@@ -887,6 +887,7 @@ def _emit_machine_report(
     coverage_ok: bool,
     missing: list[str],
     extra: list[str],
+    failed_ids: list[str] | None = None,
 ) -> dict:
     slowest: list[tuple[str, float]] = []
     class_seconds: dict[str, float] = {}
@@ -908,6 +909,7 @@ def _emit_machine_report(
         "coverage_ok": coverage_ok,
         "missing_ids": missing[:50],
         "extra_ids": extra[:50],
+        **({"failed_ids": sorted(failed_ids)[:200]} if failed_ids is not None else {}),
         "shards": [
             {
                 "labels": list(s.modules),
@@ -932,6 +934,8 @@ def _emit_machine_report(
 # First-pass report context: main re-emits the final line from this after retry
 # (correcting retried/retry_ok).
 _LAST_FIRST_PASS: dict = {}
+# Ids that still failed after the retry; the final report carries them.
+_LAST_RETRY_FAILED: list[str] = []
 
 
 def _kind_for(flag: str, spec: list[str]) -> str:
@@ -1071,11 +1075,26 @@ def _retry_failed(failed_ids: list[str]) -> bool:
     # helper exists; without it the semantics match the old single-process
     # retry, only carried by a subprocess).
     shard = _spawn_worker("--run-tests", sorted(set(failed_ids)), kind="retry")
+    _LAST_RETRY_FAILED[:] = list(shard.failed_ids) or ([] if shard.ok else sorted(set(failed_ids)))
     if shard.ok and not shard.failed_ids:
         print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
         return True
     print("\n=== 重跑仍失败，判定为真回归 ===")
     return False
+
+
+def _running_in(venv: Path) -> bool:
+    """Whether this interpreter runs inside ``venv``.
+
+    A venv's ``bin/python`` is usually a symlink to the base interpreter, so
+    comparing resolved executables cannot tell a system Python from the venv
+    Python. The environment prefix can
+    (https://docs.python.org/3/library/venv.html#how-venvs-work).
+    """
+    try:
+        return Path(sys.prefix).resolve() == venv.resolve()
+    except OSError:
+        return False
 
 
 def _maybe_use_checkout_env() -> None:
@@ -1092,10 +1111,7 @@ def _maybe_use_checkout_env() -> None:
         venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
     if not venv_python.is_file():
         return
-    try:
-        if Path(sys.executable).resolve() == venv_python.resolve():
-            return
-    except OSError:
+    if _running_in(ROOT / ".venv"):
         return
     import dev_env  # noqa: E402 — scripts/ 目录已在 sys.path（见顶部）
 
@@ -1217,6 +1233,7 @@ def main(argv: list[str] | None = None) -> int:
             coverage_ok=ctx["coverage_ok"],
             missing=ctx["missing"],
             extra=ctx["extra"],
+            failed_ids=list(_LAST_RETRY_FAILED),
         )
     if retry_ok:
         fp_after = _fingerprints()

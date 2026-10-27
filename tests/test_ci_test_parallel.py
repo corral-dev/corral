@@ -548,6 +548,7 @@ class CiTestParallelHelpers(unittest.TestCase):
         self.assertEqual(final["retried"], 1)
         self.assertTrue(final["retry_ok"])
         self.assertEqual(final["wall_seconds"], 100.0)
+        self.assertEqual(final["failed_ids"], [])
 
     def test_failure_output_contains_traceback(self) -> None:
         import io
@@ -658,6 +659,21 @@ class CiTestParallelHelpers(unittest.TestCase):
         # (regression fixed 2026-09-30 follow-up).
         self.assertEqual(len(result.class_seconds), 1)
         self.assertIn("_Sample", next(iter(result.class_seconds)))
+
+
+class CheckoutInterpreterTests(unittest.TestCase):
+    def test_symlinked_system_python_is_not_the_venv(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = pathlib.Path(tmp, ".venv")
+            (venv / "bin").mkdir(parents=True)
+            # The venv interpreter resolves to the same base binary as sys.executable.
+            (venv / "bin" / "python").symlink_to(pathlib.Path(sys.executable).resolve())
+            self.assertFalse(ci_test._running_in(venv))
+            with mock.patch.object(ci_test.sys, "prefix", str(venv)):
+                self.assertTrue(ci_test._running_in(venv))
 
 
 if __name__ == "__main__":

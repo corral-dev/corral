@@ -226,6 +226,88 @@ class PrivacyTests(ExportHarness):
             {"config.py": ["replacements"], "notes.md": ["replacement_file"]},
         )
 
+    def test_replace_all_covers_new_documents_but_not_ui(self):
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "old.md").write_text("Install from https://shelf.example.net/a/app now.\n")
+        (self.repo / "docs" / "new.md").write_text("Pair the Phone-Of-Owner first.\n")
+        (self.repo / "plain.md").write_text("nothing private\n")
+        self.commit_all("base")
+        recipe = self.root / "recipe.json"
+        recipe.write_text(
+            json.dumps(
+                {
+                    "replace_all": [
+                        {"old": "https://shelf.example.net/a/app", "new": "the private shelf"},
+                        {"old": "Phone-Of-Owner", "new": "paired phone"},
+                    ]
+                }
+            )
+        )
+        receipt_path = self.root / "receipt.json"
+        result, output = self.export(extra=("--recipe", str(recipe), "--receipt", str(receipt_path)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((output / "docs" / "new.md").read_text(), "Pair the paired phone first.\n")
+        self.assertIn("the private shelf", (output / "docs" / "old.md").read_text())
+        self.assertEqual((output / "plain.md").read_text(), "nothing private\n")
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(receipt["transforms"], {"docs/new.md": ["replace_all"], "docs/old.md": ["replace_all"]})
+        self.assertNotIn("Phone-Of-Owner", result.stdout + receipt_path.read_text())
+
+        # UI source stays copy-only: a private value there fails the preflight.
+        (self.repo / "Shared" / "UI").mkdir(parents=True)
+        (self.repo / "Shared" / "UI" / "View.swift").write_text('let name = "Phone-Of-Owner"\n')
+        self.commit_all("ui")
+        result, output = self.export("public-ui", extra=("--recipe", str(recipe)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("private_value in Shared/UI/View.swift:1", result.stdout)
+        self.assertNotIn("Phone-Of-Owner", result.stdout)
+
+    def test_structural_rule_patterns_are_not_private_values(self):
+        (self.repo / "project.yml").write_text("team: TEAM-SETTING\nname: app\n")
+        (self.repo / "code.swift").write_text('let key = "TEAM-SETTING"\n')
+        self.commit_all("base")
+        recipe = self.root / "recipe.json"
+        rule = {"remove_lines_containing": ["TEAM-SETTING"]}
+        recipe.write_text(json.dumps({"replace": {"project.yml": rule}}))
+        result, _ = self.export(extra=("--recipe", str(recipe)))
+        self.assertNotEqual(result.returncode, 0, "plain rules make their patterns private everywhere")
+        recipe.write_text(json.dumps({"replace": {"project.yml": {**rule, "structural": True}}}))
+        result, output = self.export("public-structural", extra=("--recipe", str(recipe)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((output / "project.yml").read_text(), "name: app\n")
+
+    def test_preflight_reports_every_finding_with_lines(self):
+        (self.repo / "a.md").write_text("ok\nINTERNAL-A here\n")
+        (self.repo / "b.md").write_text("INTERNAL-B\n")
+        self.commit_all("base")
+        recipe = self.root / "recipe.json"
+        recipe.write_text(json.dumps({"forbidden_strings": ["INTERNAL-A", "INTERNAL-B"]}))
+        result, _ = self.export(extra=("--recipe", str(recipe)))
+        self.assertNotEqual(result.returncode, 0)
+        message = json.loads(result.stdout.splitlines()[0])["error"]["message"]
+        self.assertIn("2 finding(s)", message)
+        self.assertIn("forbidden_string in a.md:2", message)
+        self.assertIn("forbidden_string in b.md:1", message)
+
+    def test_stale_replacement_file_is_rejected(self):
+        (self.repo / "Info.plist").write_text("<plist>private</plist>\n")
+        self.commit_all("base")
+        public = self.root / "public-Info.plist"
+        public.write_text("<plist>public</plist>\n")
+        digest = hashlib.sha256(b"<plist>private</plist>\n").hexdigest()
+        recipe = self.root / "recipe.json"
+        rule = {"replacement_file": "public-Info.plist", "source_sha256": digest}
+        recipe.write_text(json.dumps({"replace": {"Info.plist": rule}}))
+        result, output = self.export(extra=("--recipe", str(recipe)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((output / "Info.plist").read_text(), "<plist>public</plist>\n")
+        (self.repo / "Info.plist").write_text("<plist>private v2</plist>\n")
+        self.commit_all("changed")
+        result, output = self.export("public-2", extra=("--recipe", str(recipe)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertIn("replacement_file is stale: Info.plist", result.stdout)
+
     def test_forbidden_value_stops_success_and_cleans_up(self):
         (self.repo / "doc.md").write_text("Contact INTERNAL-HOST-xyz for access.\n")
         self.commit_all("base")

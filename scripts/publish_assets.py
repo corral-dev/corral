@@ -7,6 +7,9 @@ import json
 import pathlib
 import subprocess
 import tempfile
+import time
+
+DOWNLOAD_ATTEMPTS = 3
 
 
 def release_assets(repo: str, tag: str) -> dict[str, dict]:
@@ -17,7 +20,18 @@ def release_assets(repo: str, tag: str) -> dict[str, dict]:
     return {asset["name"]: asset for asset in json.loads(result.stdout)["assets"]}
 
 
-def publish(repo: str, tag: str, dist: pathlib.Path) -> None:
+def download(repo: str, tag: str, name: str, directory: pathlib.Path) -> None:
+    """GitHub asset downloads time out intermittently; retry before failing publication."""
+    argv = ["gh", "release", "download", tag, "--repo", repo, "--pattern", name, "--dir", str(directory), "--clobber"]
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        if subprocess.run(argv).returncode == 0:
+            return
+        if attempt < DOWNLOAD_ATTEMPTS:
+            time.sleep(5 * attempt)
+    raise RuntimeError(f"Download failed {DOWNLOAD_ATTEMPTS} times: {name}")
+
+
+def publish(repo: str, tag: str, dist: pathlib.Path, require_wheels: int = 0) -> None:
     assets = release_assets(repo, tag)
     packages = sorted(p for p in dist.iterdir() if p.suffix in {".whl", ".gz"})
     for package in packages:
@@ -42,10 +56,7 @@ def publish(repo: str, tag: str, dist: pathlib.Path) -> None:
                 continue
             if pathlib.Path(name).name != name:
                 raise RuntimeError(f"Invalid release asset name: {name}")
-            subprocess.run(
-                ["gh", "release", "download", tag, "--repo", repo,
-                 "--pattern", name, "--dir", str(root)], check=True,
-            )
+            download(repo, tag, name, root)
             actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
             expected = asset.get("digest")
             if expected and expected != f"sha256:{actual}":
@@ -53,6 +64,9 @@ def publish(repo: str, tag: str, dist: pathlib.Path) -> None:
             lines.append(f"{actual}  {name}")
         if not lines:
             raise RuntimeError("No published packages to checksum")
+        wheels = sum(1 for line in lines if line.endswith(".whl"))
+        if wheels < require_wheels:
+            raise RuntimeError(f"Release has {wheels} wheels; {require_wheels} required")
         sums = root / "SHA256SUMS"
         sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
         subprocess.run(
@@ -66,8 +80,9 @@ def main() -> None:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--dist", type=pathlib.Path, required=True)
+    parser.add_argument("--require-wheels", type=int, default=0, help="Fail unless the release holds this many wheels")
     args = parser.parse_args()
-    publish(args.repo, args.tag, args.dist)
+    publish(args.repo, args.tag, args.dist, args.require_wheels)
 
 
 if __name__ == "__main__":

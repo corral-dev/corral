@@ -46,6 +46,10 @@ _PERSONAL_PATH_RE = re.compile(rb"/Users/([^\s/\x00]+)")
 TRANSFORM_KIND_REPLACEMENT_FILE = "replacement_file"
 TRANSFORM_KIND_REPLACEMENTS = "replacements"
 TRANSFORM_KIND_REMOVE_LINES = "remove_lines"
+TRANSFORM_KIND_REPLACE_ALL = "replace_all"
+
+# Bound the error text: one failure report names every finding up to this count.
+MAX_REPORTED_FINDINGS = 40
 
 
 class Failure(Exception):
@@ -281,13 +285,20 @@ def load_transforms(
             raise fail_usage(f"replacement targets UI source, which is copy-only: {path}")
         if not isinstance(spec, dict):
             raise fail_usage(f"replacement for {path} must be an object")
-        allowed = {"replacements", "remove_lines_containing", "replacement_file"}
+        allowed = {"replacements", "remove_lines_containing", "replacement_file", "source_sha256", "structural"}
         unknown = set(spec) - allowed
         if unknown:
             raise fail_usage(f"replacement for {path} has unknown keys: {sorted(unknown)}")
         replacements = spec.get("replacements", [])
         removals = spec.get("remove_lines_containing", [])
         replacement_file = spec.get("replacement_file")
+        source_sha256 = spec.get("source_sha256")
+        if source_sha256 is not None and (
+            replacement_file is None
+            or not isinstance(source_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+        ):
+            raise fail_usage(f"source_sha256 for {path} must be a SHA-256 hex digest beside replacement_file")
         if not isinstance(replacements, list) or any(
             not isinstance(item, dict) or not isinstance(item.get("old"), str) or not isinstance(item.get("new"), str)
             for item in replacements
@@ -313,11 +324,28 @@ def load_transforms(
                 content = candidate.read_bytes()
             except OSError as exc:
                 raise fail_usage(f"cannot read replacement file for {path}: {exc}") from exc
-            transforms[path] = {"replacement_file": content}
+            transforms[path] = {"replacement_file": content, "source_sha256": source_sha256}
         else:
             if not replacements and not removals:
                 raise fail_usage(f"replacement for {path} is empty")
-            transforms[path] = {"replacements": replacements, "remove_lines": removals}
+            if not isinstance(spec.get("structural", False), bool):
+                raise fail_usage(f"structural for {path} must be boolean")
+            # Structural edits (e.g. dropping signing keys from a project file) match ordinary
+            # source text, so their patterns are not private values for the tree-wide preflight.
+            transforms[path] = {"replacements": replacements, "remove_lines": removals,
+                                "structural": spec.get("structural", False)}
+    replace_all = recipe.get("replace_all", [])
+    if not isinstance(replace_all, list) or any(
+        not isinstance(item, dict)
+        or set(item) != {"old", "new"}
+        or not isinstance(item["old"], str)
+        or not item["old"]
+        or not isinstance(item["new"], str)
+        for item in replace_all
+    ):
+        raise fail_usage("recipe 'replace_all' must be an array of {old, new} with non-empty 'old'")
+    if replace_all:
+        transforms[""] = {"replace_all": replace_all}
     for key in ("forbidden_strings",):
         entries = recipe.get(key, [])
         if not isinstance(entries, list) or any(not isinstance(item, str) for item in entries):
@@ -331,6 +359,9 @@ def load_transforms(
 
 def apply_transforms(data: bytes, path: str, spec: dict) -> tuple[bytes, list[str]]:
     if TRANSFORM_KIND_REPLACEMENT_FILE in spec:
+        expected = spec.get("source_sha256")
+        if expected and hashlib.sha256(data).hexdigest() != expected:
+            raise fail_export(f"replacement_file is stale: {path} changed since its public copy was prepared")
         return bytes(spec[TRANSFORM_KIND_REPLACEMENT_FILE]), [TRANSFORM_KIND_REPLACEMENT_FILE]
     try:
         text = data.decode("utf-8")
@@ -351,9 +382,36 @@ def apply_transforms(data: bytes, path: str, spec: dict) -> tuple[bytes, list[st
     return text.encode("utf-8"), kinds
 
 
+def apply_replace_all(data: bytes, replace_all: list[dict]) -> tuple[bytes, bool]:
+    """Workspace-wide redactions; unlike per-path rules a miss is not an error."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data, False
+    changed = False
+    for item in replace_all:
+        if item["old"] in text:
+            text = text.replace(item["old"], item["new"])
+            changed = True
+    return (text.encode("utf-8"), True) if changed else (data, False)
+
+
+def line_of(data: bytes, index: int) -> int:
+    return data.count(b"\n", 0, index) + 1
+
+
+def raise_findings(prefix: str, findings: list[str]) -> None:
+    if findings:
+        shown = "; ".join(findings[:MAX_REPORTED_FINDINGS])
+        more = len(findings) - MAX_REPORTED_FINDINGS
+        raise fail_export(f"{prefix}: {len(findings)} finding(s): {shown}" + (f"; and {more} more" if more > 0 else ""))
+
+
 def preflight(outputs: list[dict], private_values: list[bytes], forbidden: list[bytes]) -> None:
+    """Report every finding at once, by path and line, never by value."""
     needles = [(value, "private_value") for value in private_values if value]
     needles += [(value, "forbidden_string") for value in forbidden if value]
+    findings: list[str] = []
     for entry in outputs:
         data: bytes = entry["data"]
         for match in _PERSONAL_PATH_RE.finditer(data):
@@ -361,10 +419,12 @@ def preflight(outputs: list[dict], private_values: list[bytes], forbidden: list[
             lowered = segment.lower()
             if lowered.startswith("<") or lowered in PLACEHOLDER_USER_SEGMENTS:
                 continue
-            raise fail_export(f"privacy preflight: personal path in {entry['path']}")
+            findings.append(f"personal_path in {entry['path']}:{line_of(data, match.start())}")
         for value, kind in needles:
-            if value in data:
-                raise fail_export(f"privacy preflight: {kind} found in {entry['path']}")
+            index = data.find(value)
+            if index >= 0:
+                findings.append(f"{kind} in {entry['path']}:{line_of(data, index)}")
+    raise_findings("privacy preflight", findings)
 
 
 def within_output(output: str, path: str) -> str:
@@ -474,7 +534,12 @@ def export_source(args: argparse.Namespace) -> dict:
     planned: list[dict] = []
     total_bytes = 0
     private_values: list[bytes] = []
+    replace_all = transforms.pop("", {}).get("replace_all", [])
+    private_values += [item["old"].encode("utf-8") for item in replace_all]
+    stale: list[str] = []
     for spec in transforms.values():
+        if spec.get("structural"):
+            continue
         for item in spec.get("replacements", []):
             private_values.append(item["old"].encode("utf-8"))
         for needle in spec.get("remove_lines", []):
@@ -488,7 +553,15 @@ def export_source(args: argparse.Namespace) -> dict:
             raise fail_export(f"file exceeds size bound: {path}")
         kinds: list[str] = []
         if path in transforms:
-            data, kinds = apply_transforms(data, path, transforms[path])
+            try:
+                data, kinds = apply_transforms(data, path, transforms[path])
+            except Failure as exc:
+                stale.append(exc.message)
+                continue
+        if replace_all and not is_ui_path(path) and TRANSFORM_KIND_REPLACEMENT_FILE not in kinds:
+            data, changed = apply_replace_all(data, replace_all)
+            if changed:
+                kinds.append(TRANSFORM_KIND_REPLACE_ALL)
         planned.append(
             {
                 "path": path,
@@ -498,6 +571,7 @@ def export_source(args: argparse.Namespace) -> dict:
             }
         )
         total_bytes += len(data)
+    raise_findings("recipe is stale", stale)
     if len(planned) > MAX_FILES or total_bytes > MAX_TOTAL_BYTES:
         raise fail_export("planned output exceeds size bound")
     preflight(planned, private_values, [item.encode("utf-8") for item in forbidden])

@@ -1,0 +1,93 @@
+{
+  "_about": "Assessed diagnostics that do not block scripts/release.py. Each entry records origin, reason, residual risk, follow-up and evidence; see docs/RELEASE_RUNBOOK.md. Unlisted warnings and failures block publication.",
+  "warnings": [
+    {
+      "id": "zig-deprecated-linker-optimization",
+      "scopes": ["cli.build"],
+      "match": "linker stderr: ignoring deprecated linker optimization setting",
+      "origin": "Zig linker during the four Linux cross-builds on macOS",
+      "reason": "Rust passes its default ELF link optimization argument, which Zig reports as deprecated; not an owned-code diagnostic (https://github.com/rust-lang/rust/issues/158192)",
+      "risk": "None observed: cross-linking and wheel integrity pass. Execution on musl and aarch64 is not covered",
+      "follow_up": "Adopt the upstream Rust/Zig fix; execute musl and aarch64 wheels on native hosts",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "cargo-native-warning-summary",
+      "scopes": ["cli.build"],
+      "match": "`corral-native` \\(lib\\) generated 1 warning$",
+      "origin": "Cargo summary line for the Zig linker diagnostic above",
+      "reason": "Counts exactly the assessed linker warning; a higher count matches nothing here and blocks",
+      "risk": "None beyond the linker entry",
+      "follow_up": "Remove together with the linker entry",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "musl-compiler-family-probe",
+      "scopes": ["cli.build"],
+      "match": "Compiler family detection failed .*\"(x86_64|aarch64)-linux-musl-gcc\"",
+      "origin": "cc-rs compiler-family probe in the musl cross-builds",
+      "reason": "No conventional musl GCC is installed; the build links through Zig (https://github.com/rust-cross/cargo-zigbuild) and produces both wheels",
+      "risk": "A future C dependency would need an explicit target compiler",
+      "follow_up": "Configure the target C compiler explicitly when maintaining the cross-builder; run the wheels on musl hosts",
+      "recorded": "2026-10-27"
+    }
+  ],
+  "test_failures": [
+    {
+      "id": "test_runtime.RuntimeTests.test_claude_new_session_plan_has_no_handoff_prompt",
+      "platform": "linux",
+      "reason": "Root user on the Linux host: Claude rejects its skip-permissions flag under root, so plans differ; also fails on v0.24.355 there",
+      "follow_up": "Run the Linux suite as a non-root user or make root-specific expectations explicit",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_runtime.RuntimeTests.test_native_resume_keeps_runtime_specific_command",
+      "platform": "linux",
+      "reason": "Root-user Claude flag difference, as above; reproduces on v0.24.355",
+      "follow_up": "Same as the root-user entry above",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_runtime.RuntimeTests.test_passthrough_plan_prepends_auto_approve_args",
+      "platform": "linux",
+      "reason": "Root-user Claude flag difference, as above; reproduces on v0.24.355",
+      "follow_up": "Same as the root-user entry above",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_titlegen.GatewayTitleGeneratorTests.test_missing_key_is_unavailable_and_makes_no_request",
+      "platform": "linux",
+      "reason": "Runtime-dependent title-generator discovery on the Linux host; reproduces on v0.24.355",
+      "follow_up": "Isolate title-generator discovery from installed host runtimes in the fixture",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_titlegen.GatewayTitleGeneratorTests.test_missing_url_with_key_makes_no_request",
+      "platform": "linux",
+      "reason": "Runtime-dependent title-generator discovery, as above; reproduces on v0.24.355",
+      "follow_up": "Same as the title-generator entry above",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_pi_claim_cache.ClaimMemoTests.test_same_length_in_place_rewrite_is_detected_even_with_restored_mtime",
+      "platform": "linux",
+      "reason": "Claim-file ctime behaviour of the Linux host filesystem; reproduces on v0.24.355",
+      "follow_up": "Assert the change signal the host filesystem actually provides",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_session_scanning.PiScanTests.test_live_flags_do_not_bind_short_env_to_uuid_history",
+      "platform": "linux",
+      "reason": "Pi liveness probing on the Linux host; reproduces on v0.24.355",
+      "follow_up": "Isolate the fixture from host Pi processes",
+      "recorded": "2026-10-27"
+    },
+    {
+      "id": "test_ui.MainScreenHostWorkerTests.test_restart_menu_resolves_a_retired_selected_card",
+      "platform": "linux",
+      "reason": "Unresolved: fails only in the full Linux runner and passed alone against v0.24.355, which points to fixture interaction rather than product code",
+      "follow_up": "Find the interacting fixture; remove this entry once it is isolated",
+      "recorded": "2026-10-27"
+    }
+  ]
+}

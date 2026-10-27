@@ -22,6 +22,8 @@
 #
 # 可选环境变量：
 #   CORRAL_SKIP_WHEELS=1   跳过构建/上传安装包
+#   CORRAL_DIST_DIR=DIR    上传 DIR 里预构建的安装包（scripts/build-dist.sh 产物），不再构建
+#   CORRAL_REQUIRE_WHEELS=N 已发布 wheel 少于 N 个即失败（release.py 传 5）
 #   CORRAL_SKIP_TAP=1      跳过更新 Homebrew 配方
 # 中断恢复：若在「计算源码归档校验和」一步因境外网络超时中断（附件已传好、
 # 只差配方），直接 `CORRAL_SKIP_WHEELS=1 bash scripts/publish-release.sh` 补跑即可
@@ -114,49 +116,27 @@ gh release edit "$TAG" --repo "$SOURCE_REPO" --latest
 if [ "${CORRAL_SKIP_WHEELS:-0}" = "1" ]; then
   echo "==> 跳过安装包构建（CORRAL_SKIP_WHEELS=1）"
 else
-  command -v maturin >/dev/null || die "未找到 maturin，先执行 pip install 'maturin>=1.9,<2'"
-  DIST="$(mktemp -d)"
-  trap 'rm -rf "$DIST"' EXIT
-  case "$(uname -s)" in
-    Darwin)
-      # macOS 只出 universal2：Intel / Apple Silicon 共用一个包。
-      maturin build --release --out "$DIST" --target universal2-apple-darwin
-      SKIPPED="Linux 各架构预编译包（需在 Linux 上发版或等 CI 补齐）"
-      ;;
-    Linux)
-      # 交叉编译靠 zig；缺了就只出本机架构，不静默少传。
-      ZIG_ARG=()
-      if python3 -c "import ziglang" >/dev/null 2>&1; then
-        ZIG_ARG=(--zig)
-      else
-        echo "提示：未安装 ziglang（pip install ziglang），本轮只出本机架构" >&2
-      fi
-      maturin build --release --out "$DIST" --compatibility manylinux_2_17 "${ZIG_ARG[@]}"
-      if [ ${#ZIG_ARG[@]} -gt 0 ]; then
-        for spec in \
-          "aarch64-unknown-linux-gnu manylinux_2_17" \
-          "x86_64-unknown-linux-musl musllinux_1_2" \
-          "aarch64-unknown-linux-musl musllinux_1_2"
-        do
-          set -- $spec
-          rustup target add "$1" >/dev/null 2>&1 || true
-          maturin build --release --out "$DIST" --target "$1" --compatibility "$2" --zig
-        done
-      fi
-      SKIPPED="macOS 预编译包（需在 Mac 上发版或等 CI 补齐）"
-      ;;
-    *) die "不支持的发版平台：$(uname -s)" ;;
-  esac
-  maturin sdist --out "$DIST"
+  if [ -n "${CORRAL_DIST_DIR:-}" ]; then
+    # Packages prebuilt (and already gated) by scripts/release.py from this commit.
+    DIST="$CORRAL_DIST_DIR"
+    [ -d "$DIST" ] || die "CORRAL_DIST_DIR 不存在：$DIST"
+    echo "==> 使用预构建安装包：$DIST"
+  else
+    DIST="$(mktemp -d)"
+    trap 'rm -rf "$DIST"' EXIT
+    bash scripts/build-dist.sh "$DIST"
+  fi
+  SKIPPED="$(cat "$DIST/not-built.txt" 2>/dev/null || true)"
 
   # Checksums cover actual published assets, including packages from earlier publishers.
   echo "==> 上传缺失安装包并校验已发布附件"
   # Local and CI builds may differ in SBOM metadata. Preserve versioned bytes.
-  if ! python3 scripts/publish_assets.py --repo "$SOURCE_REPO" --tag "$TAG" --dist "$DIST"; then
+  if ! python3 scripts/publish_assets.py --repo "$SOURCE_REPO" --tag "$TAG" --dist "$DIST" \
+      --require-wheels "${CORRAL_REQUIRE_WHEELS:-0}"; then
     UPLOAD_FAILED=1
     echo "!!  附件发布未完成；继续同步现有附件的配方，最终以非零状态退出"
   fi
-  echo "==> 本轮未覆盖：${SKIPPED}"
+  [ -z "$SKIPPED" ] || echo "==> 本轮未覆盖：${SKIPPED}（CI 会补齐）"
 fi
 
 # ---- 3. Homebrew 配方 ----

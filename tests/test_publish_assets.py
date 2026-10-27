@@ -56,3 +56,18 @@ class PublishAssetsTest(unittest.TestCase):
                 publisher.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "offline")
             ), self.assertRaisesRegex(RuntimeError, "Upload failed"):
                 publisher.publish("owner/repo", "v1", dist)
+
+
+class DownloadRetryTest(unittest.TestCase):
+    def test_timeout_is_retried_then_reported(self):
+        results = iter([1, 0])
+        with patch.object(publisher.time, "sleep"), patch.object(
+            publisher.subprocess, "run",
+            side_effect=lambda argv: subprocess.CompletedProcess(argv, next(results)),
+        ) as run:
+            publisher.download("owner/repo", "v1", "corral.whl", pathlib.Path("/tmp"))
+        self.assertEqual(run.call_count, 2)
+        with patch.object(publisher.time, "sleep"), patch.object(
+            publisher.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)
+        ), self.assertRaisesRegex(RuntimeError, "Download failed 3 times"):
+            publisher.download("owner/repo", "v1", "corral.whl", pathlib.Path("/tmp"))
