@@ -586,7 +586,9 @@ class Context:
             update_phase(self.workspace, phase, note=f"waiting for {resource}")
             time.sleep(20)
         data = envelope.get("data") or {}
-        step_log = Path(((data.get("results") or [{}])[0]).get("log_path") or self.log(phase))
+        # A failed run reports its step results, including the log path, inside the error.
+        results = data.get("results") or error.get("results") or [{}]
+        step_log = Path(results[0].get("log_path") or self.log(phase))
         update_phase(self.workspace, phase, log=str(step_log), note=None)
         if data.get("status") != "succeeded":
             raise Failure(error.get("message") or f"{phase} failed", log=step_log, excerpt=excerpt(step_log))

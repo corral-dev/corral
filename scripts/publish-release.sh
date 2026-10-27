@@ -86,8 +86,13 @@ fi
 
 git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null \
   || die "本地没有 ${TAG} 标签，先打好标签再跑本脚本"
-git ls-remote --exit-code --tags github "refs/tags/${TAG}" >/dev/null 2>&1 \
-  || die "${TAG} 还没推到 github 远端，先 git push github --tags"
+# A just-pushed tag can miss one ls-remote round trip (2026-10-27, v0.24.357); retry before failing.
+tag_on_github=0
+for attempt in 1 2 3; do
+  if git ls-remote --exit-code --tags github "refs/tags/${TAG}" >/dev/null; then tag_on_github=1; break; fi
+  sleep $((attempt * 5))
+done
+[ "$tag_on_github" = 1 ] || die "${TAG} 还没推到 github 远端，先 git push github --tags"
 
 # 按当前工作区构建安装包，不会切回 tag 源码。版本号对不上就会把更新版本的包传到旧 Release。
 # 2026-08-16：给 v0.24.125 收尾时工作区已被并行 Agent 升到 0.24.126，macOS 包被传到 125。
