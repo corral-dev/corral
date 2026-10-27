@@ -612,6 +612,9 @@ Run every release through the [release runbook](RELEASE_RUNBOOK.md) (`scripts/re
 - Refresh the local tap before `brew upgrade`: a stale tap selected an older formula, whose failed download then surfaced through Homebrew's timeout-rescue path ([download strategy](https://docs.brew.sh/rubydoc/CurlDownloadStrategy.html)).
 - `ci-test.py` detects the checkout `.venv` through `sys.prefix` ([venv identity](https://docs.python.org/3/library/venv.html#how-venvs-work)). Comparing resolved executables could not tell a system Python from its symlinked venv Python, so the suite ran without its dependencies.
 - GitHub release asset downloads time out intermittently; `publish_assets.py` retries them and enforces the expected wheel count.
+- A failed subtest reports as `test.id (param=value)`, which the unittest loader cannot resolve; `ci-test.py` retries the whole test method. Before this fix every subtest failure became an unloadable `_FailedTest` on retry and was judged a real regression.
+- A tag pushed seconds earlier can miss one `git ls-remote` round trip; `publish-release.sh` retries that check before failing (v0.24.357).
+- The tag-triggered GitHub `release` workflow only fills packages a local publication could not build, and it refuses to run without a green `test.yml` for the commit. Its failure therefore does not affect a complete local release. Since v0.24.356, `test.yml` fails on Python 3.10/3.14 in the search-coalescing and retired-card restart-menu fixtures, which is the fixture-isolation follow-up above.
 
 ## CI 工作流（`.github/workflows/test.yml`）
 
