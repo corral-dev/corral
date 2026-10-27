@@ -22,13 +22,13 @@ class RecentStartsTests(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def test_record_is_durable_bounded_and_moves_reused_pair_to_front(self):
-        for i in range(7):
+        for i in range(recent_starts.MAX_COMBOS + 2):
             recent_starts.record("claude", f"{self.temp.name}/project{i}")
         self.assertEqual([c.project_label for c in recent_starts.load()],
-                         [f"project{i}" for i in range(6, 1, -1)])
+                         [f"project{i}" for i in range(recent_starts.MAX_COMBOS + 1, 1, -1)])
         recent_starts.record("claude", f"{self.temp.name}/project3")
         combos = recent_starts.load()
-        self.assertEqual(len(combos), 5)
+        self.assertEqual(len(combos), recent_starts.MAX_COMBOS)
         self.assertEqual(combos[0].project_label, "project3")
         proc = subprocess.run(
             [sys.executable, "-c", "from corral import recent_starts; print(recent_starts.load()[0].project_label)"],
@@ -55,6 +55,19 @@ class RecentStartsTests(unittest.TestCase):
             {"runtime_id": "codex", "cwd": "/tmp", "project_label": "valid"},
         ]))
         self.assertEqual(recent_starts.load(), [recent_starts.RecentStart("codex", "/tmp", "valid")])
+
+    def test_history_fills_past_five_without_reviving_dismissed_pairs(self):
+        root = Path(self.temp.name).resolve()
+        candidates = [recent_starts.RecentStart("codex", str(root / f"project{i}"), f"Project{i}")
+                      for i in range(20)]
+        recent_starts.record("codex", candidates[3].cwd)
+        self.assertEqual(len(recent_starts.load(candidates)), 20)
+        self.assertEqual(recent_starts.load(candidates)[0].cwd, candidates[3].cwd)
+        recent_starts.remove(candidates[8])
+        self.assertNotIn(candidates[8], recent_starts.load(candidates))
+        recent_starts.record("codex", candidates[8].cwd)
+        self.assertEqual(recent_starts.load(candidates)[0].cwd, candidates[8].cwd)
+        self.assertEqual(len(recent_starts.load(candidates + candidates)), 20)
 
     def test_write_failure_does_not_interrupt_launch(self):
         with mock.patch.object(recent_starts.os, "replace", side_effect=OSError("read only")):

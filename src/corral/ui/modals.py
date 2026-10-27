@@ -481,7 +481,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     def _pack_quick_starts(self) -> None:
         grids = self.query("#ns-quick-grid")
         if grids:
-            QuickFilters._pack(grids.first(), spacing=2, expand=True)
+            QuickFilters._pack(grids.first(), spacing=2, max_rows=2)
 
     def on_resize(self) -> None:
         self.call_after_refresh(self._pack_quick_starts)
@@ -811,6 +811,14 @@ async def new_session_flow(app, store, nav, session: dict | None):
             project_index,
             runtime_index,
             initial_query=getattr(nav, "project_query", "") or "",
+            recent_combos=recent_starts.load(
+                recent_starts.RecentStart(rid, cwd, os.path.basename(cwd) or cwd)
+                for rid, item in sorted(
+                    ((rid, item) for rid, sessions in store.sessions.items() for item in sessions),
+                    key=lambda pair: pair[1].get("mtime", 0), reverse=True,
+                )
+                if (cwd := str(item.get("cwd") or "")) and os.path.isabs(cwd)
+            ),
         )
     )
     if picked is None:

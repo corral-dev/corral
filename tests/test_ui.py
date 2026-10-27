@@ -9264,9 +9264,8 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(heading.region.height, 1)
             divider = modal.query_one("#ns-quick-divider")
             self.assertEqual(divider.region.y, grid.region.y + 1)
-            self.assertEqual(chips[-1].region.right, grid.region.right)
 
-    async def test_quick_start_wrapping_fills_every_row(self) -> None:
+    async def test_quick_start_wrapping_keeps_natural_button_widths(self) -> None:
         from corral.recent_starts import RecentStart
         from corral.textutil import text_width
         from corral.ui.modals import _QuickStartChip
@@ -9305,17 +9304,17 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                     left = modal.query_one("#ns-project-filter").region.x
                     for row in rows.values():
                         self.assertEqual(row[0].region.x, left)
-                        self.assertEqual(row[-1].region.right, grid.region.right)
-                        growth = [chip.region.width - text_width(str(chip.label)) - 2 for chip in row]
-                        self.assertLessEqual(max(growth) - min(growth), 1)
+                        for chip in row:
+                            self.assertEqual(chip.region.width, text_width(str(chip.label)) + 2)
                         for previous, following in zip(row, row[1:], strict=False):
                             self.assertEqual(following.region.x - previous.region.right, 2)
                     for selector in (".title", "#ns-quick-heading", "#ns-quick-divider"):
                         self.assertEqual(modal.query_one(selector).region.x, left)
                     self.assertEqual(modal.query_one("#ns-quick-divider").region.y, grid.region.bottom)
 
-    async def test_quick_start_expands_after_removal_in_both_themes(self) -> None:
+    async def test_quick_start_count_adapts_to_two_rows_and_backfills_removal(self) -> None:
         from corral.recent_starts import RecentStart
+        from corral.textutil import text_width
         from corral.ui.modals import _QuickStartChip
 
         store, _ = _make_store()
@@ -9323,26 +9322,34 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         modal = NewSessionModal(
             [("/tmp", "Corral", "/tmp")],
             [RuntimeChoice("codex", "Codex", "", True)],
-            recent_combos=[RecentStart("codex", "/tmp", label) for label in
-                           ("Short", "很长的项目名称" * 12, "Final")],
+            recent_combos=[RecentStart("codex", f"/tmp/p{i}", f"Project{i}") for i in range(20)],
         )
-        async with app.run_test(size=(80, 30)) as pilot:
+        async with app.run_test(size=(120, 30)) as pilot:
             await app.push_screen(modal, lambda *a: None)
-            for theme in ("corral-light", "corral-dark"):
+            counts = []
+            for theme, width in (("corral-light", 120), ("corral-dark", 80), ("corral-dark", 120)):
                 app.theme = theme
+                await pilot.resize_terminal(width, 30)
                 await pilot.pause()
                 grid = modal.query_one("#ns-quick-grid")
-                for chip in modal.query(_QuickStartChip):
-                    self.assertEqual(chip.region.x, grid.region.x)
-                    self.assertEqual(chip.region.right, grid.region.right)
-            # The expanded area is a real button hit target, not empty padding.
+                chips = list(modal.query(_QuickStartChip))
+                visible = [chip for chip in chips if chip.display]
+                counts.append(len(visible))
+                self.assertGreater(len(visible), 5)
+                self.assertEqual(visible, chips[:len(visible)])
+                self.assertEqual(grid.region.height, 2)
+                for chip in visible:
+                    self.assertEqual(chip.region.width, text_width(str(chip.label)) + 2)
+                    self.assertLessEqual(chip.region.bottom, grid.region.bottom)
+                next_width = text_width(str(chips[len(visible)].label)) + 2
+                self.assertGreater(visible[-1].region.right + 2 + next_width, grid.region.right)
+            self.assertGreater(counts[0], counts[1])
+            self.assertEqual(counts[0], counts[2])
+            first_hidden = next(chip for chip in chips if not chip.display)
             with mock.patch("corral.recent_starts.remove"):
-                for selector in ("#ns-quick-1", "#ns-quick-2"):
-                    chip = modal.query_one(selector)
-                    self.assertTrue(await pilot.click(chip, offset=(chip.region.width - 1, 0), button=3))
-                    await pilot.pause()
-            remaining = modal.query_one("#ns-quick-0")
-            self.assertEqual(remaining.region, modal.query_one("#ns-quick-grid").region)
+                self.assertTrue(await pilot.click(visible[0], button=3))
+                await pilot.pause()
+            self.assertTrue(first_hidden.display)
             self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
 
     async def test_new_session_has_no_function_key_launches(self):

@@ -428,9 +428,9 @@ class QuickFilters(Horizontal):
 
     @staticmethod
     def _pack(
-        row: Grid, *, spacing: int = 0, row_spacing: int = 0, expand: bool = False,
+        row: Grid, *, spacing: int = 0, row_spacing: int = 0, max_rows: int | None = None,
     ) -> None:
-        """Pack by label width, optionally sharing spare cells within each row."""
+        """Pack natural-width actions, optionally clipping overflow after max_rows."""
         width = max(1, row.content_size.width)
         row.styles.grid_size_columns = width
         buttons = list(row.query(Button))
@@ -438,24 +438,18 @@ class QuickFilters(Horizontal):
             min(width, text_width(str(button.label)) + (0 if button.has_class("-inline") else 2))
             for button in buttons
         ]
-        if expand:
-            # Choose line breaks before expansion so resizing always starts from
-            # natural label widths, not the previous frame's stretched controls.
-            start = 0
-            while start < len(sizes):
-                end = start + 1
-                used = sizes[start]
-                while end < len(sizes) and used + spacing + sizes[end] <= width:
-                    used += spacing + sizes[end]
-                    end += 1
-                share, remainder = divmod(width - used, end - start)
-                for index in range(start, end):
-                    sizes[index] += share + (index - start < remainder)
-                start = end
         cursor = 0
         lines = 1
+        clipped = False
         for button, cells in zip(buttons, sizes, strict=True):
             gap = row.query_one(f"#{button.id}-gap")
+            if clipped or (max_rows is not None and lines >= max_rows
+                           and cursor and cursor + spacing + cells > width):
+                clipped = True
+                button.styles.display = "none"
+                gap.styles.display = "none"
+                continue
+            button.styles.display = "block"
             if cursor == width:
                 cursor = 0
                 lines += 1

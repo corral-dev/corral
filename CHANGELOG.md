@@ -6,6 +6,16 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Corrected Quick Start space usage: show more recent combinations across two rows as terminal width allows, instead of stretching buttons. Removed the five-combination cap; existing session history supplies additional choices, and dismissed choices stay hidden.
+
+### 简体中文
+
+- 纠正快速开始的空间利用：根据终端宽度在两行内显示更多最近组合，而不是拉长按钮。取消固定五个的限制，从已有会话历史补充选项，移除的组合不会重新冒出。
+
 ## 0.24.356
 
 ### English
