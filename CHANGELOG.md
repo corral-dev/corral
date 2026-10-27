@@ -11,10 +11,12 @@ the named acceptance is done.
 ### English
 
 - Fixed Your prompts → latest in native terminal mode: return the agent-owned viewport to live output without losing the draft or interrupting the running task. Guard stale navigation replies and require write permission for the host action.
+- Quick Start choices now fill each wrapped row, including the last row, while adapting to narrow and wide terminals.
 
 ### 简体中文
 
 - 修复原生终端模式下「提问 → 最新」：将助手自己的滚动位置带回实时输出，保留草稿且不打断正在执行的任务；过期导航响应不再覆盖新操作，宿主动作也会检查写入权限。
+- 快速开始选项会填满每一行，包括换行后的最后一行，同时适配窄屏与宽屏终端。
 
 ## 0.24.355
 
