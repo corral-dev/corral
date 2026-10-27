@@ -1008,7 +1008,8 @@ class RemoteService:
         since_version = str(params.get("since_version") or "")
         snapshot = getattr(self.hub, "list_snapshot", None)
         if callable(snapshot):
-            return snapshot(query=query, limit=limit, since_version=since_version)
+            retained = {"retained_keys": params["retained_keys"]} if "retained_keys" in params else {}
+            return snapshot(query=query, limit=limit, since_version=since_version, **retained)
         return {
             "sessions": self.hub.list_sessions(query=query, limit=limit),
         }

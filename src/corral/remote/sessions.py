@@ -1317,7 +1317,8 @@ class SessionHub:
         return payloads
 
     def list_snapshot(
-        self, query: str = "", limit: int = 0, since_version: str = ""
+        self, query: str = "", limit: int = 0, since_version: str = "",
+        retained_keys: list[str] | None = None,
     ) -> dict:
         """给手机的列表回包：默认窗口带版本号；版本未变不带会话数组。
 
@@ -1326,6 +1327,15 @@ class SessionHub:
         事件在详情页期间不会送达，开发机重启后也不会重放。重复下发才能让
         手机与 Mac 侧栏把旧键收敛到正式会话（见远程知识库 2026-10-24 条）。
         """
+        if retained_keys is not None and (
+            not isinstance(retained_keys, list)
+            or len(retained_keys) > 100
+            or any(not isinstance(key, str) or not key or len(key) > 256 for key in retained_keys)
+        ):
+            raise ActionError(
+                "usage_error",
+                "retained_keys must contain at most 100 nonempty session keys (256 characters each).",
+            )
         layout = self._layout()
         if query or limit > 0:
             payloads, total, has_more = self._listed_payloads(
@@ -1339,11 +1349,11 @@ class SessionHub:
                 "unchanged": False,
                 "has_more": has_more,
                 "total": total,
-                "aliases": self._list_aliases(None),
+                **self._retained_snapshot(retained_keys, self._list_aliases(None), layout),
                 "sessions": payloads,
             }
         sessions = self.store.all_sessions()
-        aliases = self._list_aliases(sessions)
+        reconciliation = self._retained_snapshot(retained_keys, self._list_aliases(sessions), layout)
         windowed = _phone_list_window_sessions(sessions, layout)
         total = len(sessions)
         has_more = total > len(windowed)
@@ -1355,7 +1365,7 @@ class SessionHub:
                 "unchanged": True,
                 "has_more": has_more,
                 "total": total,
-                "aliases": aliases,
+                **reconciliation,
             }
         payloads = [self.session_payload(item, layout) for item in windowed]
         return {
@@ -1364,9 +1374,39 @@ class SessionHub:
             "unchanged": False,
             "has_more": has_more,
             "total": total,
-            "aliases": aliases,
+            **reconciliation,
             "sessions": payloads,
         }
+
+    def _retained_snapshot(self, keys: list[str] | None, aliases: dict[str, str], layout) -> dict:
+        """Reconcile explicit visits, not absence from the bounded browsing window.
+
+        A complete fresh catalog is required for negative evidence. Preparing it
+        belongs to the search worker, never the RPC thread. Positive exact matches
+        remain useful while preparation is incomplete or a scanner has failed.
+        """
+        result: dict = {"aliases": aliases}
+        if keys is None:
+            return result
+        catalog = self.store.search_catalog
+        authoritative = catalog.fresh
+        if not authoritative:
+            self._search_refresh.set()
+        found: dict[str, dict] = {}
+        missing = []
+        for key in dict.fromkeys(keys):
+            canonical = self.resolve_session_key(key)
+            session = self.store.find_session(canonical)
+            if session is None:
+                if authoritative:
+                    missing.append(key)
+                continue
+            canonical = session_key(session)
+            if canonical != key:
+                aliases[key] = canonical
+            found[canonical] = self.session_payload(session, layout)
+        result.update(retained_sessions=list(found.values()), missing_keys=missing)
+        return result
 
     def _list_aliases(self, sessions: list[dict] | None) -> dict[str, str]:
         """占位键 → 正式键：供客户端收敛跨窗口保留的新建会话旧键。

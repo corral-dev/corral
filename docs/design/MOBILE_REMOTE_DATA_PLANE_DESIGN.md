@@ -181,6 +181,8 @@ P2 measured results (2026-09-30; 397 Cursor + 485 OpenCode local sessions (rerun
 1. **手机按开发机落下上次成功窗口**：进列表先画出这份快照，再在后台订阅/刷新。没有快照才转圈。刷新失败且本地有行时保留画面，只标明连接问题。切到另一台开发机必须换该机自己的快照，禁止把上一台的行留在这一台。
 2. **列表窗口带版本号**：`sessions.watch` / `sessions.list` 可带上次版本。版本相同只回「未变」+ 版本号，不带会话数组。手机收到未变**禁止**当成空列表覆盖。开发机计算版本前先截当前页，只为窗口内的会话组摘要，不为整表闲置会话做完整打包。**每个列表回包（含「未变」）都带 `aliases`（占位键→正式键）**：客户端把新建会话的详情打开后会把它记成显式访问并跨窗口保留，一次性迁移事件在详情页期间不订阅列表，重启后也不重放；重复下发别名才能让手机和 Mac 侧栏把这类旧键收敛到正式会话（见远程知识库 2026-10-24 条）。
 
+Retained visits are reconciled separately from window membership: list/watch requests carry bounded `retained_keys`; even unchanged replies return current `retained_sessions` and only catalog-confirmed `missing_keys`. Persist accepted aliases per host. Never infer absence from a window miss or scanner/transport failure. This closes the pane-exit plus daemon-restart gap in the October 24 alias fix; the authoritative contract and acceptance matrix are in [Retained session reconciliation](../REMOTE_KNOWLEDGE_BASE.md#retained-session-reconciliation-owner-approved-2026-10-27).
+
 搜索走已有的按关键词查询（不限于当前窗口），不要为此做滚动分页。闲置会话被截在窗口外时，用搜索找，不在首屏把几百条都拉下来。搜索命中只用于当前筛选画面，**禁止写回该开发机落盘的列表窗口**。
 
 带条数上限、没有关键词的列会话仍是全表前 N 条（旧契约）；手机当前页窗口是默认不加条数上限的那条路。禁止为了「统一」把前者改成窗口。

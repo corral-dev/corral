@@ -287,6 +287,18 @@ class RemoteServiceTests(unittest.TestCase):
         self._call(connection, protocol.M_PAIR, {"code": code})
         return connection
 
+    def test_list_and_watch_forward_retained_keys_even_when_window_unchanged(self):
+        connection = self._paired()
+        expected = {"unchanged": True, "retained_sessions": [], "missing_keys": ["opencode:old"]}
+        snapshot = mock.Mock(return_value=expected)
+        self.hub.list_snapshot = snapshot
+        for method in (protocol.M_SESSIONS_LIST, protocol.M_SESSIONS_WATCH):
+            with self.subTest(method=method):
+                reply = self._call(connection, method, {"since_version": "v1", "retained_keys": ["opencode:old"]})
+                self.assertTrue(reply["ok"])
+                self.assertEqual(reply["d"], expected)
+                snapshot.assert_called_with(query="", limit=0, since_version="v1", retained_keys=["opencode:old"])
+
     def test_duplicate_watch_does_not_double_count(self):
         connection = self._paired()
         self._call(connection, protocol.M_SESSIONS_WATCH)
