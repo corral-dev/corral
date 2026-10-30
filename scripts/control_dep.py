@@ -6,13 +6,11 @@ the pin (VERSION / artifact URL / digest); ``pyproject.toml`` and the install
 paths mirror the generated fields verbatim once the coordinator publishes the
 versioned immutable artifact.
 
-Status: the upstream artifact is NOT yet published. There is no downloadable
-wheel URL or digest to pin, so every helper that would emit one fails loudly
-instead of inventing an artifact. The coordinator publishes the artifact, then
-fills in WHEEL_URL / WHEEL_SHA256 below (and nothing else needs a code
-change: dev-env, install.sh and verify_clean_install.py already branch on
-this pin). A relative path / PYTHONPATH / editable install is development
-only and never the final consumer dependency.
+Status: the upstream artifact is published as a versioned GitHub Release
+wheel (v0.1.0, x0c/agent-session-control). The pin below is the single
+source of truth; `pyproject.toml` and the install paths mirror the
+generated fields verbatim. A relative path / PYTHONPATH / editable
+install is development only and never the final consumer dependency.
 
 FINAL-PIN HOOK (for the coordinator, after publication):
   1. Set WHEEL_URL / WHEEL_SHA256 below (keep VERSION in sync).
@@ -34,8 +32,13 @@ VERSION = "0.1.0"
 PACKAGE = "agent-session-control"
 # No published artifact yet (private source repo only). The coordinator
 # publishes the versioned wheel, then fills URL + sha256 here.
-WHEEL_URL: str | None = None
-WHEEL_SHA256: str | None = None
+WHEEL_URL: str | None = (
+    "https://github.com/x0c/agent-session-control/releases/download/"
+    "v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"
+)
+WHEEL_SHA256: str | None = (
+    "622c239093d08b7a56de22ecce7ca612cb6743387b57dbdcaa5507c60ed73f62"
+)
 REQUIRES = f"{PACKAGE}>={VERSION}"
 
 
