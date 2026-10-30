@@ -150,6 +150,7 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 6. **高级操作分流。** 弹窗第一项「导出会话」写 `corral.share/v1` 到 `~/.cache/corral/share/`（尊重 `CORRAL_CACHE_DIR`）并把绝对路径复制到剪贴板，不启动会话、不改原历史。第二项「分叉会话」走同助手分叉（官方分叉或磁盘复制）。第三项「重启会话」结束卡住的托管进程后按原会话原地恢复（上下文保留；仅对正托管且非占位的会话可用，其余置灰；菜单选定后立刻执行，不再二次确认）。其后每个助手（含来源自身）的文案都是“读取来源历史后新建会话”；同助手另起给原会话卡住 / 出 bug 用。默认优先选择第一个可用的其他助手接力，没有可用目标时才回到来源助手。真正的原生恢复只走侧边栏回车。**界面内嵌时，分叉与接力新建默认在源会话旁加一格分屏**（与顶栏“加助手”同路径）。满格时提示上限，不静默覆盖。
 7. **空白就是空白。** 空白新建会话不得出现历史路径、对话摘录或接力提示词，也不得借用已选会话的 ID。
 8. **直启是透传。** 用户显式给出的参数应保持顺序和内容；直启不使用历史会话的工作目录，也不额外加入模型配置等隐式行为。
+9. **接力成功后必须通知源会话停工（best-effort，2026-10-30）。** 新会话可用后，向仍在托管的源会话注入固定英文一句话（`corral/handoff_notice.py` 的 `HANDOFF_SOURCE_NOTICE`）：已交接、这只是告知、立即停止一切工作、仅回复 `received`。回固定单词是为了不让源 Agent 自作多情再思考浪费 token。实现约束：只在接力新建成功后触发（原生恢复 / 重启 / 分叉 / 空白新建一律不通知）；源无 `keepalive_name`、已死、无 tmux 或注入失败一律静默返回，绝不能阻断或报错已成功的新会话；先按源运行时 `interrupt_keys` 尽力打断再粘贴 + 回车，粘贴失败则不补回车（避免误提交用户半截输入）。三端同一语义：TUI（`host_controller` 后台 worker）、手机远程（`remote/sessions.py::handoff_session`）、终端接管（`cli.py::_launch` exec 前）。
 
 For session namespaces and cross-runtime resume evidence, see the shared [association guidance](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#association-needs-owned-fresh-evidence).
 

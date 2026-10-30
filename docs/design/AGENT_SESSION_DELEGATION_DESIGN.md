@@ -8,6 +8,62 @@ The outcome below is adopted. The shipped command authority is `corral describe 
 `corral describe run create`;
 the baseline findings below describe the pre-control 0.24.335 release.
 
+## Reusable control extraction and ACP (owner-approved 2026-10-30)
+
+The owner authorized parallel OpenCode implementation of a standalone reusable
+session-control library, Corral consumption of that library, and an ACP-facing
+adapter based on existing control capabilities, with sufficient automated and
+real-path tests. This is implementation authorization, not an ACP-only research
+exercise. The initial independent repository is `~/Codes/AgentSessionControl`;
+its `AGENTS.md`, `docs/DESIGN.md`, and `docs/CONTRACT.md` own the host-neutral
+implementation and public contract.
+
+Generic launch/resume plans, verified terminal input, cancellation/lifecycle,
+operation storage, idempotency, supervision and evidence correlation move to the
+independent control layer. Corral retains target-selection and handoff policy,
+managed identity/claim integration, user defaults, UI/layout, notifications,
+transport/pairing and product-specific adapters. Native history interpretation
+remains exclusively SessKit-owned. Neither shared library may import Corral.
+Corral must consume the extracted implementation rather than retaining a second
+parser, controller or executor. Staged migration must preserve published CLI
+contracts and installed hosting behavior; unfinished migration is not acceptance.
+
+The former prohibition on ACP in the October 20 design is superseded only for
+this new outward-facing, optional protocol adapter. Corral's ordinary control
+path is not being silently rerouted through vendor ACP/SDK backends. Reuse the
+existing hosted-terminal path and launch arguments, and expose unsupported
+operations honestly. The library must work without Corral configuration, remote
+pairing, Textual, a relay, or an automatically started network listener.
+
+Protocol roles, baseline/optional capability semantics, released schema versus
+SDK coverage and controller-adapter obligations are owned by the shared
+[ACP guide](~/.config/agentsync/docs/ACP_KNOWLEDGE_BASE.md#released-schema-and-sdk-coverage).
+The library's `docs/ACP.md` owns the selected `schema-v1.27.0` / Python SDK
+0.12.1 baseline, runtime matrix and actual acceptance limits; these version
+choices are not proof of complete backend conformance.
+
+Acceptance includes public API and JSON CLI behavior, a real ACP stdio client,
+latest-schema compatibility, prompt/update/finality ordering, cancellation,
+optional capability honesty, resource links and session MCP configuration,
+reconnect/recovery without uncertain replay, cross-process input ownership,
+clean installation and a consumer outside Corral. Supported runtime/profile
+coverage must be explicit, including unavailable login/quota/platform paths.
+No real user history or active hosted session may be mutated for tests.
+
+Extraction acceptance remains pending: focused shared-core/control regressions
+and reviewed wrapper delegation do not establish a complete installed host,
+versioned dependency handoff or full ACP runtime pass. Preserve the current
+worker/review evidence under the task's private development directory and the
+active TASKBOARD; do not convert source-level fixes or ended worker runs into
+release claims. Public protocol `resource_link` and lossless message/tool-result
+paths must not inherit Corral's bounded query projections. Legacy store location,
+markers, actor and supervisor identity remain compatibility obligations.
+
+Reusable ownership, recovery and reader-lifetime remedies are in the
+[session integration guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#controlled-execution-ownership-and-recovery);
+fixture confidentiality and failure/skip classification are in the
+[workspace environment guide](~/.config/agentsync/docs/AGENT_WORKSPACE_ENVIRONMENT_GUIDE.md#secret-safe-fixtures-and-external-run-limits).
+
 ## 1. Requested outcome and ownership
 
 An agent reviewing code must be able to find the historical session responsible for
@@ -25,25 +81,26 @@ does not require or fabricate a source session. Both entry paths are first-class
 Corral middleware capabilities; neither depends on runtime-native agent teams,
 subagents, messaging, background-session managers or orchestration APIs.
 
-Owner clarification (2026-10-20): this capability belongs to the Corral middle
-layer and must be decoupled from the coding agents. Corral owns the unified
-control/monitoring contract, hosting, input delivery, queue, operation state and
-result correlation. Do not depend on Claude cross-session messaging, per-vendor
-SDKs, ACP or vendor-specific control APIs for this workflow. Ordinary executable
-launch/resume arguments remain in the existing runtime adapters; observation
-consumes SessKit's normalized history. Runtime-specific readiness/composer/key
-differences remain bounded adapter details, not separate orchestration systems.
+Historical owner clarification (2026-10-20): control must be decoupled from the
+coding agents and originally lived in the Corral middle layer, using hosted input
+and SessKit observation rather than Claude peer messaging or vendor-specific
+orchestration. The October 30 authorization above supersedes that implementation
+ownership: generic control/queue/state/correlation moves to the independent
+library, with an optional outward ACP adapter. Corral's ordinary path keeps its
+host integration and does not silently switch to vendor ACP/SDK execution.
 
 This requirement supersedes the former product-wide ban on agent-driven session
 control. Existing query commands remain queries; generating a continuation plan
 does not authorize its automatic execution. Do not silently add execution to
 `search`, `show`, `context`, or `plan continue`.
 
-Corral owns target selection, native resume, hosting, instruction delivery,
-operation identity, permissions, audit, supervision and result presentation.
-SessKit owns native history interpretation, incremental readers, typed events,
-turns and outcome evidence. The current dependency already supplies the reusable
-reading primitives; this feature does not by itself justify a SessKit change.
+Corral owns target selection, launch/resume/handoff and permission policy,
+managed-host integration and result presentation. The independent control
+library owns the extracted generic mechanisms and audit/supervision; Corral
+consumes them through explicit adapters. SessKit owns native history
+interpretation, incremental readers, typed events, turns and outcome evidence.
+The current dependency already supplies the reusable reading primitives; this
+feature does not by itself justify a SessKit change.
 Any demonstrated missing native evidence must be fixed upstream, released and pinned.
 
 Native resume preserves the runtime's stored conversation, subject to its own

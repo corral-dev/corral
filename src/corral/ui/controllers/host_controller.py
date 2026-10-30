@@ -248,6 +248,20 @@ class HostControllerMixin:
         self._persist_split_composition()
         self._begin_attention_read(corral.session_key(current))
         self.call_next(self._rebuild_list, select_key)
+        if (
+            isinstance(request, corral.LaunchRequest)
+            and not native_resume
+            and not getattr(request, "copy_session", False)
+        ):
+            # 接力新建成功：源会话仍在跑但已不知情，后台尽力通知它停工。
+            # 主线程只起 worker，tmux 阻塞 I/O 不许冻住界面。
+            try:
+                self._notify_handoff_source_worker(
+                    dict(request.session),
+                    str(request.session.get("source") or ""),
+                )
+            except Exception:  # noqa: BLE001 通知纯 best-effort，不影响已成功的接力
+                pass
         # 托管刚成功：pid 快照变化让下一次签名必穿，全量重扫（秒级）会和
         # 首帧抓取抢 GIL。退避一轮，让首帧先上屏（见主屏刷新循环与
         # REFRESH_HOST_COOLDOWN；不是拉长间隔，下一轮自然补扫）。
@@ -258,6 +272,25 @@ class HostControllerMixin:
 
             self._refresh_cooldown_until = _time.monotonic() + REFRESH_HOST_COOLDOWN
         except Exception:  # noqa: BLE001 退避失败不该影响托管收尾
+            pass
+
+    @work(thread=True, group="host")
+    def _notify_handoff_source_worker(self, source_session: dict, source_runtime_id: str) -> None:
+        """后台通知被接力的源会话：英文一句话，告知已交接、立即停工、仅回 received。
+
+        跑在 host 线程组：interrupt 间隙与 paste/Enter 都是阻塞 tmux 调用，
+        不许占用主线程。任何失败静默吞掉——新会话已经可用，源通知绝不能
+        反过来报错或弹提示。
+        """
+        try:
+            runtime = self.store.registry.get(source_runtime_id)
+        except Exception:  # noqa: BLE001 未注册来源也照样投递正文
+            runtime = None
+        try:
+            from corral.handoff_notice import notify_handoff_source
+
+            notify_handoff_source(source_session, runtime)
+        except Exception:  # noqa: BLE001 best-effort，见模块 docstring
             pass
 
     def _embed_open_shell(self, cwd: str) -> None:

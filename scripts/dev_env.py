@@ -18,6 +18,7 @@ SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 RUFF_VERSION = "0.16.1"
 PYTEST_VERSION = "9.1.1"
 _RECEIPT_NAME = "sesskit-install-receipt.json"
+_CONTROL_RECEIPT_NAME = "control-install-receipt.json"
 _PROJECTS = {
     "corral": {"package": "corral", "runtime": ("textual", "websockets", "sesskit")},
     "sesskit": {"package": "sesskit", "runtime": ()},
@@ -219,6 +220,76 @@ def _sesskit_pin() -> dict[str, str] | None:
     return values if all(isinstance(value, str) and value for value in values.values()) else None
 
 
+def _control_pin() -> dict[str, str] | None:
+    """Read the agent-session-control pin; None until the coordinator publishes it.
+
+    Mirrors :func:`_sesskit_pin`. The incomplete pin (no URL/digest yet) is a
+    pending-publication state, never a fabricated artifact.
+    """
+    pin_file = SCRIPT_ROOT / "scripts" / "control_dep.py"
+    if not pin_file.is_file():
+        return None
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(pin_file), "json"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+        payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    values = {
+        "version": payload.get("version"),
+        "url": payload.get("wheel_url"),
+        "sha256": payload.get("wheel_sha256"),
+    }
+    return values if all(isinstance(value, str) and value for value in values.values()) else None
+
+
+def _control_receipt_path(repo: Path) -> Path:
+    return _log_dir(repo) / _CONTROL_RECEIPT_NAME
+
+
+def _read_control_receipt(repo: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(_control_receipt_path(repo).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _probe_dist(repo: Path, dist_name: str) -> dict[str, Any] | None:
+    """Probe one installed distribution without gating readiness on it."""
+    python = _venv_python(repo)
+    if not python.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [str(python), "-c", _probe_code("corral", (dist_name,))],
+            cwd=repo,
+            env=_python_env(repo),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return (payload.get("packages") or {}).get(dist_name)
+
+
 def _probe_code(package: str, runtime_packages: tuple[str, ...]) -> str:
     return "\n".join(
         (
@@ -418,6 +489,33 @@ def _write_receipt(
     return path
 
 
+def _write_control_receipt(
+    repo: Path, pin: dict[str, str], installed_version: str | None, direct_url: dict[str, Any] | None
+) -> Path:
+    """Install receipt for the published control wheel; separate file, same shape."""
+    path = _control_receipt_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pin_version": pin["version"],
+                "pin_url": pin["url"],
+                "pin_sha256": pin["sha256"],
+                "installed_version": installed_version,
+                "installed_source_url": (direct_url or {}).get("url"),
+                "installer": "uv pip install --force-reinstall --no-deps with #sha256 fragment",
+                "installer_verified": True,
+                "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
     repo, project_name, project_version = validate_repo(repo_value)
     uv_path = shutil.which("uv")
@@ -465,6 +563,23 @@ def doctor(repo_value: str) -> tuple[dict[str, Any], bool]:
         verdict = _artifact_verdict(pin, sesskit, _read_receipt(repo))
         package_checks["sesskit_pin"] = verdict
         runtime_ok = runtime_ok and verdict["version_matches"] and verdict["published_artifact_matches"]
+        cpin = _control_pin()
+        if cpin:
+            installed_control = _probe_dist(repo, "agent-session-control")
+            cverdict = _artifact_verdict(cpin, installed_control, _read_control_receipt(repo))
+            package_checks["control_pin"] = cverdict
+            runtime_ok = runtime_ok and cverdict["version_matches"] and cverdict["published_artifact_matches"]
+        else:
+            # Unpublished: informational only, never a readiness blocker and
+            # never a fabricated pin. Dev testing uses the local test wheel
+            # (scripts/control_dep.py test-wheel); the strict gate activates
+            # automatically once the coordinator publishes URL+digest.
+            package_checks["control_pin"] = {
+                "status": "pending_publication",
+                "expected_version": None,
+                "expected_sha256": None,
+                "digest_verified": False,
+            }
 
     lock = _lock_status(repo, project_name, uv_path)
     warnings: list[str] = []
@@ -683,6 +798,34 @@ def _prepare(repo: Path, project_name: str, python: str | None) -> tuple[bool, P
                 repo, pin, installed_sesskit.get("version"), installed_sesskit.get("direct_url")
             )
             logs.append(_relative_log(receipt_path, repo))
+        cpin = _control_pin()
+        if not cpin:
+            logs.append(
+                "control artifact unpublished: verified install skipped "
+                "(dev testing uses scripts/control_dep.py test-wheel with an explicit local build)"
+            )
+        else:
+            installed_control = _probe_dist(repo, "agent-session-control") or {}
+            if _artifact_verdict(cpin, installed_control, _read_control_receipt(repo))["digest_verified"]:
+                logs.append("control digest evidence already held; installer skipped (no churn)")
+            else:
+                requirement = f"agent-session-control @ {cpin['url']}#sha256={cpin['sha256']}"
+                install = [
+                    uv_path, "pip", "install", "--python", str(_venv_python(repo)),
+                    "--force-reinstall", "--no-deps", requirement,
+                ]
+                code, log_path, tail = _run_logged(install, repo=repo, env=env)
+                logs.append(_relative_log(log_path, repo))
+                if code:
+                    return False, log_path, f"verified control install failed (exit {code}); {tail[-400:]}"
+                installed_control = _probe_dist(repo, "agent-session-control") or {}
+                fresh = _artifact_verdict(cpin, installed_control, None)
+                if not (fresh["version_matches"] and fresh["source_url_matches"]):
+                    return False, log_path, "install succeeded but metadata does not match the pin"
+                receipt_path = _write_control_receipt(
+                    repo, cpin, installed_control.get("version"), installed_control.get("direct_url")
+                )
+                logs.append(_relative_log(receipt_path, repo))
     summary = f"Prepared {project_name} using its locked dependencies and checkout .venv. Logs: {', '.join(logs)}"
     return True, log_path, summary
 
@@ -715,6 +858,17 @@ def _plan_prepare(repo: Path, project_name: str, python: str | None) -> tuple[li
             )
         else:
             reasons.append("the repository-pinned SessKit artifact could not be read")
+        cpin = _control_pin()
+        if cpin:
+            steps.append(
+                f"one digest-checked install of the pinned control {cpin['version']} wheel "
+                "only when no digest evidence exists, then record an install receipt"
+            )
+        else:
+            steps.append(
+                "control artifact unpublished: verified install skipped "
+                "(dev testing uses scripts/control_dep.py test-wheel)"
+            )
     return steps, reasons
 
 

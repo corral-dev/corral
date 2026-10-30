@@ -97,6 +97,18 @@ def _launch(request: LaunchRequest | NewSessionRequest, registry: RuntimeRegistr
             and not request.force_new
             and not request.copy_session
         )
+        if not native_resume and not request.copy_session:
+            # 接力新建：计划已生成（源历史可用），exec 接管前尽力告知源会话停工。
+            try:
+                from corral.handoff_notice import notify_handoff_source
+
+                try:
+                    source_runtime = registry.get(str(request.session.get("source") or ""))
+                except Exception:
+                    source_runtime = None
+                notify_handoff_source(dict(request.session), source_runtime)
+            except Exception:
+                pass
         ident = request.session["id"] if native_resume else keepalive.new_session_ident()
     else:
         plan = registry.build_new_session_plan(request)

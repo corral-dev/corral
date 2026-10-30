@@ -2,47 +2,118 @@
 
 Execution goes through Corral's hosted terminals (``SessionHub``); observation
 consumes SessKit's normalized activity. No vendor control API is involved.
+
+Run/message identity and evidence correlation are the shared implementation
+(:mod:`agent_session_control.correlation`, selected here with Corral's legacy
+``Corral`` marker namespace). What stays Corral-owned: exact target
+selection, admission policy, launch arguments, caller identity and the
+adapter-backed host profiles consumed through the shared port.
 """
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 
-from corral.control_store import EXIT_NOT_FOUND, EXIT_USAGE, ControlError, digest
+from agent_session_control import correlation as _correlation
+from agent_session_control.correlation import (
+    MAX_PROMPT_CHARS,
+    build_result,
+    compact_event,
+)
+from agent_session_control.correlation import (
+    validate_prompt as _shared_validate_prompt,
+)
+from agent_session_control.errors import EXIT_NOT_FOUND, EXIT_USAGE, ControlError
+
+from corral.control_store import digest
 from corral.models import session_key
 from corral.runtime.registry import ACTIVE_RUNTIME_IDS
 
-MAX_PROMPT_CHARS = 100_000
+__all__ = [
+    "ACTIVE_RUNTIME_IDS",
+    "MARKER_NAMESPACE",
+    "MAX_PROMPT_CHARS",
+    "build_result",
+    "caller_identity",
+    "compact_event",
+    "control_capability",
+    "control_profile",
+    "correlate",
+    "fresh_plan",
+    "host_runtime_profiles",
+    "library_create_plan",
+    "library_resume_plan",
+    "marker",
+    "marker_with_namespace",
+    "own_message",
+    "own_message_with_namespace",
+    "resolve_target",
+    "self_target",
+    "target_payload",
+    "validate_directory",
+    "validate_prompt",
+    "wire_prompt",
+    "wire_prompt_with_namespace",
+]
+
+#: Legacy wire namespace of the visible run/message envelope. This is Corral's
+#: own historical value (predates the library); the library default stays
+#: neutral and Corral selects this explicitly at every call site below.
+MARKER_NAMESPACE = "Corral"
+
 _RESOLVE_DEPTH = 200
-_EVENT_TEXT_LIMIT = 1_200
-_RESULT_TEXT_LIMIT = 20_000
-_MARKER = re.compile(r"\[Corral run=(run_[0-9a-f]+) message=([\w-]+)\]")
 
 
 def marker(run_id: str, message_id: str) -> str:
-    return f"[Corral run={run_id} message={message_id}]"
+    """Thin facade: shared marker with Corral's legacy namespace."""
+    return _correlation.marker(run_id, message_id, namespace=MARKER_NAMESPACE)
 
 
 def wire_prompt(run_id: str, message_id: str, prompt: str) -> str:
-    """The visible envelope lets SessKit evidence prove which run an input belongs to."""
-    return f"{prompt}\n\n{marker(run_id, message_id)}"
+    """Thin facade: shared envelope with Corral's legacy namespace."""
+    return _correlation.wire_prompt(run_id, message_id, prompt, namespace=MARKER_NAMESPACE)
+
+
+def own_message(text: str | None, run_id: str) -> str | None:
+    """Thin facade: shared ownership match with Corral's legacy namespace.
+
+    Only a new normalized user event may establish input recording; callers
+    enforce the user-message restriction in :func:`correlate`. A non-legacy
+    namespace never matches the legacy wire marker.
+    """
+    return _correlation.own_message(text, run_id, namespace=MARKER_NAMESPACE)
+
+
+def marker_with_namespace(run_id: str, message_id: str, *, namespace: str = MARKER_NAMESPACE) -> str:
+    return _correlation.marker(run_id, message_id, namespace=namespace)
+
+
+def wire_prompt_with_namespace(run_id: str, message_id: str, prompt: str, *, namespace: str = MARKER_NAMESPACE) -> str:
+    return _correlation.wire_prompt(run_id, message_id, prompt, namespace=namespace)
+
+
+def own_message_with_namespace(text: str | None, run_id: str, *, namespace: str = MARKER_NAMESPACE) -> str | None:
+    return _correlation.own_message(text, run_id, namespace=namespace)
+
+
+def correlate(events: list, turns: list, run_id: str, baseline_seq: int) -> dict:
+    """Thin facade: shared correlation with Corral's legacy namespace.
+
+    Inputs from anyone else inside the bound range make attribution ``mixed``.
+    Markers quoted in assistant or tool output never count as delivery.
+    """
+    return _correlation.correlate(events, turns, run_id, baseline_seq, namespace=MARKER_NAMESPACE)
 
 
 def validate_prompt(text: str) -> str:
-    if not text or not text.strip():
-        raise ControlError("usage_error", "The prompt is empty.", EXIT_USAGE)
-    if "\x00" in text:
-        raise ControlError("usage_error", "The prompt contains a NUL byte.", EXIT_USAGE)
-    if len(text) > MAX_PROMPT_CHARS:
-        raise ControlError("usage_error", f"The prompt exceeds {MAX_PROMPT_CHARS} characters.", EXIT_USAGE,
-                           hint="Write long material to a file in the project and reference its path in the brief.")
-    return text
+    """Thin facade: shared prompt validation (same limits, codes and hint)."""
+    return _shared_validate_prompt(text)
 
 
 def caller_identity() -> dict:
     """The calling agent as Corral knows it; hosted panes export their own identity."""
+    import os
+
     from corral.legacy_names import getenv
 
     runtime = getenv("RUNTIME") or None
@@ -58,17 +129,29 @@ def resolve_target(registry, ref: str) -> dict:
     """Resolve one complete ``runtime:id`` without recency guessing."""
     runtime_id, sep, ident = str(ref or "").partition(":")
     if not sep or not ident:
-        raise ControlError("usage_error", "Control writes need a complete runtime:id reference.", EXIT_USAGE,
-                           hint="Copy runtime and id from search/show output, e.g. claude:<full-session-id>.")
+        raise ControlError(
+            "usage_error",
+            "Control writes need a complete runtime:id reference.",
+            EXIT_USAGE,
+            hint="Copy runtime and id from search/show output, e.g. claude:<full-session-id>.",
+        )
     if runtime_id not in ACTIVE_RUNTIME_IDS:
-        raise ControlError("usage_error", f"Unsupported runtime: {runtime_id}", EXIT_USAGE,
-                           hint="Supported runtimes: " + ", ".join(sorted(ACTIVE_RUNTIME_IDS)))
+        raise ControlError(
+            "usage_error",
+            f"Unsupported runtime: {runtime_id}",
+            EXIT_USAGE,
+            hint="Supported runtimes: " + ", ".join(sorted(ACTIVE_RUNTIME_IDS)),
+        )
     runtime = registry.get(runtime_id)
     sessions = runtime.scan_sessions(_RESOLVE_DEPTH, keep_ids={ident})
     matches = [s for s in sessions if s.get("id") == ident]
     if len(matches) != 1:
-        raise ControlError("not_found", f"No session has the exact reference {ref}.", EXIT_NOT_FOUND,
-                           hint="Prefixes are not accepted for writes; use the full id from search or show.")
+        raise ControlError(
+            "not_found",
+            f"No session has the exact reference {ref}.",
+            EXIT_NOT_FOUND,
+            hint="Prefixes are not accepted for writes; use the full id from search or show.",
+        )
     from corral import liveness
 
     liveness.annotate(matches)
@@ -87,11 +170,22 @@ def control_capability(session: dict) -> tuple[str, str]:
 def target_payload(session: dict) -> dict:
     mode, reason = control_capability(session)
     ref = session_key(session)
-    stable = {"session_ref": ref, "cwd": str(session.get("cwd") or ""), "history": str(session.get("path") or ""),
-              "host": session.get("keepalive_name") or None, "mode": mode}
-    return {"session_ref": ref, "runtime": session.get("source"), "cwd": stable["cwd"],
-            "history_path": stable["history"], "control": mode, "control_reason": reason,
-            "version": "t1:" + digest(stable)[:20]}
+    stable = {
+        "session_ref": ref,
+        "cwd": str(session.get("cwd") or ""),
+        "history": str(session.get("path") or ""),
+        "host": session.get("keepalive_name") or None,
+        "mode": mode,
+    }
+    return {
+        "session_ref": ref,
+        "runtime": session.get("source"),
+        "cwd": stable["cwd"],
+        "history_path": stable["history"],
+        "control": mode,
+        "control_reason": reason,
+        "version": "t1:" + digest(stable)[:20],
+    }
 
 
 def validate_directory(value: str) -> str:
@@ -113,9 +207,12 @@ def fresh_plan(runtime, cwd: str, model: str | None):
         try:
             plan = runtime.with_model(plan, model)
         except LaunchError as exc:
-            raise ControlError("model_selection_unsupported", str(exc), EXIT_USAGE,
-                               hint="Omit --model to inherit the runtime's own default, or pick another runtime.") \
-                from exc
+            raise ControlError(
+                "model_selection_unsupported",
+                str(exc),
+                EXIT_USAGE,
+                hint="Omit --model to inherit the runtime's own default, or pick another runtime.",
+            ) from exc
     return plan
 
 
@@ -124,103 +221,167 @@ def self_target(session: dict, caller: dict) -> bool:
     return bool(caller.get("pane_ident")) and name.endswith("-" + str(caller["pane_ident"]))
 
 
-# -- correlation -----------------------------------------------------------------
+# -- shared-library plan delegation -------------------------------------------
+#
+# Pure adapters mapping the locked ``agent_session_control`` runtime contract
+# onto Corral's adapter-owned launch arguments. No process is started, no
+# history is scanned and no global runtime configuration is changed. The
+# generic plan shape is the library's; every argv rule stays in the runtime
+# adapters (host-owned), including product-default approval flags, Pi hosted
+# identity binding and per-adapter model/session-id support.
 
 
-def own_message(text: str | None, run_id: str) -> str | None:
-    return next((match.group(2) for match in _MARKER.finditer(text or "")
-                 if match.group(1) == run_id), None)
+def control_profile(runtime) -> dict:
+    """Host-owned capability profile for one runtime adapter.
 
-
-def _trim(text: str | None, limit: int) -> str | None:
-    if text is None:
-        return None
-    text = str(text)
-    return text if len(text) <= limit else text[:limit] + f"… [{len(text) - limit} more chars]"
-
-
-def compact_event(event) -> dict:
-    out = {"type": event.type, "native_seq": event.seq, "ts": event.ts}
-    if event.text:
-        out["text"] = _trim(event.text, _EVENT_TEXT_LIMIT)
-    if event.name:
-        out["tool"] = event.name
-    if event.call_id:
-        out["call_id"] = event.call_id
-    if event.result is not None:
-        out["result"] = getattr(event.result, "status", None)
-    if event.error is not None:
-        out["error"] = {"kind": getattr(event.error, "kind", None),
-                        "message": _trim(getattr(event.error, "message", None), 400)}
-    if event.interaction is not None:
-        out["interaction"] = {"purpose": event.interaction.purpose, "resolution": event.interaction.resolution,
-                              "request_id": event.interaction.request_id}
-    return out
-
-
-def correlate(events: list, turns: list, run_id: str, baseline_seq: int) -> dict:
-    """Bind this run's own inputs (marker after the baseline) to their native turns.
-
-    Inputs from anyone else inside the bound range make attribution ``mixed``.
-    Markers quoted in assistant or tool output never count as delivery.
+    Prefers the adapter's own :meth:`control_profile` so third-party adapters
+    without it still get an honest profile derived from public attributes.
     """
-    fresh = [e for e in events if e.seq > baseline_seq]
-    own = {e.seq: own_message(e.text, run_id) for e in fresh if e.type == "user_message"}
-    own = {seq: mid for seq, mid in own.items() if mid}
-    if not own:
-        return {"recorded": False}
-    first = min(own)
-    last_own = max(own)
-    turn = next((t for t in turns if t.start_seq <= last_own <= t.end_seq), None)
-    end = turn.end_seq if turn else max(e.seq for e in fresh)
-    selected = [e for e in fresh if first <= e.seq <= end]
-    foreign = [e for e in selected if e.type == "user_message" and e.seq not in own and (e.text or "").strip()]
-    pending = [e for e in selected if e.interaction is not None and e.interaction.resolution == "pending"]
+    profile = getattr(runtime, "control_profile", None)
+    if callable(profile):
+        return profile()
     return {
-        "recorded": True,
-        "messages": sorted(set(own.values())),
-        "first_seq": first, "end_seq": end,
-        "turn_id": turn.turn_id if turn else None,
-        "outcome": turn.outcome.status if turn else "in_progress",
-        "outcome_evidence": turn.outcome.evidence.origin if turn else "unknown",
-        "outcome_error": _trim(getattr(turn.outcome.error, "message", None), 400) if turn and turn.outcome.error
-        else None,
-        "attribution": "mixed" if foreign else "correlated",
-        "current_turn": not any(e.type == "user_message" and e.seq > end for e in fresh),
-        "pending_interaction": bool(pending),
-        "events": selected,
+        "runtime": getattr(runtime, "id", "?"),
+        "display_name": getattr(runtime, "display_name", "") or "",
+        "executable": getattr(runtime, "executable", "") or "",
+        "executable_aliases": tuple(getattr(runtime, "executable_aliases", ()) or ()),
+        "available": bool(runtime.is_available()) if hasattr(runtime, "is_available") else False,
+        "interrupt_keys": tuple(getattr(runtime, "interrupt_keys", ("Escape",))),
+        "auto_approve_args": tuple(getattr(runtime, "auto_approve_args", ()) or ()),
+        "model_supported": getattr(runtime, "model_flag", None) is not None,
+        "session_id_supported": getattr(runtime, "session_id_flag", None) is not None,
+        "continue_supported": False,
+        "fork_supported": False,
+        "mcp_supported": False,
     }
 
 
-def build_result(observation: dict) -> dict:
-    events = observation.get("events") or []
-    replies = [e for e in events if e.type == "assistant_message" and (e.text or "").strip()]
-    tools = [e for e in events if e.type == "tool_call"]
-    errors = [compact_event(e) for e in events if e.error is not None]
-    usage = {}
-    models = []
-    for event in events:
-        if event.usage is None:
-            continue
-        if event.usage.model:
-            models.append(event.usage.model)
-        for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
-            value = getattr(event.usage, field, None)
-            if isinstance(value, (int, float)):
-                usage[field] = usage.get(field, 0) + value
-    stamps = [e.ts for e in events if e.ts]
-    return {
-        "final_response": _trim(replies[-1].text, _RESULT_TEXT_LIMIT) if replies else None,
-        "assistant_messages": len(replies),
-        "tool_calls": len(tools),
-        "tools_used": sorted({e.name for e in tools if e.name}),
-        "errors": errors[-10:],
-        "usage": usage or None,
-        "observed_models": sorted(set(models)),
-        "started_at": min(stamps) if stamps else None,
-        "finished_at": max(stamps) if stamps else None,
-        "turn_id": observation.get("turn_id"),
-        "attribution": observation.get("attribution"),
-        "outcome_evidence": observation.get("outcome_evidence"),
-        "acceptance": "unverified",
-    }
+def _reject_mcp(mcp_servers) -> None:
+    if mcp_servers:
+        raise ControlError(
+            "mcp_unsupported",
+            "Per-session MCP configuration is not supported by Corral plans.",
+            EXIT_USAGE,
+            hint="Launch without mcp_servers; configure the runtime out of band if needed.",
+        )
+
+
+def library_create_plan(
+    runtime,
+    cwd: str,
+    *,
+    model: str | None = None,
+    native_id: str | None = None,
+    auto_approve: bool = False,
+    mcp_servers=(),
+) -> dict:
+    """Pure fresh-launch plan; adapter semantics preserved, nothing executed.
+
+    ``auto_approve`` records the host's explicit approval request. Corral's
+    product default already bakes adapter approval flags into the plan; this
+    function never invents new approval flags and never strips the adapter's
+    own Claude root/sandbox handling. ``native_id`` binds the preassigned
+    native identity (Pi pins ``--session-id`` to its hosted ident); runtimes
+    without session-id support fail instead of silently dropping identity.
+    """
+    _reject_mcp(mcp_servers)
+    plan = fresh_plan(runtime, cwd, model)
+    _ = auto_approve  # annotation only; approval policy stays adapter-owned (see docstring).
+    if native_id:
+        bound = runtime.with_session_id(plan, native_id)
+        if bound is not None:
+            plan = bound
+        elif getattr(runtime, "id", None) == "pi":
+            from corral.runtime.pi import bind_hosted_ident
+
+            plan = bind_hosted_ident(plan, native_id)
+        else:
+            raise ControlError(
+                "session_id_unsupported",
+                f"{getattr(runtime, 'id', '?')} does not accept a preassigned native session id.",
+                EXIT_USAGE,
+                hint="Omit native_id to let the runtime assign identity on first write.",
+            )
+    return {"argv": tuple(plan.argv), "cwd": plan.cwd, "env": {}}
+
+
+def library_resume_plan(runtime, session: dict, *, auto_approve: bool = False, mcp_servers=()) -> dict:
+    """Pure native-resume plan for the exact session mapping; never a blank replacement.
+
+    ``session`` must carry the exact ``id``/``path``/``cwd`` fields; nothing is
+    rescanned to guess it. Missing identity fails rather than creating a new
+    conversation. Adapter resume arguments (including product-default approval
+    flags) are preserved verbatim.
+    """
+    _reject_mcp(mcp_servers)
+    if not isinstance(session, dict) or not session.get("id") or not session.get("path"):
+        raise ControlError(
+            "usage_error",
+            "Resume needs the exact session mapping with id/path/cwd.",
+            EXIT_USAGE,
+            hint="Resolve the session first (search/show), then pass its full record.",
+        )
+    _ = auto_approve  # annotation only; see library_create_plan.
+    plan = runtime.build_resume_plan(session)
+    return {"argv": tuple(plan.argv), "cwd": plan.cwd, "env": {}}
+
+
+class _AdapterProfile:
+    """Library-port profile backed by a Corral runtime adapter.
+
+    Plan construction stays entirely adapter-owned (argv rules, approval
+    flags, model/session-id support, Pi hosted binding); this shim only
+    translates the call shape the shared controller port expects.
+    """
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+        self.id = runtime.id
+
+    @property
+    def interrupt_keys(self):
+        return tuple(getattr(self._runtime, "interrupt_keys", ("Escape",)) or ("Escape",))
+
+    @property
+    def readiness_markers(self):
+        return ()
+
+    @property
+    def composer_region(self):
+        return getattr(self._runtime, "composer_region", None)
+
+    def build_create_plan(self, cwd, *, model=None, auto_approve=False, mcp_servers=()):
+        plan = library_create_plan(self._runtime, cwd, model=model, auto_approve=auto_approve, mcp_servers=mcp_servers)
+        from agent_session_control.runtime import LaunchPlan
+
+        return LaunchPlan(argv=plan["argv"], cwd=plan["cwd"], env=plan["env"])
+
+    def build_resume_plan(self, session, *, auto_approve=False, mcp_servers=()):
+        _reject_mcp(mcp_servers)
+        plan = self._runtime.build_resume_plan(dict(session))
+        from agent_session_control.runtime import LaunchPlan
+
+        return LaunchPlan(argv=tuple(plan.argv), cwd=plan.cwd, env={})
+
+    def describe(self):
+        profile = control_profile(self._runtime)
+        return {
+            "steer": False,
+            "interrupt_keys": list(profile["interrupt_keys"]),
+            "model_selection": bool(profile["model_supported"]),
+            "mcp": "unsupported",
+        }
+
+
+def host_runtime_profiles(registry=None) -> dict:
+    """Adapter-backed profiles for shared-port consumers (never Corral's own launches).
+
+    Corral's ordinary launches keep using the adapters directly; this registry
+    exists so library-port callers (controller, external consumers) get real
+    Corral argv rules instead of generic approximations.
+    """
+    from corral.runtime.registry import ACTIVE_RUNTIME_IDS as _active
+    from corral.runtime.registry import default_registry
+
+    registry = registry or default_registry()
+    return {runtime.id: _AdapterProfile(runtime) for runtime in registry if runtime.id in _active}

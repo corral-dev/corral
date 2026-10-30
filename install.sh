@@ -58,6 +58,22 @@ fi
 echo "正在安装依赖 sesskit ..."
 python3 -m pip install --user --upgrade "$SESSKIT_REQ"
 
+# agent-session-control：与 CI 共用 scripts/control_dep.py 的固定 Release。
+# 产物尚未发布时 control_dep.py 报错，此时跳过（老版本 corral 不需要它）；
+# 发布后此处自动随 pin 安装，顺序同样必须先于 corral 本体。
+CONTROL_REQ=""
+if [ -n "${CORRAL_CONTROL_REQUIREMENT:-}" ]; then
+  CONTROL_REQ="$CORRAL_CONTROL_REQUIREMENT"
+elif command -v python3 >/dev/null 2>&1 && [ -f "$(dirname "$0")/scripts/control_dep.py" ]; then
+  CONTROL_REQ="$(python3 "$(dirname "$0")/scripts/control_dep.py" wheel-requirement 2>/dev/null || true)"
+fi
+if [ -n "$CONTROL_REQ" ]; then
+  echo "正在安装依赖 agent-session-control ..."
+  python3 -m pip install --user --upgrade "$CONTROL_REQ"
+else
+  echo "agent-session-control 产物尚未发布，跳过（当前版本 corral 不需要它）..."
+fi
+
 MACHINE=$(uname -m)
 case "$MACHINE" in
   x86_64|amd64) ARCH="x86_64" ;;

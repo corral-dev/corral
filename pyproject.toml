@@ -41,6 +41,13 @@ dependencies = [
   # Until SessKit is on PyPI, pip/git users install sesskit from GitHub; Homebrew
   # vendors it as a formula resource so offline brew installs still work.
   "sesskit>=0.2.21",
+  # FINAL-PIN HOOK (coordinator, after the agent-session-control wheel is
+  # published): append "agent-session-control>=0.1.0" here plus the
+  # [tool.uv.sources] block from `python3 scripts/control_dep.py
+  # uv-source-table`, then `uv lock`. Until then the line stays out: pip
+  # would fail on PyPI and clean installs must keep working. The pin
+  # authority is scripts/control_dep.py; install.sh, verify_clean_install.py
+  # and dev_env.py already branch on it.
 ]
 
 # 手机端接力（corral remote）需要的额外组件。刻意不进主依赖：只在终端里用 corral

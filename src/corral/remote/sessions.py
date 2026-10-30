@@ -3846,7 +3846,14 @@ class SessionHub:
             plan = target.build_new_plan(handoff)
         except LaunchError as exc:
             raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
-        return self._host(plan, target_runtime_id, f"接力 · {title}", session.get("cwd"))
+        hosted = self._host(plan, target_runtime_id, f"接力 · {title}", session.get("cwd"))
+        try:
+            from corral.handoff_notice import notify_handoff_source
+
+            notify_handoff_source(session, source)
+        except Exception:
+            pass
+        return hosted
 
     def copy_session(self, key: str) -> dict:
         """同助手复制会话：官方分叉优先，否则磁盘克隆后原生恢复。

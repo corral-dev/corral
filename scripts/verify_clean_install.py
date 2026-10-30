@@ -54,6 +54,11 @@ def _resolve_python() -> str:
 def main(argv: list[str] | None = None) -> int:
     import sesskit_dep
 
+    try:
+        import control_dep
+    except ImportError:
+        control_dep = None  # type: ignore[assignment]
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--with-remote",
@@ -63,6 +68,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     sesskit_dep.verify_published_digests()
+    if control_dep is not None:
+        try:
+            control_requirement = control_dep.wheel_requirement()
+        except RuntimeError:
+            control_requirement = None  # unpublished: skipped below, never invented
+    else:
+        control_requirement = None
     python = _resolve_python()
 
     env = _clean_env()
@@ -74,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
         pip = [str(py), "-m", "pip"]
         _run([*pip, "install", "--upgrade", "pip"], env=env)
         _run([*pip, "install", sesskit_dep.wheel_requirement()], env=env)
+        if control_requirement is not None:
+            _run([*pip, "install", control_requirement], env=env)
+        else:
+            print("control artifact unpublished: clean install skips agent-session-control")
         # Install from the working tree like a source user would after cloning.
         extra = ".[remote]" if args.with_remote else "."
         _run([*pip, "install", extra], env=env)
@@ -82,6 +98,13 @@ def main(argv: list[str] | None = None) -> int:
             "assert corral.__version__; "
             "print(corral.__version__, getattr(sesskit, '__version__', 'sesskit'))"
         )
+        if control_requirement is not None:
+            check = (
+                "import corral, corral._native, sesskit, agent_session_control; "
+                "assert corral.__version__; "
+                "print(corral.__version__, getattr(sesskit, '__version__', 'sesskit'), "
+                "agent_session_control.__version__)"
+            )
         if args.with_remote:
             check += "; import cryptography, websockets, segno"
             # NOTE: zeroconf (mDNS broadcast) is an optional part of [remote]:

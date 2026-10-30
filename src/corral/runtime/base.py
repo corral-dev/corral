@@ -97,6 +97,32 @@ class BaseRuntime(ABC):
     # Presses are sent as separate writes (remote session.interrupt).
     interrupt_keys: tuple[str, ...] = ("Escape",)
 
+    def control_profile(self) -> dict:
+        """Pure host-owned capability profile for the shared control layer.
+
+        Maps to the library ``runtime_profile`` contract without importing it:
+        executable aliases, availability, interrupt keys, composer/readiness
+        helpers and explicit capability limitations. No process is started and
+        no history is read. MCP/session-scoped private configuration is not
+        supported through Corral plans (``mcp_supported`` stays False); model
+        and native-id support mirror ``model_flag``/``session_id_flag`` (Pi
+        binds its hosted ident through ``bind_hosted_ident`` instead).
+        """
+        return {
+            "runtime": self.id,
+            "display_name": self.display_name,
+            "executable": self.executable,
+            "executable_aliases": tuple(self.executable_aliases),
+            "available": bool(self.is_available()),
+            "interrupt_keys": tuple(self.interrupt_keys),
+            "auto_approve_args": tuple(self.auto_approve_args),
+            "model_supported": self.model_flag is not None,
+            "session_id_supported": self.session_id_flag is not None or self.id == "pi",
+            "continue_supported": type(self).build_continue_plan is not BaseRuntime.build_continue_plan,
+            "fork_supported": type(self).build_fork_plan is not BaseRuntime.build_fork_plan,
+            "mcp_supported": False,
+        }
+
     def composer_region(self, screen: str) -> str | None:
         """The TUI's own input box on a plain-text pane capture.
 

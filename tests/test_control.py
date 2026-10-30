@@ -7,8 +7,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -17,6 +19,25 @@ from sesskit.models import ActivityEvent, Evidence, Turn, TurnOutcome
 
 from corral import control, control_cli, control_store, control_worker, skill_bundle
 from corral.control_store import ControlError, RunStore
+
+try:
+    from tests.hub_stub import (
+        _append_fixture_row,
+        _ClaudeComposerStub,
+        _FakeHub,
+        _StubCodexRuntime,
+        _StubRuntime,
+        _write_fixture_rows,
+    )
+except ImportError:  # CI discovery / pytest rootdir mode: tests/ itself is on sys.path
+    from hub_stub import (
+        _append_fixture_row,
+        _ClaudeComposerStub,
+        _FakeHub,
+        _StubCodexRuntime,
+        _StubRuntime,
+        _write_fixture_rows,
+    )
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 _EV = Evidence(origin="native")
@@ -41,12 +62,18 @@ class FirstTurnFailureTests(unittest.TestCase):
             path = project / "session.jsonl"
             rows = [
                 {"type": "user", "cwd": str(root), "message": {"content": wire}},
-                {"type": "assistant", "isApiErrorMessage": True, "apiErrorStatus": 401,
-                 "message": {"content": [{"type": "text", "text": "Authentication failed"}]}},
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "apiErrorStatus": 401,
+                    "message": {"content": [{"type": "text", "text": "Authentication failed"}]},
+                },
             ]
             path.write_text("".join(json.dumps(row) + "\n" for row in rows))
-            with mock.patch.object(claude, "PROJECTS_DIR", str(project.parent)), \
-                    mock.patch.object(claude, "_live_session_ids", return_value={}):
+            with (
+                mock.patch.object(claude, "PROJECTS_DIR", str(project.parent)),
+                mock.patch.object(claude, "_live_session_ids", return_value={}),
+            ):
                 sessions = claude.scan_sessions(host=corral_host_extension())
             self.assertEqual([s["id"] for s in sessions], ["session"])
             self.assertTrue(sessions[0]["fallback_title"].startswith(prompt))
@@ -63,8 +90,7 @@ class StoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _create(self, key="k1", prompt="fix it"):
-        return self.store.create("agent:a", key, {"prompt": prompt},
-                                 {"delivery": "accepted", "execution": "queued"})
+        return self.store.create("agent:a", key, {"prompt": prompt}, {"delivery": "accepted", "execution": "queued"})
 
     def test_reads_never_create_storage(self):
         with self.assertRaises(ControlError) as caught:
@@ -110,10 +136,12 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ControlError) as caught:
             self.store.enqueue(run["run_id"], "agent:a", "m1", {"action": "steer", "prompt": "x"}, "v2:stale")
         self.assertEqual(caught.exception.code, "conflict")
-        message, created = self.store.enqueue(run["run_id"], "agent:a", "m1", {"action": "steer", "prompt": "x"},
-                                              run["version"])
-        again, created_again = self.store.enqueue(run["run_id"], "agent:a", "m1",
-                                                  {"action": "steer", "prompt": "x"}, "v2:any")
+        message, created = self.store.enqueue(
+            run["run_id"], "agent:a", "m1", {"action": "steer", "prompt": "x"}, run["version"]
+        )
+        again, created_again = self.store.enqueue(
+            run["run_id"], "agent:a", "m1", {"action": "steer", "prompt": "x"}, "v2:any"
+        )
         self.assertTrue(created)
         self.assertFalse(created_again)
         self.assertEqual(message["message_id"], again["message_id"])
@@ -150,15 +178,26 @@ class CorrelationTests(unittest.TestCase):
     RUN = "run_" + "a" * 32
 
     def _turns(self, *spans, status="completed", origin="native"):
-        return [Turn(turn_id=f"t{i}", index=i, start_seq=a, end_seq=b, user_seq=a,
-                     outcome=TurnOutcome(status=status, evidence=Evidence(origin=origin)))
-                for i, (a, b) in enumerate(spans)]
+        return [
+            Turn(
+                turn_id=f"t{i}",
+                index=i,
+                start_seq=a,
+                end_seq=b,
+                user_seq=a,
+                outcome=TurnOutcome(status=status, evidence=Evidence(origin=origin)),
+            )
+            for i, (a, b) in enumerate(spans)
+        ]
 
     def test_binds_only_own_marker_after_baseline(self):
         old = _event(1, "user_message", control.wire_prompt(self.RUN, "initial", "old copy"))
-        events = [old, _event(2, "assistant_message", "x"),
-                  _event(3, "user_message", control.wire_prompt(self.RUN, "initial", "fix")),
-                  _event(4, "assistant_message", "fixed")]
+        events = [
+            old,
+            _event(2, "assistant_message", "x"),
+            _event(3, "user_message", control.wire_prompt(self.RUN, "initial", "fix")),
+            _event(4, "assistant_message", "fixed"),
+        ]
         result = control.correlate(events, self._turns((1, 2), (3, 4)), self.RUN, baseline_seq=2)
         self.assertTrue(result["recorded"])
         self.assertEqual(result["first_seq"], 3)
@@ -186,9 +225,11 @@ class CorrelationTests(unittest.TestCase):
         self.assertFalse(result["recorded"])
 
     def test_foreign_input_in_bound_turn_is_mixed(self):
-        events = [_event(3, "user_message", control.wire_prompt(self.RUN, "initial", "fix")),
-                  _event(4, "user_message", "human says something else"),
-                  _event(5, "assistant_message", "done")]
+        events = [
+            _event(3, "user_message", control.wire_prompt(self.RUN, "initial", "fix")),
+            _event(4, "user_message", "human says something else"),
+            _event(5, "assistant_message", "done"),
+        ]
         result = control.correlate(events, self._turns((3, 5)), self.RUN, baseline_seq=0)
         self.assertEqual(result["attribution"], "mixed")
 
@@ -214,8 +255,12 @@ class AdmissionTests(unittest.TestCase):
         patcher = mock.patch.object(control_store, "control_home", return_value=self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.session = {"source": "claude", "id": "s-1", "cwd": str(self.project),
-                        "path": str(self.project / "h.jsonl")}
+        self.session = {
+            "source": "claude",
+            "id": "s-1",
+            "cwd": str(self.project),
+            "path": str(self.project / "h.jsonl"),
+        }
         resolve = mock.patch.object(control_cli, "resolve_target", side_effect=lambda registry, ref: dict(self.session))
         resolve.start()
         self.addCleanup(resolve.stop)
@@ -227,9 +272,18 @@ class AdmissionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _args(self, **extra):
-        base = dict(target="claude:s-1", prompt="fix the bug", prompt_file=None, idempotency_key="key-1",
-                    if_version=None, on_busy="queue", queue_timeout=3600, allow_concurrent=False, task_ref=None,
-                    dry_run=False)
+        base = dict(
+            target="claude:s-1",
+            prompt="fix the bug",
+            prompt_file=None,
+            idempotency_key="key-1",
+            if_version=None,
+            on_busy="queue",
+            queue_timeout=3600,
+            allow_concurrent=False,
+            task_ref=None,
+            dry_run=False,
+        )
         base.update(extra)
         return SimpleNamespace(**base)
 
@@ -260,8 +314,9 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(ControlError) as caught:
             control_cli.cmd_submit(self._args(if_version=version, idempotency_key="key-2"), None)
         self.assertEqual(caught.exception.code, "duplicate_active_run")
-        allowed = control_cli.cmd_submit(self._args(if_version=version, idempotency_key="key-3",
-                                                    allow_concurrent=True), None)["data"]
+        allowed = control_cli.cmd_submit(
+            self._args(if_version=version, idempotency_key="key-3", allow_concurrent=True), None
+        )["data"]
         self.assertEqual(allowed["status"], "created")
 
     def test_external_live_session_is_never_targeted(self):
@@ -324,7 +379,6 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "idempotency_conflict")
 
 
-
 class SupervisorHelpersTests(unittest.TestCase):
     def test_queue_expiry_only_before_dispatch(self):
         now = time.time()
@@ -376,8 +430,10 @@ class SkillBundleTests(unittest.TestCase):
         for entry in roots:
             entry["resolved_root"] = os.path.realpath(entry["root"])
             entry["root_exists"] = Path(entry["resolved_root"]).is_dir()
-        self.patches = [mock.patch.object(skill_bundle, "runtime_roots", return_value=roots),
-                        mock.patch.object(skill_bundle, "manifest_path", return_value=self.home / "manifest.json")]
+        self.patches = [
+            mock.patch.object(skill_bundle, "runtime_roots", return_value=roots),
+            mock.patch.object(skill_bundle, "manifest_path", return_value=self.home / "manifest.json"),
+        ]
         for patch in self.patches:
             patch.start()
 
@@ -461,9 +517,11 @@ class SkillBundleTests(unittest.TestCase):
 
     def test_interrupted_registration_reconciles_journal(self):
         original = skill_bundle._write_skill
+
         def crash_after_write(path, name):
             original(path, name)
             raise RuntimeError("crash after rename")
+
         with mock.patch.object(skill_bundle, "_write_skill", side_effect=crash_after_write):
             with self.assertRaises(RuntimeError):
                 skill_bundle.install(dry_run=False)
@@ -476,97 +534,451 @@ class SkillBundleTests(unittest.TestCase):
         skill_bundle.auto_register()
         manifest = skill_bundle._load_manifest()
         self.assertIn("bundle_version", manifest)
-        with mock.patch.object(skill_bundle, "digest_roots", return_value="changed"), \
-                mock.patch.object(skill_bundle, "install") as install:
+        with (
+            mock.patch.object(skill_bundle, "digest_roots", return_value="changed"),
+            mock.patch.object(skill_bundle, "install") as install,
+        ):
             skill_bundle.auto_register()
         install.assert_called_once_with(dry_run=False)
 
 
-
 class SupervisorReviewTests(unittest.TestCase):
+    """Port-level supervision: shared runner plus Corral host hooks.
+
+    Terminal effects go through a stub hub; observation goes through real
+    SessKit reads of a fixture history that the stub hub appends to when it
+    "delivers" (simulating the runtime persisting input, nothing more).
+    """
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        self.project = str(Path(self.tmp.name) / "proj")
+        os.makedirs(self.project)
         self.store = RunStore(Path(self.tmp.name) / "control")
-        self.spec = {"mode": "submit", "runtime": "claude", "session_ref": "claude:one"}
-        self.run, _ = self.store.create("a", "k", self.spec,
-                                       {"session_ref": "claude:one", "delivery": "native_recorded",
-                                        "execution": "running", "created_at": time.time()})
-        self.run_id = self.run["run_id"]
-        self.hub = mock.Mock()
-        self.hub.registry.get.return_value = SimpleNamespace(id="claude")
-        self.supervisor = control_worker.Supervisor(self.store, self.run_id, self.hub)
-        self.addCleanup(self.supervisor.close)
+        watcher = mock.patch("corral.attention_signals.inspect_session", return_value=SimpleNamespace(phase="unknown"))
+        watcher.start()
+        self.addCleanup(watcher.stop)
 
-    def enqueue(self, action="steer"):
-        return self.store.enqueue(self.run_id, "a", "m", {"action": action, "prompt": "more"},
-                                  self.store.get(self.run_id)["version"])[0]["message_id"]
+    def _history(self, name="h.jsonl"):
+        return str(Path(self.tmp.name) / name)
 
-    def test_crash_after_send_does_not_replay_followup(self):
-        ident = self.enqueue()
-        self.hub.send_text.side_effect = RuntimeError("crash after successful send")
-        with mock.patch("corral.embed.input_transaction", return_value=__import__('contextlib').nullcontext()):
-            with self.assertRaises(RuntimeError):
-                self.supervisor._process_messages(None)
-            self.assertEqual(self.store.messages(self.run_id)[0]["state"], "dispatching")
-            self.supervisor._recover_messages()
-            self.supervisor._process_messages(None)
-        self.assertEqual(self.hub.send_text.call_count, 1)
-        self.assertEqual(self.store.messages(self.run_id)[0]["state"], "unknown")
-        self.supervisor._record_messages({"messages": [ident]})
-        self.assertEqual(self.store.messages(self.run_id)[0]["state"], "native_recorded")
+    def _session(self, path, live=True):
+        return {
+            "source": "claude",
+            "id": "fix-1",
+            "cwd": self.project,
+            "path": path,
+            "live": live,
+            "keepalive_name": "corral-claude-fix",
+        }
+
+    def _submit(self, key, session, prompt="fix the bug", run_key="k1", target_control="hosted"):
+        spec = {
+            "mode": "submit",
+            "runtime": "claude",
+            "session_ref": f"claude:{session['id']}",
+            "cwd": self.project,
+            "history_path": session["path"],
+            "prompt": prompt,
+            "on_busy": "queue",
+            "queue_timeout": 0,
+            "caller": {"actor": "t"},
+            "task_ref": None,
+        }
+        initial = {
+            "mode": "submit",
+            "runtime": "claude",
+            "session_ref": spec["session_ref"],
+            "cwd": self.project,
+            "history_path": session["path"],
+            "delivery": "accepted",
+            "execution": "queued",
+            "acceptance": "unverified",
+            "requested_model": None,
+            "target_control": target_control,
+        }
+        run, _ = self.store.create("t", key, spec, initial)
+        return run["run_id"]
+
+    def _run_shared(self, run_id, hub, **kwargs):
+        from agent_session_control.supervisor import run_supervisor
+
+        hooks, state = control_worker.corral_hooks(self.store, run_id, hub)
+        if "history_wait" not in kwargs:
+            kwargs["history_wait"] = control_worker._runner_history_wait()
+        rc = run_supervisor(self.store, run_id, hooks, marker_namespace="Corral", **kwargs)
+        control_worker.finalize_run(self.store, run_id, state)
+        try:
+            state["locks"].close()
+        except Exception:  # noqa: BLE001 - teardown must not fail assertions
+            pass
+        return rc
+
+    def test_submit_settles_completed_through_shared_runner(self):
+        from corral import control as control_mod
+
+        path = self._history()
+        _write_fixture_rows(
+            path,
+            [
+                {"type": "user", "cwd": self.project, "message": {"content": "old question"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "old answer"}]}},
+            ],
+        )
+        session = self._session(path)
+        hub = _FakeHub(session)
+        run_id = self._submit("k-settle", session)
+
+        def _persist(text):
+            _append_fixture_row(path, {"type": "user", "cwd": self.project, "message": {"content": text}})
+            _append_fixture_row(
+                path, {"type": "assistant", "message": {"content": [{"type": "text", "text": "ACK done"}]}}
+            )
+
+        hub.append_on_send = _persist
+        with (
+            mock.patch("corral.embed.capture", return_value=""),
+            mock.patch("corral.embed.pane_liveness", return_value="alive"),
+            mock.patch("corral.embed.input_transaction", return_value=nullcontext()),
+        ):
+            self.assertEqual(self._run_shared(run_id, hub), 0)
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "completed")
+        self.assertEqual(record["delivery"], "native_recorded")
+        self.assertEqual(record["finality"], "native" if record.get("finality") == "native" else "inferred")
+        self.assertEqual(record["result"]["final_response"], "ACK done")
+        self.assertEqual(record["result"]["acceptance"], "unverified")
+        self.assertEqual(len(hub.sent), 1)
+        self.assertIn(control_mod.marker(run_id, "initial"), hub.sent[0][1])
+        self.assertEqual(record["host"], "corral-claude-fix")
+
+    def test_queued_cancellation_needs_no_target_and_no_resend(self):
+        path = self._history()
+        _write_fixture_rows(
+            path,
+            [
+                {"type": "user", "cwd": self.project, "message": {"content": "old"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "old"}]}},
+            ],
+        )
+        session = self._session(path)
+        hub = _FakeHub(session)
+        run_id = self._submit("k-cancel", session)
+        version = self.store.get(run_id)["version"]
+        self.store.enqueue(run_id, "t", "m-cancel", {"action": "interrupt"}, version)
+        self.assertEqual(self._run_shared(run_id, hub), 0)
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "interrupted")
+        self.assertEqual(record["delivery"], "rejected")
+        self.assertEqual(hub.sent, [])
+        self.assertEqual(hub.interrupted, [])
+
+    def test_unowned_input_rejects_interrupt_and_stays_recoverable(self):
+        path = self._history()
+        _write_fixture_rows(
+            path,
+            [
+                {"type": "user", "cwd": self.project, "message": {"content": "someone else"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+            ],
+        )
+        session = self._session(path)
+        hub = _FakeHub(session)
+
+        def _persist_foreign(text):
+            _append_fixture_row(
+                path, {"type": "user", "cwd": self.project, "message": {"content": "foreign follow-up"}}
+            )
+
+        hub.append_on_send = _persist_foreign
+        run_id = self._submit("k-foreign", session)
+
+        def _interrupt_mid_turn():
+            for _ in range(200):
+                record = self.store.get(run_id)
+                if record.get("delivery") not in ("accepted",):
+                    break
+                time.sleep(0.1)
+            version = self.store.get(run_id)["version"]
+            self.store.enqueue(run_id, "t", "m-int", {"action": "interrupt"}, version)
+
+        interrupter = threading.Thread(target=_interrupt_mid_turn, daemon=True)
+        interrupter.start()
+        try:
+            with (
+                mock.patch("corral.embed.capture", return_value=""),
+                mock.patch("corral.embed.pane_liveness", return_value="alive"),
+                mock.patch("corral.embed.input_transaction", return_value=nullcontext()),
+            ):
+                self.assertEqual(self._run_shared(run_id, hub, history_wait=4), 0)
+        finally:
+            interrupter.join(timeout=30)
+        record = self.store.get(run_id)
+        self.assertEqual(hub.interrupted, [])
+        messages = {m["message_id"]: m["state"] for m in self.store.messages(run_id)}
+        self.assertTrue(any(state == "rejected" for state in messages.values()))
+        self.assertEqual(record["execution"], "unknown")
+
+    def test_composer_draft_blocks_dispatch(self):
+        path = self._history()
+        Path(path).write_text("")
+        session = self._session(path)
+        hub = _FakeHub(session, runtime=_ClaudeComposerStub([session]))
+        run_id = self._submit("k-draft", session)
+        rule = "─" * 20
+        screen = f"{rule}\n❯ half typed\n{rule}\n"
+        with mock.patch("corral.embed.capture", return_value=screen):
+            self.assertEqual(self._run_shared(run_id, hub), 0)
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "failed")
+        self.assertEqual(record["delivery"], "rejected")
+        self.assertEqual(record["error"]["code"], "composer_not_empty")
+        self.assertEqual(hub.sent, [])
+
+    def test_missing_history_settles_unknown_with_exact_evidence(self):
+        hub = _FakeHub(runtime=_StubCodexRuntime())
+        spec = {
+            "mode": "create",
+            "runtime": "codex",
+            "cwd": self.project,
+            "model": None,
+            "prompt": "fresh work",
+            "on_busy": "steer",
+            "queue_timeout": 0,
+            "caller": {"actor": "t"},
+            "task_ref": None,
+        }
+        initial = {
+            "mode": "create",
+            "runtime": "codex",
+            "session_ref": None,
+            "cwd": self.project,
+            "delivery": "accepted",
+            "execution": "queued",
+            "acceptance": "unverified",
+            "requested_model": None,
+        }
+        run, _ = self.store.create("t", "k-fresh", spec, initial)
+        run_id = run["run_id"]
+        with (
+            mock.patch.dict(os.environ, {"CORRAL_HISTORY_WAIT_TIMEOUT": "4"}),
+            mock.patch("corral.embed.pane_liveness", return_value="alive"),
+        ):
+            self.assertEqual(self._run_shared(run_id, hub), 0)
+            record = self.store.get(run_id)
+            self.assertEqual(record["execution"], "unknown")
+            self.assertEqual(record["error"], control_worker._history_wait_error("native_history_missing"))
+        self.assertEqual(len(hub.sent), 1)
+
+    def test_target_lock_contention_reports_target_locked(self):
+        hub = _FakeHub(runtime=_StubCodexRuntime(), planned_key="codex:fix-abc")
+        bound = {
+            "source": "codex",
+            "id": "fix-abc",
+            "cwd": self.project,
+            "path": "/nonexistent/h.jsonl",
+            "live": True,
+            "keepalive_name": "corral-codex-abc",
+        }
+        hub.store.by_key["codex:fix-abc"] = bound
+        spec = {
+            "mode": "create",
+            "runtime": "codex",
+            "cwd": self.project,
+            "model": None,
+            "prompt": "fresh work",
+            "on_busy": "steer",
+            "queue_timeout": 0,
+            "caller": {"actor": "t"},
+            "task_ref": None,
+        }
+        initial = {
+            "mode": "create",
+            "runtime": "codex",
+            "session_ref": None,
+            "cwd": self.project,
+            "delivery": "accepted",
+            "execution": "queued",
+            "acceptance": "unverified",
+            "requested_model": None,
+        }
+        run, _ = self.store.create("t", "k-lock", spec, initial)
+        run_id = run["run_id"]
+        with control_worker.file_lock(self.store, "target:codex:fix-abc") as owned:
+            self.assertTrue(owned)
+            with mock.patch("corral.embed.pane_liveness", return_value="alive"):
+                self.assertEqual(self._run_shared(run_id, hub, history_wait=30), 0)
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "unknown")
+        self.assertEqual(record["error"]["code"], "target_locked")
+        self.assertFalse(control_worker.lock_held(self.store, "target:codex:fix-abc"))
 
     def test_completion_waits_for_every_accepted_followup(self):
-        ident = self.enqueue()
+        run, _ = self.store.create("a", "kf", {"prompt": "x"}, {"delivery": "accepted", "execution": "running"})
+        run_id = run["run_id"]
+        version = self.store.get(run_id)["version"]
+        ident = self.store.enqueue(run_id, "a", "m", {"action": "steer", "prompt": "more"}, version)[0]["message_id"]
         for state in ("queued", "dispatching", "unknown", "input_submitted", "native_recorded"):
             self.store.message_state(ident, state)
-            result = self.store.update(self.run_id, {"execution": "completed", "result": {"final_response": "old"}},
-                                       settled_messages={"initial"})
+            result = self.store.update(
+                run_id, {"execution": "completed", "result": {"final_response": "old"}}, settled_messages={"initial"}
+            )
             self.assertEqual(result["execution"], "running", state)
             self.assertNotIn("result", result)
-        done = self.store.update(self.run_id, {"execution": "completed"}, settled_messages={"initial", ident})
+        done = self.store.update(run_id, {"execution": "completed"}, settled_messages={"initial", ident})
         self.assertEqual(done["execution"], "completed")
 
-    def test_interrupt_requires_positive_current_turn_ownership(self):
-        self.enqueue("interrupt")
-        self.supervisor._process_messages({"recorded": False})
-        self.hub.interrupt_session.assert_not_called()
-        self.assertEqual(self.store.messages(self.run_id)[0]["state"], "rejected")
-
-    def test_interrupt_rejects_old_owned_turn_with_new_foreign_input(self):
-        events = [_event(1, "user_message", control.wire_prompt(self.run_id, "initial", "fix")),
-                  _event(2, "assistant_message", "done"), _event(3, "user_message", "other work")]
-        turn = Turn(turn_id="t1", index=0, start_seq=1, end_seq=2, user_seq=1,
-                    outcome=TurnOutcome(status="completed", evidence=_EV))
-        observation = control.correlate(events, [turn], self.run_id, -1)
-        self.assertFalse(observation["current_turn"])
-        self.enqueue("interrupt")
-        self.supervisor._process_messages(observation)
-        self.hub.interrupt_session.assert_not_called()
-
-    def test_fresh_binding_lock_contention_stops_control_and_closes_locks(self):
-        self.supervisor.key = "claude:new"
-        with control_worker.file_lock(self.store, "target:claude:new") as owned:
-            self.assertTrue(owned)
-            with self.assertRaises(ControlError) as caught:
-                self.supervisor._bind_target_lock()
-            self.assertEqual(caught.exception.code, "target_locked")
-        self.supervisor._bind_target_lock()
-        self.assertTrue(control_worker.lock_held(self.store, "target:claude:new"))
-        self.supervisor.close()
-        self.assertFalse(control_worker.lock_held(self.store, "target:claude:new"))
-
     def test_queued_cancellation_does_not_wait_for_target_lock(self):
-        self.store.update(self.run_id, {"delivery": "accepted", "execution": "queued"})
-        self.enqueue("interrupt")
-        with mock.patch.object(control_worker, "RunStore", return_value=self.store), \
-                mock.patch("corral.remote.sessions.SessionHub", return_value=self.hub), \
-                mock.patch.object(control_worker, "_earlier_runs", return_value=True), \
-                mock.patch.object(control_worker.time, "sleep") as sleep:
-            self.assertEqual(control_worker.main(self.run_id), 0)
+        path = self._history()
+        Path(path).write_text("")
+        session = self._session(path)
+        hub = _FakeHub(session)
+        run_id = self._submit("k-main", session)
+        version = self.store.get(run_id)["version"]
+        self.store.enqueue(run_id, "t", "m-main", {"action": "interrupt"}, version)
+        with (
+            mock.patch.object(control_worker, "RunStore", return_value=self.store),
+            mock.patch("corral.remote.sessions.SessionHub", return_value=hub),
+            mock.patch.object(control_worker, "_earlier_runs", return_value=True),
+            mock.patch.object(control_worker.time, "sleep") as sleep,
+        ):
+            self.assertEqual(control_worker.main(run_id), 0)
         sleep.assert_not_called()
-        self.hub.interrupt_session.assert_not_called()
-        self.assertEqual(self.store.get(self.run_id)["execution"], "interrupted")
+        self.assertEqual(hub.interrupted, [])
+        self.assertEqual(self.store.get(run_id)["execution"], "interrupted")
+
+    def _old_turn(self, path):
+        _write_fixture_rows(
+            path,
+            [
+                {"type": "user", "cwd": self.project, "message": {"content": "old question"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "old answer"}]}},
+            ],
+        )
+
+    def _wait_for_thread_recorded(self, run_id):
+        deadline = time.monotonic() + 60
+        while self.store.get(run_id).get("delivery") != "native_recorded":
+            if time.monotonic() >= deadline:
+                raise AssertionError("timed out waiting for native recording")
+            time.sleep(0.1)
+
+    def test_main_submit_detached_settles_completed(self):
+        import corral as corral_pkg
+        from corral import control as control_mod
+
+        path = self._history()
+        _write_fixture_rows(
+            path,
+            [
+                {"type": "user", "cwd": self.project, "message": {"content": "old question"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "old answer"}]}},
+            ],
+        )
+        session = self._session(path)
+        hub = _FakeHub(session)
+        run_id = self._submit("k-detached", session)
+
+        def _persist(text):
+            _append_fixture_row(path, {"type": "user", "cwd": self.project, "message": {"content": text}})
+
+        hub.append_on_send = _persist
+        outcome: dict = {}
+
+        def _main():
+            with (
+                mock.patch.object(control_worker, "RunStore", return_value=self.store),
+                mock.patch("corral.remote.sessions.SessionHub", return_value=hub),
+            ):
+                outcome["rc"] = control_worker.main(run_id)
+
+        thread = threading.Thread(target=_main, daemon=True)
+        cap = mock.patch("corral.embed.capture", return_value="")
+        pane = mock.patch("corral.embed.pane_liveness", return_value="alive")
+        txn = mock.patch("corral.embed.input_transaction", return_value=nullcontext())
+        with cap, pane, txn:
+            thread.start()
+            self._wait_for_thread_recorded(run_id)
+            _append_fixture_row(
+                path, {"type": "assistant", "message": {"content": [{"type": "text", "text": "detached done"}]}}
+            )
+            thread.join(timeout=120)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome.get("rc"), 0)
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "completed")
+        self.assertEqual(record["result"]["final_response"], "detached done")
+        self.assertIn(control_mod.marker(run_id, "initial"), hub.sent[0][1])
+        self.assertEqual(record.get("supervisor_version"), corral_pkg.__version__)
+
+    def test_main_create_detached_binds_and_settles(self):
+        path = self._history()
+        self._old_turn(path)
+        hub = _FakeHub(runtime=_StubRuntime(), planned_key="claude:fix-det")
+        hub.store.by_key["claude:fix-det"] = {
+            "source": "claude",
+            "id": "fix-det",
+            "cwd": self.project,
+            "path": path,
+            "live": True,
+            "keepalive_name": "corral-claude-det",
+        }
+        spec = {
+            "mode": "create",
+            "runtime": "claude",
+            "cwd": self.project,
+            "model": None,
+            "prompt": "fresh detached",
+            "on_busy": "steer",
+            "queue_timeout": 0,
+            "caller": {"actor": "t"},
+            "task_ref": None,
+        }
+        initial = {
+            "mode": "create",
+            "runtime": "claude",
+            "session_ref": None,
+            "cwd": self.project,
+            "delivery": "accepted",
+            "execution": "queued",
+            "acceptance": "unverified",
+            "requested_model": None,
+        }
+        run, _ = self.store.create("t", "k-detached-create", spec, initial)
+        run_id = run["run_id"]
+
+        def _persist(text):
+            _append_fixture_row(path, {"type": "user", "cwd": self.project, "message": {"content": text}})
+
+        hub.append_on_send = _persist
+        outcome: dict = {}
+
+        def _main():
+            with (
+                mock.patch.object(control_worker, "RunStore", return_value=self.store),
+                mock.patch("corral.remote.sessions.SessionHub", return_value=hub),
+            ):
+                outcome["rc"] = control_worker.main(run_id)
+
+        thread = threading.Thread(target=_main, daemon=True)
+        cap = mock.patch("corral.embed.capture", return_value="")
+        pane = mock.patch("corral.embed.pane_liveness", return_value="alive")
+        txn = mock.patch("corral.embed.input_transaction", return_value=nullcontext())
+        trust = mock.patch("corral.control_worker._plain", return_value="composer ready")
+        with cap, pane, txn, trust:
+            thread.start()
+            self._wait_for_thread_recorded(run_id)
+            _append_fixture_row(
+                path, {"type": "assistant", "message": {"content": [{"type": "text", "text": "fresh detached done"}]}}
+            )
+            thread.join(timeout=120)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome.get("rc"), 0)
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "completed")
+        self.assertEqual(record["session_ref"], "claude:fix-det")
+        self.assertEqual(record["result"]["final_response"], "fresh detached done")
 
 
 class SearchCoverageTests(unittest.TestCase):
@@ -575,16 +987,28 @@ class SearchCoverageTests(unittest.TestCase):
 
         session = {"source": "claude", "id": "one", "mtime": 1}
         runtime = SimpleNamespace(id="claude")
-        args = SimpleNamespace(keywords=["missing-word"], scope="activity", deep=True, runtime=None,
-                               project=None, compact=False, top=None, fields=None, limit=20,
-                               live=False, keepalive=False)
-        with mock.patch.object(agent_api, "_scan_runtimes", return_value=({"claude": [session]}, {})), \
-                mock.patch.object(agent_api, "_load_conversation", side_effect=OSError("conversation unreadable")), \
-                mock.patch.object(agent_api.liveness, "annotate"), \
-                mock.patch.object(agent_api, "_attach_attention"), \
-                mock.patch.object(agent_api.titles, "load_cache", return_value={}), \
-                mock.patch.object(agent_api.titles, "resolve_initial_title", return_value=("other", None)), \
-                mock.patch("sesskit.load_activity", side_effect=OSError("activity unreadable")):
+        args = SimpleNamespace(
+            keywords=["missing-word"],
+            scope="activity",
+            deep=True,
+            runtime=None,
+            project=None,
+            compact=False,
+            top=None,
+            fields=None,
+            limit=20,
+            live=False,
+            keepalive=False,
+        )
+        with (
+            mock.patch.object(agent_api, "_scan_runtimes", return_value=({"claude": [session]}, {})),
+            mock.patch.object(agent_api, "_load_conversation", side_effect=OSError("conversation unreadable")),
+            mock.patch.object(agent_api.liveness, "annotate"),
+            mock.patch.object(agent_api, "_attach_attention"),
+            mock.patch.object(agent_api.titles, "load_cache", return_value={}),
+            mock.patch.object(agent_api.titles, "resolve_initial_title", return_value=("other", None)),
+            mock.patch("sesskit.load_activity", side_effect=OSError("activity unreadable")),
+        ):
             data = agent_api.cmd_search(args, [runtime])["data"]
         self.assertEqual(data["count"], 0)
         self.assertTrue(data["potentially_limited"])
@@ -592,11 +1016,15 @@ class SearchCoverageTests(unittest.TestCase):
         self.assertEqual({f["scope"] for f in data["history_read_failures"]}, {"conversation", "activity"})
 
 
-
 class GateTests(unittest.TestCase):
     def _describe(self, env: dict) -> list[str]:
-        out = subprocess.run([sys.executable, "-m", "corral", "describe"], capture_output=True, text=True,
-                             env={**os.environ, "PYTHONPATH": SRC, **env}, check=True).stdout
+        out = subprocess.run(
+            [sys.executable, "-m", "corral", "describe"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": SRC, **env},
+            check=True,
+        ).stdout
         return [c["name"] for c in json.loads(out)["data"]["commands"]]
 
     def test_control_commands_available_without_preview_environment(self):
