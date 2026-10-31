@@ -331,6 +331,7 @@ def _is_low_value_title(text: str | None) -> bool:
         "newcursorsession",
         "空白会话",
         "新建会话",
+        "无消息",
         "实现",
         "执行",
         "做",

@@ -27,6 +27,20 @@ def _session(**overrides) -> dict:
 
 
 class TemporaryTitleRankingTests(unittest.TestCase):
+    def test_placeholder_fallback_yields_to_native_title(self) -> None:
+        session = _session(
+            source="opencode",
+            native_title="深度调研，接入",
+            fallback_title="(无消息)",
+            first_user_msg="",
+            last_user_msg="",
+        )
+        self.assertIsNone(titles._compact_title("(无消息)"))
+        self.assertTrue(titles._is_low_value_title("(无消息)"))
+        title, _needs = titles.resolve_initial_title(session, {})
+        self.assertNotEqual(title, "(无消息)")
+        self.assertIn("深度调研", title)
+
     def test_clipped_attachment_fallback_yields_to_real_request_for_every_runtime(self) -> None:
         request = "/tmp/captures/screenshot.png 修复会话标题"
         for runtime in ("claude", "codex", "opencode", "cursor", "pi"):
