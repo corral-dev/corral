@@ -1722,11 +1722,15 @@ class EmbedPane(Widget):
             return
         # 浏览器增强脚本（shell-gate 注入进 ttyd 页面）把剪贴板图片压缩后裹上
         # 哨兵标记，经普通粘贴通道送到这里；识别到就落盘再把路径喂给 agent，
-        # 不当文本转发。普通文本粘贴走原有路径不受影响。
+        # 不当文本转发。普通文本粘贴走原有路径不受影响。哨兵在场但格式不支持
+        # （超大/解码失败/HEIC 转码失败等）时响铃丢弃——绝不能把哨兵 + base64
+        # 原样粘进 composer（兆级垃圾文本，TUI 卡死且首条带图消息发不出去）。
         image_bytes = embed.extract_pasted_image(event.text)
         self._mark_used()
         if image_bytes is not None:
             self._paste_image_worker(self.session_name, image_bytes)
+        elif embed.has_image_sentinel(event.text):
+            self.app.bell()
         else:
             embed.paste(self.session_name, event.text)
         self.history_offset = 0

@@ -1162,7 +1162,12 @@ _MAX_IMAGE_B64_CHARS = (_MAX_IMAGE_PASTE_BYTES * 4) // 3 + 8
 
 
 def _image_suffix(image_bytes: bytes) -> str | None:
-    """按 magic bytes 判定常见图片类型；无法识别返回 None（拒绝落盘）。"""
+    """按 magic bytes 判定可直接落盘的图片类型；无法识别返回 None。
+
+    直接落盘的类型仅限各家助手 TUI/模型普遍接受的四种（JPEG/PNG/GIF/WebP，
+    见 OpenCode 附件文档）。HEIC/HEIF/BMP/TIFF 走下面的转换通道（先转 JPEG
+    再落盘），不要在这里加后缀——调用方按「直接 / 可转换 / 不支持」三档分流。
+    """
     if image_bytes.startswith(b"\xff\xd8\xff"):
         return ".jpg"
     if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -1174,11 +1179,109 @@ def _image_suffix(image_bytes: bytes) -> str | None:
     return None
 
 
+# HEIC/HEIF 的 ftyp 品牌（含 iPhone 常用的 heic/mif1；remote/media.py 的
+# sniff_mime 同款名单，转换通道共用，避免两处名单漂移）。
+_HEIC_FTYP_BRANDS = (
+    b"heic", b"heix", b"hevc", b"heif", b"heim", b"heis", b"hevm", b"hevs",
+    b"mif1", b"msf1",
+)
+
+
+def _convertible_image_kind(image_bytes: bytes) -> str | None:
+    """HEIC/HEIF/BMP/TIFF 等可转 JPEG 的 magic；不可转换返回 None。"""
+    if (
+        len(image_bytes) >= 12
+        and image_bytes[4:8] == b"ftyp"
+        and image_bytes[8:12] in _HEIC_FTYP_BRANDS
+    ):
+        return "heic"
+    if image_bytes.startswith(b"BM"):
+        return "bmp"
+    if image_bytes[:4] in (b"II*\x00", b"MM\x00*"):
+        return "tiff"
+    return None
+
+
+def has_image_sentinel(text: str) -> bool:
+    """文本是否为图片哨兵裹住的粘贴（无论格式是否受支持）。
+
+    `extract_pasted_image` 对「非哨兵文本」和「哨兵但格式不支持」都返回 None，
+    调用方靠本函数区分：前者按普通文本转发，后者必须响铃丢弃——绝不能把哨兵
+    + base64 原样粘进 composer（兆级垃圾文本，TUI 卡死且 agent 无法启动）。
+    """
+    return image_sentinel_payload(text) is not None
+
+
+def _convert_to_jpeg(image_bytes: bytes) -> bytes | None:
+    """把 HEIC/HEIF/BMP/TIFF 转成 JPEG；转不了返回 None。
+
+    通道顺序与 remote/media.py 的预览编码一致：macOS `sips` 优先（唯一能解
+    HEIC 的本机工具），回退 Pillow（BMP/TIFF；HEIC 无 pillow-heif 插件会失败，
+    属于已知能力差距，见维护指南）。任何失败都返回 None，调用方按不支持处理。
+    """
+    converted = _convert_to_jpeg_via_sips(image_bytes)
+    if converted is not None:
+        return converted
+    return _convert_to_jpeg_via_pillow(image_bytes)
+
+
+def _convert_to_jpeg_via_sips(image_bytes: bytes) -> bytes | None:
+    sips = shutil.which("sips")
+    if sips is None:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="corral-img-") as work:
+            source = os.path.join(work, "source")
+            target = os.path.join(work, "converted.jpg")
+            with open(source, "wb") as f:
+                f.write(image_bytes)
+            done = subprocess.run(
+                [sips, "-s", "format", "jpeg", str(source), "--out", str(target)],
+                capture_output=True, timeout=20, check=False,
+            )
+            if done.returncode != 0:
+                return None
+            try:
+                with open(target, "rb") as f:
+                    data = f.read()
+            except OSError:
+                return None
+            if not data.startswith(b"\xff\xd8\xff") or len(data) > _MAX_IMAGE_PASTE_BYTES:
+                return None
+            return data
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _convert_to_jpeg_via_pillow(image_bytes: bytes) -> bytes | None:
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        import io as _io
+
+        with Image.open(_io.BytesIO(image_bytes)) as opened:
+            image = opened.convert("RGB")
+            buffer = _io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85, optimize=True)
+            data = buffer.getvalue()
+    except Exception:
+        return None
+    if not data.startswith(b"\xff\xd8\xff") or len(data) > _MAX_IMAGE_PASTE_BYTES:
+        return None
+    return data
+
+
 def extract_pasted_image(text: str) -> bytes | None:
     """识别浏览器增强脚本裹了哨兵的图片粘贴内容，解出原始图片字节；
 
     普通文本粘贴（不含哨兵）返回 None，调用方应转发原文本，走现有 `paste()`。
-    超大载荷或非图片 magic 一律拒绝，避免临时目录被灌满。
+    哨兵存在但载荷超大/解码失败/格式不支持（直存与可转换都不命中）同样返回
+    None——调用方必须先查 `has_image_sentinel`：哨兵在场时响铃丢弃，绝不能把
+    哨兵 + base64 原样粘进 composer。超大载荷一律拒绝，避免临时目录被灌满。
+    直接支持 JPEG/PNG/GIF/WebP；HEIC/HEIF/BMP/TIFF 返回原始字节，落盘时由
+    `save_image_and_paste_path` 转成 JPEG。
     """
     payload = image_sentinel_payload(text)
     if payload is None:
@@ -1191,7 +1294,7 @@ def extract_pasted_image(text: str) -> bytes | None:
         return None
     if len(raw) > _MAX_IMAGE_PASTE_BYTES:
         return None
-    if _image_suffix(raw) is None:
+    if _image_suffix(raw) is None and _convertible_image_kind(raw) is None:
         return None
     return raw
 
@@ -1219,17 +1322,26 @@ def _pane_cwd(name: str) -> str | None:
 
 def save_image_and_paste_path(name: str, image_bytes: bytes) -> str | None:
     """把粘贴来的图片落盘为临时文件，再把绝对路径经 `paste()` 送进托管 pane，
-    让 Claude Code / Codex 等按路径读图。
+    让 Claude Code / Codex 等按路径读图（OpenCode TUI 会把有效图片路径自动
+    转成图片附件，无效路径则拒绝粘贴——落盘文件必须真实存在且格式受支持）。
 
-    图片优先落在托管 pane 当前工作目录下的隐藏子目录（路径短、agent 大概率有
-    权限访问）；查不到工作目录时退化到系统临时目录。落盘失败返回 None，调用方
+    JPEG/PNG/GIF/WebP 直接落盘；HEIC/HEIF/BMP/TIFF 先转 JPEG 再落盘（iPhone
+    照片多为 HEIC，不转则粘贴被拒、首条带图消息发不出去）。图片优先落在托管
+    pane 当前工作目录下的隐藏子目录（路径短、agent 大概率有权限访问）；查不到
+    工作目录时退化到系统临时目录。落盘/转换/粘贴任一步失败返回 None，调用方
     据此提示用户重试；不在这里改动运行时适配器，保持本模块运行时无关。
     """
     if len(image_bytes) > _MAX_IMAGE_PASTE_BYTES:
         return None
     suffix = _image_suffix(image_bytes)
     if suffix is None:
-        return None
+        if _convertible_image_kind(image_bytes) is None:
+            return None
+        converted = _convert_to_jpeg(image_bytes)
+        if converted is None:
+            return None
+        image_bytes = converted
+        suffix = ".jpg"
     cwd = _pane_cwd(name)
     base_dir = (
         os.path.join(cwd, _IMAGE_PASTE_DIR) if cwd

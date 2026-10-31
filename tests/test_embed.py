@@ -743,6 +743,25 @@ class ImagePasteTests(unittest.TestCase):
         wrapped = f"␞CORRAL_IMG_BEGIN␞{payload}␞CORRAL_IMG_END␞"
         self.assertIsNone(embed.extract_pasted_image(wrapped))
 
+    def test_extract_accepts_heic_and_bmp_magic(self):
+        # iPhone 照片多为 HEIC：识别为可转换图片，返回原始字节，落盘时再转 JPEG。
+        heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00" + b"\x00" * 64
+        wrapped = f"␞CORRAL_IMG_BEGIN␞{base64.b64encode(heic).decode()}␞CORRAL_IMG_END␞"
+        self.assertEqual(embed.extract_pasted_image(wrapped), heic)
+        bmp = b"BM" + b"\x00" * 64
+        wrapped_bmp = f"␞CORRAL_IMG_BEGIN␞{base64.b64encode(bmp).decode()}␞CORRAL_IMG_END␞"
+        self.assertEqual(embed.extract_pasted_image(wrapped_bmp), bmp)
+
+    def test_has_image_sentinel_distinguishes_garbage(self):
+        # 哨兵在场但载荷不是图片：extract 返回 None，调用方必须响铃丢弃，
+        # 绝不能把哨兵 + base64 原样粘进 composer（兆级垃圾文本）。
+        raw = b"not-an-image"
+        wrapped = f"␞CORRAL_IMG_BEGIN␞{base64.b64encode(raw).decode()}␞CORRAL_IMG_END␞"
+        self.assertIsNone(embed.extract_pasted_image(wrapped))
+        self.assertTrue(embed.has_image_sentinel(wrapped))
+        self.assertFalse(embed.has_image_sentinel("普通粘贴文本"))
+        self.assertFalse(embed.has_image_sentinel(""))
+
     def test_pane_cwd_parses_display_message(self):
         with mock.patch.object(embed.subprocess, "check_output", return_value=b"/home/demo/proj\n"):
             self.assertEqual(embed._pane_cwd("s"), "/home/demo/proj")
@@ -794,6 +813,43 @@ class ImagePasteTests(unittest.TestCase):
     def test_save_image_and_paste_path_rejects_unknown_bytes(self):
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok):
             self.assertIsNone(embed.save_image_and_paste_path("s", b"data"))
+
+    def test_save_converts_bmp_to_jpeg(self):
+        import io as _io
+
+        from PIL import Image as _Image
+
+        buffer = _io.BytesIO()
+        _Image.new("RGB", (8, 8), (200, 30, 30)).save(buffer, format="BMP")
+        bmp = buffer.getvalue()
+        self.assertIsNone(embed._image_suffix(bmp))
+        self.assertEqual(embed._convertible_image_kind(bmp), "bmp")
+        tmp_root = tempfile.mkdtemp()
+        try:
+            with mock.patch.object(embed, "_convert_to_jpeg_via_sips", return_value=None), \
+                    mock.patch.object(embed.subprocess, "check_output",
+                                       return_value=(tmp_root + "\n").encode()), \
+                    mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok):
+                path = embed.save_image_and_paste_path("s", bmp)
+            self.assertIsNotNone(path)
+            assert path is not None
+            self.assertTrue(path.endswith(".jpg"))
+            with open(path, "rb") as f:
+                self.assertTrue(f.read(3).startswith(b"\xff\xd8\xff"))
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+    def test_save_returns_none_when_conversion_fails(self):
+        # HEIC 可识别但本机转不了（无 sips、无 pillow-heif）：返回 None，
+        # 调用方响铃/报错，绝不落盘半成品。
+        heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00" + b"\x00" * 64
+        with mock.patch.object(embed, "_convert_to_jpeg", return_value=None), \
+                mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok):
+            self.assertIsNone(embed.save_image_and_paste_path("s", heic))
+
+    def test_pillow_conversion_rejects_heic_without_plugin(self):
+        heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00" + b"\x00" * 64
+        self.assertIsNone(embed._convert_to_jpeg_via_pillow(heic))
 
 
 class ChannelPoolTests(unittest.TestCase):

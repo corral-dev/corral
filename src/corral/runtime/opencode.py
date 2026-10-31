@@ -4,10 +4,40 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
 
 from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from corral.runtime.base import BaseRuntime, usable_cwd
 from corral.scan import opencode as scan_opencode
+
+# 主命令 `--fork` 支持探测缓存：None=尚未探测（进程内只探一次，禁止每次启动
+# 都 fork 子进程）。v2.2.5 实测主 `--help` 已无 --fork（旧 `opencode -s <id>
+# --fork` 报 `ERROR Unrecognized flag: --fork` 退出码 1，内嵌侧只看到
+# exit 1 + ERROR）；`run` 子命令的 --fork 不受影响。探测失败默认 True（沿用
+# 旧 argv，老版本行为零变化）。
+_MAIN_FORK_SUPPORT: bool | None = None
+
+
+def main_supports_fork(executable: str = "opencode") -> bool:
+    """已装 opencode 主命令是否声明 `--fork`（v2.2.5 已删）。
+
+    只看 `SUBCOMMANDS` 之前的 flags 段，避免把 `run` 子命令的 --fork 误判成
+    主命令支持。结果进程内缓存。
+    """
+    global _MAIN_FORK_SUPPORT
+    if _MAIN_FORK_SUPPORT is not None:
+        return _MAIN_FORK_SUPPORT
+    try:
+        proc = subprocess.run(
+            [executable, "--help"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        head = output.split("SUBCOMMANDS")[0]
+        _MAIN_FORK_SUPPORT = "--fork" in head
+    except Exception:
+        _MAIN_FORK_SUPPORT = True
+    return _MAIN_FORK_SUPPORT
 
 
 class OpenCodeRuntime(BaseRuntime):
@@ -112,6 +142,16 @@ class OpenCodeRuntime(BaseRuntime):
         )
 
     def build_fork_plan(self, session: SessionInfo) -> LaunchPlan | None:
+        """同助手原生分叉；新版无主命令 `--fork` 时返回 None 走克隆+恢复。
+
+        旧版（主 `--help` 含 --fork，如 v2.0.x）：`opencode --auto -s <id>
+        --fork`，原样保留。新版（v2.2.5 实测已删，带 flag 直接
+        `ERROR Unrecognized flag` 退出码 1）：返回 None，调用方
+        `prepare_copy_request` 改走 `clone_session`（整库行复制，图片等内联
+        附件原样保留）后再原生恢复。两版 argv/分支各有回归断言。
+        """
+        if not main_supports_fork(self.executable):
+            return None
         return LaunchPlan(
             argv=(
                 self.executable,
@@ -122,6 +162,10 @@ class OpenCodeRuntime(BaseRuntime):
             ),
             cwd=usable_cwd(str(session.get("cwd") or "")),
         )
+
+    def clone_session(self, session: SessionInfo) -> SessionInfo:
+        """磁盘复制历史并换新身份（SessKit SQL 行复制），供无 --fork 新版回退。"""
+        return scan_opencode.clone_session(session)
 
     def build_new_plan(self, handoff: Handoff) -> LaunchPlan:
         # OpenCode 主命令的位置参数是项目路径，提示词只能通过 --prompt 传入；也没有

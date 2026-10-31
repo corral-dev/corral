@@ -242,11 +242,84 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("session-123", codex_plan.argv)
 
             opencode = self._session("opencode", str(history), td)
-            oc_req = _prepare_copy_request(registry, opencode, "讨论")
-            oc_plan = registry.build_launch_plan(oc_req)
-            self.assertIn("-s", oc_plan.argv)
-            self.assertIn("--fork", oc_plan.argv)
-            self.assertIn("session-123", oc_plan.argv)
+            from corral.runtime import opencode as runtime_opencode
+
+            # 旧版主命令认 --fork（如 v2.0.x）：原生分叉 argv 原样保留。
+            with mock.patch.object(
+                runtime_opencode, "main_supports_fork", return_value=True
+            ):
+                oc_req = _prepare_copy_request(registry, opencode, "讨论")
+                oc_plan = registry.build_launch_plan(oc_req)
+                self.assertIn("-s", oc_plan.argv)
+                self.assertIn("--fork", oc_plan.argv)
+                self.assertIn("session-123", oc_plan.argv)
+
+    def test_copy_session_opencode_without_main_fork_clones(self) -> None:
+        """新版主命令删 --fork（如 v2.2.5 实测）：分叉走克隆+原生恢复。
+
+        build_fork_plan 返回 None，prepare_copy_request 改走 clone_session
+        （SessKit 行复制，图片等内联附件原样保留），启动计划是新 id 的原生
+        恢复，不再拼出会被用法错误打回的 --fork。
+        """
+        from corral.runtime import opencode as runtime_opencode
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "opencode.db"
+            _make_minimal_opencode_db(db_path, "session-123", "旧标题")
+            opencode = self._session("opencode", str(db_path), td)
+            opencode["id"] = "session-123"
+            opencode["cwd"] = td
+            registry = default_registry()
+
+            with mock.patch.object(
+                runtime_opencode, "main_supports_fork", return_value=False
+            ):
+                runtime = registry.get("opencode")
+                self.assertIsNone(runtime.build_fork_plan(opencode))
+                request = _prepare_copy_request(registry, opencode, "旧标题")
+                self.assertFalse(request.copy_session)
+                self.assertNotEqual(request.session["id"], "session-123")
+                plan = registry.build_launch_plan(request)
+                self.assertEqual(plan.argv[0], "opencode")
+                self.assertIn("-s", plan.argv)
+                self.assertNotIn("--fork", plan.argv)
+                self.assertIn(request.session["id"], plan.argv)
+
+    def test_opencode_main_fork_probe_parses_help(self) -> None:
+        """版本探测：只认 SUBCOMMANDS 之前的 --fork（run 子命令的不算）。"""
+        from corral.runtime import opencode as runtime_opencode
+
+        old = runtime_opencode._MAIN_FORK_SUPPORT
+        runtime_opencode._MAIN_FORK_SUPPORT = None
+        try:
+            fake_old = (
+                "FLAGS\n  --session, -s string\n  --fork\n\nSUBCOMMANDS\n"
+                "  run   Run OpenCode\n"
+            )
+            with mock.patch.object(
+                runtime_opencode.subprocess, "run",
+                return_value=mock.Mock(stdout=fake_old, stderr=""),
+            ):
+                self.assertTrue(runtime_opencode.main_supports_fork("opencode"))
+            runtime_opencode._MAIN_FORK_SUPPORT = None
+            # v2.2.5 实测：主段无 --fork，只有 run 子命令有。
+            fake_new = (
+                "FLAGS\n  --session, -s string\n\nSUBCOMMANDS\n"
+                "  run   Run OpenCode\n"
+            )
+            with mock.patch.object(
+                runtime_opencode.subprocess, "run",
+                return_value=mock.Mock(stdout=fake_new + "  --fork\n", stderr=""),
+            ):
+                self.assertFalse(runtime_opencode.main_supports_fork("opencode"))
+            # 探测结果缓存：第二次不再起子进程。
+            with mock.patch.object(
+                runtime_opencode.subprocess, "run",
+                side_effect=AssertionError("must be cached"),
+            ):
+                self.assertFalse(runtime_opencode.main_supports_fork("opencode"))
+        finally:
+            runtime_opencode._MAIN_FORK_SUPPORT = old
 
     def test_copy_session_cursor_clones_directory(self) -> None:
         """Cursor 无官方分叉：磁盘复制目录并换新 id，再原生恢复。"""
