@@ -71,7 +71,7 @@ Install and sign in to at least one supported coding assistant separately. Corra
 
 ## Start using it
 
-Open `corral`. Existing assistant sessions appear in the sidebar. Selecting a conversation reads it; it does not start that assistant. Press `Enter` to resume an ended session or attach to a hosted terminal.
+Open `corral`. Existing assistant sessions appear in the sidebar. Selecting a conversation previews its transcript without launching the agent. Press `Enter` to resume an ended session or attach to a hosted terminal.
 
 Press `Ctrl+N` to start something new. The New Session dialog remembers your five most recent assistant/project combinations under Quick Start. Click a combination to launch it immediately; right-click it to remove it. From your shell you can also choose the assistant:
 
