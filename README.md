@@ -62,25 +62,25 @@ Install and sign in to at least one supported coding assistant separately. Corra
 
 ## What Corral does
 
-- **See who needs you.** Working agents and agents waiting on your answer show up in one sidebar, across every assistant.
+- **See who needs you.** Active agents and ones waiting on your answer show up in one sidebar, across every assistant.
 - **Work side by side.** Open up to four sessions together, group related work, and pin what matters.
 - **Keep agents running.** Hosted sessions keep going after you close Corral or disconnect SSH, as long as the host stays awake.
 - **Hand work to another assistant.** Pass a task with its conversation history to a new session in a different assistant — for example, Claude implements and Codex reviews.
-- **Continue from your phone or Mac.** Read replies, send a follow-up, or answer a question away from the terminal with the native app; see below.
+- **Continue from your phone or Mac.** Read replies, send a follow-up, or answer a question away from the terminal with the native app.
 - **Find past conversations.** Combine Active, runtime and project quick filters with title filtering, or search what you said across every assistant's history. Quick filters narrow the sidebar while keeping your open panes in place.
 
 ## Start using it
 
 Open `corral`. Existing assistant sessions appear in the sidebar. Selecting a conversation previews its transcript without launching the agent. Press `Enter` to resume an ended session or attach to a hosted terminal.
 
-Press `Ctrl+N` to start something new. The New Session dialog remembers your five most recent assistant/project combinations under Quick Start. Click a combination to launch it immediately; right-click it to remove it. From your shell you can also choose the assistant:
+Press `Ctrl+N` to start something new. The New Session dialog remembers your five most recent assistant/project combinations under Quick Start. Pick one to launch it immediately; right-click to remove it. From your shell you can also choose the assistant:
 
 ```bash
 corral claude
 # Also: corral codex | corral opencode | corral cursor | corral pi
 ```
 
-Select two to four sessions with `Space`, then press `Enter` to open them side by side. Closing a pane hides that view; it does not stop a hosted agent.
+Select two to four sessions with `Space`, then press `Enter` to open them side by side. Closing a pane only hides the view; it does not stop a hosted agent.
 
 To continue elsewhere, open a session, press `Ctrl+T`, and choose an assistant. After Claude finishes an implementation, you can hand that conversation to Codex for review. The source session stays intact; the receiving assistant reads the history it needs. Press `Enter` instead when you want the original assistant's native resume.
 
@@ -112,7 +112,7 @@ Sidebar shortcuts apply while the sidebar has focus. The footer shows actions av
 
 ## Pick up from your Mac or iPhone
 
-The native app shows the same sessions as the terminal: read conversations side by side, send a follow-up, or answer a question without opening a terminal.
+The native app shows the same sessions as the terminal: read conversations side by side, send a follow-up, or answer a question — no terminal needed.
 
 <p align="center">
   <picture>
@@ -141,7 +141,7 @@ Installing the CLI does not install the app. With the app installed, run this on
 corral remote pair
 ```
 
-Pairing starts remote access and installs any missing remote components. Scan or paste the code in the app on the same local network. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Remote traffic is end-to-end encrypted. For access across networks, follow the [relay setup](https://github.com/corral-dev/corral-relay#quick-start). Use `corral remote pair --readonly` when a device should only view sessions.
+Pairing starts remote access and installs any missing remote components. On the same local network, scan the pairing code with the app, or paste it in. Away from home, you need a relay you host yourself; Corral does not bundle a shared public relay. Remote traffic is end-to-end encrypted. For access across networks, follow the [relay setup](https://github.com/corral-dev/corral-relay#quick-start). Use `corral remote pair --readonly` when a device should only view sessions.
 
 ## Privacy
 
