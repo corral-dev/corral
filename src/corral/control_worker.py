@@ -122,8 +122,13 @@ def _phase(session: dict) -> str:
 _COMPOSER_CHROME = set("›❯┃│─━╭╮╰╯┌┐└┘→>-|+ \t")
 
 
-def composer_state(runtime, name: str | None) -> str:
-    """``empty`` / ``draft`` / ``unknown`` from non-dim composer cells; never edits it."""
+def _composer_region_text(runtime, name: str | None) -> str | None:
+    """Post-filter composer region text from non-dim cells; None when unreadable.
+
+    Shared pipeline behind :func:`composer_state` and
+    :func:`composer_occupant_excerpt` so the guard verdict and the rejection
+    evidence always describe the same screen read. Never edits the composer.
+    """
     import re
 
     from corral import embed
@@ -131,7 +136,7 @@ def composer_state(runtime, name: str | None) -> str:
 
     styled = embed.capture(name, 0, 0) if name else None
     if not styled:
-        return "unknown"
+        return None
     ansi = re.compile(r"\x1b\[[0-9;:?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
     rows = []
     for line in styled.splitlines():
@@ -140,7 +145,7 @@ def composer_state(runtime, name: str | None) -> str:
         rows.append("".join(" " if cell.dim else (cell.ch or "") for cell in cells))
     region = runtime.composer_region("\n".join(rows))
     if region is None:
-        return "unknown"
+        return None
     if runtime.id == "cursor":
         region = region.splitlines()[0] if region else ""
     if runtime.id == "opencode":
@@ -150,10 +155,40 @@ def composer_state(runtime, name: str | None) -> str:
         # composer_region; only the hint line is filtered here so a real
         # draft on the input lines above still counts.
         region = "\n".join(line for line in region.splitlines() if "Ask anything" not in line)
+    return region
+
+
+def composer_state(runtime, name: str | None) -> str:
+    """``empty`` / ``draft`` / ``unknown`` from non-dim composer cells; never edits it."""
+    region = _composer_region_text(runtime, name)
+    if region is None:
+        return "unknown"
     content = "".join(ch for ch in region if ch not in _COMPOSER_CHROME)
     for placeholder in _PLACEHOLDERS:
         content = content.replace(placeholder.replace(" ", ""), "")
     return "draft" if any(ch.isalnum() for ch in content) else "empty"
+
+
+#: Occupant excerpt budget for the composer_not_empty rejection evidence. The
+#: coordinator passes through ``error.message[:240]``, so the excerpt is
+#: capped well inside that window; single-line collapsed for log safety.
+_COMPOSER_EXCERPT_LIMIT = 120
+
+
+def composer_occupant_excerpt(runtime, name: str | None, limit: int = _COMPOSER_EXCERPT_LIMIT) -> str:
+    """Single-line occupant summary for composer_not_empty evidence; ``""`` when none.
+
+    Uses the same post-filter region as :func:`composer_state`, so the text
+    shown is the draft that blocked dispatch — not the idle hint or the
+    status line the filters already removed. Never edits the composer.
+    """
+    try:
+        region = _composer_region_text(runtime, name)
+    except Exception:  # noqa: BLE001 - evidence must never break the guard
+        return ""
+    if not region:
+        return ""
+    return " ".join(region.split())[: max(0, limit)]
 
 
 # Idle composer hints some runtimes draw without the dim attribute.
@@ -411,6 +446,26 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
     def target_busy(session: dict) -> bool:
         return bool(session.get("live")) and _phase(session) == "working"
 
+    # waiting_input semantics (coordinator contract; verified against the
+    # shared AgentSessionControl supervisor admit()/observation_changes()).
+    # Pre-dispatch, a session already waiting on an earlier native question is
+    # rejected here as delivery=rejected/code=target_waiting_input ("answer it
+    # first"); the brief is never injected on top of someone else's question.
+    # Post-dispatch, execution=waiting_input means THIS run's own delivered
+    # turn drew a pending native question (SessKit pending_interaction inside
+    # the run's correlated range, or session phase==waiting, or
+    # outcome==awaiting_input). Delivery proof (delivery=native_recorded)
+    # already stands by then; the callback did its job and the question is
+    # target business, not a delivery failure — so there is no auto-settle,
+    # no re-queue and no handoff: the run waits for an explicit answer.
+    # A coordinator that stops polling after its own budget (e.g. five
+    # reconciles) and treats its side as terminal is correct policy, provided
+    # it does not expect Corral to settle. To unblock instead, self-check:
+    # `corral run status <run_id>` (execution + questions[] request_id),
+    # `corral run events <run_id> --after 0` (evidence chain), then
+    # `corral run answer <run_id> --request-id <rid> --answers-json
+    # '[{"question_id":...}]'`, or `corral run interrupt <run_id>`.
+    # `run message` stays blocked while a question is pending, by design.
     def target_waiting(session: dict) -> bool:
         return _phase(session) == "waiting"
 
@@ -461,8 +516,14 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             check = composer_state(runtime, name)
             store.update(run_id, {"composer_check": check})
             if check == "draft":
+                # Occupant evidence for the coordinator: error.message is
+                # passed through (truncated to [:240] downstream), so the
+                # draft excerpt rides in the message itself and is visible in
+                # `corral run status <run_id>` under .data.runs[0].error.
+                excerpt = composer_occupant_excerpt(runtime, name)
+                detail = f" Occupant ({runtime.id}): {excerpt!r}." if excerpt else ""
                 raise CertainFailure(
-                    "composer_not_empty", "The session's input box already holds text; it was left untouched."
+                    "composer_not_empty", "The session's input box already holds text; it was left untouched." + detail
                 )
         return baseline
 

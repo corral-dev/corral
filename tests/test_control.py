@@ -734,6 +734,10 @@ class SupervisorReviewTests(unittest.TestCase):
         self.assertEqual(record["execution"], "failed")
         self.assertEqual(record["delivery"], "rejected")
         self.assertEqual(record["error"]["code"], "composer_not_empty")
+        # W4: the rejection must carry the occupant excerpt so the coordinator
+        # can see who holds the input box via `run status` .error without a
+        # second screen read.
+        self.assertIn("half typed", record["error"]["message"])
         self.assertEqual(hub.sent, [])
 
     def test_missing_history_settles_unknown_with_exact_evidence(self):
