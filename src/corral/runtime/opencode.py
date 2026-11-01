@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import subprocess
 
 from corral.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from corral.runtime.base import BaseRuntime, usable_cwd
 from corral.scan import opencode as scan_opencode
+
+# Trailing status/model line inside the OpenCode composer box (v2.2.5
+# observed: `Build auto · <model> · xhigh`, `Build · <model> · xhigh`).
+# It is chrome, not user input; the draft check must ignore it. The match is
+# deliberately narrow (leading `Build`, middle-dot separators) so a user
+# draft that merely mentions "build" on the last input line still counts.
+_STATUS_LINE_RE = re.compile(r"^Build(?:\s+auto)?\s*·")
+
+
+def _is_composer_status_line(line: str) -> bool:
+    stripped = line.lstrip()
+    if stripped.startswith("┃"):
+        stripped = stripped[1:].strip()
+    else:
+        stripped = stripped.strip()
+    return bool(_STATUS_LINE_RE.match(stripped))
+
 
 # 主命令 `--fork` 支持探测缓存：None=尚未探测（进程内只探一次，禁止每次启动
 # 都 fork 子进程）。v2.2.5 实测主 `--help` 已无 --fork（旧 `opencode -s <id>
@@ -85,7 +103,12 @@ class OpenCodeRuntime(BaseRuntime):
 
     def composer_region(self, screen: str) -> str | None:
         # The bottommost run of `┃` lines; completion popups render below it
-        # (2.0.32).
+        # (2.0.32). The run's last line is the composer's own status/model
+        # line (e.g. `┃  Build auto · <model> · xhigh`, v2.2.5), never user
+        # input: it must not count as a draft. User text lives on the lines
+        # above it, so only the status line is dropped here; the idle
+        # `Ask anything… "<suggestion>"` hint is filtered by the caller
+        # (composer_state), which knows the placeholder vocabulary.
         lines = screen.splitlines()
         marked = [i for i, line in enumerate(lines) if line.lstrip().startswith("┃")]
         if not marked:
@@ -93,7 +116,10 @@ class OpenCodeRuntime(BaseRuntime):
         start = end = marked[-1]
         while start > 0 and lines[start - 1].lstrip().startswith("┃"):
             start -= 1
-        return "\n".join(lines[start : end + 1])
+        region = lines[start : end + 1]
+        while region and _is_composer_status_line(region[-1]):
+            region.pop()
+        return "\n".join(region)
 
     def scan_signature(self) -> object | None:
         return scan_opencode.scan_signature()

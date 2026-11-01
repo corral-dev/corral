@@ -143,6 +143,13 @@ def composer_state(runtime, name: str | None) -> str:
         return "unknown"
     if runtime.id == "cursor":
         region = region.splitlines()[0] if region else ""
+    if runtime.id == "opencode":
+        # Idle hint with a rotating suggestion (`Ask anything… "<suggestion>"`,
+        # v2.2.5, non-dim) is chrome, not a draft. The trailing status line
+        # (`Build [auto] · …`) is already excluded by the adapter's
+        # composer_region; only the hint line is filtered here so a real
+        # draft on the input lines above still counts.
+        region = "\n".join(line for line in region.splitlines() if "Ask anything" not in line)
     content = "".join(ch for ch in region if ch not in _COMPOSER_CHROME)
     for placeholder in _PLACEHOLDERS:
         content = content.replace(placeholder.replace(" ", ""), "")
