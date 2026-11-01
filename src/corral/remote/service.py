@@ -1164,8 +1164,19 @@ class RemoteService:
         theme = _terminal_theme(params) if connection.access != "readonly" else None
         vote = connection.access != "readonly"
         active = _terminal_active(params)
+        # Readonly watches only: never natively resume a stopped session.
+        allow_resume = connection.access != "readonly"
         if not self._subscribe(connection, protocol.terminal_channel(key)):
             # Already attached on this connection: a size update plus a fresh snapshot.
+            # A stopped session must resume here too, otherwise Retry (which reuses
+            # this branch) waits for a snapshot that can never arrive (host_timeout).
+            if allow_resume:
+                ensure = getattr(self.hub, "ensure_terminal_hosted", None)
+                if callable(ensure):
+                    try:
+                        ensure(key)
+                    except Exception:
+                        pass
             size = self.hub.terminal_resize(key, viewer, cols, rows, vote=vote, active=active)
             self.hub.terminal_resync(key)
         else:

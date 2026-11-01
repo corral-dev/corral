@@ -2578,10 +2578,24 @@ class SessionHub:
 
     # -- 桌面终端原始流（Mac 终端视图） ----------------------------------
 
+    def ensure_terminal_hosted(self, key: str) -> str:
+        """Return the hosted tmux name, natively resuming a stopped session.
+
+        Retry (already-subscribed resize+resync) and cold attach share this:
+        an aborted/unhosted session must resume instead of serving a snapshot
+        that can never arrive (client `host_timeout`). Shell keys never resume.
+        """
+        return self._keepalive_name(key, resume_if_needed=True)
+
     def terminal_attach(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool,
                         active: bool = True) -> dict:
-        """Start (or join) the session's raw stream; a snapshot event follows."""
-        name = self._keepalive_name(key)
+        """Start (or join) the session's raw stream; a snapshot event follows.
+
+        Full-access viewers (`vote=True`) natively resume a stopped session so
+        Retry/cold-open gets a snapshot instead of `host_timeout`. Readonly
+        (`vote=False`) only watches and never resumes. Shell keys never resume.
+        """
+        name = self._keepalive_name(key, resume_if_needed=vote)
         stream_class = shell_terminal.ShellTerminalStream if shell_terminal.is_shell_key(key) else TerminalStream
         with self._lock:
             entry = self._terminals.get(key)
