@@ -67,7 +67,7 @@ Install and sign in to at least one supported coding assistant separately. Corra
 - **Keep agents running.** Hosted sessions keep going after you close Corral or disconnect SSH, as long as the host stays awake.
 - **Hand work to another assistant.** Pass a task with its conversation history to a new session in a different assistant — for example, Claude implements and Codex reviews.
 - **Continue from your phone or Mac.** Read replies, send a follow-up, or answer a question away from the terminal with the native app.
-- **Find past conversations.** Combine Active, runtime and project quick filters with title filtering, or search what you said across every assistant's history. Quick filters narrow the sidebar while keeping your open panes in place.
+- **Find past conversations.** Cycle the quick filter through Focus, Active, and all sessions; combine it with runtime, project and title filters, or search what you said across every assistant's history. Quick filters narrow the sidebar while keeping your open panes in place.
 
 ## Start using it
 
