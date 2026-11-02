@@ -1,20 +1,47 @@
-"""界面导航状态：项目搜索查询与默认运行时，跨 MainScreen/模态弹窗共享。"""
+"""Window-scoped navigation and presentation-only session filter state."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+from corral.activity_board import needs_attention, resolve_active_marker
+
+
+class SessionQuickFilter(str, Enum):
+    ALL = "all"
+    FOCUS = "focus"
+    ACTIVE = "active"
+
+    @property
+    def next(self) -> SessionQuickFilter:
+        return {
+            self.ALL: self.FOCUS,
+            self.FOCUS: self.ACTIVE,
+            self.ACTIVE: self.ALL,
+        }[self]
+
+    @property
+    def label_key(self) -> str:
+        return "filter.active" if self is self.ACTIVE else "filter.attention"
+
+    def matches(self, session: dict, *, now: float | None = None) -> bool:
+        if self is self.FOCUS:
+            return needs_attention(session, now=now)
+        if self is self.ACTIVE:
+            return resolve_active_marker(session, now=now) in {"waiting", "working", "recent"}
+        return True
 
 
 @dataclass
 class NavState:
     source: str
-    # 侧边栏顶部搜索框内容；空字符串 = 不过滤（全部项目/会话）
     project_query: str = ""
-    # 侧栏「关注」快捷筛选：只列 needs_attention 的会话（与其他筛选取交集）；不持久化
-    attention_only: bool = False
+    quick_filter: SessionQuickFilter = SessionQuickFilter.ALL
     runtime_filters: set[str] = field(default_factory=set)
     project_filters: set[str] = field(default_factory=set)
 
     @property
     def narrowing(self) -> bool:
-        return bool(self.project_query.strip() or self.attention_only or self.runtime_filters or self.project_filters)
+        return bool(self.project_query.strip() or self.quick_filter is not SessionQuickFilter.ALL
+                    or self.runtime_filters or self.project_filters)

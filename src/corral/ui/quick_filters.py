@@ -1,4 +1,4 @@
-"""Sidebar filter row: Agent and Project pickers plus the Attention checkbox.
+"""Sidebar filter row: Agent/Project pickers plus the Focus/Active cycle.
 
 One row at the default 39-cell width (owner redesign 2026-10-25). Filters are
 presentation-only over the unfiltered catalog and use neutral colors; brand
@@ -19,7 +19,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.style import Style
-from textual.widgets import Button, Checkbox, Input, SelectionList, Static
+from textual.widgets import Button, Input, SelectionList, Static
 from textual.widgets._toggle_button import ToggleButton
 
 from corral.i18n import t
@@ -28,7 +28,7 @@ from corral.runtime.registry import active_runtimes
 from corral.textutil import fit_cell, text_width
 from corral.theme import runtime_label_style
 from corral.ui.dismiss import OutsideClickDismiss
-from corral.ui.nav import NavState
+from corral.ui.nav import NavState, SessionQuickFilter
 
 
 def project_options(sessions: list[dict]) -> list[tuple[str, str]]:
@@ -251,30 +251,14 @@ class FilterChip(Button):
 
 
 class QuickFilters(Horizontal):
-    """`Agent: All ▾  Project: All ▾  [ ] Focus` plus its owned blank row."""
+    """Agent/Project pickers and one cycling filter action, plus a blank row."""
 
     DEFAULT_CSS = """
-    /* Chips start at the left edge like the cards; the checkbox's trailing cell
-       is the right inset. At 39 cells: 12 + gap + 14 + gap + 11 fit exactly. */
+    /* Keep both picker prefixes and the cycling button on one compact row. */
     QuickFilters { height: 2; width: 1fr; padding: 0; }
     QuickFilters > FilterChip { width: auto; }
     QuickFilters > .filter-gap { width: 1; height: 1; }
-    QuickFilters > Checkbox {
-        dock: right; height: 1; width: auto; margin: 0; padding: 0;
-        background: transparent; border: none;
-    }
-    QuickFilters > Checkbox:focus { border: none; background-tint: transparent; }
-    QuickFilters > Checkbox > .toggle--label { color: $text-muted; }
-    QuickFilters > Checkbox:hover > .toggle--label,
-    QuickFilters > Checkbox:focus > .toggle--label {
-        color: $foreground; background: $panel-lighten-1; text-style: none;
-    }
-    QuickFilters > Checkbox:light:hover > .toggle--label,
-    QuickFilters > Checkbox:light:focus > .toggle--label { background: $panel-darken-1; }
-    QuickFilters > Checkbox.-on > .toggle--label { color: $foreground; text-style: bold; }
-    /* 未勾选时框内不画字（Textual 默认画一个淡 X，终端里容易被看成已勾选）。 */
-    QuickFilters > Checkbox > .toggle--button { color: $panel; }
-    QuickFilters > Checkbox.-on > .toggle--button { color: $foreground; }
+    QuickFilters > #attention-filter { dock: right; margin: 0; }
     """
 
     def __init__(self, store, nav: NavState, **kwargs) -> None:
@@ -287,9 +271,7 @@ class QuickFilters(Horizontal):
         yield FilterChip("", id="agent-filter", classes="-inline", compact=True)
         yield Static("", classes="filter-gap")
         yield FilterChip("", id="project-filter", classes="-inline", compact=True)
-        checkbox = Checkbox(t("filter.attention"), self.nav.attention_only,
-                            id="attention-filter", compact=True)
-        yield checkbox
+        yield FilterChip(t(self.nav.quick_filter.label_key), id="attention-filter", compact=True)
 
     def on_mount(self) -> None:
         self.call_next(self.sync)
@@ -379,20 +361,21 @@ class QuickFilters(Horizontal):
         project.label = self._chip_label("project")
         self._mark(agent, bool(self.nav.runtime_filters))
         self._mark(project, bool(self.nav.project_filters))
-        checkbox = self.query_one("#attention-filter", Checkbox)
-        if checkbox.value != self.nav.attention_only:
-            with checkbox.prevent(Checkbox.Changed):
-                checkbox.value = self.nav.attention_only
-        self._layout(agent, project, checkbox)
+        quick = self.query_one("#attention-filter", FilterChip)
+        quick.label = t(self.nav.quick_filter.label_key)
+        self._mark(quick, self.nav.quick_filter is not SessionQuickFilter.ALL)
+        self._layout(agent, project, quick)
 
-    def _layout(self, agent: FilterChip, project: FilterChip, checkbox: Checkbox) -> None:
-        """Fit both pickers before the checkbox; long values truncate, never wrap."""
+    def _layout(self, agent: FilterChip, project: FilterChip, quick: FilterChip) -> None:
+        """Reserve both mode labels so cycling never shifts the picker geometry."""
         width = self.content_size.width
         if width <= 0:
             return
-        # Native Checkbox renders "▐X▌ " + label + one trailing cell.
-        check_width = 5 + text_width(t("filter.attention"))
-        # Gaps: between the two pickers and before the checkbox (breathing room).
+        # Preserve the former checkbox footprint, reserving its label slot for
+        # the longest mode. Agent/Project geometry stays stable across cycling.
+        check_width = 5 + max(text_width(t("filter.attention")), text_width(t("filter.active")))
+        quick.styles.width = check_width
+        # Gaps: between the two pickers and before the quick-filter button.
         room = max(2, width - check_width - 2)
         natural_agent = text_width(str(agent.label))
         natural_project = text_width(str(project.label))
@@ -489,8 +472,15 @@ class QuickFilters(Horizontal):
         self.post_message(FilterChanged())
 
     def on_key(self, event: events.Key) -> None:
-        delta = {"left": -1, "right": 1}.get(event.key)
         focused = self.screen.focused
+        # Button natively binds Enter; retain the previous checkbox's Space
+        # shortcut by routing it through the same public native press action.
+        if event.key == "space" and isinstance(focused, FilterChip) and focused.id == "attention-filter":
+            event.stop()
+            event.prevent_default()
+            focused.action_press()
+            return
+        delta = {"left": -1, "right": 1}.get(event.key)
         if delta is None or focused is None or focused.parent is not self:
             return
         controls = [self.query_one("#agent-filter"), self.query_one("#project-filter"),
@@ -499,12 +489,10 @@ class QuickFilters(Horizontal):
             event.stop()
             controls[(controls.index(focused) + delta) % len(controls)].focus()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
+        if event.button.id == "attention-filter":
+            await self.screen._toggle_attention_filter()
+            return
         dimension = "agent" if event.button.id == "agent-filter" else "project"
         self.app.push_screen(FilterPickerModal(self, dimension, anchor=event.button.region))
-
-    async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        event.stop()
-        if event.value != self.nav.attention_only:
-            await self.screen._toggle_attention_filter()

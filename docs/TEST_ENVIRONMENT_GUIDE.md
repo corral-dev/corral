@@ -132,6 +132,23 @@ not stand in for mandatory complete verification or release acceptance; the
 serialized integrator records those separate results and may rerun this entry
 when shared UI/tmux jobs are idle.
 
+## Split-close helper marker precondition (2026-11-02)
+
+The optional `acceptance.py` real-tmux helper currently fails before a close:
+all three isolated backends pass raw liveness/screen checks and the first
+mounted-grid marker check, but after the sidebar rebuild the readback is
+`[False, False, True]`. This reproduced twice with the installed Corral
+interpreter; cleanup verified removal of each task-owned socket. No filter
+transition occurs in this scenario. The cause is unresolved; do not label it a
+passed close/scroll path or infer that a quick-filter change caused it. Follow-up:
+instrument mounted pane identity, render mode and capture state around that
+rebuild, retaining both real-marker assertions; do not repair it by adding a
+fixed sleep or weakening the precondition. The checkout developer environment
+also lacks optional CairoSVG, while the installed interpreter has it; use the
+latter for this screenshot-dependent helper until the preparation owner closes
+that optional-tool gap. Full CLI and focused quick-filter checks remain separate
+evidence, not substitutes for this open scenario.
+
 ## State-probe independence under a blocked scan
 
 The state loop regression must prove at least four additional probes while the full-scan worker is still blocked, using a condition/event to observe probe progress with a bounded deadline. A fixed 0.3-second sleep does not establish that independence: the 2026-10-16 macOS/Python 3.10 cloud run and its isolated retry both observed exactly three probes and failed the `> 3` threshold, while the local full suite passed. Preserve the probe-count threshold, blocked scan, production loop and cleanup; synchronize on the observed progress instead of treating runner scheduling as product cadence. Runtime latency requirements remain separate and must not be relaxed by this fixture repair.

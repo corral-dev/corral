@@ -48,7 +48,7 @@ from corral.ui.modals import (
     choose_target_runtime,
     new_session_flow,
 )
-from corral.ui.nav import NavState
+from corral.ui.nav import NavState, SessionQuickFilter
 from corral.ui.quick_filters import FilterChanged, QuickFilters
 from corral.ui.runtime_top_bar import RuntimeTopBar
 from corral.ui.session_list import (
@@ -1957,7 +1957,7 @@ class MainScreen(
                     self.nav.runtime_filters.clear()
                 if normalize_cwd(target.get("cwd")) not in self.nav.project_filters:
                     self.nav.project_filters.clear()
-            self.nav.attention_only = False
+            self.nav.quick_filter = SessionQuickFilter.ALL
             self.query_one("#project-search", Input).value = ""
             session_list.clear_multi()
         await self._rebuild_list(key)
@@ -1966,7 +1966,7 @@ class MainScreen(
             session_list.focus()
 
     async def _toggle_attention_filter(self) -> None:
-        """筛选行「关注」勾选：只收窄列表，右栏与焦点不动（焦点留在勾选框上便于再按）。"""
+        """Advance the quick-filter mode; retain workspace and button focus."""
         list_view = self.query_one(SessionListView)
         list_view.clear_multi()
         list_view.toggle_attention_filter()

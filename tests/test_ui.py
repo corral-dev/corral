@@ -69,6 +69,7 @@ from corral.ui.modals import (
     RuntimeChoice,
     RuntimePickerModal,
 )
+from corral.ui.nav import SessionQuickFilter
 from corral.ui.pointer_shape import (
     enable_tmux_passthrough,
     reset_sequence,
@@ -4693,7 +4694,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("f0", {s["id"] for s in view.visible_sessions()})
 
     async def test_filter_row_is_one_neutral_row_that_truncates_values(self) -> None:
-        from textual.widgets import Button, Checkbox
+        from textual.widgets import Button
 
         from corral.ui.quick_filters import QuickFilters
 
@@ -4716,7 +4717,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 filters = app.screen.query_one(QuickFilters)
                 agent = filters.query_one("#agent-filter", Button)
                 project = filters.query_one("#project-filter", Button)
-                active = filters.query_one("#attention-filter", Checkbox)
+                active = filters.query_one("#attention-filter", Button)
                 self.assertEqual(filters.region.height, 2)
                 self.assertEqual(len({agent.region.y, project.region.y, active.region.y}), 1)
                 self.assertEqual(agent.region.y, app.screen.query_one("#project-search-row").region.bottom)
@@ -4742,8 +4743,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 warning = Color.parse(app.get_css_variables()["warning"]).rich_color
                 self.assertNotEqual(chosen.color, warning)
 
-    async def test_header_metadata_and_native_checkbox(self) -> None:
-        from textual.widgets import Checkbox, Static
+    async def test_header_metadata_and_native_quick_filter(self) -> None:
+        from textual.widgets import Button, Static
 
         for theme in ("corral-dark", "corral-light"):
             store, _ = _make_store()
@@ -4777,21 +4778,25 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(str(metadata.render()), "")
                     self.assertTrue(search.placeholder.startswith("Load failed:"))
                 app.screen._update_header()
-                checkbox = app.screen.query_one("#attention-filter", Checkbox)
-                self.assertFalse(checkbox.value)
-                # Unchecked boxes draw no mark (a faint X reads as checked).
-                off = checkbox.get_component_rich_style("toggle--button")
-                self.assertEqual(off.color, off.bgcolor)
-                await pilot.click(checkbox)
+                quick = app.screen.query_one("#attention-filter", Button)
+                self.assertFalse(quick.has_class("-chosen"))
+                await pilot.click(quick)
                 await pilot.pause()
-                self.assertTrue(app.screen.nav.attention_only)
-                self.assertTrue(checkbox.value)
-                # Fixture sessions ran minutes ago: all stay in the Attention window.
+                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.FOCUS)
+                self.assertTrue(quick.has_class("-chosen"))
+                # Fixture sessions ran minutes ago: all stay in Focus.
                 self.assertEqual(str(metadata.render()), "3/3")
-                await pilot.click(checkbox)
+                await pilot.click(quick)
                 await pilot.pause()
-                self.assertFalse(app.screen.nav.attention_only)
-                self.assertFalse(checkbox.value)
+                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.ACTIVE)
+                self.assertTrue(quick.has_class("-chosen"))
+                self.assertEqual(str(quick.label), "Active")
+                await pilot.click(quick)
+                await pilot.pause()
+                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.ALL)
+                self.assertFalse(quick.has_class("-chosen"))
+                self.assertEqual(str(quick.label), "Focus")
+                self.assertEqual(str(metadata.render()), "3")
 
     async def test_attention_filter_membership(self) -> None:
         now = time.time()
@@ -4814,7 +4819,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             view = app.screen.query_one(SessionListView)
             # An open pane is not an open: a2 ended two hours ago and stays out.
             view.set_open_keys(["claude:a2"])
-            app.screen.nav.attention_only = True
+            app.screen.nav.quick_filter = SessionQuickFilter.FOCUS
             self.assertEqual(
                 sorted(session["id"] for session in view.visible_sessions()),
                 ["a0", "a1", "a3", "a5"],
@@ -4937,8 +4942,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("X", "".join(lines))
 
     async def test_active_filter_toggle_narrows_list_without_touching_panes(self) -> None:
-        """Attention narrows the list and leaves open workspace panes untouched."""
-        from textual.widgets import Checkbox
+        """All three modes leave open workspace panes and keyboard focus untouched."""
+        from textual.widgets import Button
 
         store, _ = _make_store()
         marked = {"claude:s1"}
@@ -4947,8 +4952,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             return "waiting" if corral.session_key(session) in marked else None
 
         app = CorralApp(store, embed_ok=True)
-        with mock.patch("corral.ui.session_list.needs_attention",
-                        side_effect=lambda session, **_kwargs: _marker(session) is not None):
+        with mock.patch("corral.ui.nav.needs_attention",
+                        side_effect=lambda session, **_kwargs: _marker(session) is not None), \
+                mock.patch("corral.ui.nav.resolve_active_marker", side_effect=_marker):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
@@ -4957,12 +4963,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 area = app.screen.query_one(SplitPaneArea)
                 await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
                 unfiltered = len(list_view.visible_sessions())
-                checkbox = app.screen.query_one("#attention-filter", Checkbox)
-                checkbox.focus()
+                quick = app.screen.query_one("#attention-filter", Button)
+                quick.focus()
                 await pilot.press("space")
                 await pilot.pause(delay=0.2)
-                self.assertTrue(app.screen.nav.attention_only)
-                self.assertTrue(checkbox.has_focus)
+                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.FOCUS)
+                self.assertTrue(quick.has_focus)
                 # Only s1 has real activity; idle open s0 is excluded.
                 self.assertEqual(
                     [corral.session_key(s) for s in list_view.visible_sessions()],
@@ -4973,7 +4979,15 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
                 await pilot.press("space")
                 await pilot.pause(delay=0.2)
-                self.assertFalse(app.screen.nav.attention_only)
+                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.ACTIVE)
+                self.assertEqual(str(quick.label), "Active")
+                self.assertEqual([corral.session_key(s) for s in list_view.visible_sessions()], ["claude:s1"])
+                self.assertTrue(quick.has_focus)
+                self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
+                await pilot.press("enter")
+                await pilot.pause(delay=0.2)
+                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.ALL)
+                self.assertTrue(quick.has_focus)
                 self.assertEqual(len(list_view.visible_sessions()), unfiltered)
 
     async def test_escape_exits_with_no_result(self) -> None:

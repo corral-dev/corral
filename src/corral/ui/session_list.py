@@ -55,11 +55,11 @@ if TYPE_CHECKING:
 
 from corral.activity_board import (
     active_marker_style,
-    needs_attention,
     resolve_active_marker,
 )
 from corral.i18n import t
 from corral.projects import normalize_cwd
+from corral.ui.nav import SessionQuickFilter
 
 NEW_SESSION_ID = "__new_session__"
 STICKY_IDS = (NEW_SESSION_ID,)
@@ -1491,7 +1491,7 @@ class SessionListView(Vertical):
 
     def _attention_members_changed(self, now: float) -> bool:
         """Attention windows expire with time alone; report when membership moved."""
-        if not self.nav.attention_only:
+        if self.nav.quick_filter is SessionQuickFilter.ALL:
             self._attention_members = None
             return False
         import corral
@@ -1499,7 +1499,7 @@ class SessionListView(Vertical):
         members = frozenset(
             corral.session_key(session)
             for session in self.store.all_sessions()
-            if needs_attention(session, now=now)
+            if self.nav.quick_filter.matches(session, now=now)
         )
         previous, self._attention_members = self._attention_members, members
         return previous is not None and members != previous
@@ -1596,17 +1596,13 @@ class SessionListView(Vertical):
             self.nav.project_query,
             titles=self.store.snapshot(),
         )
-        attention_only = self.nav.attention_only
         return [
             session
             for session in visible
             if session.get("source") != SHELL_RUNTIME_ID
             and (not self.nav.runtime_filters or session.get("source") in self.nav.runtime_filters)
             and (not self.nav.project_filters or normalize_cwd(session.get("cwd")) in self.nav.project_filters)
-            and (
-                not attention_only
-                or needs_attention(session)
-            )
+            and self.nav.quick_filter.matches(session)
         ]
 
     def _sidebar_rows(self) -> list[_SidebarRow]:
@@ -1855,7 +1851,7 @@ class SessionListView(Vertical):
     def _filter_scope_signature(self) -> tuple:
         return (
             self.nav.project_query.strip(),
-            self.nav.attention_only,
+            self.nav.quick_filter,
             frozenset(self.nav.runtime_filters),
             frozenset(self.nav.project_filters),
         )
@@ -1920,8 +1916,8 @@ class SessionListView(Vertical):
         return identity if identity in identities else None
 
     def toggle_attention_filter(self) -> None:
-        """切换「关注」筛选；与筛选框关键字一样只改展示，不动会话与分屏。"""
-        self.nav.attention_only = not self.nav.attention_only
+        """Cycle unfiltered, Focus and Active without changing the workspace."""
+        self.nav.quick_filter = self.nav.quick_filter.next
 
     def set_open_keys(self, keys) -> None:
         """右栏开着的会话；关注筛选开启时变化了才需要重建。"""
@@ -1929,7 +1925,7 @@ class SessionListView(Vertical):
         if keys == self._open_keys:
             return
         self._open_keys = keys
-        if self.nav.attention_only:
+        if self.nav.quick_filter is not SessionQuickFilter.ALL:
             self.call_next(self.rebuild)
 
     def total_count(self) -> int:
