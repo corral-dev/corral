@@ -345,8 +345,9 @@ search crawl 2026-09-30):
   Water Drop respectively, including extension-side Keychain reads.
   Reuse the inspected `Shared/UI/NotificationSoundPicker.swift` native SwiftUI
   Picker and existing AudioToolbox preview; only its data and labels change,
-  not settings layout or interaction. All notification kinds (waiting, completed, aborted)
-  use the one selected preset; there is no per-kind sound and no extra
+  not settings layout or interaction. Apple documents IMA4-in-CAF and the
+  conversion tool in [UNNotificationSound](https://developer.apple.com/documentation/usernotifications/unnotificationsound).
+  All notification kinds (waiting, completed, aborted) use the one selected preset; there is no per-kind sound and no extra
   silent option (the system's own notification settings already cover that).
 - The choice is device-local and client-only: the host, push payload and relay
   protocol are unchanged. Settings shows it under Notifications as a native
@@ -358,7 +359,7 @@ search crawl 2026-09-30):
   shared Keychain access group (`AfterFirstUnlock`, readable while locked).
   The extension sets the sound on the best-attempt content before decrypting,
   so decrypt failure and extension timeout still use the selected preset;
-  unreadable Keychain falls back to Chime. The sound files are bundled in
+  unreadable Keychain falls back to Electronic Chime. The sound files are bundled in
   both the app and the extension. The relay's plaintext `aps.sound` remains
   `default` and only applies if the extension never runs; changing it would
   require a relay deployment for no observed path.
