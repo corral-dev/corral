@@ -45,8 +45,13 @@ of the default scope.
 `plan` reads `## Unreleased` in `cli/CHANGELOG.md` and `apple/CHANGELOG.md`. Each must hold
 `### English` and `### 简体中文` with user-visible changes. When `plan` reports
 `notes: missing`, write the notes from the listed commit subjects, commit only the changelog,
-and rerun `plan`. `start` turns the section into the version heading and uses it as the
-GitHub, Homebrew and AppShelf release notes.
+and rerun `plan`. `start` turns the section into the version heading for publication.
+Current limitation: the iOS driver passes only the first bullet, truncated to 200 characters,
+to `ios-deliver`, rather than the complete bilingual body. The changelog retains both
+languages, but this does not establish bilingual notes on AppShelf. Follow-up: preserve the
+complete English/Chinese notes through the upload and verify the returned Notes field;
+the [shared AppShelf guide](~/.config/agentsync/docs/APPSHELF_INSTALL_SHELF_GUIDE.md) owns
+multipart text-field caveats. This limitation does not relax the bilingual release requirement.
 
 ## Phases
 
@@ -79,10 +84,11 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
   file is covered, or add a per-path rule there. If a `replacement_file` is stale, refresh the
   file and its `source_sha256`. The recipe format is in
   [PUBLIC_SOURCE_EXPORT_GUIDE](PUBLIC_SOURCE_EXPORT_GUIDE.md).
+- Fresh iOS-only workspace reports missing `logs/ios.deliver.log` after delivery: reconcile the durable `ios-deliver` job before retrying any external effect. A workflow-backed build writes its log outside the release workspace, so it does not create the release's `logs/` directory. `Context.log()` must create that parent for directly written phase logs. For affected older drivers, create only the release workspace's `logs/` directory and `resume`; the existing artifact/device job reuses its confirmed upload and installation. Do not rebuild, reinstall or upload a different artifact merely because recording its result failed.
 - New warning: fix it if it is in owned code. Otherwise register it with an assessment.
 - New Linux failure: fix it. Register it only after showing that it also fails on the
   previous release tag on the same host, or after you have identified an environment cause.
-- Network or notarization interruption: `resume`. Every publication step is idempotent.
+- Network or notarization interruption: `resume` reuses confirmed artifacts and receipts. Reconcile an unknown external outcome against the target first; do not assume every backend offers exactly-once publication. In particular, the shared AppShelf guide documents that an upload retry without a confirmed receipt can create a duplicate shelf release.
 
 ## Private configuration
 

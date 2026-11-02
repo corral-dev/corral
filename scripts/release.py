@@ -565,6 +565,9 @@ class Context:
         return self.state["versions"][component]["to"]
 
     def log(self, phase: str) -> Path:
+        # Workflow-backed phases log elsewhere; a fresh iOS-only release may
+        # reach a directly written delivery log before this directory exists.
+        self.logs.mkdir(parents=True, exist_ok=True)
         return self.logs / f"{phase}.log"
 
     def workflow(self, phase: str, repo: Path, argv: list[str], *, resource: str | None = None,

@@ -54,6 +54,17 @@ Release: minor
 """
 
 
+class ContextLogTests(unittest.TestCase):
+    def test_fresh_direct_phase_log_creates_parent_and_preserves_existing_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = object.__new__(release.Context)
+            ctx.logs = Path(tmp) / "fresh-release" / "logs"
+            log = ctx.log("ios.deliver")
+            log.write_text("confirmed delivery")
+            self.assertEqual(ctx.log("ios.deliver"), log)
+            self.assertEqual(log.read_text(), "confirmed delivery")
+
+
 class VersionTests(unittest.TestCase):
     def test_steps(self):
         self.assertEqual(release.next_version("0.24.356", "patch"), "0.24.357")
