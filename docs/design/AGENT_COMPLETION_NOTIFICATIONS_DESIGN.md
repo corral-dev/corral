@@ -333,11 +333,19 @@ search crawl 2026-09-30):
 
 ### 3.5 Notification sound presets (owner requirement, 2026-10-19)
 
-- Corral notifications never use the system default sound. The Apple clients
-  ship three original presets (Chime, Marimba, Soft Tap), generated
-  reproducibly by `apple/scripts/notification-sounds/generate.py` into
+- Corral notifications never use the system default sound. Owner-approved
+  replacement (2026-11-02): the Apple clients offer exactly three edited,
+  model-generated recordings: Wooden Duet (木质双音), Water Drop (清透水滴),
+  and Electronic Chime (电子钟琴). Preserve the approved edits without further
+  trimming, normalization or effects. Keep the renamed MP3 masters in
+  `apple/scripts/notification-sounds/sources/`; `generate.py` converts them to
   `apple/Shared/Resources/Sounds/corral-<preset>.caf` (IMA4 CAF, under 2 s).
-  Chime is the default. All notification kinds (waiting, completed, aborted)
+  Electronic Chime remains the default chime-style choice. Resolve previous
+  Chime / Marimba / Soft Tap preferences to Electronic Chime / Wooden Duet /
+  Water Drop respectively, including extension-side Keychain reads.
+  Reuse the inspected `Shared/UI/NotificationSoundPicker.swift` native SwiftUI
+  Picker and existing AudioToolbox preview; only its data and labels change,
+  not settings layout or interaction. All notification kinds (waiting, completed, aborted)
   use the one selected preset; there is no per-kind sound and no extra
   silent option (the system's own notification settings already cover that).
 - The choice is device-local and client-only: the host, push payload and relay
