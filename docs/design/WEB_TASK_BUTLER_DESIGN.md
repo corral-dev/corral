@@ -976,16 +976,21 @@ Decisions for the owner at freeze:
 > system's. Reused: native drag image, auto-scroll, Esc cancel, long press. Not reused:
 > CodeMirror's built-in widget drag (6.22+, [forum](https://discuss.codemirror.net/t/drag-drop-widget-decorator/7338))
 > deletes and reinserts plain text without the span, and never sees `dragend` once the moved
-> widget re-renders, leaving a stale dragged range; and `dropCursor()` places the caret on the
-> first line of a wrapped sentence's end. So the drop handler (through CodeMirror's handler
-> chain, which skips the built-in drop) moves the span itself, and a small caret is drawn from
-> the sentence element's own line boxes. Drops are accepted only in the sentence's own day.
+> widget re-renders, leaving a stale dragged range; and `dropCursor()`. So the drop handler
+> (through CodeMirror's handler chain, which skips the built-in drop) moves the span itself and
+> draws a small drop caret at the editor's measured position. Drops are accepted only in the sentence's own day.
 > Fixed at the same time: a move was refused whenever the drop touched the edge of the text it
 > takes away (e.g. joining a one-sentence paragraph to the end of the previous one); now only a
 > move that leaves the text unchanged is refused. **Accepted by the owner on a physical iPhone
 > and in desktop Chrome (2026-11-03):** mouse drag, iOS long-press drag, drop caret and moves.
 > Reusable CodeMirror / native drag findings live in the shared web interaction guide
 > (AgentSync `WEB_APP_INTERACTION_GUIDE.md`, "Inline objects in a CodeMirror 6 editor").
+> **Caret at the end of a wrapped sentence (owner report, 2026-11-03, after acceptance):** the
+> caret after a taken sentence that wraps onto a second line was drawn at the end of its first
+> line, mid-sentence; CodeMirror's default measure for an inline replace widget uses the first
+> line box. The sentence widget now measures its own edges (`coordsAt`: start = first line box,
+> end = last line box plus the trailing gap), which fixes the editing caret, arrow-key stops
+> and the drop caret alike.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral

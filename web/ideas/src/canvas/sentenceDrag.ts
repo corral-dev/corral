@@ -1,7 +1,6 @@
 // Drag a taken sentence to another place in the same day (owner, 2026-11-03: no grip; the
 // sentence itself is the handle). The drag is the platform's own HTML drag and drop: the
-// sentence widget is `draggable`, and a caret shows where it will land (drawn here because
-// CodeMirror's `dropCursor()` places it on the first line of a wrapped sentence's end). CodeMirror's built-in widget drag is not used: its drop would delete and reinsert the
+// sentence widget is `draggable`, and a caret shows where it will land. CodeMirror's built-in widget drag is not used: its drop would delete and reinsert the
 // text without the span, and it never learns the drag ended once the moved widget re-renders. A mouse drags as soon as it moves; on
 // iOS / iPadOS Safari 15+ a long press lifts it natively, so an ordinary swipe still scrolls.
 // Only the drop is ours: it moves the sentence to the caret position and keeps its span,
@@ -86,20 +85,6 @@ function endDrag(): Dragging | null {
   return d;
 }
 
-/** Screen box of the caret at `pos`, measured on the sentence element when `pos` is a sentence edge. */
-function caretBox(view: EditorView, pos: number): { left: number; top: number; bottom: number } | null {
-  for (const s of view.state.field(spansField)) {
-    if (pos !== s.from && pos !== s.to) continue;
-    const el = view.contentDOM.querySelector(`.cm-taken[data-thread="${CSS.escape(s.threadId)}"]`);
-    const rects = el ? [...el.getClientRects()] : [];
-    if (!rects.length) break;
-    const r = pos === s.to ? rects[rects.length - 1] : rects[0];
-    // After a sentence the caret sits in its trailing gap, as the editor's own caret does.
-    return pos === s.to ? { left: r.right + 3, top: r.top, bottom: r.bottom } : { left: r.left - 3, top: r.top, bottom: r.bottom };
-  }
-  return view.coordsAtPos(pos, -1) ?? view.coordsAtPos(pos, 1);
-}
-
 function startDrag(e: DragEvent, view: EditorView): void {
   const el = (e.target as HTMLElement).closest?.<HTMLElement>(".cm-taken[data-thread]");
   const id = el?.dataset.thread;
@@ -152,7 +137,8 @@ const dragPlugin = ViewPlugin.fromClass(
       return true;
     }
     show(pos: number) {
-      const box = caretBox(this.view, pos);
+      // The sentence widget measures its own edges (SentenceWidget.coordsAt).
+      const box = this.view.coordsAtPos(pos, -1) ?? this.view.coordsAtPos(pos, 1);
       if (!box) return this.hide();
       if (!this.caret) {
         this.caret = document.createElement("div");

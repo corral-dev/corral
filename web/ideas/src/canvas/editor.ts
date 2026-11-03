@@ -85,6 +85,19 @@ class SentenceWidget extends WidgetType {
     return el;
   }
   /**
+   * The caret at the sentence's start or end, measured on its own line boxes. The default
+   * measure puts the end of a sentence that wraps onto the end of its first line (owner report,
+   * 2026-11-03). After the sentence the caret sits in its trailing gap.
+   */
+  coordsAt(dom: HTMLElement, pos: number): { left: number; right: number; top: number; bottom: number } | null {
+    const rects = dom.getClientRects();
+    if (!rects.length) return null;
+    const atEnd = pos > 0;
+    const r = atEnd ? rects[rects.length - 1] : rects[0];
+    const x = atEnd ? r.right + 3 : r.left - 2;
+    return { left: x, right: x, top: r.top, bottom: r.bottom };
+  }
+  /**
    * Leave mousedown and dragstart to the browser so a press-and-move starts a native drag of
    * this element, owned by sentenceDrag.ts (CodeMirror would otherwise start a text selection
    * or its own drag). Clicks and hover still reach the editor.
