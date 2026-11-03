@@ -954,6 +954,10 @@ Decisions for the owner at freeze:
 > grey. Done = soft green background, waiting = soft amber, working and discussed = soft
 > neutral, withdrawn = soft neutral plus a strike line. This supersedes the grey done text and
 > the box-less done/withdrawn of the entry above.
+> **Mouse drags without a hold (owner, 2026-11-03):** with a mouse, pressing a taken sentence and
+> moving more than a few pixels starts the drag at once; a click without movement opens the
+> discussion. Only touch (finger or pen) needs the long press, because there a plain move must
+> keep scrolling the page. This supersedes the 220 ms mouse hold below.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral

@@ -1,13 +1,16 @@
-// Press-and-hold a taken sentence to drag it to another place in the same day (owner,
-// 2026-11-03: no grip; the sentence itself is the handle). A short press still opens the
+// Drag a taken sentence to another place in the same day (owner, 2026-11-03: no grip; the
+// sentence itself is the handle). A mouse drags as soon as it moves; a finger or pen must hold
+// first so an ordinary swipe still scrolls. A press without a drag still opens the
 // discussion. The drop snaps to the nearest sentence boundary inside a paragraph, or makes
 // a new paragraph when released over the space between paragraphs.
 import { Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { Paragraph, SpanView, external, paragraphs, setSpans, spansField } from "./editor";
 
-const HOLD_MS = { mouse: 220, touch: 380 };
+/** Touch and pen hold before lifting; a mouse lifts on movement instead. */
+const TOUCH_HOLD_MS = 380;
 const SLOP_PX = 8;
+const MOUSE_SLOP_PX = 4;
 
 interface Drop {
   pos: number;
@@ -108,7 +111,7 @@ export let suppressClickUntil = 0;
 
 export const sentenceDrag = ViewPlugin.fromClass(
   class {
-    pending: { id: string; x: number; y: number; timer: number; pointerId: number } | null = null;
+    pending: { id: string; x: number; y: number; timer: number; pointerId: number; mouse: boolean } | null = null;
     lifted: { id: string; span: SpanView; drop: Drop | null } | null = null;
     ghost: HTMLElement | null = null;
     marker: HTMLElement | null = null;
@@ -137,11 +140,12 @@ export const sentenceDrag = ViewPlugin.fromClass(
       const el = (e.target as HTMLElement).closest<HTMLElement>(".cm-taken[data-thread]");
       if (!el?.dataset.thread) return;
       const id = el.dataset.thread;
-      const hold = e.pointerType === "touch" || e.pointerType === "pen" ? HOLD_MS.touch : HOLD_MS.mouse;
-      this.pending = { id, x: e.clientX, y: e.clientY, pointerId: e.pointerId, timer: window.setTimeout(() => this.lift(), hold) };
+      const mouse = e.pointerType === "mouse";
+      const timer = mouse ? 0 : window.setTimeout(() => this.lift(), TOUCH_HOLD_MS);
+      this.pending = { id, x: e.clientX, y: e.clientY, pointerId: e.pointerId, mouse, timer };
     };
 
-    lift() {
+    lift(at?: { x: number; y: number }) {
       const p = this.pending;
       this.pending = null;
       if (!p) return;
@@ -162,13 +166,20 @@ export const sentenceDrag = ViewPlugin.fromClass(
       this.marker = document.createElement("div");
       this.marker.className = "drop-marker";
       document.body.appendChild(this.marker);
-      this.place(p.x, p.y);
-      navigator.vibrate?.(8);
+      this.place(at?.x ?? p.x, at?.y ?? p.y);
+      if (!p.mouse) navigator.vibrate?.(8);
     }
 
     move = (e: PointerEvent) => {
       if (this.pending) {
-        if (Math.hypot(e.clientX - this.pending.x, e.clientY - this.pending.y) > SLOP_PX) this.clearPending();
+        const p = this.pending;
+        if (e.pointerId !== p.pointerId) return;
+        const dist = Math.hypot(e.clientX - p.x, e.clientY - p.y);
+        // Mouse: moving is the drag. Touch: moving before the hold is a scroll, so give up.
+        if (p.mouse && dist > MOUSE_SLOP_PX) {
+          e.preventDefault();
+          this.lift({ x: e.clientX, y: e.clientY });
+        } else if (!p.mouse && dist > SLOP_PX) this.clearPending();
         return;
       }
       if (!this.lifted) return;
