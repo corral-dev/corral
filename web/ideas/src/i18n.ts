@@ -57,6 +57,7 @@ const en = {
   replyTo: "Reply to {name}…",
   replyingTo: "Replying to {name}",
   cancel: "Cancel",
+  move: "Drag to move",
 } as const;
 
 export type Key = keyof typeof en;
@@ -117,6 +118,7 @@ const zh: Record<Key, string> = {
   replyTo: "回复 {name}…",
   replyingTo: "回复 {name}",
   cancel: "取消",
+  move: "拖动调整位置",
 };
 
 function detect(): "en" | "zh" {

@@ -1,6 +1,6 @@
 // CodeMirror 6 extensions for one day section: read-only taken spans, status marks,
 // guarded undo/redo and the settle window (requirement 20).
-import { Annotation, EditorState, Extension, Prec, StateEffect, StateField } from "@codemirror/state";
+import { Annotation, EditorState, Extension, Prec, StateEffect, StateField, Transaction } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -49,6 +49,15 @@ export const spansField = StateField.define<SpanView[]>({
   provide: (f) => EditorView.decorations.from(f, buildDecorations),
 });
 
+// One family of same-size round icons at the sentence end (owner, 2026-11-03): only
+// "waiting" is coloured; done and working stay low-contrast.
+const STATUS_ICONS: Partial<Record<Presence, string>> = {
+  done: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="7.25" class="icon-fill"/><path d="M4.9 8.3l2.1 2.1 4.1-4.6" class="icon-glyph" stroke-width="1.7"/></svg>',
+  waiting:
+    '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="7.25" class="icon-fill"/><path d="M8 4.4v4.4" class="icon-glyph" stroke-width="1.8"/><circle cx="8" cy="11.4" r="1.05" class="icon-dot"/></svg>',
+  working: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.4" class="icon-ring" stroke-width="1.6"/></svg>',
+};
+
 class StatusWidget extends WidgetType {
   constructor(
     readonly threadId: string,
@@ -65,12 +74,7 @@ class StatusWidget extends WidgetType {
     el.className = `cm-status is-${this.status}${this.unread ? " is-unread" : ""}`;
     el.dataset.thread = this.threadId;
     el.setAttribute("aria-hidden", "true");
-    if (this.status === "done") {
-      el.innerHTML =
-        '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="7.25" fill="currentColor"/><path d="M4.9 8.3l2.1 2.1 4.1-4.6" fill="none" stroke="var(--on-status)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    } else {
-      el.innerHTML = '<span class="cm-status-dot"></span>';
-    }
+    el.innerHTML = STATUS_ICONS[this.status] ?? "";
     return el;
   }
   ignoreEvent(): boolean {
@@ -169,6 +173,88 @@ export function blockAt(state: EditorState, pos: number): { from: number; to: nu
   return { from: first.from, to: last.to };
 }
 
+// ---- moving paragraphs (owner, 2026-11-03: taken sentences can be dragged) -----------
+
+export interface Paragraph {
+  from: number;
+  to: number;
+}
+
+/** Runs of non-blank lines, in document order. */
+export function paragraphs(state: EditorState): Paragraph[] {
+  const out: Paragraph[] = [];
+  let cur: Paragraph | null = null;
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const line = state.doc.line(n);
+    if (line.text.trim()) {
+      if (cur) cur.to = line.to;
+      else cur = { from: line.from, to: line.to };
+    } else if (cur) {
+      out.push(cur);
+      cur = null;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+export const setDragging = StateEffect.define<Paragraph | null>();
+
+const draggingLine = Decoration.line({ class: "cm-dragging" });
+const draggingField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(set, tr) {
+    set = set.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setDragging)) continue;
+      if (!e.value) return Decoration.none;
+      const lines = [];
+      for (let pos = e.value.from; pos <= e.value.to; ) {
+        const line = tr.state.doc.lineAt(pos);
+        lines.push(draggingLine.range(line.from));
+        pos = line.to + 1;
+      }
+      set = Decoration.set(lines);
+    }
+    return set;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+/**
+ * Moves paragraph `index` so it lands before paragraph `before` (`before` = count means the
+ * end). Expressed as one removal plus one insertion so unrelated positions and earlier
+ * history map normally; taken spans travel with their words. Not an undoable text edit.
+ */
+export function moveParagraph(view: EditorView, index: number, before: number): boolean {
+  const state = view.state;
+  const ps = paragraphs(state);
+  if (index < 0 || index >= ps.length || before < 0 || before > ps.length) return false;
+  if (before === index || before === index + 1) return false;
+  const moved = ps[index];
+  const text = state.doc.sliceString(moved.from, moved.to);
+  const last = ps.length - 1;
+  const removal = index < last ? { from: moved.from, to: ps[index + 1].from } : { from: ps[index - 1].to, to: moved.to };
+  const insertAtEnd = before === ps.length;
+  const insertPos = insertAtEnd ? ps[last].to : ps[before].from;
+  const insert = insertAtEnd ? `\n\n${text}` : `${text}\n\n`;
+  const changes = state.changes([{ from: removal.from, to: removal.to }, { from: insertPos, insert }]);
+  const start = changes.mapPos(insertPos, insertAtEnd ? 1 : -1) - (insertAtEnd ? text.length : 0);
+  const spans = state.field(spansField).map((sp) => {
+    if (sp.from >= moved.from && sp.to <= moved.to) {
+      const d = start - moved.from;
+      return { ...sp, from: sp.from + d, to: sp.to + d };
+    }
+    return { ...sp, from: changes.mapPos(sp.from, 1), to: changes.mapPos(sp.to, -1) };
+  });
+  view.dispatch({
+    changes,
+    effects: [setSpans.of(spans), setDragging.of(null)],
+    annotations: [external.of(true), Transaction.addToHistory.of(false)],
+  });
+  return true;
+}
+
 export interface SettleOptions {
   settleMs: number;
   onSettled: (from: number, to: number) => void;
@@ -261,6 +347,7 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
     EditorView.contentAttributes.of({ spellcheck: "true", autocapitalize: "sentences" }),
     placeholderExt(hooks.placeholder),
     spansField,
+    draggingField,
     lockTaken,
     settlePlugin(hooks),
     EditorView.updateListener.of((u) => {

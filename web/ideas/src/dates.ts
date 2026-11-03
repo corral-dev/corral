@@ -1,8 +1,7 @@
-// Local calendar-day grouping (requirement 19). Wording follows Corral's sidebar:
+// Local calendar-day grouping (requirement 19; only today open by default). Wording follows Corral's sidebar:
 // Today, Yesterday, weekday within the last week, then the date.
 import { locale, t } from "./i18n";
 
-export const FOLD_AFTER_DAYS = 7;
 
 export function dayKey(d: Date): string {
   const y = d.getFullYear();
@@ -41,6 +40,7 @@ export function dayLabel(key: string, now: Date): string {
   return date.getFullYear() === now.getFullYear() ? monthDay.format(date) : monthDayYear.format(date);
 }
 
+/** Only today is open by default (owner, 2026-11-03). */
 export function defaultOpen(key: string, now: Date): boolean {
-  return daysAgo(key, now) <= FOLD_AFTER_DAYS;
+  return daysAgo(key, now) === 0;
 }

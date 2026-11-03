@@ -37,6 +37,8 @@
   --done: #187a41;
   --muted: #85858b;
   --on-status: #ffffff;
+  --icon-quiet: #c6c6ca;
+  --icon-glyph: #ffffff;
 
   --shadow-float: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 48px -12px rgba(20, 20, 30, 0.18);
   --shadow-rest: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.03);
@@ -62,6 +64,8 @@
     --done: #4cc982;
     --muted: #7a7a80;
     --on-status: #101012;
+    --icon-quiet: #55555b;
+    --icon-glyph: #1c1c1e;
     --shadow-float: 0 0 0 1px var(--line), 0 20px 56px -12px rgba(0, 0, 0, 0.7);
     --shadow-rest: 0 0 0 1px var(--line);
   }
@@ -185,33 +189,6 @@ textarea:focus-visible {
   box-shadow: 0 0 0 1px var(--line);
 }
 
-/* ---- chips ----------------------------------------------------------------------- */
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 28px;
-  padding: 0 11px 0 10px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  color: var(--tone, var(--ink-2));
-  background: color-mix(in srgb, var(--tone, var(--ink-3)) 10%, transparent);
-}
-.chip.is-waiting {
-  background: color-mix(in srgb, var(--waiting-tint) 16%, transparent);
-}
-.chip.small {
-  height: 22px;
-  padding: 0 8px;
-  font-size: 12px;
-  gap: 6px;
-}
-.chip.small .dot {
-  display: none;
-}
 /* ---- page ------------------------------------------------------------------------ */
 
 .stage {
@@ -387,13 +364,9 @@ textarea:focus-visible {
     box-shadow 0.2s,
     color 0.2s;
 }
-/* Three presences (owner correction 2026-11-03): waiting stands out, working stays quiet. */
-.cm-taken.is-waiting {
-  background: color-mix(in srgb, var(--waiting-tint) 16%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--waiting-tint) 16%, transparent);
-}
+/* Quiet sentence states (owner, 2026-11-03): ordinary text colour; done and withdrawn grey. */
 .cm-taken.is-done {
-  color: var(--done);
+  color: var(--ink-3);
 }
 .cm-taken.is-withdrawn {
   color: var(--ink-3);
@@ -401,11 +374,8 @@ textarea:focus-visible {
   text-decoration-color: color-mix(in srgb, var(--ink-3) 70%, transparent);
 }
 .cm-taken.is-active {
-  background: color-mix(in srgb, var(--tone, var(--ink-3)) 12%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone, var(--ink-3)) 12%, transparent);
-}
-.cm-taken.is-working.is-active {
-  --tone: var(--ink-3);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .cm-taken.is-fresh {
   animation: taken 1.6s var(--ease) both;
@@ -421,29 +391,82 @@ textarea:focus-visible {
 
 .cm-status {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
   vertical-align: -2px;
-  margin-left: 5px;
-  color: var(--tone);
+  margin-left: 6px;
   cursor: pointer;
 }
-.cm-status.is-done svg {
+.cm-status svg {
   display: block;
 }
-.cm-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--tone);
+.cm-status .icon-fill {
+  fill: var(--icon-quiet);
 }
-.cm-status.is-working .cm-status-dot {
-  width: 6px;
-  height: 6px;
-  background: var(--ink-4);
+.cm-status .icon-glyph {
+  fill: none;
+  stroke: var(--icon-glyph);
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
-.cm-status.is-waiting .cm-status-dot {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--waiting-tint) 25%, transparent);
+.cm-status .icon-dot {
+  fill: var(--icon-glyph);
+}
+.cm-status .icon-ring {
+  fill: none;
+  stroke: var(--icon-quiet);
+}
+.cm-status.is-waiting .icon-fill {
+  fill: var(--waiting-tint);
+}
+.cm-status.is-waiting .icon-glyph {
+  stroke: #ffffff;
+}
+.cm-status.is-waiting .icon-dot {
+  fill: #ffffff;
+}
+
+/* ---- moving taken paragraphs ----------------------------------------------------- */
+
+.day-body {
+  position: relative;
+}
+.grip {
+  position: absolute;
+  left: -26px;
+  width: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--ink-4);
+  cursor: grab;
+  touch-action: none;
+  transition:
+    color 0.15s,
+    background-color 0.15s;
+}
+.grip svg circle {
+  fill: currentColor;
+}
+.grip:hover,
+.grip:focus-visible {
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+.grip.is-dragging {
+  cursor: grabbing;
+  color: var(--ink-2);
+}
+.drop-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: var(--ink-3);
+  pointer-events: none;
+}
+.cm-line.cm-dragging {
+  opacity: 0.35;
 }
 
 /* ---- motion ---------------------------------------------------------------------- */
@@ -769,6 +792,10 @@ textarea:focus-visible {
   }
   .stage {
     padding: 24px 20px 120px;
+  }
+  .grip {
+    left: -20px;
+    width: 20px;
   }
   /* No gutter on phones: the chevron moves to the end of the header row. */
   .day-head {

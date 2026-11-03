@@ -102,8 +102,8 @@ coordinator proposals in this document remain outside that bounded CLI work.
     coming back has an obvious first step. The owner left the follow-up design to the agent
     ("你考虑一下吧"); the proposals below are not yet confirmed.
 19. **The canvas groups itself by date and folds old days** (owner, 2026-11-03). Text is
-    grouped automatically by the local calendar day it was written; days more than one week
-    old fold automatically. The owner does not create or maintain the groups. Details
+    grouped automatically by the local calendar day it was written; every day except today
+    folds by default (owner, later the same day; the first version folded only days older than a week). The owner does not create or maintain the groups. Details
     (*Proposed*) are in §4.
 20. **Settle window starts at one minute** (owner, 2026-11-03). A block is handed to the
     coordinator only after one minute without edits. This is an initial value to be tuned
@@ -921,6 +921,22 @@ Decisions for the owner at freeze:
 > needs the owner, a day that contains a discussion waiting for the owner stays expanded
 > by default; other days still fold after a week. This supersedes the "pick up here" and
 > folded-row parts of item 2 above and of requirement 18's proposal.
+> **Only today is open by default (owner, 2026-11-03, later):** every day other than today is
+> folded by default; the owner's own open/close choice per day is still remembered. This
+> replaces the one-week rule of requirement 19 and the "a day with something waiting stays
+> open" exception of the second subtraction. Consequence: waiting discussions in earlier days
+> are visible only after opening that day (proposed, not adopted: the same amber "!" icon at
+> the end of a folded row).
+> **Quiet sentence states and moving taken text (owner, 2026-11-03):** taken text keeps the
+> ordinary text colour, except done (low-contrast grey) and withdrawn (grey, struck). No
+> green text and no tinted background. State is one same-size round icon at the sentence end:
+> done = low-contrast check, waiting = amber circle with "!" (the only coloured one),
+> working = faint ring. Taken sentences can be dragged to a new position: each paragraph that
+> holds taken text shows a faint, always-visible grip in the left gutter (the visible drag
+> affordance the UI guide requires; also keyboard-movable with Arrow Up/Down); moving reorders
+> paragraphs within the same day, carries the taken spans with their words, and is not an
+> undoable text edit. This supersedes requirement 6's green text and the "Cut/paste moves"
+> deferral for taken text.
 > **Forum, not chat (owner correction, 2026-11-03):** the discussion must be a forum-style
 > comment thread ("留言回复的论坛模式"), not a chat with left/right bubbles; the chat layout
 > misread requirement 13. The original sentence is the post. Below it, comments are listed
