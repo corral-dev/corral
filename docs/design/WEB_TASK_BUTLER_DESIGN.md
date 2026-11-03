@@ -101,6 +101,13 @@ coordinator proposals in this document remain outside that bounded CLI work.
     off their current thinking and walk away without fear of losing the thread, and
     coming back has an obvious first step. The owner left the follow-up design to the agent
     ("你考虑一下吧"); the proposals below are not yet confirmed.
+19. **The canvas groups itself by date and folds old days** (owner, 2026-11-03). Text is
+    grouped automatically by the local calendar day it was written; days more than one week
+    old fold automatically. The owner does not create or maintain the groups. Details
+    (*Proposed*) are in §4.
+20. **Settle window starts at one minute** (owner, 2026-11-03). A block is handed to the
+    coordinator only after one minute without edits. This is an initial value to be tuned
+    from real use, not a frozen threshold (§5).
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -215,8 +222,10 @@ stateDiagram-v2
   Its look is derived from the discussion: struck when withdrawn, green when done.
 - Because taken text cannot be cut or edited, anchor mapping only has to follow edits
   around it, which ordinary range mapping handles. E5's cut/paste move logic is unnecessary.
-- Take-up happens only after the §5 settle window and its visible dispatch countdown, so a
-  sentence the owner is still writing is never locked.
+- Take-up happens only after the §5 settle window (60 s, requirement 20) and its visible
+  countdown, so a sentence the owner is still writing is never locked.
+- Every span also carries the local calendar day it was first written, which places it in a
+  date group (§4). Editing a block later never moves it to another day.
 
 #### Discussion (derived)
 
@@ -334,6 +343,18 @@ document (E6).
 - Taken-up text is read-only from take-up onwards (§3.1 canvas span) and shows its
   discussion's derived status; clicking its annotation opens the discussion, which holds
   the result and evidence. New text written beside it is simply new input for the coordinator.
+- **Date groups** (requirement 19, *Proposed* details). The canvas is a sequence of day
+  sections, newest at the top, so the page opens where new writing goes. Writing on a day
+  with no section starts today's section automatically. Section titles use the same local
+  calendar wording as Corral's sidebar (Today, Yesterday, weekday within the last week, then
+  the date). A block belongs to the day it was first written; later edits and take-up never
+  move it, and text typed inside an older section belongs to that section.
+- **Auto-fold after a week.** Sections more than seven calendar days old fold to one line:
+  the date plus derived counts (for example "2 waiting for you, 1 working"). Folding never
+  hides what needs the owner: open questions and failed work still appear in "pick up here"
+  and in the folded line, and opening a discussion from there expands its section. The owner
+  can open or close any section; that choice is remembered for the section. Folding is a view
+  state only: the text, the ledger and what the coordinator receives are unchanged.
 - *Superseded 2026-11-03:* per-character seen/unseen tracking, strike-on-delete, the
   cut/paste anchor move (E5) and per-state text styling while editing. Free text deletes
   normally; taken text cannot be deleted (requirement 12 as narrowed).
@@ -345,8 +366,12 @@ document (E6).
 ## 5. When the coordinator is prompted (*Proposed*)
 
 - Unit of change is a **block** (paragraph / list item), never a keystroke.
-- A block is *settled* when the cursor leaves it, Enter starts a new block, or it has been
-  idle ~8 s. Only settled blocks produce changes; whitespace/format-only diffs are dropped.
+- A block is *settled* after **60 s without edits to it** (requirement 20; one configurable
+  value, tuned later from real use). Leaving the block or pressing Enter no longer settles
+  it early: take-up locks the text, so a premature round costs the owner the rest of the
+  thought, while waiting a minute costs almost nothing. Only settled blocks produce changes;
+  whitespace/format-only diffs are dropped. *Superseded:* the 2026-09-29 rule (cursor leave,
+  Enter or ~8 s idle) and the E4 candidate delays.
 - ~~Blocks linked to a running worker use a shorter delay.~~ Superseded 2026-11-03: taken
   text is read-only, so no canvas block is linked to a running worker. Owner replies in a
   discussion are explicit and wake the coordinator without the settle delay.
@@ -357,8 +382,10 @@ document (E6).
   during a round are merged into the next one like any other input.
 - Each round sends: changed blocks (before/after), new discussion replies with thread ids,
   linked task ids, ledger snapshot.
-- New ideas get a short visible dispatch countdown; continued editing restarts it, so
-  half-written ideas are not dispatched.
+- A block waiting to settle shows a quiet countdown in its annotation position; any edit to
+  it restarts the 60 s. Settling only makes the block visible to the coordinator: taking it up
+  and dispatching remain the coordinator's judgement, so a block that settles half-written can
+  still be left alone.
 
 ## 6. Edge cases
 
@@ -420,7 +447,8 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 - Project-name false positives; ambiguity must be resolvable by the owner.
 - **Early lock** (2026-11-03 model): a sentence taken up before the owner finished thinking
   becomes read-only, and the rest of the thought must go in a reply. The settle window and
-  visible countdown bound this; real typing traces (§9.9 item 3) decide the delays.
+  visible countdown bound this; the window starts at 60 s (requirement 20) and is tuned from
+  real use.
 - A quota-exhausted or logged-out worker cannot be asked for a status report. Corral must retain
   the last verified session/workspace state so the coordinator can move the task to another usable worker.
 
@@ -772,8 +800,9 @@ Captures: [desktop](assets/web-task-butler-preview.png),
 1. ~~Full E3 run through the command boundary~~ — done (§9.4). Open: S16 (vague bug)
    is still unreliable (3 of 5).
 2. ~~Long-running coordinator~~ — done (E6, 26/26 continuous and restarted, §9.4).
-3. Trigger delays from the owner's real typing in the preview page (E4 used synthetic traces;
-   a 10-second thinking pause still woke the coordinator at 8 s / 3 s). Needs the owner.
+3. ~~Trigger delays from the owner's real typing in the preview page~~ — replaced by the
+   owner's 60 s starting value (requirement 20); tune from real use. Historical note: E4
+   used synthetic traces, and a 10-second thinking pause still woke the coordinator at 8 s / 3 s.
 4. Owner review of the interactive demo (§9.7). The first trial (2026-09-29) produced two
    decisions: unseen text deletes outright (requirement 12) and the roles get names
    (requirement 17). Further review is open.
@@ -850,9 +879,9 @@ features are not exposed).
 | 1 | **Ledger and state machines** (§3.1): spans, discussions, replies, questions, tasks, pending intents and audit log in one SQLite under `~/.config/corral/butler/`; boundary from `contract.py` extended to the §3.1 transition table. | One deterministic test per legal and illegal transition; audit row per mutation in the same transaction; restart reconciliation of pending intents; E6 replay rewritten with replies. |
 | 2 | **Worker lifecycle on existing session control**: host per task, confirmed delivery, turn completion → `review`, quota/login/crash → `stalled`, reassign, stop. Missing SessKit facts (one completion per Codex turn; quota and login as their own states) are fixed upstream in SessKit first. | Live end-to-end on a disposable project with a cheap explicit model: task → worker → verified report → `done`; fake unavailable assistant → `stalled` → reassign. |
 | 3 | **Coordinator runner**: one hosted session, standing prompt, rounds per §5 and §3.1 coordinator round, one retry on rejection, restart from the ledger. | E3 scenarios rewritten for take-up and replies through the real runner; restart test; S16 and S14 re-measured. |
-| 4 | **Minimal page**: loopback server (token, origin check, single editing tab, versioned saves) with a plain-text canvas, read-only taken spans with a collapsed status annotation, a discussion panel with replies and result posts, and the "pick up here" summary. No project highlighting, margin stacking, move tracking or strikethrough on delete. | Browser screenshots (light, dark, narrow); write → take-up → question → reply → done path in the real page; never-lose-draft restart test. |
+| 4 | **Minimal page**: loopback server (token, origin check, single editing tab, versioned saves) with a plain-text canvas in date sections that fold after a week, a 60 s settle countdown, read-only taken spans with a collapsed status annotation, a discussion panel with replies and result posts, and the "pick up here" summary. No project highlighting, margin stacking, move tracking or strikethrough on delete. | Browser screenshots (light, dark, narrow); write → take-up → question → reply → done path in the real page; never-lose-draft restart test. |
 | 5 | **Entry and return**: `corral ideas` opens the page; worker sessions listed in Corral and grouped. | Installed command opens the page; sessions visible in the TUI and Mac list. |
-| Later | Blocking-only phone push and replying from the phone; project-name highlighting; folding or archiving finished discussions; real-typing settle delays. | Separate acceptance when scheduled. |
+| Later | Blocking-only phone push and replying from the phone; project-name highlighting; tuning the settle window. | Separate acceptance when scheduled. |
 
 Decisions for the owner at freeze:
 1. **Entry point name.** Proposed: `corral ideas` opens the page in the browser. The internal
@@ -863,8 +892,8 @@ Decisions for the owner at freeze:
 4. **Stepping away and coming back** (§1, requirement 18). The "pick up here" summary is in
    slice 4; blocking-only push is "Later"; the explicit "step away" action is optional and
    may come later.
-5. **Folding finished discussions.** One document grows for months; whether done and
-   withdrawn spans fold away automatically or on request is open.
+5. ~~Folding finished discussions~~ — decided 2026-11-03: date sections, auto-folded after
+   a week (requirement 19).
 
 ## 11. References
 
