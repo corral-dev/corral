@@ -92,9 +92,11 @@ function buildDecorations(spans: SpanView[]): DecorationSet {
     const cls = `cm-taken is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`;
     // Taken text is read-only, so spelling marks there are only noise (project names).
     // inclusiveEnd renders the end icon inside the sentence's own element, so the two share
-    // one box and can never read as part of the next sentence.
+    // one box and can never read as part of the next sentence. contenteditable=false makes the
+    // sentence a non-editable island: iOS long press neither selects it nor falls through to
+    // the neighbouring editable text (owner, 2026-11-03).
     ranges.push(
-      Decoration.mark({ class: cls, inclusiveEnd: true, attributes: { "data-thread": s.threadId, spellcheck: "false" } }).range(s.from, s.to),
+      Decoration.mark({ class: cls, inclusiveEnd: true, attributes: { "data-thread": s.threadId, spellcheck: "false", contenteditable: "false" } }).range(s.from, s.to),
     );
     // Withdrawn and quiet text carries no marker; its look (or nothing) says enough.
     if (s.status === "withdrawn" || s.status === "quiet") continue;

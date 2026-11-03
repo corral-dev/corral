@@ -122,7 +122,15 @@ export const sentenceDrag = ViewPlugin.fromClass(
       window.addEventListener("touchmove", this.touchMove, { passive: false });
       window.addEventListener("keydown", this.key);
       view.contentDOM.addEventListener("contextmenu", this.menu);
+      document.addEventListener("selectstart", this.select);
     }
+
+    select = (e: Event) => {
+      // A press on a taken sentence is a tap or a drag, never the start of a text selection
+      // (including iOS falling through to nearby editable text).
+      const t = e.target instanceof Element ? e.target : (e.target as Node | null)?.parentElement;
+      if (this.pending || this.lifted || t?.closest(".cm-taken")) e.preventDefault();
+    };
 
     down = (e: PointerEvent) => {
       if (e.button !== 0) return;
@@ -263,6 +271,7 @@ export const sentenceDrag = ViewPlugin.fromClass(
       window.removeEventListener("touchmove", this.touchMove);
       window.removeEventListener("keydown", this.key);
       this.view.contentDOM.removeEventListener("contextmenu", this.menu);
+      document.removeEventListener("selectstart", this.select);
     }
   },
 );

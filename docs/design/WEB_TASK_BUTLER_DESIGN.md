@@ -927,6 +927,14 @@ Decisions for the owner at freeze:
 > same day; a short press still opens its discussion. **Surface exception:** this deliberately
 > departs from the global drag-discoverability rule (persistent visible handle) at the owner's
 > explicit request for this canvas; do not re-add a grip without a new owner decision.
+> **Text selection only where text is editable (owner, 2026-11-03, after trying on iOS):**
+> long-pressing a taken sentence collided with iOS's own text selection. System text
+> selection stays only on editable free text and input fields; taken sentences, headings
+> and discussion comments are not selectable (so comments cannot be long-press copied).
+> Mechanism: page-wide `-webkit-user-select: none` with editable text and inputs re-enabled;
+> taken spans are `contenteditable="false"` islands with `-webkit-touch-callout: none`, so a
+> long press neither selects them nor falls through to the neighbouring editable text; a press
+> that starts on a taken sentence also cancels `selectstart`.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral
