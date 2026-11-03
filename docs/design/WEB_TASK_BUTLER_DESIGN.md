@@ -937,6 +937,7 @@ The owner asked for the page first, polished for a future general audience. It l
   answering a question → task starts; typing inside taken text and two undos left it
   unchanged; folded day expands; Tab focus is visible, Enter opens and Esc closes a
   discussion; no console errors.
+- **Hosted preview (2026-11-03).** At the owner's request the page also runs as a public site behind the maintainer's unified sign-in (deployment and address in the private infrastructure notes, not this public repository). Behind an OAuth2 Proxy gateway the page reads `/oauth2/userinfo`, keeps one saved copy per account (`corral.ideas.preview.v1:<email>`) so accounts sharing a browser never see each other's drafts, and shows an account menu with sign out; where sign-out lands comes from deployment-provided `<meta name="ideas:after-sign-out">`, so no provider address is built in. Taken text has spell-check off.
 - **Limits.** No backend: nothing reaches a real coordinator or worker, and "open session"
   is omitted until slice 5 can make it work. The bundle is ~550 kB minified because
   `@codemirror/lang-markdown` pulls nested code-language parsers; trim before shipping in
