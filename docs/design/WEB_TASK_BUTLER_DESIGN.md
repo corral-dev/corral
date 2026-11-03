@@ -4,6 +4,11 @@
 > Read before planning, implementing, or reviewing the local web idea editor, the
 > coordinator agent, the worker agents, or Corral changes made for them.
 > Items marked *Proposed* are unadopted suggestions; §8 records owner decisions.
+> **Interaction clarification (owner, 2026-11-03):** requirement 13 now specifies a
+> free-form text canvas with annotations that open forum-style reply threads, not a
+> forum replacing the canvas. It supersedes questions inserted into the canvas body.
+> The September experiments and demo in §9 remain historical evidence, not validation
+> of this interaction; §10 needs thread-specific design and acceptance before freeze.
 
 For the separately requested Agent CLI delegation workflow and current runtime
 contracts, see [Agent session delegation](AGENT_SESSION_DELEGATION_DESIGN.md).
@@ -42,9 +47,15 @@ coordinator proposals in this document remain outside that bounded CLI work.
     told which text was struck and decides what to do. Deleting text that has not been
     submitted to the coordinator yet removes it outright, as in any editor (owner, 2026-09-29, after trying
     the demo; supersedes "strike everything").
-13. **Agents talk inside the document.** When the coordinator needs details or a decision, it inserts its
-    own question as text near the related idea, visibly marked as agent-written. The owner
-    answers by writing in the editor whenever convenient. No separate question cards.
+13. **Free-form canvas, discussions attached to the owner's words** (owner clarification,
+    2026-11-03). The owner keeps writing freely on a text canvas. After an agent takes up a
+    requirement, it can attach an annotation to the relevant sentence. Opening that annotation
+    reveals a forum-style discussion where the owner and agents can freely reply and follow up.
+    The canvas is not replaced with a post list, and writing an idea does not require manually
+    creating a forum post. This supersedes the earlier requirement to insert agent questions
+    and owner answers into the canvas body; it does not change auto-dispatch, deletion or
+    completion-locking requirements. The opening surface, reply nesting, storage/export format
+    and relationship to the proposed result popover remain design questions.
 14. Questions awaiting the owner are also pushed to the phone.
 15. SessKit and OpenConductor may be changed, optimized, used as references, and have modules
     extracted or updated for reuse.
@@ -57,7 +68,7 @@ coordinator proposals in this document remain outside that bounded CLI work.
     - **Coordinator** (协调员), one per owner, one long-lived session. Reads the idea
       document, turns settled ideas into tasks, picks the project and the assistant, orders
       only real dependencies, sends and updates tasks, answers workers from the document when
-      it can, asks the owner inside the document when it cannot, and marks a task done only
+      it can, asks the owner in the attached discussion when it cannot, and marks a task done only
       on verified evidence. It acts only through validated Corral commands and never edits
       project code itself.
     - **Worker** (执行者), one session per task, on whichever assistant the coordinator picks.
@@ -131,11 +142,12 @@ The checkpoint advice has three questions; only the second one is covered by the
   context; each coordinator round receives the ledger snapshot plus the change set, and acts only
   through validated Corral commands. The coordinator can therefore be restarted or compacted without loss.
   (Same lesson as OpenConductor's "deterministic core + model only for semantics".)
-- **The document is shared by owner and the coordinator.** Owner text, struck-out text and coordinator-written text
-  all live in the Markdown file (strikethrough as Markdown strikethrough; coordinator text carries an
-  authorship marker so the file alone shows who wrote what — exact syntax fixed at design
-  freeze). Task anchors, states and results live in the ledger and are rendered as view-only
-  decorations.
+- **The canvas and its attached discussions are distinct.** Owner text and struck-out text
+  remain in the Markdown document. Agent questions and owner replies belong to annotation
+  threads attached to that text (§1, requirement 13), rather than being inserted into its body.
+  Task anchors, states and results remain ledger-backed view decorations. Thread persistence,
+  authorship metadata and export representation must be designed before freeze; the earlier
+  assumption that all discussion lives as marked-up text in one Markdown file is superseded.
 - **Mechanics vs. judgement.** The system guarantees mechanics (anchors follow text, typing
   is never disturbed, nothing is lost, delivery is confirmed, done text is locked). Every
   semantic choice belongs to the coordinator's instructions, not to code.
@@ -158,11 +170,11 @@ The checkpoint advice has three questions; only the second one is covered by the
   text outright and turn seen text into strikethrough (overwriting seen text = old text
   struck + new text inserted). A selection spanning both is split: the seen part is struck
   and the unseen part is removed. New characters typed inside a seen sentence are unseen
-  until the next round submits them. The coordinator's own text counts as seen.
-- **The coordinator's questions are text in the document**, inserted near the related idea in a distinct
-  agent style. The owner answers by writing anywhere nearby; the coordinator reads the answer on its next
-  round. A top-bar count and a keyboard jump go to the next unanswered coordinator question. Workers'
-  questions go to the coordinator first; the coordinator answers from the document when it can.
+  until the next round submits them.
+- **Annotation discussions** follow requirement 13: opening a remark on the original text
+  exposes its reply thread without requiring a separate forum post. The proposed question
+  count and keyboard jump should open the relevant unresolved discussion. Workers' questions
+  still go to the coordinator first; it answers from the canvas and discussion when it can.
 
 ## 5. When the coordinator is prompted (*Proposed*)
 
@@ -173,7 +185,10 @@ The checkpoint advice has three questions; only the second one is covered by the
   direction.
 - **One coordinator round in flight.** Changes arriving during a round are merged into the next one.
 - Worker events (turn completed, waiting for an answer, failed, quota exhausted) also wake the coordinator.
-- Each round sends: changed blocks (before/after), linked task ids, ledger snapshot.
+- Submitted discussion replies also reach the coordinator, with their thread and source-text
+  association. Reply timing and batching need design alongside the canvas settle policy.
+- Each round sends: changed blocks (before/after), new discussion replies with thread ids,
+  linked task ids, ledger snapshot.
 - New ideas get a short visible dispatch countdown; continued editing restarts it, so
   half-written ideas are not dispatched.
 
@@ -195,15 +210,16 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 - **Project highlight** is a hint only: whole-word matches, short/common names matched
   case-sensitively; clicking a highlight offers "not a project", remembered for that phrase.
 - **Typing always wins**: background updates never move the cursor or re-layout the block
-  being edited; its decorations and coordinator insertions wait until it settles, and the coordinator never inserts
-  inside the block the owner is editing.
+  being edited; decorations affecting it wait until it settles. Agent discussion stays in
+  annotations rather than being inserted into the owner's canvas text.
 - **Never lose the draft**: saved locally in the page and in the service; reconciled by
   version after restarts; only one tab edits, others are read-only with an "edit here"
   takeover.
 - **Restarts**: the ledger is persisted; after sleep or restart the system reconciles the
   ledger with live sessions and tells the coordinator; no action is replayed twice.
 - **Confirmed delivery** of every message the coordinator sends to the worker; failed delivery is reported to the coordinator.
-- **Phone push** for coordinator questions that await the owner; answers are written in the editor.
+- **Phone push** for coordinator questions that await the owner; answers are written in the
+  attached discussion.
 - **Result popover** shows the coordinator's plain-language summary, project, verification evidence,
   assistant used, time taken, and "open session in Corral".
 - **Worker sessions** appear in Corral's normal session list, grouped under the butler.
@@ -215,12 +231,14 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 - What struck-out text means for its task (stop, keep, adjust) — requirement 12.
 - Edits to dispatched text: update, steer, or stop and restart the worker.
 - Which project an idea targets, aliases, several projects per idea, and a project that does
-  not exist yet (the coordinator asks in the document when it needs the owner, e.g. a new project's name).
+  not exist yet (the coordinator asks in the attached discussion when it needs the owner,
+  e.g. a new project's name).
 - Dependencies, including ones discovered after tasks started.
 - Failures, retries, quota exhaustion and switching assistants.
 - Whether a worker's finished turn is an accepted completion (the worker must report what changed and how
   it was verified; the coordinator may send it back).
-- Whether the owner's nearby writing answers an open question; whether to ask at all.
+- Whether a discussion reply answers an open question, changes the requirement or adds new
+  work; whether to ask at all. A reply's explicit thread association does not settle its meaning.
 
 ## 7. Risks
 
@@ -628,6 +646,12 @@ Freeze requires an acceptance check for every §6.1 guarantee and an evaluation 
 | Whether writing answers a question; whether to ask at all | S4, S12, S16 |
 
 ## 10. Implementation plan (*Proposed*, for design freeze)
+
+The 2026-11-03 clarification requires a revision of slices 2–6 before freeze: design
+thread identity and persistence, source-text attachment under edits, reply delivery to the
+coordinator, and opening/replying/returning to the canvas. Add acceptance for those paths;
+the old inline-question demo does not cover them. Do not infer a one-thread-to-one-task
+constraint or treat this clarification as approval to implement.
 
 Order follows risk: the parts every later slice depends on come first. Each slice ships
 behind no user-facing entry until slice 6 (unfinished features are not exposed).
