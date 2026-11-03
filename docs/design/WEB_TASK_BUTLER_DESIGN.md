@@ -991,6 +991,12 @@ Decisions for the owner at freeze:
 > line box. The sentence widget now measures its own edges (`coordsAt`: start = first line box,
 > end = last line box plus the trailing gap), which fixes the editing caret, arrow-key stops
 > and the drop caret alike.
+> **A move adds no text at all (owner, 2026-11-03, later):** dropping a sentence after another
+> must not insert a space; a slight natural trailing gap on the sentence (5 px, owner: "自然的微微的
+> 外边距") separates it visually, replacing the earlier 8 px. This
+> supersedes "one space between Latin neighbours" in the drop-at-caret entry. A move still takes
+> one neighbouring space (or a whole paragraph separator) away with the sentence, so no stray
+> double space or blank line is left behind.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral

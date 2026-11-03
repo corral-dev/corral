@@ -94,7 +94,7 @@ class SentenceWidget extends WidgetType {
     if (!rects.length) return null;
     const atEnd = pos > 0;
     const r = atEnd ? rects[rects.length - 1] : rects[0];
-    const x = atEnd ? r.right + 3 : r.left - 2;
+    const x = atEnd ? r.right + 2 : r.left - 2;
     return { left: x, right: x, top: r.top, bottom: r.bottom };
   }
   /**

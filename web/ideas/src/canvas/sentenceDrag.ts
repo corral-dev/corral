@@ -4,7 +4,7 @@
 // text without the span, and it never learns the drag ended once the moved widget re-renders. A mouse drags as soon as it moves; on
 // iOS / iPadOS Safari 15+ a long press lifts it natively, so an ordinary swipe still scrolls.
 // Only the drop is ours: it moves the sentence to the caret position and keeps its span,
-// adding nothing but one space between Latin neighbours (owner, 2026-11-03).
+// adding no text: the sentence's trailing gap already separates it (owner, 2026-11-03).
 import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { SpanView, external, paragraphs, setSpans, spansField } from "./editor";
@@ -26,7 +26,6 @@ function removalRange(state: EditorState, sp: SpanView): { from: number; to: num
   return { from: sp.from, to: sp.to };
 }
 
-const latin = (c: string | undefined) => !!c && /[A-Za-z0-9.,!?;:)"']/.test(c);
 
 /** One removal plus one insertion at the drop caret; the moved span keeps its words, others map normally. */
 export function moveSentence(view: EditorView, threadId: string, target: number): boolean {
@@ -42,20 +41,13 @@ export function moveSentence(view: EditorView, threadId: string, target: number)
   const inside = spans.find((s) => s.threadId !== threadId && pos > s.from && pos < s.to);
   if (inside) pos = pos - inside.from <= inside.to - pos ? inside.from : inside.to;
   const text = doc.sliceString(sp.from, sp.to);
-  // The only added text: a space where the sentence would otherwise touch a Latin word,
-  // judged on the text as it reads once the sentence has been taken out.
-  const removal = state.changes({ from: rem.from, to: rem.to });
-  const rest = removal.apply(doc);
-  const at = removal.mapPos(pos, -1);
-  const prefix = latin(rest.sliceString(at - 1, at)) && latin(text[0]) ? " " : "";
-  const suffix = latin(rest.sliceString(at, at + 1)) && latin(text[text.length - 1]) ? " " : "";
   const changes = state.changes([
     { from: rem.from, to: rem.to },
-    { from: pos, insert: prefix + text + suffix },
+    { from: pos, insert: text },
   ]);
   // Dropping back where it came from changes nothing.
   if (changes.apply(doc).eq(doc)) return false;
-  const start = changes.mapPos(pos, -1) + prefix.length;
+  const start = changes.mapPos(pos, -1);
   const next = spans.map((s) =>
     s.threadId === threadId
       ? { ...s, from: start, to: start + text.length }
