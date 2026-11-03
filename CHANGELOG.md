@@ -6,6 +6,18 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Deleting an OpenCode session now removes both copies created by its storage migration, so the session no longer resurfaces on the next scan.
+- Fixed Homebrew installs for this release line: the bottled formula now vendors the agent-session-control dependency, so `brew install` and `brew upgrade corral` verify cleanly again.
+
+### 简体中文
+
+- 删除 OpenCode 会话时会同时清除其存储迁移产生的两份拷贝，会话不会在下次扫描时重新冒出来。
+- 修复本版本线的 Homebrew 安装：预编译配方现在内置 agent-session-control 依赖，`brew install` 与 `brew upgrade corral` 可正常通过校验。
+
 ## 0.24.358
 
 ### English
