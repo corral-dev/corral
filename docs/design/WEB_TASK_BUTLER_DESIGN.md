@@ -914,6 +914,23 @@ Decisions for the owner at freeze:
 >    discussion is a full-height bottom sheet with the composer kept above the keyboard,
 >    accepted on a physical phone.
 > Bullets below that describe the rail, chips, countdown and "Now" card are superseded.
+> **Second subtraction (owner, 2026-11-03, annotated phone screenshots):** removed the
+> top-bar account avatar (sign-out now happens at the unified login, not on this page), the
+> "pick up here" card, the date beside each day name, and everything on a folded row except
+> the day name (no weekday/date, waiting chip or item count). So folding never hides what
+> needs the owner, a day that contains a discussion waiting for the owner stays expanded
+> by default; other days still fold after a week. This supersedes the "pick up here" and
+> folded-row parts of item 2 above and of requirement 18's proposal.
+> **Forum, not chat (owner correction, 2026-11-03):** the discussion must be a forum-style
+> comment thread ("留言回复的论坛模式"), not a chat with left/right bubbles; the chat layout
+> misread requirement 13. The original sentence is the post. Below it, comments are listed
+> oldest first, each with author and time and a "Reply" action; replies sit under their
+> comment, one level deep (a reply to a reply stays in the same group, addressed "@name").
+> The coordinator's question is a comment the owner replies under; a new requirement is a new
+> comment. **No special styles (same day):** results and questions are ordinary comments
+> with the same look as every other comment; no result card, no tinted question box. The
+> assistant-ui implementation below is superseded for the discussion view because it only
+> models a linear chat.
 > Implementation (same day): React 19 + `@assistant-ui/react` 0.15.32 (MIT; github.com/assistant-ui/assistant-ui).
 > Reused: `useExternalStoreRuntime` over our own messages (owner → `user`, coordinator →
 > `assistant`, question/result kinds in `metadata.custom`), `ThreadPrimitive` Root/Viewport/
@@ -926,6 +943,15 @@ Decisions for the owner at freeze:
 > declarations reference Node's `setImmediate`; adding Node globals to a browser app would
 > be worse; our own sources stay fully type-checked. Follow-up: drop it when Radix fixes
 > its types.
+> **Forum rebuild (same day) supersedes the assistant-ui part above.** No maintained forum/comment
+> component fit: Replyke is AGPL and tied to its backend (last release ~10 months old),
+> react-nested-comments and 3box-comments-react are unmaintained/archived, the rest are demos
+> or copy-paste snippets of unclear licence. The comment list is plain semantic markup
+> (`ol` of groups → comment, replies one level in); the composer is `react-textarea-autosize`
+> 8.5.9 (the autosize component assistant-ui itself used), Enter sends on fine pointers and
+> breaks the line on touch keyboards, never during IME composition; the sheet keeps the
+> `visualViewport` tracking. assistant-ui and Radix are removed, so `skipLibCheck` is off
+> again. Bundle ≈ 565 kB minified / 186 kB gzip.
 
 The owner asked for the page first, polished for a future general audience. It lives in
 `cli/web/ideas/` and has no user-facing entry yet (slice 5 adds `corral ideas`).

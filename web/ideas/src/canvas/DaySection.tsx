@@ -4,9 +4,9 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useEffect, useRef } from "react";
-import { dayLabel, daySubLabel } from "../dates";
+import { dayLabel } from "../dates";
 import { t } from "../i18n";
-import { DaySection as Section, Thread, isUnread, presence } from "../model";
+import { DaySection as Section, isUnread, presence } from "../model";
 import type { State, Store } from "../store";
 import { Chevron } from "../ui/icons";
 import { SpanView, editorExtensions, external, setSpans, spansField } from "./editor";
@@ -59,12 +59,10 @@ function sameSpans(a: SpanView[], b: SpanView[]): boolean {
 export function DaySection({ store, state, section, now, settleMs, onSettled }: Props) {
   const open = store.isOpen(section, now);
   const label = dayLabel(section.day, now);
-  const sub = daySubLabel(section.day, now);
   const isToday = label === t("today");
-  const threads = section.spans.map((s) => state.threads[s.threadId]).filter(Boolean);
 
   return (
-    <section className={`day${open ? " is-open" : " is-folded"}${isToday ? " is-today" : ""}`} aria-label={`${label}, ${sub}`}>
+    <section className={`day${open ? " is-open" : " is-folded"}${isToday ? " is-today" : ""}`} aria-label={label}>
       <button
         className="day-head"
         aria-expanded={open}
@@ -73,26 +71,9 @@ export function DaySection({ store, state, section, now, settleMs, onSettled }: 
       >
         <Chevron open={open} />
         <span className="day-label">{label}</span>
-        <span className="day-sub">{sub}</span>
-        {!open && <FoldedSummary threads={threads} />}
       </button>
       {open && <DayEditor store={store} state={state} section={section} settleMs={settleMs} onSettled={onSettled} isToday={isToday} />}
     </section>
-  );
-}
-
-function FoldedSummary({ threads }: { threads: Thread[] }) {
-  const waiting = threads.filter((th) => presence(th) === "waiting").length;
-  return (
-    <span className="day-summary">
-      {waiting > 0 && (
-        <span className="chip is-waiting">
-          <span className="dot" />
-          {t("countWaiting", { n: waiting })}
-        </span>
-      )}
-      <span className="day-count">{t("countItems", { n: threads.length })}</span>
-    </span>
   );
 }
 

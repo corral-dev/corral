@@ -224,64 +224,8 @@ textarea:focus-visible {
   transition: transform 0.36s var(--ease);
 }
 
-.pickup,
 .day-head {
   width: min(100%, var(--page-text));
-}
-
-/* ---- pick up here ---------------------------------------------------------------- */
-
-.pickup {
-  margin: 0 0 56px;
-  padding: 6px;
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--shadow-rest);
-  animation: rise 0.4s var(--ease) both;
-}
-.pickup .eyebrow {
-  margin: 0;
-  padding: 10px 12px 6px;
-}
-.pickup ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.pickup-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 7px minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  height: 44px;
-  padding: 0 12px;
-  border-radius: calc(var(--radius) - 6px);
-  text-align: left;
-  transition: background-color 0.15s;
-}
-.pickup-row:hover,
-.pickup-row:focus-visible {
-  background: var(--surface-2);
-}
-.pickup-quote {
-  font-size: 15px;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pickup-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--tone);
-}
-.pickup-time {
-  min-width: 56px;
-  text-align: right;
-  font-size: 13px;
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---- day sections ---------------------------------------------------------------- */
@@ -328,10 +272,6 @@ textarea:focus-visible {
   letter-spacing: -0.022em;
   color: var(--ink);
 }
-.day-sub {
-  font-size: 14px;
-  color: var(--ink-3);
-}
 .day-head:focus-visible .day-label {
   text-decoration: underline 2px color-mix(in srgb, var(--ink) 25%, transparent);
   text-underline-offset: 6px;
@@ -348,17 +288,6 @@ textarea:focus-visible {
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--ink-2);
-}
-.day-summary {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.day-count {
-  font-size: 13px;
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
 }
 
 .day-body {
@@ -619,105 +548,150 @@ textarea:focus-visible {
   color: var(--ink);
 }
 
-.thread-viewport {
+.thread-scroll {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 20px;
+  padding: 0 20px 8px;
 }
-.thread-head {
-  padding: 2px 0 20px;
+
+/* The post: the owner's own words. */
+.post {
+  padding: 2px 0 18px;
+  border-bottom: 1px solid var(--line);
 }
-.thread-quote {
+.post-text {
   margin: 0;
   font-size: 17px;
   line-height: 1.55;
   font-weight: 500;
-  color: var(--ink);
   white-space: pre-wrap;
 }
-.thread-progress {
+.post-meta {
   margin: 6px 0 0;
   font-size: 14px;
   line-height: 1.5;
   color: var(--ink-3);
 }
 
-.msg {
-  display: flex;
-  margin: 0 0 14px;
-  animation: rise 0.28s var(--ease) both;
+/* Comments: one look for every comment; replies one level in, under their comment. */
+.comments,
+.replies {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
-.msg.is-owner {
-  justify-content: flex-end;
+.comment-group {
+  padding: 16px 0 6px;
+  border-bottom: 1px solid var(--line);
 }
-.bubble {
-  max-width: 82%;
-  padding: 9px 14px;
-  border-radius: 18px 18px 6px 18px;
+.comment-group:last-child {
+  border-bottom: 0;
+}
+.replies {
+  margin-left: 36px;
+}
+.comment {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.replies .comment {
+  grid-template-columns: 22px minmax(0, 1fr);
+  padding-top: 4px;
+}
+.avatar {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.replies .avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+.comment.is-owner .avatar {
   background: var(--ink);
   color: var(--surface);
-  font-size: 15px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
-.msg-text {
-  max-width: 92%;
-  font-size: 15px;
-  line-height: 1.62;
-  color: var(--ink);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.msg.is-pending .msg-text {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--waiting-tint) 12%, transparent);
-}
-
-.result {
-  width: 100%;
-  padding: 14px 16px;
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 0 0 1px var(--line-2);
-}
-.result-head {
+.comment-head {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 6px;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 22px;
+}
+.comment-author {
   font-size: 13.5px;
   font-weight: 600;
-  color: var(--done);
 }
-.result-summary {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1.6;
-}
-.result-evidence {
-  margin: 8px 0 0;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--ink-2);
-}
-.result-meta {
-  margin: 10px 0 0;
+.comment-time {
   font-size: 12.5px;
   color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.comment-body {
+  margin: 2px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mention {
+  color: var(--ink-3);
+}
+.comment-action {
+  margin: 2px 0 0 -6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--ink-3);
+  transition:
+    color 0.15s,
+    background-color 0.15s;
+}
+.comment-action:hover,
+.comment-action:focus-visible {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+.comment {
+  animation: rise 0.28s var(--ease) both;
 }
 
-.thread-footer {
-  position: sticky;
-  bottom: 0;
-  margin-top: auto;
-  padding: 12px 0 14px;
-  background: linear-gradient(to bottom, transparent, var(--surface) 14px);
+.composer-bar {
+  flex: none;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.replying {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 8px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.replying-cancel {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--ink-3);
+}
+.replying-cancel:hover,
+.replying-cancel:focus-visible {
+  background: var(--surface-2);
+  color: var(--ink);
 }
 .composer {
   display: flex;
@@ -780,8 +754,7 @@ textarea:focus-visible {
   .day-head .chev {
     transition: none;
   }
-  .pickup,
-  .msg,
+  .comment,
   .day-body,
   .cm-taken.is-fresh {
     animation: none;
@@ -805,18 +778,8 @@ textarea:focus-visible {
   .day-head .chev {
     position: static;
     order: 9;
-    margin: 0 0 0 6px;
+    margin: 0 0 0 auto;
     align-self: center;
-  }
-  .day-head:not(:has(.day-summary)) .chev,
-  .day-head:has(.day-summary > :only-child) .chev {
-    margin-left: auto;
-  }
-  .day-head:has(.day-summary > :only-child) .day-summary {
-    display: none;
-  }
-  .pickup-time {
-    display: none;
   }
 
   .sheet {
@@ -834,7 +797,7 @@ textarea:focus-visible {
   .sheet-card {
     border-radius: var(--radius) var(--radius) 0 0;
   }
-  .thread-footer {
+  .composer-bar {
     padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
   .app.has-panel .page {
@@ -845,14 +808,4 @@ textarea:focus-visible {
     overflow: hidden;
     overscroll-behavior: none;
   }
-}
-
-/* assistant-ui renders text parts as <p>; spacing comes from the message, not the paragraph. */
-.bubble p,
-.msg-text p {
-  margin: 0;
-}
-.bubble p + p,
-.msg-text p + p {
-  margin-top: 0.6em;
 }

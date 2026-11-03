@@ -116,16 +116,29 @@ export class PreviewCoordinator {
     }, 1400);
   }
 
-  onReply(threadId: string, text: string): void {
-    this.store.addMessage(threadId, { author: "owner", kind: "text", text });
+  /**
+   * The owner commented. `target` is the top-level comment being replied under (and whose
+   * author is addressed); without it the owner started a new top-level comment.
+   */
+  onReply(threadId: string, text: string, target?: { parentId: string; replyTo?: Message["author"] }): void {
+    const own = this.store.addMessage(threadId, { author: "owner", kind: "text", text, parentId: target?.parentId, replyTo: target?.replyTo });
     const th = this.store.state.threads[threadId];
     if (!th) return;
     const q = openQuestion(th);
     if (q) this.store.updateThread(threadId, (x) => ({ ...x, questions: x.questions.map((y) => (y.id === q.id ? { ...y, state: "answered" } : y)) }));
-    this.later(threadId, 1300, () => this.respond(threadId, text));
+    // The coordinator answers in the same group: under the comment replied to, or under the new comment.
+    // Answering a reply inside an existing group addresses the owner ("@you"); answering the
+    // owner's own new comment is a direct reply and needs no address.
+    const group = target?.parentId ?? own;
+    const address = target !== undefined;
+    this.later(threadId, 1300, () => this.respond(threadId, text, group, address));
   }
 
-  private respond(threadId: string, text: string): void {
+  private say(threadId: string, text: string, group: string, address: boolean): void {
+    this.store.addMessage(threadId, { author: "coordinator", kind: "text", text, parentId: group, replyTo: address ? "owner" : undefined });
+  }
+
+  private respond(threadId: string, text: string, group: string, address: boolean): void {
     const th = this.store.state.threads[threadId];
     if (!th) return;
     const live = th.tasks.find((t) => !["done", "failed", "canceled"].includes(t.state));
@@ -137,7 +150,7 @@ export class PreviewCoordinator {
         questions: x.questions.map((q) => (q.state === "open" || q.state === "answered" ? { ...q, state: "withdrawn" } : q)),
         tasks: x.tasks.map((t) => (["done", "failed", "canceled"].includes(t.state) ? t : { ...t, state: "canceled", updatedAt: Date.now() })),
       }));
-      this.store.addMessage(threadId, { author: "coordinator", kind: "text", text: copy.stopped });
+      this.say(threadId, copy.stopped, group, address);
       return;
     }
     const q = openQuestion(th);
@@ -151,12 +164,12 @@ export class PreviewCoordinator {
         questions: x.questions.map((y) => (y.id === q.id ? { ...y, state: "resolved" } : y)),
         tasks: [...x.tasks, t],
       }));
-      this.store.addMessage(threadId, { author: "coordinator", kind: "text", text: copy.thanks(project, assistant) });
+      this.say(threadId, copy.thanks(project, assistant), group, address);
       this.runToCompletion(threadId, t.id, 20_000);
       return;
     }
     if (live) {
-      this.store.addMessage(threadId, { author: "coordinator", kind: "text", text: copy.steer(live.assistant ?? "") });
+      this.say(threadId, copy.steer(live.assistant ?? ""), group, address);
       return;
     }
     const prev = th.tasks[th.tasks.length - 1];
@@ -164,7 +177,7 @@ export class PreviewCoordinator {
     const assistant = prev?.assistant ?? pickAssistant();
     const t = task(text, project, assistant, "running");
     this.store.updateThread(threadId, (x) => ({ ...x, summary: copy.summaryWorking(project), tasks: [...x.tasks, t] }));
-    this.store.addMessage(threadId, { author: "coordinator", kind: "text", text: copy.followUp(assistant) });
+    this.say(threadId, copy.followUp(assistant), group, address);
     this.runToCompletion(threadId, t.id, 18_000);
   }
 
@@ -229,6 +242,17 @@ function result(summary: string, evidence: string, assistant: string, project: s
 
 function say(author: Message["author"], text: string, at: number, kind: Message["kind"] = "text", questionId?: string): Message {
   return { id: newId("m"), author, at, kind, text, questionId };
+}
+
+/** A top-level comment followed by replies in its group (forum layout). */
+function thread(root: Message, ...replies: Message[]): Message[] {
+  const out = [root];
+  replies.forEach((r, i) => {
+    // The first reply answers the comment itself; later ones answer the reply before them.
+    const prev = replies[i - 1];
+    out.push({ ...r, parentId: root.id, replyTo: prev && prev.author !== r.author ? prev.author : undefined });
+  });
+  return out;
 }
 
 function seedTask(title: string, project: string, assistant: string, state: Task["state"], at: number): Task {
@@ -310,11 +334,11 @@ function seedDays(): { offset: number; extra?: string; items: (SeedItem | string
               summary: "按你的要求停下了。",
               questions: [],
               tasks: [seedTask("整理 README", "Beacon", "OpenCode", "canceled", at + 20 * min)],
-              messages: [
+              messages: thread(
                 say("coordinator", "交给 OpenCode 在 Beacon 里处理。", at + min),
                 say("owner", "这个先不做了。", at + 18 * min),
                 say("coordinator", "好的，已经停下，不再继续。", at + 19 * min),
-              ],
+              ),
             }),
           },
         ],
@@ -437,11 +461,11 @@ function seedDays(): { offset: number; extra?: string; items: (SeedItem | string
             summary: "Stopped at your request.",
             questions: [],
             tasks: [seedTask("Tidy up README", "Beacon", "OpenCode", "canceled", at + 20 * min)],
-            messages: [
+            messages: thread(
               say("coordinator", "OpenCode is taking this in Beacon.", at + min),
               say("owner", "Let's not do this one for now.", at + 18 * min),
               say("coordinator", "Okay, I've stopped it.", at + 19 * min),
-            ],
+            ),
           }),
         },
       ],

@@ -12,7 +12,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "isolatedModules": true,
-    "skipLibCheck": true
+    "skipLibCheck": false
   },
   "include": ["src"]
 }

@@ -18,7 +18,7 @@ async function start(): Promise<void> {
   const store = Store.load(seed, account?.email ?? null);
   const coordinator = new PreviewCoordinator(store);
   const root = document.getElementById("app");
-  if (root) createRoot(root).render(<App store={store} coordinator={coordinator} settleMs={settleMs} account={account} />);
+  if (root) createRoot(root).render(<App store={store} coordinator={coordinator} settleMs={settleMs} />);
 }
 
 void start();

@@ -1,32 +1,24 @@
-// The discussion attached to one taken span, built on assistant-ui primitives
-// (Thread / Message / Composer) with our own styling. Desktop: a panel at the right.
-// Phones: a full-height sheet whose composer stays above the on-screen keyboard.
-import {
-  AssistantRuntimeProvider,
-  ComposerPrimitive,
-  MessagePrimitive,
-  ThreadPrimitive,
-  useAuiState,
-  useExternalStoreRuntime,
-  type AppendMessage,
-  type ThreadMessageLike,
-} from "@assistant-ui/react";
-import { useEffect, useRef } from "react";
-import { t } from "../i18n";
-import { Message, ResultInfo, Thread, openQuestion, presence } from "../model";
+// The discussion attached to one taken span, laid out as a forum thread (owner correction
+// 2026-11-03): the owner's sentence is the post; comments follow oldest first, each with a
+// Reply action; replies sit under their comment, one level deep ("@name" when answering a
+// reply). Every comment looks the same, results and questions included.
+// Desktop: a panel at the right. Phones: a full-height sheet above the keyboard.
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import TextareaAutosize from "react-textarea-autosize";
+import { relativeTime, t } from "../i18n";
+import { Message, Thread, openQuestion, presence } from "../model";
 import type { Store } from "../store";
-import { CheckCircle, CloseIcon, SendIcon } from "../ui/icons";
+import { CloseIcon, SendIcon } from "../ui/icons";
+
+export interface ReplyTarget {
+  parentId: string;
+  replyTo?: Message["author"];
+}
 
 interface Props {
   store: Store;
   thread: Thread | null;
-  onReply: (threadId: string, text: string) => void;
-}
-
-interface Custom {
-  kind: Message["kind"];
-  result?: ResultInfo;
-  pending?: boolean;
+  onReply: (threadId: string, text: string, target?: ReplyTarget) => void;
 }
 
 export function Discussion({ store, thread, onReply }: Props) {
@@ -85,96 +77,173 @@ function useKeyboardAwareHeight(ref: React.RefObject<HTMLElement | null>, active
   }, [ref, active]);
 }
 
-function ThreadView({ thread, onReply, onClose }: { thread: Thread; onReply: (id: string, text: string) => void; onClose: () => void }) {
-  const question = openQuestion(thread);
-  const convertMessage = (m: Message): ThreadMessageLike => {
-    const pending = m.kind === "question" && question?.id === m.questionId;
-    const custom: Custom = { kind: m.kind, result: m.result, pending };
-    return {
-      id: m.id,
-      role: m.author === "owner" ? "user" : "assistant",
-      content: [{ type: "text", text: m.kind === "result" ? (m.result?.summary ?? "") : m.text }],
-      createdAt: new Date(m.at),
-      metadata: { custom: custom as unknown as Record<string, unknown> },
-    };
-  };
-  const runtime = useExternalStoreRuntime({
-    messages: thread.messages,
-    convertMessage,
-    onNew: async (message: AppendMessage) => {
-      const part = message.content.find((p) => p.type === "text");
-      const text = part && part.type === "text" ? part.text.trim() : "";
-      if (text) onReply(thread.id, text);
-    },
-  });
+function authorName(a: Message["author"]): string {
+  return a === "owner" ? t("you") : t("coordinator");
+}
+
+function bodyOf(m: Message): string {
+  if (m.kind === "result" && m.result) return `${m.result.summary}\n${m.result.evidence}`;
+  return m.text;
+}
+
+function ThreadView({ thread, onReply, onClose }: { thread: Thread; onReply: Props["onReply"]; onClose: () => void }) {
+  const [target, setTarget] = useState<ReplyTarget | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const status = presence(thread);
+  const now = Date.now();
+
+  const roots = thread.messages.filter((m) => !m.parentId);
+  const repliesOf = (id: string) => thread.messages.filter((m) => m.parentId === id);
+
+  // Start at the latest comment; afterwards bring each new comment into view.
+  const count = thread.messages.length;
+  const lastId = thread.messages[count - 1]?.id;
+  const first = useRef(true);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (first.current) {
+      first.current = false;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    el.querySelector(`[data-comment="${lastId}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [count, lastId]);
+
+  const reply = (m: Message) => {
+    setTarget(m.parentId ? { parentId: m.parentId, replyTo: m.author } : { parentId: m.id });
+    input.current?.focus();
+  };
+  const targetName = target ? authorName(target.replyTo ?? thread.messages.find((m) => m.id === target.parentId)?.author ?? "coordinator") : "";
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="thread">
-        <header className="thread-bar">
-          <span className={`thread-state is-${status}`}>{status === "quiet" ? "" : t(`presence.${status}`)}</span>
-          <button className="icon-button" onClick={onClose} aria-label={t("close")} title={t("close")}>
+    <div className="thread">
+      <header className="thread-bar">
+        <span className={`thread-state is-${status}`}>{status === "quiet" ? "" : t(`presence.${status}`)}</span>
+        <button className="icon-button" onClick={onClose} aria-label={t("close")} title={t("close")}>
+          <CloseIcon />
+        </button>
+      </header>
+      <div className="thread-scroll" ref={scroller}>
+        <div className="post">
+          <p className="post-text">{thread.quote}</p>
+          {thread.summary && <p className="post-meta">{thread.summary}</p>}
+        </div>
+        <ol className="comments">
+          {roots.map((root) => (
+            <li key={root.id} className="comment-group">
+              <Comment message={root} now={now} onReply={reply} />
+              {repliesOf(root.id).length > 0 && (
+                <ol className="replies">
+                  {repliesOf(root.id).map((r) => (
+                    <li key={r.id}>
+                      <Comment message={r} now={now} onReply={reply} />
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </li>
+          ))}
+        </ol>
+      </div>
+      <Composer
+        inputRef={input}
+        target={target}
+        targetName={targetName}
+        placeholder={target ? t("replyTo", { name: targetName }) : openQuestion(thread) ? t("answer") : t("comment")}
+        onCancelTarget={() => setTarget(null)}
+        onSend={(text) => {
+          onReply(thread.id, text, target ?? undefined);
+          setTarget(null);
+        }}
+      />
+    </div>
+  );
+}
+
+function Comment({ message, now, onReply }: { message: Message; now: number; onReply: (m: Message) => void }) {
+  const name = authorName(message.author);
+  return (
+    <article className={`comment is-${message.author}`} data-comment={message.id}>
+      <span className="avatar" aria-hidden="true">
+        {name.slice(0, 1)}
+      </span>
+      <div className="comment-main">
+        <div className="comment-head">
+          <span className="comment-author">{name}</span>
+          <time className="comment-time" dateTime={new Date(message.at).toISOString()} title={new Date(message.at).toLocaleString()}>
+            {relativeTime(message.at, now)}
+          </time>
+        </div>
+        <p className="comment-body">
+          {message.replyTo && <span className="mention">@{authorName(message.replyTo)} </span>}
+          {bodyOf(message)}
+        </p>
+        <button className="comment-action" onClick={() => onReply(message)}>
+          {t("replyAction")}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+const coarsePointer = () => window.matchMedia("(pointer: coarse)").matches;
+
+function Composer(props: {
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  target: ReplyTarget | null;
+  targetName: string;
+  placeholder: string;
+  onCancelTarget: () => void;
+  onSend: (text: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const send = () => {
+    const text = value.trim();
+    if (!text) return;
+    props.onSend(text);
+    setValue("");
+  };
+  return (
+    <form
+      className="composer-bar"
+      onSubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
+      {props.target && (
+        <div className="replying">
+          <span>{t("replyingTo", { name: props.targetName })}</span>
+          <button type="button" className="replying-cancel" onClick={props.onCancelTarget} aria-label={t("cancel")} title={t("cancel")}>
             <CloseIcon />
           </button>
-        </header>
-        <ThreadPrimitive.Viewport className="thread-viewport">
-          <div className="thread-head">
-            <blockquote className="thread-quote">{thread.quote}</blockquote>
-            {thread.summary && <p className="thread-progress">{thread.summary}</p>}
-          </div>
-          <ThreadPrimitive.Messages>
-            {({ message }) => (message.role === "user" ? <OwnerMessage /> : <CoordinatorMessage />)}
-          </ThreadPrimitive.Messages>
-          <ThreadPrimitive.ViewportFooter className="thread-footer">
-            <ComposerPrimitive.Root className="composer">
-              <ComposerPrimitive.Input className="composer-input" rows={1} maxRows={6} placeholder={question ? t("answer") : t("reply")} submitMode="enter" />
-              <ComposerPrimitive.Send className="send" aria-label={t("send")} title={t("send")}>
-                <SendIcon />
-              </ComposerPrimitive.Send>
-            </ComposerPrimitive.Root>
-          </ThreadPrimitive.ViewportFooter>
-        </ThreadPrimitive.Viewport>
-      </ThreadPrimitive.Root>
-    </AssistantRuntimeProvider>
-  );
-}
-
-function OwnerMessage() {
-  return (
-    <MessagePrimitive.Root className="msg is-owner">
-      <div className="bubble">
-        <MessagePrimitive.Parts />
-      </div>
-    </MessagePrimitive.Root>
-  );
-}
-
-function CoordinatorMessage() {
-  const custom = useAuiState((s) => s.message.metadata.custom) as unknown as Custom | undefined;
-  if (custom?.kind === "result" && custom.result) {
-    const r = custom.result;
-    return (
-      <MessagePrimitive.Root className="msg is-coordinator">
-        <div className="result">
-          <div className="result-head">
-            <CheckCircle />
-            <span>{t("result")}</span>
-          </div>
-          <p className="result-summary">{r.summary}</p>
-          <p className="result-evidence">{r.evidence}</p>
-          <p className="result-meta">
-            {r.assistant} · {r.project} · {t("minutes", { n: r.minutes })}
-          </p>
         </div>
-      </MessagePrimitive.Root>
-    );
-  }
-  return (
-    <MessagePrimitive.Root className={`msg is-coordinator${custom?.pending ? " is-pending" : ""}`}>
-      <div className="msg-text">
-        <MessagePrimitive.Parts />
+      )}
+      <div className="composer">
+        <TextareaAutosize
+          ref={props.inputRef}
+          className="composer-input"
+          minRows={1}
+          maxRows={6}
+          value={value}
+          placeholder={props.placeholder}
+          aria-label={props.placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            // Desktop: Enter sends, Shift+Enter breaks the line. Touch keyboards: Return is a
+            // line break and the button sends. Never send while an IME is composing.
+            if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
+            if (coarsePointer()) return;
+            e.preventDefault();
+            send();
+          }}
+        />
+        <button className="send" type="submit" disabled={!value.trim()} aria-label={t("send")} title={t("send")}>
+          <SendIcon />
+        </button>
       </div>
-    </MessagePrimitive.Root>
+    </form>
   );
 }

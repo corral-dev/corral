@@ -52,6 +52,11 @@ const en = {
   "presence.working": "Working",
   "presence.done": "Done",
   "presence.withdrawn": "Withdrawn",
+  comment: "Add a comment…",
+  replyAction: "Reply",
+  replyTo: "Reply to {name}…",
+  replyingTo: "Replying to {name}",
+  cancel: "Cancel",
 } as const;
 
 export type Key = keyof typeof en;
@@ -107,6 +112,11 @@ const zh: Record<Key, string> = {
   "presence.working": "进行中",
   "presence.done": "已完成",
   "presence.withdrawn": "已撤回",
+  comment: "写留言…",
+  replyAction: "回复",
+  replyTo: "回复 {name}…",
+  replyingTo: "回复 {name}",
+  cancel: "取消",
 };
 
 function detect(): "en" | "zh" {

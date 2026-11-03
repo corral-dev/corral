@@ -50,6 +50,10 @@ export interface Message {
   text: string;
   questionId?: string;
   result?: ResultInfo;
+  /** Forum layout: the top-level comment this reply belongs to (one level deep). */
+  parentId?: string;
+  /** Author being answered when replying to a reply ("@name"). */
+  replyTo?: "owner" | "coordinator";
 }
 
 export interface Thread {

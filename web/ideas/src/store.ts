@@ -2,7 +2,7 @@
 // closed tab never loses the draft. Transient view state is kept out of storage.
 import { useSyncExternalStore } from "react";
 import { dayKey, defaultOpen } from "./dates";
-import { DaySection, Message, Span, Thread, newId } from "./model";
+import { DaySection, Message, Span, Thread, newId, presence } from "./model";
 
 export interface Reading {
   day: string;
@@ -86,8 +86,14 @@ export class Store {
     return this.state.sections.find((s) => s.day === day);
   }
 
+  /** Owner's choice first; otherwise recent days, and any day with something waiting, are open. */
   isOpen(section: DaySection, now: Date): boolean {
-    return section.open ?? defaultOpen(section.day, now);
+    if (section.open !== undefined) return section.open;
+    const waiting = section.spans.some((sp) => {
+      const th = this.state.threads[sp.threadId];
+      return th !== undefined && presence(th) === "waiting";
+    });
+    return waiting || defaultOpen(section.day, now);
   }
 
   private patchSection(day: string, patch: Partial<DaySection>): void {
@@ -133,8 +139,11 @@ export class Store {
     this.set({ threads: { ...this.state.threads, [id]: next } });
   }
 
-  addMessage(id: string, msg: Omit<Message, "id" | "at">): void {
-    this.updateThread(id, (t) => ({ ...t, messages: [...t.messages, { ...msg, id: newId("m"), at: Date.now() }] }));
+  /** Appends a comment and returns its id. */
+  addMessage(id: string, msg: Omit<Message, "id" | "at">): string {
+    const mid = newId("m");
+    this.updateThread(id, (t) => ({ ...t, messages: [...t.messages, { ...msg, id: mid, at: Date.now() }] }));
+    return mid;
   }
 
   openThread(id: string | null): void {

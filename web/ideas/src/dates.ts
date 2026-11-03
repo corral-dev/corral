@@ -41,14 +41,6 @@ export function dayLabel(key: string, now: Date): string {
   return date.getFullYear() === now.getFullYear() ? monthDay.format(date) : monthDayYear.format(date);
 }
 
-/** Secondary label: the full date for named days, the weekday for dated ones. */
-export function daySubLabel(key: string, now: Date): string {
-  const ago = daysAgo(key, now);
-  const date = parseDay(key);
-  if (ago >= 0 && ago < 7) return date.getFullYear() === now.getFullYear() ? monthDay.format(date) : monthDayYear.format(date);
-  return weekday.format(date);
-}
-
 export function defaultOpen(key: string, now: Date): boolean {
   return daysAgo(key, now) <= FOLD_AFTER_DAYS;
 }
