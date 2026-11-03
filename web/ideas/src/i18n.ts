@@ -46,6 +46,8 @@ const en = {
   unfold: "Expand",
   unread: "New",
   question: "Question",
+  account: "Account",
+  signOut: "Sign out",
 } as const;
 
 export type Key = keyof typeof en;
@@ -95,6 +97,8 @@ const zh: Record<Key, string> = {
   unfold: "展开",
   unread: "新",
   question: "提问",
+  account: "账号",
+  signOut: "退出登录",
 };
 
 function detect(): "en" | "zh" {

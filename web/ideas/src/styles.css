@@ -194,6 +194,66 @@ textarea:focus-visible {
   min-width: 0;
 }
 
+.account {
+  position: relative;
+  flex: none;
+}
+.account-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 13px;
+  font-weight: 600;
+  transition: transform 0.12s;
+}
+.account-button:active {
+  transform: scale(0.94);
+}
+.account-button:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.account-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 220px;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  animation: rise 0.18s var(--ease) both;
+}
+.account-email {
+  padding: 8px 10px 10px;
+  font-size: 13px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+.account-item {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: calc(var(--radius) - 6px);
+  font-size: 14px;
+  color: var(--ink);
+  text-decoration: none;
+  transition: background-color 0.15s;
+}
+.account-item:hover,
+.account-item:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+
 /* ---- chips ----------------------------------------------------------------------- */
 
 .chip {

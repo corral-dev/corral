@@ -5,6 +5,7 @@ import { Panel } from "./discussion/Panel";
 import { relativeTime, t } from "./i18n";
 import { Thread, ThreadStatus, hasUnreadResult, threadStatus } from "./model";
 import type { PreviewCoordinator } from "./preview";
+import { Account, signOutUrl } from "./identity";
 import { Store, useStore } from "./store";
 import iconUrl from "./assets/corral-icon.png";
 
@@ -12,9 +13,10 @@ interface Props {
   store: Store;
   coordinator: PreviewCoordinator;
   settleMs: number;
+  account: Account | null;
 }
 
-export function App({ store, coordinator, settleMs }: Props) {
+export function App({ store, coordinator, settleMs, account }: Props) {
   const state = useStore(store);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -26,7 +28,7 @@ export function App({ store, coordinator, settleMs }: Props) {
   const openThread = state.openThreadId ? state.threads[state.openThreadId] ?? null : null;
   return (
     <div class={`app${openThread ? " has-panel" : ""}`}>
-      <TopBar store={store} threads={threads} />
+      <TopBar store={store} threads={threads} account={account} />
       <main class="stage">
         <div class="page">
           <PickUp store={store} threads={threads} now={now} />
@@ -48,7 +50,7 @@ export function App({ store, coordinator, settleMs }: Props) {
   );
 }
 
-function TopBar({ store, threads }: { store: Store; threads: Thread[] }) {
+function TopBar({ store, threads, account }: { store: Store; threads: Thread[]; account: Account | null }) {
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 4);
@@ -77,7 +79,41 @@ function TopBar({ store, threads }: { store: Store; threads: Thread[] }) {
           </button>
         ))}
       </nav>
+      {account && <AccountMenu account={account} />}
     </header>
+  );
+}
+
+function AccountMenu({ account }: { account: Account }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+      if (e instanceof MouseEvent && (e.target as HTMLElement).closest(".account")) return;
+      setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  return (
+    <div class="account">
+      <button class="account-button" aria-haspopup="menu" aria-expanded={open} aria-label={`${t("account")}: ${account.email}`} title={account.email} onClick={() => setOpen(!open)}>
+        {account.email.slice(0, 1).toUpperCase()}
+      </button>
+      {open && (
+        <div class="account-menu" role="menu">
+          <div class="account-email">{account.email}</div>
+          <a class="account-item" role="menuitem" href={signOutUrl()}>
+            {t("signOut")}
+          </a>
+        </div>
+      )}
+    </div>
   );
 }
 

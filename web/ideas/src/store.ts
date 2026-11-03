@@ -18,7 +18,12 @@ export interface State {
   reading: Reading[];
 }
 
-const STORAGE_KEY = "corral.ideas.preview.v1";
+const STORAGE_PREFIX = "corral.ideas.preview.v1";
+
+/** One saved copy per signed-in account, so accounts sharing a browser never see each other's drafts. */
+function storageKey(account: string | null): string {
+  return account ? `${STORAGE_PREFIX}:${account}` : STORAGE_PREFIX;
+}
 
 type Listener = () => void;
 
@@ -27,21 +32,25 @@ export class Store {
   private listeners = new Set<Listener>();
   private saveTimer = 0;
 
-  constructor(initial: Pick<State, "sections" | "threads">) {
+  constructor(
+    initial: Pick<State, "sections" | "threads">,
+    private readonly key: string,
+  ) {
     this.state = { ...initial, openThreadId: null, hoverThreadId: null, reading: [] };
     this.ensureToday();
   }
 
-  static load(seed: () => Pick<State, "sections" | "threads">): Store {
+  static load(seed: () => Pick<State, "sections" | "threads">, account: string | null): Store {
+    const key = storageKey(account);
     const params = new URLSearchParams(location.search);
-    if (params.has("reset")) localStorage.removeItem(STORAGE_KEY);
+    if (params.has("reset")) localStorage.removeItem(key);
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return new Store(JSON.parse(raw));
+      const raw = localStorage.getItem(key);
+      if (raw) return new Store(JSON.parse(raw), key);
     } catch {
       // A corrupt saved copy falls back to the seed rather than blocking the page.
     }
-    return new Store(seed());
+    return new Store(seed(), key);
   }
 
   subscribe(fn: Listener): () => void {
@@ -59,7 +68,7 @@ export class Store {
     clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => {
       const { sections, threads } = this.state;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ sections, threads }));
+      localStorage.setItem(this.key, JSON.stringify({ sections, threads }));
     }, 250);
   }
 
