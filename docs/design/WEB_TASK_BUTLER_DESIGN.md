@@ -931,10 +931,12 @@ Decisions for the owner at freeze:
 > long-pressing a taken sentence collided with iOS's own text selection. System text
 > selection stays only on editable free text and input fields; taken sentences, headings
 > and discussion comments are not selectable (so comments cannot be long-press copied).
-> Mechanism: page-wide `-webkit-user-select: none` with editable text and inputs re-enabled;
-> taken spans are `contenteditable="false"` islands with `-webkit-touch-callout: none`, so a
-> long press neither selects them nor falls through to the neighbouring editable text; a press
-> that starts on a taken sentence also cancels `selectstart`.
+> Mechanism (current): page-wide `-webkit-user-select: none` with editable text and inputs
+> re-enabled; taken sentences are non-editable CodeMirror replace widgets with
+> `user-select: none` and `-webkit-touch-callout: none`, so a long press neither selects them
+> nor falls through to the neighbouring editable text, and lifts the sentence for a native drag
+> instead (see the drag implementation entry). The earlier `contenteditable="false"` mark and
+> `selectstart` cancelling were removed with the hand-written drag.
 > **Caret at taken sentences (owner, 2026-11-03):** arrow keys must reach a taken sentence's start
 > and end but never its inside; the caret had vanished next to the non-editable mark. Taken
 > sentences are now CodeMirror replace widgets (sentence text + icon, natively non-editable)
@@ -980,7 +982,10 @@ Decisions for the owner at freeze:
 > the sentence element's own line boxes. Drops are accepted only in the sentence's own day.
 > Fixed at the same time: a move was refused whenever the drop touched the edge of the text it
 > takes away (e.g. joining a one-sentence paragraph to the end of the previous one); now only a
-> move that leaves the text unchanged is refused. Touch dragging still awaits a physical iPhone.
+> move that leaves the text unchanged is refused. **Accepted by the owner on a physical iPhone
+> and in desktop Chrome (2026-11-03):** mouse drag, iOS long-press drag, drop caret and moves.
+> Reusable CodeMirror / native drag findings live in the shared web interaction guide
+> (AgentSync `WEB_APP_INTERACTION_GUIDE.md`, "Inline objects in a CodeMirror 6 editor").
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral
@@ -989,7 +994,7 @@ Decisions for the owner at freeze:
 > done text recedes to grey with a grey check and no box. The icon renders inside the
 > sentence's element (`inclusiveEnd` mark, widget side -1) and is bound by word joiners on both
 > sides, so it never wraps alone or leaves an empty box fragment before CJK punctuation.
-> Press-to-drag implementation: hold 220 ms (mouse) / 380 ms (touch) without moving more than
+> *Superseded (native drag entry above):* press-to-drag implementation: hold 220 ms (mouse) / 380 ms (touch) without moving more than
 > 8 px lifts the sentence (faded in place, a floating label follows the pointer); a vertical
 > marker shows an inline drop at the nearest sentence boundary, a horizontal one a new
 > paragraph; moving before the hold elapses scrolls or selects as usual; Esc cancels. Taken
