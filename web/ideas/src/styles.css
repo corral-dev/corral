@@ -37,8 +37,6 @@
   --done: #187a41;
   --muted: #85858b;
   --on-status: #ffffff;
-  --icon-quiet: #c6c6ca;
-  --icon-glyph: #ffffff;
 
   --shadow-float: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 48px -12px rgba(20, 20, 30, 0.18);
   --shadow-rest: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.03);
@@ -64,8 +62,6 @@
     --done: #4cc982;
     --muted: #7a7a80;
     --on-status: #101012;
-    --icon-quiet: #55555b;
-    --icon-glyph: #1c1c1e;
     --shadow-float: 0 0 0 1px var(--line), 0 20px 56px -12px rgba(0, 0, 0, 0.7);
     --shadow-rest: 0 0 0 1px var(--line);
   }
@@ -378,14 +374,15 @@ textarea:focus-visible {
     box-shadow 0.2s,
     color 0.2s;
 }
-/* Sentence state look (chosen 2026-11-03 from four compared options, see design doc):
-   the end icon renders inside the sentence's own element; unfinished sentences sit in one
-   soft box (waiting tinted amber), finished ones recede to grey text without a box. */
+/* Sentence state look (owner, 2026-11-03): colour or background is the only state mark, no
+   end icon. Working sits in a soft neutral box, waiting in a soft amber box, done recedes to
+   grey text. A fixed trailing gap keeps the next sentence from touching this one. */
 .cm-taken {
   --box: transparent;
   background: var(--box);
   border-radius: 5px;
   padding: 2px 5px;
+  margin-right: 8px;
 }
 .cm-taken.is-working {
   --box: color-mix(in srgb, var(--ink) 5.5%, transparent);
@@ -397,9 +394,6 @@ textarea:focus-visible {
 .cm-taken.is-withdrawn,
 .cm-taken.is-quiet {
   padding: 0;
-}
-.cm-taken {
-  margin-right: 4px;
 }
 
 /* Quiet sentence states (owner, 2026-11-03): ordinary text colour; done and withdrawn grey. */
@@ -427,42 +421,6 @@ textarea:focus-visible {
   100% {
     background: transparent;
   }
-}
-
-.cm-status {
-  display: inline;
-  margin-left: 4px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.cm-status svg {
-  display: inline-block;
-  vertical-align: -2px;
-}
-.cm-status .icon-fill {
-  fill: var(--icon-quiet);
-}
-.cm-status .icon-glyph {
-  fill: none;
-  stroke: var(--icon-glyph);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.cm-status .icon-dot {
-  fill: var(--icon-glyph);
-}
-.cm-status .icon-ring {
-  fill: none;
-  stroke: var(--icon-quiet);
-}
-.cm-status.is-waiting .icon-fill {
-  fill: var(--waiting-tint);
-}
-.cm-status.is-waiting .icon-glyph {
-  stroke: #ffffff;
-}
-.cm-status.is-waiting .icon-dot {
-  fill: #ffffff;
 }
 
 /* ---- dragging a taken sentence ---------------------------------------------------- */

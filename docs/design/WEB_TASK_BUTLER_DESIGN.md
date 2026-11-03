@@ -943,6 +943,12 @@ Decisions for the owner at freeze:
 > `drawSelection()` draws the caret so it stays visible at those edges. Verified in Chrome by
 > stepping the caret through a mixed paragraph in all four directions. Drafts are also flushed
 > to storage on `pagehide` / hidden visibility, so an edit made just before closing survives.
+> **No end icon; trailing gap (owner, 2026-11-03, later):** the icon at a taken sentence's end
+> was redundant; the sentence's own colour or background carries its state. Working = soft
+> neutral box, waiting = soft amber box, done = grey text without a box, withdrawn = grey and
+> struck, no other state marks. Every taken sentence keeps a fixed trailing margin so the next
+> sentence (taken or free, with or without a space between) never touches it. This supersedes
+> the end-icon parts of "State look chosen" and "Quiet sentence states" below.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral

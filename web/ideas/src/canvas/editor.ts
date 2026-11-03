@@ -50,19 +50,10 @@ export const spansField = StateField.define<SpanView[]>({
   },
 });
 
-// One family of same-size round icons at the sentence end (owner, 2026-11-03): only
-// "waiting" is coloured; done and working stay low-contrast.
-const STATUS_ICONS: Partial<Record<Presence, string>> = {
-  done: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="7.25" class="icon-fill"/><path d="M4.9 8.3l2.1 2.1 4.1-4.6" class="icon-glyph" stroke-width="1.7"/></svg>',
-  waiting:
-    '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="7.25" class="icon-fill"/><path d="M8 4.4v4.4" class="icon-glyph" stroke-width="1.8"/><circle cx="8" cy="11.4" r="1.05" class="icon-dot"/></svg>',
-  working: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.4" class="icon-ring" stroke-width="1.6"/></svg>',
-};
-
 /**
- * A taken sentence rendered as one atomic, non-editable unit: its own words plus its state
- * icon. The caret can sit at either edge but never inside (owner, 2026-11-03), long press
- * cannot select it, and the icon always belongs to this sentence's box.
+ * A taken sentence rendered as one atomic, non-editable unit. Its colour or background is its
+ * only state mark; there is no end icon (owner, 2026-11-03). The caret can sit at either edge
+ * but never inside, and long press cannot select it.
  */
 class SentenceWidget extends WidgetType {
   constructor(
@@ -90,16 +81,6 @@ class SentenceWidget extends WidgetType {
     el.dataset.thread = s.threadId;
     el.spellcheck = false;
     el.textContent = this.text;
-    const icon = STATUS_ICONS[s.status];
-    if (icon) {
-      const st = document.createElement("span");
-      st.className = `cm-status is-${s.status}`;
-      st.setAttribute("aria-hidden", "true");
-      // Word joiners keep the icon on the line of the sentence's last character and with
-      // whatever punctuation follows, so no empty box fragment wraps alone.
-      st.innerHTML = "\u2060" + icon + "\u2060";
-      el.appendChild(st);
-    }
     return el;
   }
   ignoreEvent(): boolean {
