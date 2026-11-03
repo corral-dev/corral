@@ -964,6 +964,23 @@ Decisions for the owner at freeze:
 > space between Latin neighbours; a sentence that was a whole paragraph takes its separator
 > with it. A position inside another taken sentence snaps to its nearer edge. This supersedes
 > the sentence-boundary snapping and the horizontal new-paragraph marker below.
+> **Drag implementation: the platform's own drag and drop (owner asked to reuse an existing
+> wheel, 2026-11-03).** The hand-written pointer drag (hold timer, floating label, own marker,
+> scroll and selection suppression) is replaced by native HTML drag and drop: the sentence
+> widget is `draggable` and its `ignoreEvent` leaves `mousedown` / `dragstart` to the browser,
+> because CodeMirror's mousedown would otherwise start a text selection and cancel the drag. A
+> mouse drags on movement; iOS / iPadOS Safari 15+ lifts a draggable element on long press
+> natively ([caniuse](https://caniuse.com/dragndrop)), so the hold length and preview are the
+> system's. Reused: native drag image, auto-scroll, Esc cancel, long press. Not reused:
+> CodeMirror's built-in widget drag (6.22+, [forum](https://discuss.codemirror.net/t/drag-drop-widget-decorator/7338))
+> deletes and reinserts plain text without the span, and never sees `dragend` once the moved
+> widget re-renders, leaving a stale dragged range; and `dropCursor()` places the caret on the
+> first line of a wrapped sentence's end. So the drop handler (through CodeMirror's handler
+> chain, which skips the built-in drop) moves the span itself, and a small caret is drawn from
+> the sentence element's own line boxes. Drops are accepted only in the sentence's own day.
+> Fixed at the same time: a move was refused whenever the drop touched the edge of the text it
+> takes away (e.g. joining a one-sentence paragraph to the end of the previous one); now only a
+> move that leaves the text unchanged is refused. Touch dragging still awaits a physical iPhone.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral

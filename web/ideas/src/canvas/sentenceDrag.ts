@@ -1,20 +1,14 @@
 // Drag a taken sentence to another place in the same day (owner, 2026-11-03: no grip; the
-// sentence itself is the handle). A mouse drags as soon as it moves; a finger or pen must hold
-// first so an ordinary swipe still scrolls. A press without a drag still opens the
-// discussion. The sentence lands exactly at the caret position under the pointer; a move
-// never creates paragraphs or blank lines (owner, 2026-11-03).
+// sentence itself is the handle). The drag is the platform's own HTML drag and drop: the
+// sentence widget is `draggable`, and a caret shows where it will land (drawn here because
+// CodeMirror's `dropCursor()` places it on the first line of a wrapped sentence's end). CodeMirror's built-in widget drag is not used: its drop would delete and reinsert the
+// text without the span, and it never learns the drag ended once the moved widget re-renders. A mouse drags as soon as it moves; on
+// iOS / iPadOS Safari 15+ a long press lifts it natively, so an ordinary swipe still scrolls.
+// Only the drop is ours: it moves the sentence to the caret position and keeps its span,
+// adding nothing but one space between Latin neighbours (owner, 2026-11-03).
 import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { SpanView, external, paragraphs, setSpans, spansField } from "./editor";
-
-/** Touch and pen hold before lifting; a mouse lifts on movement instead. */
-const TOUCH_HOLD_MS = 380;
-const SLOP_PX = 8;
-const MOUSE_SLOP_PX = 4;
-
-interface Drop {
-  pos: number;
-}
 
 /** The text a move takes away: the sentence, one neighbouring space, or a whole paragraph with its separator. */
 function removalRange(state: EditorState, sp: SpanView): { from: number; to: number } | null {
@@ -33,44 +27,36 @@ function removalRange(state: EditorState, sp: SpanView): { from: number; to: num
   return { from: sp.from, to: sp.to };
 }
 
-/** The caret position under the pointer, kept out of taken sentences; null when the move would change nothing. */
-function dropAt(view: EditorView, x: number, y: number, moving: SpanView): Drop | null {
-  let pos = view.posAtCoords({ x, y }, false);
-  const other = view.state.field(spansField).find((s) => s.threadId !== moving.threadId && pos > s.from && pos < s.to);
-  if (other) {
-    const a = view.coordsAtPos(other.from, 1);
-    const b = view.coordsAtPos(other.to, -1);
-    const da = a ? Math.hypot(a.left - x, (a.top + a.bottom) / 2 - y) : Infinity;
-    const db = b ? Math.hypot(b.left - x, (b.top + b.bottom) / 2 - y) : Infinity;
-    pos = da <= db ? other.from : other.to;
-  }
-  const rem = removalRange(view.state, moving);
-  if (!rem || (pos >= rem.from && pos <= rem.to)) return null;
-  return { pos };
-}
-
 const latin = (c: string | undefined) => !!c && /[A-Za-z0-9.,!?;:)"']/.test(c);
 
 /** One removal plus one insertion at the drop caret; the moved span keeps its words, others map normally. */
-export function moveSentence(view: EditorView, threadId: string, drop: Drop): boolean {
+export function moveSentence(view: EditorView, threadId: string, target: number): boolean {
+  let pos = target;
   const state = view.state;
   const doc = state.doc;
   const spans = state.field(spansField);
   const sp = spans.find((s) => s.threadId === threadId);
   if (!sp) return false;
   const rem = removalRange(state, sp);
-  if (!rem || (drop.pos >= rem.from && drop.pos <= rem.to)) return false;
+  if (!rem || (pos > rem.from && pos < rem.to)) return false;
+  // Never split another taken sentence.
+  const inside = spans.find((s) => s.threadId !== threadId && pos > s.from && pos < s.to);
+  if (inside) pos = pos - inside.from <= inside.to - pos ? inside.from : inside.to;
   const text = doc.sliceString(sp.from, sp.to);
-  // The only added text: a space where the sentence would otherwise touch a Latin word.
-  const left = doc.sliceString(drop.pos - 1, drop.pos);
-  const right = doc.sliceString(drop.pos, drop.pos + 1);
-  const prefix = latin(left) && latin(text[0]) ? " " : "";
-  const suffix = latin(right) && latin(text[text.length - 1]) ? " " : "";
+  // The only added text: a space where the sentence would otherwise touch a Latin word,
+  // judged on the text as it reads once the sentence has been taken out.
+  const removal = state.changes({ from: rem.from, to: rem.to });
+  const rest = removal.apply(doc);
+  const at = removal.mapPos(pos, -1);
+  const prefix = latin(rest.sliceString(at - 1, at)) && latin(text[0]) ? " " : "";
+  const suffix = latin(rest.sliceString(at, at + 1)) && latin(text[text.length - 1]) ? " " : "";
   const changes = state.changes([
     { from: rem.from, to: rem.to },
-    { from: drop.pos, insert: prefix + text + suffix },
+    { from: pos, insert: prefix + text + suffix },
   ]);
-  const start = changes.mapPos(drop.pos, -1) + prefix.length;
+  // Dropping back where it came from changes nothing.
+  if (changes.apply(doc).eq(doc)) return false;
+  const start = changes.mapPos(pos, -1) + prefix.length;
   const next = spans.map((s) =>
     s.threadId === threadId
       ? { ...s, from: start, to: start + text.length }
@@ -84,173 +70,117 @@ export function moveSentence(view: EditorView, threadId: string, drop: Drop): bo
   return true;
 }
 
-/** Set when a drag ends so the click that follows does not open the discussion. */
-export let suppressClickUntil = 0;
+interface Dragging {
+  view: EditorView;
+  id: string;
+  fade: HTMLStyleElement;
+}
 
-export const sentenceDrag = ViewPlugin.fromClass(
+let dragging: Dragging | null = null;
+
+function endDrag(): Dragging | null {
+  const d = dragging;
+  dragging = null;
+  d?.fade.remove();
+  d?.view.dom.classList.remove("is-carrying");
+  return d;
+}
+
+/** Screen box of the caret at `pos`, measured on the sentence element when `pos` is a sentence edge. */
+function caretBox(view: EditorView, pos: number): { left: number; top: number; bottom: number } | null {
+  for (const s of view.state.field(spansField)) {
+    if (pos !== s.from && pos !== s.to) continue;
+    const el = view.contentDOM.querySelector(`.cm-taken[data-thread="${CSS.escape(s.threadId)}"]`);
+    const rects = el ? [...el.getClientRects()] : [];
+    if (!rects.length) break;
+    const r = pos === s.to ? rects[rects.length - 1] : rects[0];
+    // After a sentence the caret sits in its trailing gap, as the editor's own caret does.
+    return pos === s.to ? { left: r.right + 3, top: r.top, bottom: r.bottom } : { left: r.left - 3, top: r.top, bottom: r.bottom };
+  }
+  return view.coordsAtPos(pos, -1) ?? view.coordsAtPos(pos, 1);
+}
+
+function startDrag(e: DragEvent, view: EditorView): void {
+  const el = (e.target as HTMLElement).closest?.<HTMLElement>(".cm-taken[data-thread]");
+  const id = el?.dataset.thread;
+  const span = id ? view.state.field(spansField).find((s) => s.threadId === id) : undefined;
+  if (!id || !span || !e.dataTransfer) return;
+  endDrag();
+  // Safari starts a drag only when some data is set.
+  e.dataTransfer.setData("text/plain", view.state.doc.sliceString(span.from, span.to));
+  e.dataTransfer.effectAllowed = "move";
+  // The sentence stays faded in place while it is being carried.
+  const fade = document.createElement("style");
+  fade.textContent = `.cm-editor .cm-taken[data-thread="${CSS.escape(id)}"] { opacity: 0.35; }`;
+  document.head.appendChild(fade);
+  dragging = { view, id, fade };
+  // Only the drop caret shows while carrying, not the editor's own caret as well.
+  view.dom.classList.add("is-carrying");
+}
+
+const dragPlugin = ViewPlugin.fromClass(
   class {
-    pending: { id: string; x: number; y: number; timer: number; pointerId: number; mouse: boolean } | null = null;
-    lifted: { id: string; span: SpanView; drop: Drop | null } | null = null;
-    ghost: HTMLElement | null = null;
-    marker: HTMLElement | null = null;
-    liftStyle: HTMLStyleElement | null = null;
-
+    caret: HTMLElement | null = null;
     constructor(readonly view: EditorView) {
-      view.contentDOM.addEventListener("pointerdown", this.down);
-      window.addEventListener("pointermove", this.move, { passive: false });
-      window.addEventListener("pointerup", this.up);
-      window.addEventListener("pointercancel", this.cancel);
-      window.addEventListener("touchmove", this.touchMove, { passive: false });
-      window.addEventListener("keydown", this.key);
-      view.contentDOM.addEventListener("contextmenu", this.menu);
-      document.addEventListener("selectstart", this.select);
+      view.contentDOM.addEventListener("dragstart", this.start);
+      view.contentDOM.addEventListener("dragend", this.end);
+      view.contentDOM.addEventListener("dragleave", this.leave);
     }
-
-    select = (e: Event) => {
-      // A press on a taken sentence is a tap or a drag, never the start of a text selection
-      // (including iOS falling through to nearby editable text).
-      const t = e.target instanceof Element ? e.target : (e.target as Node | null)?.parentElement;
-      if (this.pending || this.lifted || t?.closest(".cm-taken")) e.preventDefault();
+    start = (e: DragEvent) => startDrag(e, this.view);
+    end = () => {
+      endDrag();
+      this.hide();
     };
-
-    down = (e: PointerEvent) => {
-      if (e.button !== 0) return;
-      const el = (e.target as HTMLElement).closest<HTMLElement>(".cm-taken[data-thread]");
-      if (!el?.dataset.thread) return;
-      const id = el.dataset.thread;
-      const mouse = e.pointerType === "mouse";
-      const timer = mouse ? 0 : window.setTimeout(() => this.lift(), TOUCH_HOLD_MS);
-      this.pending = { id, x: e.clientX, y: e.clientY, pointerId: e.pointerId, mouse, timer };
-    };
-
-    lift(at?: { x: number; y: number }) {
-      const p = this.pending;
-      this.pending = null;
-      if (!p) return;
-      const span = this.view.state.field(spansField).find((s) => s.threadId === p.id);
-      if (!span) return;
-      this.lifted = { id: p.id, span, drop: null };
-      window.getSelection()?.removeAllRanges();
-      this.view.dom.classList.add("is-sentence-dragging");
-      // A rule keyed by id survives the editor re-rendering the sentence during the drag.
-      this.liftStyle = document.createElement("style");
-      this.liftStyle.textContent = `.cm-editor .cm-taken[data-thread="${CSS.escape(p.id)}"] { opacity: 0.35; }`;
-      document.head.appendChild(this.liftStyle);
-      const text = this.view.state.doc.sliceString(span.from, span.to);
-      this.ghost = document.createElement("div");
-      this.ghost.className = "drag-ghost";
-      this.ghost.textContent = text.length > 28 ? `${text.slice(0, 27)}…` : text;
-      document.body.appendChild(this.ghost);
-      this.marker = document.createElement("div");
-      this.marker.className = "drop-marker";
-      document.body.appendChild(this.marker);
-      this.place(at?.x ?? p.x, at?.y ?? p.y);
-      if (!p.mouse) navigator.vibrate?.(8);
+    /** True when this editor handled the event (CodeMirror then prevents the default). */
+    over(e: DragEvent): boolean {
+      if (!dragging || !e.dataTransfer) return false;
+      // Accept the drop only inside the sentence's own day; elsewhere the pointer shows "no drop".
+      const own = dragging.view === this.view;
+      e.dataTransfer.dropEffect = own ? "move" : "none";
+      if (own) this.show(this.view.posAtCoords({ x: e.clientX, y: e.clientY }, false));
+      return own;
     }
-
-    move = (e: PointerEvent) => {
-      if (this.pending) {
-        const p = this.pending;
-        if (e.pointerId !== p.pointerId) return;
-        const dist = Math.hypot(e.clientX - p.x, e.clientY - p.y);
-        // Mouse: moving is the drag. Touch: moving before the hold is a scroll, so give up.
-        if (p.mouse && dist > MOUSE_SLOP_PX) {
-          e.preventDefault();
-          this.lift({ x: e.clientX, y: e.clientY });
-        } else if (!p.mouse && dist > SLOP_PX) this.clearPending();
-        return;
+    leave = (e: DragEvent) => {
+      if (!this.view.contentDOM.contains(e.relatedTarget as Node | null)) this.hide();
+    };
+    drop(e: DragEvent): boolean {
+      this.hide();
+      const d = endDrag();
+      if (!d) return false;
+      // Sentences move within their own day only.
+      if (d.view === this.view) moveSentence(this.view, d.id, this.view.posAtCoords({ x: e.clientX, y: e.clientY }, false));
+      return true;
+    }
+    show(pos: number) {
+      const box = caretBox(this.view, pos);
+      if (!box) return this.hide();
+      if (!this.caret) {
+        this.caret = document.createElement("div");
+        this.caret.className = "drop-caret";
+        document.body.appendChild(this.caret);
       }
-      if (!this.lifted) return;
-      e.preventDefault();
-      this.place(e.clientX, e.clientY);
-      // Keep the page moving when the pointer reaches the top or bottom edge.
-      const edge = 72;
-      if (e.clientY < edge) window.scrollBy(0, -12);
-      else if (e.clientY > window.innerHeight - edge) window.scrollBy(0, 12);
-    };
-
-    place(x: number, y: number) {
-      if (!this.lifted || !this.ghost || !this.marker) return;
-      // Keep the ghost fully on screen near the right and bottom edges.
-      const gw = this.ghost.offsetWidth;
-      const gh = this.ghost.offsetHeight;
-      const gx = Math.min(x + 14, window.innerWidth - gw - 8);
-      const gy = Math.min(y + 16, window.innerHeight - gh - 8);
-      this.ghost.style.transform = `translate(${Math.max(8, gx)}px, ${gy}px)`;
-      const drop = dropAt(this.view, x, y, this.lifted.span);
-      this.lifted.drop = drop;
-      if (!drop) {
-        this.marker.style.display = "none";
-        return;
-      }
-      const c = this.view.coordsAtPos(drop.pos, 1) ?? this.view.coordsAtPos(drop.pos, -1);
-      if (!c) {
-        this.marker.style.display = "none";
-        return;
-      }
-      this.marker.style.display = "block";
-      this.marker.style.transform = `translate(${c.left - 1}px, ${c.top}px)`;
-      this.marker.style.height = `${c.bottom - c.top}px`;
+      this.caret.style.transform = `translate(${Math.round(box.left - 1)}px, ${Math.round(box.top)}px)`;
+      this.caret.style.height = `${Math.round(box.bottom - box.top)}px`;
     }
-
-    up = () => {
-      if (this.pending) {
-        this.clearPending();
-        return;
-      }
-      if (!this.lifted) return;
-      const { id, drop } = this.lifted;
-      this.finish();
-      suppressClickUntil = Date.now() + 400;
-      if (drop) moveSentence(this.view, id, drop);
-    };
-
-    cancel = () => {
-      this.clearPending();
-      if (this.lifted) this.finish();
-    };
-
-    key = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && this.lifted) this.finish();
-    };
-
-    touchMove = (e: TouchEvent) => {
-      // Once lifted, the finger moves the sentence instead of scrolling the page.
-      if (this.lifted) e.preventDefault();
-    };
-
-    menu = (e: Event) => {
-      if (this.pending || this.lifted || (e.target as HTMLElement).closest(".cm-taken")) e.preventDefault();
-    };
-
-    clearPending() {
-      if (this.pending) clearTimeout(this.pending.timer);
-      this.pending = null;
+    hide() {
+      this.caret?.remove();
+      this.caret = null;
     }
-
-    finish() {
-      if (!this.lifted) return;
-      this.liftStyle?.remove();
-      this.liftStyle = null;
-      this.view.dom.classList.remove("is-sentence-dragging");
-      this.ghost?.remove();
-      this.marker?.remove();
-      this.ghost = null;
-      this.marker = null;
-      this.lifted = null;
-    }
-
     destroy() {
-      this.clearPending();
-      this.finish();
-      this.view.contentDOM.removeEventListener("pointerdown", this.down);
-      window.removeEventListener("pointermove", this.move);
-      window.removeEventListener("pointerup", this.up);
-      window.removeEventListener("pointercancel", this.cancel);
-      window.removeEventListener("touchmove", this.touchMove);
-      window.removeEventListener("keydown", this.key);
-      this.view.contentDOM.removeEventListener("contextmenu", this.menu);
-      document.removeEventListener("selectstart", this.select);
+      this.view.contentDOM.removeEventListener("dragstart", this.start);
+      this.view.contentDOM.removeEventListener("dragend", this.end);
+      this.view.contentDOM.removeEventListener("dragleave", this.leave);
+      this.hide();
+      if (dragging?.view === this.view) endDrag();
     }
   },
 );
+
+export const sentenceDrag = [
+  dragPlugin,
+  // Through CodeMirror's handler chain so its own drop (which would insert the text again) never runs.
+  EditorView.domEventHandlers({
+    dragover: (e, view) => view.plugin(dragPlugin)?.over(e) ?? false,
+    drop: (e, view) => view.plugin(dragPlugin)?.drop(e) ?? false,
+  }),
+];

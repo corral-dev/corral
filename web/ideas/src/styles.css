@@ -424,43 +424,28 @@ textarea:focus-visible {
 }
 
 /* ---- dragging a taken sentence ---------------------------------------------------- */
-
+/* Native drag and drop (see sentenceDrag.ts): no text selection or callout on the sentence,
+   but the element itself may be dragged (a long press lifts it on iOS / iPadOS). */
 .cm-taken,
 .cm-taken * {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
-  -webkit-user-drag: none;
 }
-.is-sentence-dragging,
-.is-sentence-dragging * {
-  cursor: grabbing !important;
+.cm-taken {
+  -webkit-user-drag: element;
 }
-.drag-ghost {
+.is-carrying .cm-cursorLayer {
+  visibility: hidden;
+}
+.drop-caret {
   position: fixed;
   z-index: 40;
   left: 0;
   top: 0;
-  max-width: 320px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: var(--surface);
-  box-shadow: var(--shadow-float);
-  font-size: 14px;
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  pointer-events: none;
-}
-.drop-marker {
-  position: fixed;
-  z-index: 39;
-  left: 0;
-  top: 0;
   width: 2px;
   border-radius: 1px;
-  background: var(--ink-2);
+  background: var(--ink);
   pointer-events: none;
 }
 

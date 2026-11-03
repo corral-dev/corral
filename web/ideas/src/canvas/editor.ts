@@ -17,7 +17,7 @@ import { markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import type { Presence } from "../model";
-import { sentenceDrag, suppressClickUntil } from "./sentenceDrag";
+import { sentenceDrag } from "./sentenceDrag";
 
 export interface SpanView {
   threadId: string;
@@ -80,11 +80,17 @@ class SentenceWidget extends WidgetType {
     el.className = `cm-taken is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`;
     el.dataset.thread = s.threadId;
     el.spellcheck = false;
+    el.draggable = true;
     el.textContent = this.text;
     return el;
   }
-  ignoreEvent(): boolean {
-    return false;
+  /**
+   * Leave mousedown and dragstart to the browser so a press-and-move starts a native drag of
+   * this element, owned by sentenceDrag.ts (CodeMirror would otherwise start a text selection
+   * or its own drag). Clicks and hover still reach the editor.
+   */
+  ignoreEvent(e: Event): boolean {
+    return e.type === "mousedown" || e.type === "dragstart";
   }
 }
 
@@ -186,7 +192,7 @@ export function blockAt(state: EditorState, pos: number): { from: number; to: nu
   return { from: first.from, to: last.to };
 }
 
-// ---- paragraphs (used to place dragged sentences, see sentenceDrag.ts) ---------------
+// ---- paragraphs (used when moving dragged sentences, see sentenceDrag.ts) ---------------
 
 export interface Paragraph {
   from: number;
@@ -316,23 +322,14 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
       if (u.docChanged || u.geometryChanged || u.viewportChanged) hooks.onLayout();
     }),
     EditorView.domEventHandlers({
-      // Taken text behaves as one object: no caret or selection inside it, so a press can
-      // become a drag (sentenceDrag) and a short press opens the discussion.
-      mousedown(e) {
-        if (e.button !== 0 || !(e.target as HTMLElement).closest(".cm-taken")) return false;
-        e.preventDefault();
-        return true;
-      },
       click(e) {
         const el = (e.target as HTMLElement).closest<HTMLElement>("[data-thread]");
         if (!el?.dataset.thread) return false;
-        if (Date.now() < suppressClickUntil) return true;
         if (!window.getSelection()?.isCollapsed) return false;
         hooks.onOpenThread(el.dataset.thread);
         return true;
       },
-      mouseover(e, view) {
-        if (view.dom.classList.contains("is-sentence-dragging")) return false;
+      mouseover(e) {
         const el = (e.target as HTMLElement).closest<HTMLElement>("[data-thread]");
         hooks.onHoverThread(el?.dataset.thread ?? null);
         return false;
