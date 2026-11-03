@@ -35,6 +35,9 @@
   --waiting-tint: #f2a531;
   --attention: #c42f28;
   --done: #187a41;
+  --done-tint: #34c759;
+  --done-mix: 17%;
+  --done-mix-active: 26%;
   --muted: #85858b;
   --on-status: #ffffff;
 
@@ -60,6 +63,9 @@
     --waiting-tint: #f1b545;
     --attention: #ff6f66;
     --done: #4cc982;
+    --done-tint: #30d158;
+    --done-mix: 19%;
+    --done-mix-active: 28%;
     --muted: #7a7a80;
     --on-status: #101012;
     --shadow-float: 0 0 0 1px var(--line), 0 20px 56px -12px rgba(0, 0, 0, 0.7);
@@ -374,42 +380,36 @@ textarea:focus-visible {
     box-shadow 0.2s,
     color 0.2s;
 }
-/* Sentence state look (owner, 2026-11-03): colour or background is the only state mark, no
-   end icon. Working sits in a soft neutral box, waiting in a soft amber box, done recedes to
-   grey text. A fixed trailing gap keeps the next sentence from touching this one. */
+/* Sentence state look (owner, 2026-11-03): the background alone tells the state; taken text
+   keeps the ordinary text colour. Neutral = working or discussed, amber = waiting for the
+   owner, green = done; withdrawn is neutral and struck. Hover or an open discussion deepens
+   the same tint. A fixed trailing gap keeps the next sentence from touching this one. */
 .cm-taken {
-  --box: transparent;
-  background: var(--box);
+  --tint: var(--ink);
+  --mix: 5.5%;
+  --mix-active: 9%;
+  background: color-mix(in srgb, var(--tint) var(--mix), transparent);
   border-radius: 5px;
   padding: 2px 5px;
   margin-right: 8px;
 }
-.cm-taken.is-working {
-  --box: color-mix(in srgb, var(--ink) 5.5%, transparent);
-}
 .cm-taken.is-waiting {
-  --box: color-mix(in srgb, var(--waiting-tint) 17%, transparent);
+  --tint: var(--waiting-tint);
+  --mix: 17%;
+  --mix-active: 26%;
 }
-.cm-taken.is-done,
-.cm-taken.is-withdrawn,
-.cm-taken.is-quiet {
-  padding: 0;
-}
-
-/* Quiet sentence states (owner, 2026-11-03): ordinary text colour; done and withdrawn grey. */
 .cm-taken.is-done {
-  color: var(--ink-3);
+  --tint: var(--done-tint);
+  --mix: var(--done-mix);
+  --mix-active: var(--done-mix-active);
 }
 .cm-taken.is-withdrawn {
-  color: var(--ink-3);
   text-decoration-line: line-through;
-  text-decoration-color: color-mix(in srgb, var(--ink-3) 70%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--ink) 55%, transparent);
 }
+/* After the state rules so it wins for every state. */
 .cm-taken.is-active {
-  --box: color-mix(in srgb, var(--ink) 9%, transparent);
-}
-.cm-taken.is-waiting.is-active {
-  --box: color-mix(in srgb, var(--waiting-tint) 26%, transparent);
+  --mix: var(--mix-active);
 }
 .cm-taken.is-fresh {
   animation: taken 1.6s var(--ease) both;

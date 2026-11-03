@@ -949,6 +949,11 @@ Decisions for the owner at freeze:
 > struck, no other state marks. Every taken sentence keeps a fixed trailing margin so the next
 > sentence (taken or free, with or without a space between) never touches it. This supersedes
 > the end-icon parts of "State look chosen" and "Quiet sentence states" below.
+> **Background only (owner, 2026-11-03, later still):** every state is told by the sentence's
+> background alone; taken text always uses the ordinary text colour (white in dark mode), never
+> grey. Done = soft green background, waiting = soft amber, working and discussed = soft
+> neutral, withdrawn = soft neutral plus a strike line. This supersedes the grey done text and
+> the box-less done/withdrawn of the entry above.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral
