@@ -6,6 +6,24 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Remote typing stays responsive while the session list loads: list and watch snapshots no longer block keystrokes on the encrypted channel, so Mac and iPhone terminal input is not stuck behind a slow list refresh.
+- The TUI filter now cycles Focus, Active and All, matching the Apple clients.
+- Retry on an ended or stopped session resumes it first, so the terminal shows a fresh snapshot instead of a blank page.
+- OpenCode upgrades no longer break session forking: version-aware resume, plus more robust image pasting.
+- Session titles prefer the agent-native title over the empty-history placeholder.
+
+### 简体中文
+
+- 远端打字不再被会话列表加载卡住：列表与订阅快照不再占用加密通道的串行处理，按键输入不会排在慢列表后面，Mac 与 iPhone 终端输入更跟手。
+- TUI 筛选现在按"关注 → 活跃 → 全部"循环，与苹果客户端一致。
+- 对已结束或已停止的会话点重试会先恢复会话，终端显示最新快照而不是空白页。
+- OpenCode 升级不再破坏会话分叉：按版本自适应恢复，图片粘贴更稳。
+- 会话标题优先采用助手原生标题，不再被空历史占位符盖掉。
+
 ## 0.24.357
 
 ### English
