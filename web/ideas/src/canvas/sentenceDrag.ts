@@ -1,11 +1,11 @@
 // Drag a taken sentence to another place in the same day (owner, 2026-11-03: no grip; the
 // sentence itself is the handle). A mouse drags as soon as it moves; a finger or pen must hold
 // first so an ordinary swipe still scrolls. A press without a drag still opens the
-// discussion. The drop snaps to the nearest sentence boundary inside a paragraph, or makes
-// a new paragraph when released over the space between paragraphs.
-import { Transaction } from "@codemirror/state";
+// discussion. The sentence lands exactly at the caret position under the pointer; a move
+// never creates paragraphs or blank lines (owner, 2026-11-03).
+import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
-import { Paragraph, SpanView, external, paragraphs, setSpans, spansField } from "./editor";
+import { SpanView, external, paragraphs, setSpans, spansField } from "./editor";
 
 /** Touch and pen hold before lifting; a mouse lifts on movement instead. */
 const TOUCH_HOLD_MS = 380;
@@ -14,80 +14,58 @@ const MOUSE_SLOP_PX = 4;
 
 interface Drop {
   pos: number;
-  /** Insert as its own paragraph (released between paragraphs). */
-  block: boolean;
 }
 
-/** Positions inside a paragraph where a sentence may be dropped. */
-function boundaries(view: EditorView, para: Paragraph, spans: SpanView[]): number[] {
-  const text = view.state.doc.sliceString(para.from, para.to);
-  const out = new Set<number>([para.from, para.to]);
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const end = /[。！？!?；;…]/.test(c) || (c === "." && (i + 1 === text.length || /\s/.test(text[i + 1])));
-    if (!end) continue;
-    let j = i + 1;
-    while (j < text.length && text[j] === " ") j++;
-    out.add(para.from + j);
+/** The text a move takes away: the sentence, one neighbouring space, or a whole paragraph with its separator. */
+function removalRange(state: EditorState, sp: SpanView): { from: number; to: number } | null {
+  const doc = state.doc;
+  const ps = paragraphs(state);
+  const pi = ps.findIndex((p) => sp.from >= p.from && sp.to <= p.to);
+  if (pi < 0) return null;
+  const para = ps[pi];
+  if (para.from === sp.from && para.to === sp.to) {
+    if (pi < ps.length - 1) return { from: para.from, to: ps[pi + 1].from };
+    if (pi > 0) return { from: ps[pi - 1].to, to: para.to };
+    return { from: sp.from, to: sp.to };
   }
-  for (const sp of spans) {
-    if (sp.from < para.from || sp.to > para.to) continue;
-    out.add(sp.from);
-    out.add(sp.to);
-  }
-  return [...out].sort((a, b) => a - b);
+  if (doc.sliceString(sp.to, sp.to + 1) === " ") return { from: sp.from, to: sp.to + 1 };
+  if (doc.sliceString(sp.from - 1, sp.from) === " ") return { from: sp.from - 1, to: sp.to };
+  return { from: sp.from, to: sp.to };
 }
 
+/** The caret position under the pointer, kept out of taken sentences; null when the move would change nothing. */
 function dropAt(view: EditorView, x: number, y: number, moving: SpanView): Drop | null {
-  const pos = view.posAtCoords({ x, y }, false);
-  const ps = paragraphs(view.state);
-  if (!ps.length) return null;
-  const para = ps.find((p) => pos >= p.from && pos <= p.to);
-  if (!para) {
-    // Between paragraphs or below the text: a new paragraph after the one above.
-    const prev = [...ps].reverse().find((p) => p.to <= pos) ?? ps[ps.length - 1];
-    return { pos: prev.to, block: true };
+  let pos = view.posAtCoords({ x, y }, false);
+  const other = view.state.field(spansField).find((s) => s.threadId !== moving.threadId && pos > s.from && pos < s.to);
+  if (other) {
+    const a = view.coordsAtPos(other.from, 1);
+    const b = view.coordsAtPos(other.to, -1);
+    const da = a ? Math.hypot(a.left - x, (a.top + a.bottom) / 2 - y) : Infinity;
+    const db = b ? Math.hypot(b.left - x, (b.top + b.bottom) / 2 - y) : Infinity;
+    pos = da <= db ? other.from : other.to;
   }
-  const spans = view.state.field(spansField);
-  const candidates = boundaries(view, para, spans).filter((c) => c <= moving.from || c >= moving.to);
-  let best = candidates[0];
-  for (const c of candidates) if (Math.abs(c - pos) < Math.abs(best - pos)) best = c;
-  if (best === undefined || best === moving.from || best === moving.to) return null;
-  return { pos: best, block: false };
+  const rem = removalRange(view.state, moving);
+  if (!rem || (pos >= rem.from && pos <= rem.to)) return null;
+  return { pos };
 }
 
 const latin = (c: string | undefined) => !!c && /[A-Za-z0-9.,!?;:)"']/.test(c);
 
-/** One removal plus one insertion; the moved span keeps its words, others map normally. */
+/** One removal plus one insertion at the drop caret; the moved span keeps its words, others map normally. */
 export function moveSentence(view: EditorView, threadId: string, drop: Drop): boolean {
   const state = view.state;
   const doc = state.doc;
   const spans = state.field(spansField);
   const sp = spans.find((s) => s.threadId === threadId);
   if (!sp) return false;
+  const rem = removalRange(state, sp);
+  if (!rem || (drop.pos >= rem.from && drop.pos <= rem.to)) return false;
   const text = doc.sliceString(sp.from, sp.to);
-  const ps = paragraphs(state);
-  const pi = ps.findIndex((p) => sp.from >= p.from && sp.to <= p.to);
-  if (pi < 0) return false;
-  const para = ps[pi];
-  let rem = { from: sp.from, to: sp.to };
-  if (para.from === sp.from && para.to === sp.to) {
-    // The sentence was the whole paragraph: take its separator too.
-    if (pi < ps.length - 1) rem = { from: para.from, to: ps[pi + 1].from };
-    else if (pi > 0) rem = { from: ps[pi - 1].to, to: para.to };
-  } else if (doc.sliceString(sp.to, sp.to + 1) === " ") rem.to += 1;
-  else if (doc.sliceString(sp.from - 1, sp.from) === " ") rem.from -= 1;
-  if (drop.pos > rem.from && drop.pos < rem.to) return false;
-
-  let prefix = "";
-  let suffix = "";
-  if (drop.block) prefix = "\n\n";
-  else {
-    const left = doc.sliceString(drop.pos - 1, drop.pos);
-    const right = doc.sliceString(drop.pos, drop.pos + 1);
-    if (left && !/\s/.test(left) && latin(left) && latin(text[0])) prefix = " ";
-    if (right && !/\s/.test(right) && latin(right) && latin(text[text.length - 1])) suffix = " ";
-  }
+  // The only added text: a space where the sentence would otherwise touch a Latin word.
+  const left = doc.sliceString(drop.pos - 1, drop.pos);
+  const right = doc.sliceString(drop.pos, drop.pos + 1);
+  const prefix = latin(left) && latin(text[0]) ? " " : "";
+  const suffix = latin(right) && latin(text[text.length - 1]) ? " " : "";
   const changes = state.changes([
     { from: rem.from, to: rem.to },
     { from: drop.pos, insert: prefix + text + suffix },
@@ -205,24 +183,14 @@ export const sentenceDrag = ViewPlugin.fromClass(
         this.marker.style.display = "none";
         return;
       }
-      const c = this.view.coordsAtPos(drop.pos, drop.block ? -1 : 1);
+      const c = this.view.coordsAtPos(drop.pos, 1) ?? this.view.coordsAtPos(drop.pos, -1);
       if (!c) {
         this.marker.style.display = "none";
         return;
       }
-      const content = this.view.contentDOM.getBoundingClientRect();
       this.marker.style.display = "block";
-      if (drop.block) {
-        this.marker.className = "drop-marker is-block";
-        this.marker.style.transform = `translate(${content.left}px, ${c.bottom + 14}px)`;
-        this.marker.style.width = `${content.width}px`;
-        this.marker.style.height = "";
-      } else {
-        this.marker.className = "drop-marker";
-        this.marker.style.transform = `translate(${c.left - 1}px, ${c.top}px)`;
-        this.marker.style.width = "";
-        this.marker.style.height = `${c.bottom - c.top}px`;
-      }
+      this.marker.style.transform = `translate(${c.left - 1}px, ${c.top}px)`;
+      this.marker.style.height = `${c.bottom - c.top}px`;
     }
 
     up = () => {

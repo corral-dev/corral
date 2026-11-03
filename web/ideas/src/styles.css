@@ -463,9 +463,6 @@ textarea:focus-visible {
   background: var(--ink-2);
   pointer-events: none;
 }
-.drop-marker.is-block {
-  height: 2px;
-}
 
 /* ---- motion ---------------------------------------------------------------------- */
 

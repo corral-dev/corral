@@ -958,6 +958,12 @@ Decisions for the owner at freeze:
 > moving more than a few pixels starts the drag at once; a click without movement opens the
 > discussion. Only touch (finger or pen) needs the long press, because there a plain move must
 > keep scrolling the page. This supersedes the 220 ms mouse hold below.
+> **Drop at the caret, nothing else (owner, 2026-11-03):** a dragged sentence lands exactly at the
+> caret position under the pointer, shown by a caret-like marker; there is no "new paragraph"
+> drop, no horizontal line, and a move never adds blank lines. The only text a move adds is one
+> space between Latin neighbours; a sentence that was a whole paragraph takes its separator
+> with it. A position inside another taken sentence snaps to its nearer edge. This supersedes
+> the sentence-boundary snapping and the horizontal new-paragraph marker below.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral
