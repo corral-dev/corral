@@ -1,0 +1,23 @@
+{
+  "name": "corral-ideas-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.tsx --bundle --format=esm --target=es2022 --jsx=automatic --jsx-import-source=preact --minify --sourcemap --outdir=dist --loader:.png=file --asset-names=[name] --public-path=dist",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@lezer/highlight": "^1.2.5",
+    "preact": "^11.1.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

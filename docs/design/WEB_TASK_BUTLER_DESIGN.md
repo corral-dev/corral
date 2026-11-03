@@ -1,6 +1,6 @@
 # Web Task Butler (draft-driven dispatch) — requirements and analysis
 
-> Status: **analysis draft; owner decisions recorded, design freeze pending** (2026-09-29; state model and minimal-first plan added 2026-11-03). No product code yet.
+> Status: **analysis draft; owner decisions recorded, design freeze pending** (2026-09-29; state model and minimal-first plan added 2026-11-03). Page preview front end in `cli/web/ideas/` (§10.1); no backend or entry point yet.
 > Read before planning, implementing, or reviewing the local web idea editor, the
 > coordinator agent, the worker agents, or Corral changes made for them.
 > Items marked *Proposed* are unadopted suggestions; §8 records owner decisions.
@@ -894,6 +894,53 @@ Decisions for the owner at freeze:
    may come later.
 5. ~~Folding finished discussions~~ — decided 2026-11-03: date sections, auto-folded after
    a week (requirement 19).
+
+### 10.1 Page preview (slice 4 front end, built 2026-11-03)
+
+The owner asked for the page first, polished for a future general audience. It lives in
+`cli/web/ideas/` and has no user-facing entry yet (slice 5 adds `corral ideas`).
+
+- **Stack.** Preact 11 + CodeMirror 6 (exact Markdown text, per §4), bundled by esbuild;
+  `npm run typecheck` (TypeScript 7) and `npm run build` produce `dist/`. Open by serving
+  the folder on loopback, e.g. `python3 -m http.server 47811 --bind 127.0.0.1` from
+  `cli/web/ideas`, then `index.html`. `?reset` reseeds, `?lang=en|zh` forces the
+  language, `?settle=<s>` shortens the 60 s window for review only.
+- **Preview data.** `src/preview.ts` seeds sample days and runs a rule-based stand-in for
+  the coordinator (take-up, one question, reply handling, completion with a result post);
+  the draft is kept in browser storage. These rules exercise the interface only (§6.2).
+- **State model in code.** `src/model.ts` derives discussion status exactly as §3.1;
+  the store rejects a take-up whose quote is not one contiguous run of free text.
+  Taken spans are read-only through a change filter, and undo/redo is pre-checked
+  because CodeMirror dispatches history steps without filters (F12 lesson, reused from the
+  spike's `guarded()`).
+- **Visual decisions.** Neutral ink-on-paper surfaces; the Corral mark only in the top bar;
+  status colours (working blue, waiting amber, attention red, done green, withdrawn grey)
+  are used only for status with a label or glyph. One standard radius (14 px), nested rows
+  derive `radius − inset`, chips and pills are capsules. The right rail shows only
+  discussions that need a look (working, waiting, attention, unread result); done text is
+  already green with a check and withdrawn text is struck, so they carry no pill. When the
+  rail is hidden (discussion open, or width ≤ 1100 px) a small dot at the end of the
+  sentence takes over. An open discussion floats at the right and the text column
+  re-centres in the remaining space. Phones get a full-screen discussion with safe-area
+  padding. Light/dark follow the system; Reduced Motion removes movement.
+- **References inspected.** Lexical playground `CommentPlugin`
+  (github.com/facebook/lexical, commit `1b69a77`, `packages/lexical-playground/src/plugins/CommentPlugin/index.tsx`
+  and `src/commenting/index.ts`): reused the thread-carries-its-quote model, two-way
+  highlight between the marked text and its thread, and `Intl.RelativeTimeFormat` times;
+  not reused: Lexical's editor, the all-threads side list and delete-with-modal (owner
+  threads are not deleted). Logseq journals (github.com/logseq/logseq, commit `e7e9c97`,
+  `src/main/frontend/components/journal.cljs` / `journal.css`): reused one section per day,
+  newest first, extra writing room for today and hairline-separated days; not reused:
+  list virtualisation (old days fold after a week, so the list stays short).
+- **Verified (agent-browser, Chrome, 2026-11-03).** 1440×900 light and dark, 1024×768,
+  390×844; typing a new idea → countdown ring → "Reading" → take-up with a working pill;
+  answering a question → task starts; typing inside taken text and two undos left it
+  unchanged; folded day expands; Tab focus is visible, Enter opens and Esc closes a
+  discussion; no console errors.
+- **Limits.** No backend: nothing reaches a real coordinator or worker, and "open session"
+  is omitted until slice 5 can make it work. The bundle is ~550 kB minified because
+  `@codemirror/lang-markdown` pulls nested code-language parsers; trim before shipping in
+  the package. Writing on phones is usable but not a supported target yet (§10 Later).
 
 ## 11. References
 
