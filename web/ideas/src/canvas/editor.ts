@@ -1,6 +1,6 @@
 // CodeMirror 6 extensions for one day section: read-only taken spans, status marks,
 // guarded undo/redo and the settle window (requirement 20).
-import { Annotation, EditorState, Extension, Prec, StateEffect, StateField, Transaction } from "@codemirror/state";
+import { Annotation, EditorState, Extension, Prec, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -16,6 +16,7 @@ import { markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import type { Presence } from "../model";
+import { sentenceDrag, suppressClickUntil } from "./sentenceDrag";
 
 export interface SpanView {
   threadId: string;
@@ -74,7 +75,9 @@ class StatusWidget extends WidgetType {
     el.className = `cm-status is-${this.status}${this.unread ? " is-unread" : ""}`;
     el.dataset.thread = this.threadId;
     el.setAttribute("aria-hidden", "true");
-    el.innerHTML = STATUS_ICONS[this.status] ?? "";
+    // Word joiners on both sides keep the icon on the line of the sentence's last character
+    // and with whatever punctuation follows, so no empty box fragment wraps alone.
+    el.innerHTML = "\u2060" + (STATUS_ICONS[this.status] ?? "") + "\u2060";
     return el;
   }
   ignoreEvent(): boolean {
@@ -88,10 +91,15 @@ function buildDecorations(spans: SpanView[]): DecorationSet {
   for (const s of sorted) {
     const cls = `cm-taken is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`;
     // Taken text is read-only, so spelling marks there are only noise (project names).
-    ranges.push(Decoration.mark({ class: cls, attributes: { "data-thread": s.threadId, spellcheck: "false" } }).range(s.from, s.to));
+    // inclusiveEnd renders the end icon inside the sentence's own element, so the two share
+    // one box and can never read as part of the next sentence.
+    ranges.push(
+      Decoration.mark({ class: cls, inclusiveEnd: true, attributes: { "data-thread": s.threadId, spellcheck: "false" } }).range(s.from, s.to),
+    );
     // Withdrawn and quiet text carries no marker; its look (or nothing) says enough.
     if (s.status === "withdrawn" || s.status === "quiet") continue;
-    ranges.push(Decoration.widget({ widget: new StatusWidget(s.threadId, s.status, s.unread), side: 1 }).range(s.to));
+    // side -1 + the mark's inclusiveEnd put the icon inside the sentence's own element.
+    ranges.push(Decoration.widget({ widget: new StatusWidget(s.threadId, s.status, s.unread), side: -1 }).range(s.to));
   }
   return Decoration.set(ranges, true);
 }
@@ -173,7 +181,7 @@ export function blockAt(state: EditorState, pos: number): { from: number; to: nu
   return { from: first.from, to: last.to };
 }
 
-// ---- moving paragraphs (owner, 2026-11-03: taken sentences can be dragged) -----------
+// ---- paragraphs (used to place dragged sentences, see sentenceDrag.ts) ---------------
 
 export interface Paragraph {
   from: number;
@@ -196,63 +204,6 @@ export function paragraphs(state: EditorState): Paragraph[] {
   }
   if (cur) out.push(cur);
   return out;
-}
-
-export const setDragging = StateEffect.define<Paragraph | null>();
-
-const draggingLine = Decoration.line({ class: "cm-dragging" });
-const draggingField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(set, tr) {
-    set = set.map(tr.changes);
-    for (const e of tr.effects) {
-      if (!e.is(setDragging)) continue;
-      if (!e.value) return Decoration.none;
-      const lines = [];
-      for (let pos = e.value.from; pos <= e.value.to; ) {
-        const line = tr.state.doc.lineAt(pos);
-        lines.push(draggingLine.range(line.from));
-        pos = line.to + 1;
-      }
-      set = Decoration.set(lines);
-    }
-    return set;
-  },
-  provide: (f) => EditorView.decorations.from(f),
-});
-
-/**
- * Moves paragraph `index` so it lands before paragraph `before` (`before` = count means the
- * end). Expressed as one removal plus one insertion so unrelated positions and earlier
- * history map normally; taken spans travel with their words. Not an undoable text edit.
- */
-export function moveParagraph(view: EditorView, index: number, before: number): boolean {
-  const state = view.state;
-  const ps = paragraphs(state);
-  if (index < 0 || index >= ps.length || before < 0 || before > ps.length) return false;
-  if (before === index || before === index + 1) return false;
-  const moved = ps[index];
-  const text = state.doc.sliceString(moved.from, moved.to);
-  const last = ps.length - 1;
-  const removal = index < last ? { from: moved.from, to: ps[index + 1].from } : { from: ps[index - 1].to, to: moved.to };
-  const insertAtEnd = before === ps.length;
-  const insertPos = insertAtEnd ? ps[last].to : ps[before].from;
-  const insert = insertAtEnd ? `\n\n${text}` : `${text}\n\n`;
-  const changes = state.changes([{ from: removal.from, to: removal.to }, { from: insertPos, insert }]);
-  const start = changes.mapPos(insertPos, insertAtEnd ? 1 : -1) - (insertAtEnd ? text.length : 0);
-  const spans = state.field(spansField).map((sp) => {
-    if (sp.from >= moved.from && sp.to <= moved.to) {
-      const d = start - moved.from;
-      return { ...sp, from: sp.from + d, to: sp.to + d };
-    }
-    return { ...sp, from: changes.mapPos(sp.from, 1), to: changes.mapPos(sp.to, -1) };
-  });
-  view.dispatch({
-    changes,
-    effects: [setSpans.of(spans), setDragging.of(null)],
-    annotations: [external.of(true), Transaction.addToHistory.of(false)],
-  });
-  return true;
 }
 
 export interface SettleOptions {
@@ -347,22 +298,31 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
     EditorView.contentAttributes.of({ spellcheck: "true", autocapitalize: "sentences" }),
     placeholderExt(hooks.placeholder),
     spansField,
-    draggingField,
     lockTaken,
+    sentenceDrag,
     settlePlugin(hooks),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) hooks.onDocChanged(u.state.doc.toString(), u.state.field(spansField));
       if (u.docChanged || u.geometryChanged || u.viewportChanged) hooks.onLayout();
     }),
     EditorView.domEventHandlers({
+      // Taken text behaves as one object: no caret or selection inside it, so a press can
+      // become a drag (sentenceDrag) and a short press opens the discussion.
+      mousedown(e) {
+        if (e.button !== 0 || !(e.target as HTMLElement).closest(".cm-taken")) return false;
+        e.preventDefault();
+        return true;
+      },
       click(e) {
         const el = (e.target as HTMLElement).closest<HTMLElement>("[data-thread]");
         if (!el?.dataset.thread) return false;
+        if (Date.now() < suppressClickUntil) return true;
         if (!window.getSelection()?.isCollapsed) return false;
         hooks.onOpenThread(el.dataset.thread);
         return true;
       },
-      mouseover(e) {
+      mouseover(e, view) {
+        if (view.dom.classList.contains("is-sentence-dragging")) return false;
         const el = (e.target as HTMLElement).closest<HTMLElement>("[data-thread]");
         hooks.onHoverThread(el?.dataset.thread ?? null);
         return false;

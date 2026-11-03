@@ -364,6 +364,30 @@ textarea:focus-visible {
     box-shadow 0.2s,
     color 0.2s;
 }
+/* Sentence state look (chosen 2026-11-03 from four compared options, see design doc):
+   the end icon renders inside the sentence's own element; unfinished sentences sit in one
+   soft box (waiting tinted amber), finished ones recede to grey text without a box. */
+.cm-taken {
+  --box: transparent;
+  background: var(--box);
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+.cm-taken.is-working {
+  --box: color-mix(in srgb, var(--ink) 5.5%, transparent);
+}
+.cm-taken.is-waiting {
+  --box: color-mix(in srgb, var(--waiting-tint) 17%, transparent);
+}
+.cm-taken.is-done,
+.cm-taken.is-withdrawn,
+.cm-taken.is-quiet {
+  padding: 0;
+}
+.cm-taken {
+  margin-right: 4px;
+}
+
 /* Quiet sentence states (owner, 2026-11-03): ordinary text colour; done and withdrawn grey. */
 .cm-taken.is-done {
   color: var(--ink-3);
@@ -374,8 +398,10 @@ textarea:focus-visible {
   text-decoration-color: color-mix(in srgb, var(--ink-3) 70%, transparent);
 }
 .cm-taken.is-active {
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 6%, transparent);
+  --box: color-mix(in srgb, var(--ink) 9%, transparent);
+}
+.cm-taken.is-waiting.is-active {
+  --box: color-mix(in srgb, var(--waiting-tint) 26%, transparent);
 }
 .cm-taken.is-fresh {
   animation: taken 1.6s var(--ease) both;
@@ -390,13 +416,14 @@ textarea:focus-visible {
 }
 
 .cm-status {
-  display: inline-flex;
-  vertical-align: -2px;
-  margin-left: 6px;
+  display: inline;
+  margin-left: 4px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .cm-status svg {
-  display: block;
+  display: inline-block;
+  vertical-align: -2px;
 }
 .cm-status .icon-fill {
   fill: var(--icon-quiet);
@@ -424,49 +451,46 @@ textarea:focus-visible {
   fill: #ffffff;
 }
 
-/* ---- moving taken paragraphs ----------------------------------------------------- */
+/* ---- dragging a taken sentence ---------------------------------------------------- */
 
-.day-body {
-  position: relative;
+.cm-taken {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
-.grip {
-  position: absolute;
-  left: -26px;
-  width: 22px;
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
-  color: var(--ink-4);
-  cursor: grab;
-  touch-action: none;
-  transition:
-    color 0.15s,
-    background-color 0.15s;
+.is-sentence-dragging,
+.is-sentence-dragging * {
+  cursor: grabbing !important;
 }
-.grip svg circle {
-  fill: currentColor;
-}
-.grip:hover,
-.grip:focus-visible {
-  color: var(--ink-2);
-  background: var(--surface-2);
-}
-.grip.is-dragging {
-  cursor: grabbing;
-  color: var(--ink-2);
-}
-.drop-line {
-  position: absolute;
+.drag-ghost {
+  position: fixed;
+  z-index: 40;
   left: 0;
-  right: 0;
-  height: 2px;
-  margin-top: -1px;
-  border-radius: 1px;
-  background: var(--ink-3);
+  top: 0;
+  max-width: 320px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  font-size: 14px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }
-.cm-line.cm-dragging {
-  opacity: 0.35;
+.drop-marker {
+  position: fixed;
+  z-index: 39;
+  left: 0;
+  top: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--ink-2);
+  pointer-events: none;
+}
+.drop-marker.is-block {
+  height: 2px;
 }
 
 /* ---- motion ---------------------------------------------------------------------- */
@@ -792,10 +816,6 @@ textarea:focus-visible {
   }
   .stage {
     padding: 24px 20px 120px;
-  }
-  .grip {
-    left: -20px;
-    width: 20px;
   }
   /* No gutter on phones: the chevron moves to the end of the header row. */
   .day-head {

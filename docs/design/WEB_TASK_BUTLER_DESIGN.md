@@ -921,6 +921,26 @@ Decisions for the owner at freeze:
 > needs the owner, a day that contains a discussion waiting for the owner stays expanded
 > by default; other days still fold after a week. This supersedes the "pick up here" and
 > folded-row parts of item 2 above and of requirement 18's proposal.
+> **Press to drag the sentence itself; no grip (owner, 2026-11-03, later):** the gutter grip is
+> removed. Pressing and holding a taken sentence lifts it; dragging moves that sentence (not
+> its whole paragraph) to the nearest sentence boundary or into a new paragraph within the
+> same day; a short press still opens its discussion. **Surface exception:** this deliberately
+> departs from the global drag-discoverability rule (persistent visible handle) at the owner's
+> explicit request for this canvas; do not re-add a grip without a new owner decision.
+> **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
+> a paragraph mixing working / done / waiting sentences with free text, light and dark:
+> (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral
+> for every state; (C) underline plus spaced icon; (D) leading icon. C and D still let the icon
+> read with the neighbouring text or broke reading flow; B hid "waiting". Adopted: A, refined so
+> done text recedes to grey with a grey check and no box. The icon renders inside the
+> sentence's element (`inclusiveEnd` mark, widget side -1) and is bound by word joiners on both
+> sides, so it never wraps alone or leaves an empty box fragment before CJK punctuation.
+> Press-to-drag implementation: hold 220 ms (mouse) / 380 ms (touch) without moving more than
+> 8 px lifts the sentence (faded in place, a floating label follows the pointer); a vertical
+> marker shows an inline drop at the nearest sentence boundary, a horizontal one a new
+> paragraph; moving before the hold elapses scrolls or selects as usual; Esc cancels. Taken
+> text has no caret or selection (it behaves as one object). Touch dragging is not yet
+> verified on a physical phone.
 > **Only today is open by default (owner, 2026-11-03, later):** every day other than today is
 > folded by default; the owner's own open/close choice per day is still remembered. This
 > replaces the one-week rule of requirement 19 and the "a day with something waiting stays
