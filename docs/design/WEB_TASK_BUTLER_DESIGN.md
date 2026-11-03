@@ -1,6 +1,6 @@
 # Web Task Butler (draft-driven dispatch) — requirements and analysis
 
-> Status: **analysis draft; owner decisions recorded, design freeze pending** (2026-09-29). No product code yet.
+> Status: **analysis draft; owner decisions recorded, design freeze pending** (2026-09-29; state model and minimal-first plan added 2026-11-03). No product code yet.
 > Read before planning, implementing, or reviewing the local web idea editor, the
 > coordinator agent, the worker agents, or Corral changes made for them.
 > Items marked *Proposed* are unadopted suggestions; §8 records owner decisions.
@@ -9,6 +9,11 @@
 > forum replacing the canvas. It supersedes questions inserted into the canvas body.
 > The September experiments and demo in §9 remain historical evidence, not validation
 > of this interaction; §10 needs thread-specific design and acceptance before freeze.
+> **Owner decisions (2026-11-03, later the same day):** (a) once the coordinator takes up a
+> sentence, that sentence is sent: later changes, additions and withdrawals are replies in its
+> discussion, not edits to the canvas (supersedes requirement 7 and narrows requirement 12);
+> (b) build the minimal version first and defer the fine editor mechanics (§10). The owner
+> also framed the whole product as a state machine; §3.1 is the resulting state model.
 
 For the separately requested Agent CLI delegation workflow and current runtime
 contracts, see [Agent session delegation](AGENT_SESSION_DELEGATION_DESIGN.md).
@@ -29,9 +34,14 @@ coordinator proposals in this document remain outside that bounded CLI work.
 5. Coordinator and worker sessions are created and driven through Corral; Corral will need changes.
 6. When a task is done, the coordinator finds the words/sentence in the owner's original text that best
    match it: a green circular check icon at its top-right, the text turns green and becomes
-   read-only, and clicking it opens a result popover.
-7. If the owner edits text after dispatch, the coordinator updates the running worker with new instructions in
-   near real time.
+   read-only, and clicking it opens a result popover. *2026-11-03:* text is read-only from
+   take-up (requirement 7), and the result is a post in the attached discussion (§3.1).
+7. ~~If the owner edits text after dispatch, the coordinator updates the running worker with new
+   instructions in near real time.~~ **Superseded (owner, 2026-11-03):** taken-up text is sent
+   and read-only; the owner changes a request by replying in its discussion, and the
+   coordinator steers the running worker from that reply. Rationale: an edit to the original
+   text is an ambiguous instruction (typo fix or change of mind), while a reply is an explicit
+   one, and two parallel channels for changing the same request would conflict.
 8. Deciding **when** to prompt the coordinator is the central design problem. Debounce is required. The coordinator stays one session.
 9. Agents (the coordinator or a worker) may ask the owner for details or decisions. The editor design is the key
    to the user experience.
@@ -47,6 +57,11 @@ coordinator proposals in this document remain outside that bounded CLI work.
     told which text was struck and decides what to do. Deleting text that has not been
     submitted to the coordinator yet removes it outright, as in any editor (owner, 2026-09-29, after trying
     the demo; supersedes "strike everything").
+    **Narrowed (owner, 2026-11-03, with requirement 7):** text the coordinator has taken up is
+    read-only and cannot be deleted; it is struck only when its discussion is withdrawn. Text the
+    coordinator has read but not taken up is edited and deleted like any text, and the next round
+    tells the coordinator it changed. Per-character seen/unseen tracking and strike-on-delete are
+    no longer needed.
 13. **Free-form canvas, discussions attached to the owner's words** (owner clarification,
     2026-11-03). The owner keeps writing freely on a text canvas. After an agent takes up a
     requirement, it can attach an annotation to the relevant sentence. Opening that annotation
@@ -54,8 +69,8 @@ coordinator proposals in this document remain outside that bounded CLI work.
     The canvas is not replaced with a post list, and writing an idea does not require manually
     creating a forum post. This supersedes the earlier requirement to insert agent questions
     and owner answers into the canvas body; it does not change auto-dispatch, deletion or
-    completion-locking requirements. The opening surface, reply nesting, storage/export format
-    and relationship to the proposed result popover remain design questions.
+    completion-locking requirements. The proposed state model and result placement are in
+    §3.1; the opening surface, reply nesting and storage/export format remain design questions.
 14. Questions awaiting the owner are also pushed to the phone.
 15. SessKit and OpenConductor may be changed, optimized, used as references, and have modules
     extracted or updated for reuse.
@@ -142,8 +157,8 @@ The checkpoint advice has three questions; only the second one is covered by the
   context; each coordinator round receives the ledger snapshot plus the change set, and acts only
   through validated Corral commands. The coordinator can therefore be restarted or compacted without loss.
   (Same lesson as OpenConductor's "deterministic core + model only for semantics".)
-- **The canvas and its attached discussions are distinct.** Owner text and struck-out text
-  remain in the Markdown document. Agent questions and owner replies belong to annotation
+- **The canvas and its attached discussions are distinct.** Owner text (including withdrawn, struck spans)
+  remains in the Markdown document. Agent questions and owner replies belong to annotation
   threads attached to that text (§1, requirement 13), rather than being inserted into its body.
   Task anchors, states and results remain ledger-backed view decorations. Thread persistence,
   authorship metadata and export representation must be designed before freeze; the earlier
@@ -156,21 +171,172 @@ The checkpoint advice has three questions; only the second one is covered by the
 - **Local-only web service**: bind loopback, random access token, origin check. It can start
   agents that skip permission prompts, so exposure equals remote code execution.
 
+### 3.1 State model (*Proposed*, follows the owner's 2026-11-03 state-machine framing)
+
+The product is five small state machines, not one large one. Each has one owner of
+truth; anything shown to the owner (annotation badges, counts, the "pick up here" summary)
+is **derived** from them and never stored separately.
+
+| Machine | Granularity | Stored in | Who moves it |
+|---|---|---|---|
+| Canvas span | A block or sentence of the owner's text | Document (text) + ledger (span → thread) | Owner writes; coordinator takes up |
+| Discussion | One annotation thread | Derived from its tasks and questions | Nobody directly |
+| Task | One unit of work done by one worker | Ledger | Coordinator (judgement) and system (facts) |
+| Question | One thing someone needs the owner to answer | Ledger | Coordinator asks and resolves; owner replies |
+| Coordinator round | The coordinator's processing loop | Runner memory, rebuilt from the ledger | System |
+
+**Reference.** The task machine follows the shape of the A2A protocol's task lifecycle:
+`working`, an *interrupted* `input-required` state, and terminal `completed` / `failed` /
+`canceled` / `rejected` states. A2A terminal tasks accept no further messages; new work
+in the same conversation is a new task that references the earlier one
+([A2A specification, task lifecycle](https://a2a-protocol.org/latest/specification/)).
+Here a discussion plays the role of A2A's conversation context. Copied: terminal immutability,
+the interrupted-state idea and follow-up-as-new-task. Not copied: the wire protocol, `auth-required`
+(login loss is a worker fact handled by `stalled`) and `rejected` (the coordinator asks
+instead of refusing).
+
+#### Canvas span
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: owner types
+    draft --> read: round includes the settled block
+    read --> draft: owner edits (unsettled again)
+    draft --> [*]: owner deletes
+    read --> [*]: owner deletes (next round is told)
+    read --> taken: coordinator take_up / attach
+    taken --> taken: discussion state changes (display only)
+```
+
+- `draft` and `read` are free text: edit and delete normally. `read` only means a round has
+  included it; the coordinator may have judged it incomplete, a note or not actionable.
+- `taken` is read-only and has exactly one discussion. A span belongs to at most one
+  discussion; one discussion may own several spans (scattered sentences → one request, S17).
+  Its look is derived from the discussion: struck when withdrawn, green when done.
+- Because taken text cannot be cut or edited, anchor mapping only has to follow edits
+  around it, which ordinary range mapping handles. E5's cut/paste move logic is unnecessary.
+- Take-up happens only after the §5 settle window and its visible dispatch countdown, so a
+  sentence the owner is still writing is never locked.
+
+#### Discussion (derived)
+
+A discussion is created by the coordinator's `take_up`, owns spans, replies, questions and
+zero or more tasks (an unclear request may start with only a question; one sentence may
+produce several tasks, S1). Its collapsed annotation shows one derived status, first match
+wins:
+
+| Status shown | Rule |
+|---|---|
+| Waiting for you | Any open question |
+| Needs attention | Any task `failed`, or `stalled` with no coordinator action yet |
+| Working | Any task not in a terminal state |
+| Done | All tasks terminal and at least one `done` |
+| Withdrawn | All tasks `canceled` (spans shown struck) |
+| Discussed | No tasks and no open questions (pure discussion) |
+
+An unread mark is independent of status: any reply or result added after the owner last
+opened the discussion. The discussion head shows a coordinator-maintained **current
+summary** (what is being done now, what is settled), so the owner never reconstructs the
+truth from the reply history. Results and verification evidence appear as a result post in
+the discussion; this replaces the separate result popover.
+
+#### Task
+
+```mermaid
+stateDiagram-v2
+    [*] --> blocked: create (unfinished dependency)
+    [*] --> queued: create
+    blocked --> queued: S all dependencies done
+    queued --> running: S worker hosted, delivery confirmed
+    running --> review: S worker turn completed
+    review --> running: C send back / steer
+    review --> done: C mark_done with evidence
+    running --> needs_input: C ask owner
+    queued --> needs_input: C ask owner
+    blocked --> needs_input: C ask owner
+    needs_input --> running: C resolve (worker had started)
+    needs_input --> queued: C resolve (not started)
+    running --> stalled: S quota / logged out / session died
+    review --> stalled: S
+    stalled --> running: C reassign
+    stalled --> failed: C give up
+    running --> failed: C give up
+    blocked --> canceled: C stop
+    queued --> canceled: C stop
+    running --> canceled: C stop
+    needs_input --> canceled: C stop
+    stalled --> canceled: C stop
+    review --> canceled: C stop
+    done --> [*]
+    failed --> [*]
+    canceled --> [*]
+```
+
+`S` = system, on verified facts only; `C` = coordinator command through the boundary.
+
+| State | Meaning | Leaves by |
+|---|---|---|
+| `blocked` | Waits for a dependency | System when every dependency is `done`. A dependency that ends `failed`/`canceled` only notifies the coordinator; it decides. |
+| `queued` | Ready; auto-dispatch per §8.2 | System after hosting the worker **and** confirming delivery from the runtime's history (E1). A failed delivery stays `queued` and notifies the coordinator. |
+| `running` | Worker has the brief | Turn completion → `review`; coordinator ask/stop/give up; worker fact → `stalled` |
+| `review` | Worker's turn ended; not yet accepted | Coordinator `mark_done` with an exact evidence quote (§9.4), or sends the worker back |
+| `needs_input` | Interrupted: waits for the owner | Coordinator `resolve` returns the task to where it was (`running` if a worker exists, else `queued`). An owner reply never resumes a task by itself: whether a reply answers the question is the coordinator's judgement (§6.2). |
+| `stalled` | The worker cannot continue (quota, login, crash) | Coordinator `reassign` to another usable assistant with evidence gathered from the session and workspace, or `give up` |
+| `done` / `failed` / `canceled` | Terminal, immutable | Never. Follow-up work is a new task in the same discussion with `follows: <task id>` (replaces `reopen_as_followup`). |
+
+A worker's finished turn is never a finished task: only `review → done` with evidence is.
+Mid-turn steering keeps the task `running`. While `needs_input`, the worker session may
+stay alive and idle; the system does not interrupt it.
+
+#### Question
+
+`open → answered → resolved`, or `open → resolved` (the coordinator found the answer
+elsewhere) or `open → withdrawn` (no longer relevant). Only the coordinator moves a question
+to `resolved`/`withdrawn`; an owner reply moves it to `answered` and wakes the coordinator.
+Each question carries the coordinator's `blocking` mark: only blocking questions are pushed
+to the phone (requirement 18); the rest wait for the "pick up here" summary. A task is in
+`needs_input` exactly while it has an open or answered question attached.
+
+#### Coordinator round
+
+`idle → pending` (a settled block, an owner reply or a worker fact arrived; debounce per §5)
+`→ in_flight → applying → idle`. Inputs arriving during `in_flight` are merged into the next
+round. Rejected commands go back once with reasons (§9.4). The coordinator's memory is the
+ledger, so a restart or compaction rebuilds the next round from the ledger and current
+document (E6).
+
+#### Invariants (mechanics the system guarantees)
+
+1. **Legal transitions only.** The boundary checks every command against the table above;
+   anything else is rejected with reasons. `contract.py`'s `LEGAL_STATES` is the starting
+   point and must gain `ask`, `resolve`, `take_up`/`attach`, `give_up` and `review`; `reanchor`
+   and `update_task` on dispatched work disappear with requirement 7.
+2. **One transaction per transition**: state change plus an append-only audit row (actor,
+   action, target, from → to, time).
+3. **Intent before effect.** Side effects (host a worker, send a message, interrupt) are
+   recorded as pending intents in the same transaction, then executed and confirmed from
+   runtime evidence. After a restart, pending intents are reconciled against session
+   history, never blindly replayed, so nothing is done twice.
+4. **Facts in, judgement out.** System transitions use only verified facts (delivery,
+   completion id, quota/login status, dependency done). Every choice among options belongs to
+   the coordinator (requirement 11).
+5. **Derived views are never stored**: discussion status, counts, unread and the "pick up
+   here" summary (open questions first, then unread results, then running work) are computed
+   from the ledger.
+6. **The owner never changes task state directly.** They write and reply; the coordinator
+   acts. The owner can always open a worker session in Corral and interrupt it there.
+
 ## 4. Editor (*Proposed*)
 
 - **CodeMirror 6**, not Milkdown/Tiptap: those rewrite Markdown through a ProseMirror model,
   while CM6 keeps the text exact and supports mark/widget decorations, `atomicRanges`, and
   `changeFilter` for read-only ranges.
-- Visual states on anchored text: waiting-to-dispatch (dotted underline, cancellable),
-  running (subtle gutter dot), waiting on owner (amber), failed (red), done (green text +
-  green check, locked; click opens result popover with summary and a link to the session).
-- Done text is read-only. New text written beside it is simply new input for the coordinator.
-- **Deleting depends on whether the coordinator has seen the text.** The editor tracks, per character,
-  which text has been submitted to the coordinator. Delete, backspace, cut and overwrite remove unseen
-  text outright and turn seen text into strikethrough (overwriting seen text = old text
-  struck + new text inserted). A selection spanning both is split: the seen part is struck
-  and the unseen part is removed. New characters typed inside a seen sentence are unseen
-  until the next round submits them.
+- Taken-up text is read-only from take-up onwards (§3.1 canvas span) and shows its
+  discussion's derived status; clicking its annotation opens the discussion, which holds
+  the result and evidence. New text written beside it is simply new input for the coordinator.
+- *Superseded 2026-11-03:* per-character seen/unseen tracking, strike-on-delete, the
+  cut/paste anchor move (E5) and per-state text styling while editing. Free text deletes
+  normally; taken text cannot be deleted (requirement 12 as narrowed).
 - **Annotation discussions** follow requirement 13: opening a remark on the original text
   exposes its reply thread without requiring a separate forum post. The proposed question
   count and keyboard jump should open the relevant unresolved discussion. Workers' questions
@@ -181,12 +347,14 @@ The checkpoint advice has three questions; only the second one is covered by the
 - Unit of change is a **block** (paragraph / list item), never a keystroke.
 - A block is *settled* when the cursor leaves it, Enter starts a new block, or it has been
   idle ~8 s. Only settled blocks produce changes; whitespace/format-only diffs are dropped.
-- Blocks linked to a **running** worker use a shorter delay, because the worker is working in a stale
-  direction.
+- ~~Blocks linked to a running worker use a shorter delay.~~ Superseded 2026-11-03: taken
+  text is read-only, so no canvas block is linked to a running worker. Owner replies in a
+  discussion are explicit and wake the coordinator without the settle delay.
 - **One coordinator round in flight.** Changes arriving during a round are merged into the next one.
 - Worker events (turn completed, waiting for an answer, failed, quota exhausted) also wake the coordinator.
 - Submitted discussion replies also reach the coordinator, with their thread and source-text
-  association. Reply timing and batching need design alongside the canvas settle policy.
+  association. A reply is sent explicitly, so it needs no settle window; replies arriving
+  during a round are merged into the next one like any other input.
 - Each round sends: changed blocks (before/after), new discussion replies with thread ids,
   linked task ids, ledger snapshot.
 - New ideas get a short visible dispatch countdown; continued editing restarts it, so
@@ -199,14 +367,16 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 
 ### 6.1 System guarantees (mechanics)
 
-- **Anchors follow text** through typing, moves, cut/paste, merges and undo/redo. Identical
-  text removed and re-inserted within one settle window is reported to the coordinator as a move.
-- **Undo/redo** changes text only; it never undoes a dispatch or unlocks done text.
-- **Strikethrough, not deletion**, for text the coordinator has seen (§4); unseen text is deleted
-  normally and never reaches the coordinator. The change sent to the coordinator says which text was struck. Whether struck text is a typo fix or a withdrawn idea is the coordinator's judgement.
-- **Completion marking**: the coordinator names the words to mark; the system verifies they exist in the
-  current text and otherwise uses the task's stored anchor range. It never guesses a span.
-  A span shared by several tasks turns green only when all of them are done.
+- **Taken text is read-only and anchored** (§3.1): edits around it never move it off its
+  words; it cannot be cut, overwritten or deleted. Undo/redo changes free text only; it never
+  undoes a take-up or a dispatch.
+- **Take-up quotes are verified**: the coordinator names the words to take up; the system
+  verifies they are one contiguous span of free text in the current document and otherwise
+  rejects the command. It never guesses a span. Span colour follows the discussion's derived
+  status (§3.1), so a span is green only when its whole discussion is done.
+- ~~Anchors follow cut/paste moves; strikethrough instead of deletion for seen text.~~
+  Superseded 2026-11-03 (requirements 7 and 12); free text that a round has read is deleted
+  normally and the next round reports the removal.
 - **Project highlight** is a hint only: whole-word matches, short/common names matched
   case-sensitively; clicking a highlight offers "not a project", remembered for that phrase.
 - **Typing always wins**: background updates never move the cursor or re-layout the block
@@ -220,16 +390,19 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 - **Confirmed delivery** of every message the coordinator sends to the worker; failed delivery is reported to the coordinator.
 - **Phone push** for coordinator questions that await the owner; answers are written in the
   attached discussion.
-- **Result popover** shows the coordinator's plain-language summary, project, verification evidence,
-  assistant used, time taken, and "open session in Corral".
+- **Result post** in the discussion shows the coordinator's plain-language summary, project,
+  verification evidence, assistant used, time taken, and "open session in Corral" (replaces the
+  result popover, §3.1).
 - **Worker sessions** appear in Corral's normal session list, grouped under the butler.
 
 ### 6.2 The coordinator decides (judgement, covered by the coordinator's instructions and evaluation set)
 
 - How text maps to tasks: one sentence → several tasks, scattered sentences → one task,
   later text amending earlier ideas, repeated ideas (including ideas already done).
-- What struck-out text means for its task (stop, keep, adjust) — requirement 12.
-- Edits to dispatched text: update, steer, or stop and restart the worker.
+- What a discussion reply means for its tasks: answer, steer, stop, new follow-up task, or
+  nothing (replaces judging struck-out text and edits to dispatched text, 2026-11-03).
+- Whether a freely deleted or rewritten block that a round has already read affects anything
+  not yet taken up.
 - Which project an idea targets, aliases, several projects per idea, and a project that does
   not exist yet (the coordinator asks in the attached discussion when it needs the owner,
   e.g. a new project's name).
@@ -245,6 +418,9 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
 - Steering interrupts a running worker; the coordinator must choose steer vs. queue vs. cancel-and-restart.
 - Coordinator token cost grows with edit frequency; block settling and merging bound it.
 - Project-name false positives; ambiguity must be resolvable by the owner.
+- **Early lock** (2026-11-03 model): a sentence taken up before the owner finished thinking
+  becomes read-only, and the rest of the thought must go in a reply. The settle window and
+  visible countdown bound this; real typing traces (§9.9 item 3) decide the delays.
 - A quota-exhausted or logged-out worker cannot be asked for a status report. Corral must retain
   the last verified session/workspace state so the coordinator can move the task to another usable worker.
 
@@ -262,8 +438,11 @@ Each item still needs an acceptance check (mechanics) or an evaluation case (coo
    Kimi, and no butler work targets Kimi's signals. SessKit made the same call: Kimi stays
    on its legacy parser and is left out of the unified activity model. Kimi findings below
    (F4, F6) are kept as history; Corral's existing Kimi support is unchanged.
+6. **Sent on take-up; minimal first** (owner, 2026-11-03). Taken-up text is read-only and
+   every later change is a discussion reply (requirements 7 and 12 updated); the first
+   build is the minimal loop in §10, with editor refinements deferred.
 
-Later decisions (same day): requirements 11–14 (agentic judgement, strikethrough,
+Later decisions (2026-09-29): requirements 11–14 (agentic judgement, strikethrough,
 in-document agent questions, phone push). Strikethrough first covered all deletions,
 including text the coordinator had never seen; after trying the demo the owner narrowed it (2026-09-29):
 only text already submitted to the coordinator is struck, unseen text is deleted outright; overwrite of
@@ -608,6 +787,13 @@ Captures: [desktop](assets/web-task-butler-preview.png),
 
 Freeze requires an acceptance check for every §6.1 guarantee and an evaluation case for every
 §6.2 judgement.
+
+> 2026-11-03: the tables below predate the sent-on-take-up decision. Rows about moves,
+> strikethrough and seen/unseen deletion are no longer freeze requirements; new rows are
+> needed for take-up quote verification, the §3.1 transition table (one deterministic test
+> per legal and illegal transition), intent reconciliation after restart, and the reply
+> judgements (answer / steer / stop / follow-up / nothing), including S5–S7 and S19 rewritten
+> as replies.
 - **Covered:** checked in a spike today.
 - **Product:** can only be checked once the real service exists; it gets an acceptance test
   in the implementation plan.
@@ -647,35 +833,38 @@ Freeze requires an acceptance check for every §6.1 guarantee and an evaluation 
 
 ## 10. Implementation plan (*Proposed*, for design freeze)
 
-The 2026-11-03 clarification requires a revision of slices 2–6 before freeze: design
-thread identity and persistence, source-text attachment under edits, reply delivery to the
-coordinator, and opening/replying/returning to the canvas. Add acceptance for those paths;
-the old inline-question demo does not cover them. Do not infer a one-thread-to-one-task
-constraint or treat this clarification as approval to implement.
+**Minimal first (owner, 2026-11-03).** The first build proves one loop: write freely →
+the coordinator takes up a request → discussion and tasks → worker → evidence-gated done →
+"pick up here" on return. Everything that only polishes the canvas waits until that loop is
+used for real. The 2026-09-29 slice table is replaced by the one below; it is still a plan
+for freeze, not approval to implement.
 
-Order follows risk: the parts every later slice depends on come first. Each slice ships
-behind no user-facing entry until slice 6 (unfinished features are not exposed).
+Since the September plan, the reusable session-control layer has been built
+(`control*.py` over `~/Codes/AgentSessionControl`, see
+[Agent session delegation](AGENT_SESSION_DELEGATION_DESIGN.md)); workers use it instead of a
+new extraction. Each slice ships behind no user-facing entry until slice 5 (unfinished
+features are not exposed).
 
-| Slice | What | Where | Acceptance |
-|---|---|---|---|
-| 0 | **Session control layer**: host, deliver-and-confirm, interrupt, stop, observe turn state. Extracted from `SessionHub` so the phone daemon and the butler share it. Per-assistant startup gates, input readiness, composer check and mid-turn mode become runtime-adapter methods (fixes F1/F2; follows the "runtime-private behaviour lives in `runtime/`" rule). | new `src/corral/control.py`; `runtime/*.py`; `remote/sessions.py` delegates | Unit tests per adapter from recorded pane text. Opt-in live E1 matrix per installed assistant: start in a new folder, first message, mid-turn message, delivery confirmed from history. Phone `send_turn` regression tests unchanged. |
-| 1 | **SessKit signals**: one completion id per turn (Codex), quota/limit and not-logged-in as their own states (Cursor). Kimi excluded (§8.5). | SessKit, then Corral pin | SessKit contract tests on recorded histories. |
-| 2 | **Ledger and command boundary**: tasks, questions, dependencies, anchors, results, audit log (actor, action, target, time; same transaction as the change). Boundary = the spike's `contract.py` + shape checks + `test_contract.py`. | new `src/corral/butler/` (`ledger.py`, `boundary.py`); SQLite under `~/.config/corral/butler/` | Deterministic tests: every action and state from §6.1; audit row for every mutation; replay of E6's 26 rounds against the ledger with recorded coordinator answers. |
-| 3 | **Document service and editor**: loopback-only server on `websockets` (already a dependency) serving the editor and a live channel. Random token, origin check, single editing tab, versioned saves, seen ranges persisted with the document. Editor source moves from the spike; the built bundle ships in the package. | `src/corral/butler/web.py`, `document.py`; editor source under `cli/web/butler/` | E2/E5 checks (25 + anchor) run against the served page; restart and two-tab tests; token/origin rejection tests. |
-| 4 | **Coordinator runner**: one hosted coordinator session, standing prompt from `coordinator_prompt.md`. Rounds are triggered per §5: block settle, idle delay, one round in flight. The payload sends finished tasks in compact form. Replies are parsed, validated with one retry, and applied to the ledger. The coordinator restarts from the ledger when its context grows (E6). | `src/corral/butler/coordinator.py` | Recorded-replay tests of trigger timing (E4 traces); E3 scenarios + new S17–S22 through the real runner with a cheap model; restart test. |
-| 5 | **Worker lifecycle**: create a worker session per task with `worker_prompt.md` + brief. Steer, stop and reassign go through slice 0. Completion and failure events go back to the coordinator. Worker sessions appear in Corral's list, grouped. | `src/corral/butler/workers.py`; `split_layout` grouping | Live end-to-end on a disposable project: idea → task → worker → verified report → done span; quota switch with a fake unavailable assistant. |
-| 6 | **Owner-facing finish**: margin notes and result card with "open session in Corral"; questions pushed to the phone through the existing push path; a command to open the page. | editor; `remote/` push; `bootstrap.py` entry | Browser screenshots light/dark/phone; push received on a real phone; §9.10 Product rows all checked. |
+| Slice | What | Acceptance |
+|---|---|---|
+| 1 | **Ledger and state machines** (§3.1): spans, discussions, replies, questions, tasks, pending intents and audit log in one SQLite under `~/.config/corral/butler/`; boundary from `contract.py` extended to the §3.1 transition table. | One deterministic test per legal and illegal transition; audit row per mutation in the same transaction; restart reconciliation of pending intents; E6 replay rewritten with replies. |
+| 2 | **Worker lifecycle on existing session control**: host per task, confirmed delivery, turn completion → `review`, quota/login/crash → `stalled`, reassign, stop. Missing SessKit facts (one completion per Codex turn; quota and login as their own states) are fixed upstream in SessKit first. | Live end-to-end on a disposable project with a cheap explicit model: task → worker → verified report → `done`; fake unavailable assistant → `stalled` → reassign. |
+| 3 | **Coordinator runner**: one hosted session, standing prompt, rounds per §5 and §3.1 coordinator round, one retry on rejection, restart from the ledger. | E3 scenarios rewritten for take-up and replies through the real runner; restart test; S16 and S14 re-measured. |
+| 4 | **Minimal page**: loopback server (token, origin check, single editing tab, versioned saves) with a plain-text canvas, read-only taken spans with a collapsed status annotation, a discussion panel with replies and result posts, and the "pick up here" summary. No project highlighting, margin stacking, move tracking or strikethrough on delete. | Browser screenshots (light, dark, narrow); write → take-up → question → reply → done path in the real page; never-lose-draft restart test. |
+| 5 | **Entry and return**: `corral ideas` opens the page; worker sessions listed in Corral and grouped. | Installed command opens the page; sessions visible in the TUI and Mac list. |
+| Later | Blocking-only phone push and replying from the phone; project-name highlighting; folding or archiving finished discussions; real-typing settle delays. | Separate acceptance when scheduled. |
 
 Decisions for the owner at freeze:
 1. **Entry point name.** Proposed: `corral ideas` opens the page in the browser. The internal
    code name "butler" never appears in the interface.
 2. **Coordinator assistant.** Proposed: the first usable of Claude, Codex, Pi, overridable in
    settings (requirement 3 leaves it open).
-3. **Scope of the first release.** Proposed: slices 0–5 plus the page command. Phone push of
-   questions (slice 6) can follow in the next release.
-4. **Stepping away and coming back** (§1, requirement 18). Proposed: the "pick up here"
-   summary and the blocking-only push in slice 6; the explicit "step away" action is optional
-   and may come later.
+3. ~~Scope of the first release~~ — decided 2026-11-03: minimal first, slices 1–5 above.
+4. **Stepping away and coming back** (§1, requirement 18). The "pick up here" summary is in
+   slice 4; blocking-only push is "Later"; the explicit "step away" action is optional and
+   may come later.
+5. **Folding finished discussions.** One document grows for months; whether done and
+   withdrawn spans fold away automatically or on request is open.
 
 ## 11. References
 
@@ -685,5 +874,7 @@ Decisions for the owner at freeze:
 - Tiptap Markdown round-trip limits: https://tiptap.dev/docs/editor/markdown
 - Conductor OSS (Markdown board → tmux agents; relies on explicit board columns, not free
   text): https://conductross.com/
+- A2A task lifecycle (task states, interrupted and terminal states, follow-up tasks):
+  https://a2a-protocol.org/latest/specification/
 
 <!-- 该文档整理/压缩于 2026-09-29 -->
