@@ -81,7 +81,8 @@ function buildDecorations(spans: SpanView[]): DecorationSet {
   const ranges = [];
   for (const s of sorted) {
     const cls = `cm-taken is-${s.status}${s.active ? " is-active" : ""}`;
-    ranges.push(Decoration.mark({ class: cls, attributes: { "data-thread": s.threadId } }).range(s.from, s.to));
+    // Taken text is read-only, so spelling marks there are only noise (project names).
+    ranges.push(Decoration.mark({ class: cls, attributes: { "data-thread": s.threadId, spellcheck: "false" } }).range(s.from, s.to));
     // Withdrawn and pure-discussion text needs no marker unless something new arrived.
     if ((s.status === "withdrawn" || s.status === "discussed") && !s.unread) continue;
     ranges.push(Decoration.widget({ widget: new StatusWidget(s.threadId, s.status, s.unread), side: 1 }).range(s.to));
