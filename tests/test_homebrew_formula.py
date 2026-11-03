@@ -56,7 +56,7 @@ class HomebrewFormulaTest(unittest.TestCase):
     def test_dependencies_are_universal_wheels_installed_in_one_batch(self):
         formula = self.formula()
         resources = formula.split("  def install")[0].split("  resource ")[1:]
-        self.assertEqual(len(resources), 13)
+        self.assertEqual(len(resources), 14)
         for resource in resources:
             self.assertIn("-py3-none-any.whl", resource)
             self.assertIn('sha256 "', resource)
@@ -64,6 +64,7 @@ class HomebrewFormulaTest(unittest.TestCase):
         self.assertNotIn("venv.pip_install resources", formula)
         self.assertIn('"import corral._native"', formula)
         self.assertIn('resource "websockets"', formula)
+        self.assertIn('resource "agent-session-control"', formula)
         self.assertIn('"pip", "check"', formula)
 
     def test_dependency_repair_revises_existing_292_installs(self):

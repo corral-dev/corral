@@ -16,7 +16,10 @@ FINAL-PIN HOOK (for the coordinator, after publication):
   1. Set WHEEL_URL / WHEEL_SHA256 below (keep VERSION in sync).
   2. Add to pyproject ``dependencies``: ``"agent-session-control>=0.1.0"``,
      plus ``[tool.uv.sources]`` block from ``uv-source-table``; ``uv lock``.
-  3. install.sh / verify_clean_install.py pick the pin up automatically.
+  3. install.sh / verify_clean_install.py pick the pin up automatically;
+     the Homebrew formula generator (scripts/homebrew_formula.py RESOURCES)
+     needs the new ``homebrew_resource_block()`` explicitly, or bottled
+     installs fail ``pip check`` (first hit: v0.24.358).
 """
 
 from __future__ import annotations
@@ -69,6 +72,17 @@ def wheel_requirement() -> str:
         )
     assert WHEEL_URL is not None and WHEEL_SHA256 is not None
     return f"{PACKAGE} @ {WHEEL_URL}#sha256={WHEEL_SHA256}"
+
+
+def homebrew_resource_block() -> str:
+    """Ruby ``resource "agent-session-control"`` block for the Homebrew formula generator."""
+    assert WHEEL_URL is not None and WHEEL_SHA256 is not None
+    return (
+        f'  resource "{PACKAGE}" do\n'
+        f'    url "{WHEEL_URL}"\n'
+        f'    sha256 "{WHEEL_SHA256}"\n'
+        "  end"
+    )
 
 
 def uv_source_table() -> str:

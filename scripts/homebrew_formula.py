@@ -48,6 +48,10 @@ if str(_SCRIPTS_DIR) not in sys.path:
 # without tripping E402 (module import after runtime code). Name binding and
 # behavior are identical to a plain `import sesskit_dep`.
 sesskit_dep = importlib.import_module("sesskit_dep")
+# Path-dependent sibling import: same mechanism for the agent-session-control
+# pin (scripts/control_dep.py); its resource block joins RESOURCES below so
+# bottled installs satisfy `pip check` for the hard pyproject dependency.
+control_dep = importlib.import_module("control_dep")
 
 DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Cursor, and Pi"
 
@@ -55,7 +59,10 @@ DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Curs
 # 每个依赖都要一个 resource 块（下载地址 + sha256）。依赖升级时同步改这里
 # （可借助 `brew update-python-resources` / homebrew-pypi-poet 生成）。
 # sesskit：真源在 scripts/sesskit_dep.py（与 CI / install.sh 同一份 pin）。
+# agent-session-control：真源在 scripts/control_dep.py，同理。
 RESOURCES = f"""{sesskit_dep.homebrew_resource_block()}
+
+{control_dep.homebrew_resource_block()}
 
   resource "websockets" do
     url "https://files.pythonhosted.org/packages/09/ce/3929538b2b9918f5eee623fbf3346893973191f6df93f19bbda097bd7bb7/websockets-17.0.1-py3-none-any.whl"
