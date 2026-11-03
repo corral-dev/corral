@@ -38,6 +38,7 @@ export class Store {
   ) {
     this.state = { ...initial, openThreadId: null, hoverThreadId: null, reading: [] };
     this.ensureToday();
+    this.watchPageExit();
   }
 
   static load(seed: () => Pick<State, "sections" | "threads">, account: string | null): Store {
@@ -68,10 +69,25 @@ export class Store {
 
   private scheduleSave(): void {
     clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(() => {
-      const { sections, threads } = this.state;
-      localStorage.setItem(this.key, JSON.stringify({ sections, threads }));
-    }, 250);
+    this.saveTimer = window.setTimeout(() => this.saveNow(), 250);
+  }
+
+  /** Writes immediately; also runs when the page is hidden or closed, so no edit is lost. */
+  saveNow(): void {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
+    const { sections, threads } = this.state;
+    localStorage.setItem(this.key, JSON.stringify({ sections, threads }));
+  }
+
+  private watchPageExit(): void {
+    const flush = () => {
+      if (this.saveTimer) this.saveNow();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flush();
+    });
   }
 
   private ensureToday(): void {

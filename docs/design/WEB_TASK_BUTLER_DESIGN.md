@@ -935,6 +935,14 @@ Decisions for the owner at freeze:
 > taken spans are `contenteditable="false"` islands with `-webkit-touch-callout: none`, so a
 > long press neither selects them nor falls through to the neighbouring editable text; a press
 > that starts on a taken sentence also cancels `selectstart`.
+> **Caret at taken sentences (owner, 2026-11-03):** arrow keys must reach a taken sentence's start
+> and end but never its inside; the caret had vanished next to the non-editable mark. Taken
+> sentences are now CodeMirror replace widgets (sentence text + icon, natively non-editable)
+> listed in `EditorView.atomicRanges`, so left/right/up/down step over the whole sentence and stop
+> at its edges, Backspace at an edge cannot eat into it, and typing at an edge lands outside.
+> `drawSelection()` draws the caret so it stays visible at those edges. Verified in Chrome by
+> stepping the caret through a mixed paragraph in all four directions. Drafts are also flushed
+> to storage on `pagehide` / hidden visibility, so an edit made just before closing survives.
 > **State look chosen (2026-11-03, owner delegated the choice):** four options were rendered on
 > a paragraph mixing working / done / waiting sentences with free text, light and dark:
 > (A) soft box per sentence with the icon inside, waiting box amber; (B) the same box neutral

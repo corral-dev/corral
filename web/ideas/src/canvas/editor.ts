@@ -1,6 +1,6 @@
 // CodeMirror 6 extensions for one day section: read-only taken spans, status marks,
 // guarded undo/redo and the settle window (requirement 20).
-import { Annotation, EditorState, Extension, Prec, StateEffect, StateField } from "@codemirror/state";
+import { Annotation, EditorState, Extension, Prec, StateEffect, StateField, Text } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -8,6 +8,7 @@ import {
   ViewPlugin,
   ViewUpdate,
   WidgetType,
+  drawSelection,
   keymap,
   placeholder as placeholderExt,
 } from "@codemirror/view";
@@ -47,7 +48,6 @@ export const spansField = StateField.define<SpanView[]>({
     // Inserts exactly at a span's edge stay outside it.
     return spans.map((s) => ({ ...s, from: tr.changes.mapPos(s.from, 1), to: tr.changes.mapPos(s.to, -1) }));
   },
-  provide: (f) => EditorView.decorations.from(f, buildDecorations),
 });
 
 // One family of same-size round icons at the sentence end (owner, 2026-11-03): only
@@ -59,25 +59,47 @@ const STATUS_ICONS: Partial<Record<Presence, string>> = {
   working: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.4" class="icon-ring" stroke-width="1.6"/></svg>',
 };
 
-class StatusWidget extends WidgetType {
+/**
+ * A taken sentence rendered as one atomic, non-editable unit: its own words plus its state
+ * icon. The caret can sit at either edge but never inside (owner, 2026-11-03), long press
+ * cannot select it, and the icon always belongs to this sentence's box.
+ */
+class SentenceWidget extends WidgetType {
   constructor(
-    readonly threadId: string,
-    readonly status: Presence,
-    readonly unread: boolean,
+    readonly text: string,
+    readonly s: SpanView,
   ) {
     super();
   }
-  eq(o: StatusWidget): boolean {
-    return o.threadId === this.threadId && o.status === this.status && o.unread === this.unread;
+  eq(o: SentenceWidget): boolean {
+    const a = this.s;
+    const b = o.s;
+    return (
+      o.text === this.text &&
+      a.threadId === b.threadId &&
+      a.status === b.status &&
+      a.active === b.active &&
+      a.unread === b.unread &&
+      a.fresh === b.fresh
+    );
   }
   toDOM(): HTMLElement {
+    const s = this.s;
     const el = document.createElement("span");
-    el.className = `cm-status is-${this.status}${this.unread ? " is-unread" : ""}`;
-    el.dataset.thread = this.threadId;
-    el.setAttribute("aria-hidden", "true");
-    // Word joiners on both sides keep the icon on the line of the sentence's last character
-    // and with whatever punctuation follows, so no empty box fragment wraps alone.
-    el.innerHTML = "\u2060" + (STATUS_ICONS[this.status] ?? "") + "\u2060";
+    el.className = `cm-taken is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`;
+    el.dataset.thread = s.threadId;
+    el.spellcheck = false;
+    el.textContent = this.text;
+    const icon = STATUS_ICONS[s.status];
+    if (icon) {
+      const st = document.createElement("span");
+      st.className = `cm-status is-${s.status}`;
+      st.setAttribute("aria-hidden", "true");
+      // Word joiners keep the icon on the line of the sentence's last character and with
+      // whatever punctuation follows, so no empty box fragment wraps alone.
+      st.innerHTML = "\u2060" + icon + "\u2060";
+      el.appendChild(st);
+    }
     return el;
   }
   ignoreEvent(): boolean {
@@ -85,26 +107,26 @@ class StatusWidget extends WidgetType {
   }
 }
 
-function buildDecorations(spans: SpanView[]): DecorationSet {
-  const sorted = [...spans].filter((s) => s.to > s.from).sort((a, b) => a.from - b.from);
-  const ranges = [];
-  for (const s of sorted) {
-    const cls = `cm-taken is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`;
-    // Taken text is read-only, so spelling marks there are only noise (project names).
-    // inclusiveEnd renders the end icon inside the sentence's own element, so the two share
-    // one box and can never read as part of the next sentence. contenteditable=false makes the
-    // sentence a non-editable island: iOS long press neither selects it nor falls through to
-    // the neighbouring editable text (owner, 2026-11-03).
-    ranges.push(
-      Decoration.mark({ class: cls, inclusiveEnd: true, attributes: { "data-thread": s.threadId, spellcheck: "false", contenteditable: "false" } }).range(s.from, s.to),
-    );
-    // Withdrawn and quiet text carries no marker; its look (or nothing) says enough.
-    if (s.status === "withdrawn" || s.status === "quiet") continue;
-    // side -1 + the mark's inclusiveEnd put the icon inside the sentence's own element.
-    ranges.push(Decoration.widget({ widget: new StatusWidget(s.threadId, s.status, s.unread), side: -1 }).range(s.to));
-  }
-  return Decoration.set(ranges, true);
+function buildDecorations(spans: SpanView[], doc: Text): DecorationSet {
+  const ranges = [...spans]
+    .filter((s) => s.to > s.from)
+    .sort((a, b) => a.from - b.from)
+    .map((s) => Decoration.replace({ widget: new SentenceWidget(doc.sliceString(s.from, s.to), s) }).range(s.from, s.to));
+  return Decoration.set(ranges);
 }
+
+const takenDecorations = EditorView.decorations.compute(["doc", spansField], (state) => buildDecorations(state.field(spansField), state.doc));
+
+/** Cursor motion and deletion treat each taken sentence as one unit. */
+const takenAtomic = EditorView.atomicRanges.of((view) =>
+  Decoration.set(
+    view.state
+      .field(spansField)
+      .filter((s) => s.to > s.from)
+      .sort((a, b) => a.from - b.from)
+      .map((s) => Decoration.mark({}).range(s.from, s.to)),
+  ),
+);
 
 /** Taken text is read-only: changes inside a span are dropped; edits beside it pass. */
 const lockTaken = EditorState.changeFilter.of((tr) => {
@@ -292,6 +314,9 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
   return [
     pageTheme,
     history(),
+    // The editor draws its own caret so it stays visible at the edges of taken sentences,
+    // where a native caret beside a non-editable box is often not painted.
+    drawSelection(),
     guardedHistory,
     keymap.of([...defaultKeymap, ...historyKeymap]),
     new LanguageSupport(markdownLanguage),
@@ -300,6 +325,8 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
     EditorView.contentAttributes.of({ spellcheck: "true", autocapitalize: "sentences" }),
     placeholderExt(hooks.placeholder),
     spansField,
+    takenDecorations,
+    takenAtomic,
     lockTaken,
     sentenceDrag,
     settlePlugin(hooks),
