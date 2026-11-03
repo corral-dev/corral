@@ -166,11 +166,15 @@ _TMUX_KEY_RE = re.compile(
 _PUSH_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 # Slow read-only methods: a cold multi-MB history parse, a tmux screen capture
-# or an image decode can take seconds. They run on bounded per-connection
-# workers so the serial encrypted channel keeps serving input, terminal attach
-# and short RPCs while one read is in flight. Everything else stays inline:
-# ordering-sensitive input/attach/layout/mutation frames never overtake each
-# other. See `RemoteService.dispatch`.
+# or a sessions-list snapshot build can take seconds. They run on bounded
+# per-connection workers so the serial encrypted channel keeps serving input,
+# terminal attach and short RPCs while one read is in flight. Everything else
+# stays inline: ordering-sensitive input/attach/layout/mutation frames never
+# overtake each other. See `RemoteService.dispatch`.
+#
+# sessions.watch is deliberately NOT in this set: its subscribe/unsubscribe
+# effect must stay in serial arrival order on the reader thread. dispatch()
+# splits it instead (subscribe inline, only the list payload off-thread).
 _CONCURRENT_READ_METHODS = frozenset(
     {
         protocol.M_SESSION_GET,
@@ -184,6 +188,7 @@ _CONCURRENT_READ_METHODS = frozenset(
         protocol.M_PROJECTS_LIST,
         protocol.M_RUNTIMES_LIST,
         protocol.M_TERMINAL_PEEK,
+        protocol.M_SESSIONS_LIST,
     }
 )
 # Concurrent slow reads one connection may run. Excess requests get a retryable
@@ -674,8 +679,16 @@ class RemoteService:
 
         Admission, startup readiness, device/read-only checks and handler
         validation still run through `handle` → `_invoke`.
+
+        sessions.watch is split: subscribe/unsubscribe and their hub watch
+        counts run here in serial arrival order; only the expensive list
+        payload runs on a read worker. The async completion never calls
+        `_sessions_watch` again and never re-subscribes.
         """
         method = str(message.get("m") or "")
+        if message.get("t") == "req" and method == protocol.M_SESSIONS_WATCH:
+            self._dispatch_sessions_watch(connection, message, reply=reply)
+            return
         if message.get("t") != "req" or method not in _CONCURRENT_READ_METHODS:
             self.handle(connection, message, reply=reply)
             return
@@ -717,6 +730,169 @@ class RemoteService:
 
         try:
             threading.Thread(target=run, daemon=True, name="remote-read-rpc").start()
+        except RuntimeError:
+            release()
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+
+    def _check_access(self, connection: Connection, method: str, params: dict) -> None:
+        """Shared pre-handler admission: revocation, pairing, readiness, readonly.
+
+        Used by both the serial `_invoke` path and the split sessions.watch
+        dispatch so the watch keeps exactly the same authorization without a
+        second protocol dispatcher. Raises ActionError on denial.
+        """
+        if connection.paired and not self.is_known_device(connection.device_public_key):
+            self._kick(connection)
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_unpaired"))
+        if connection.paired:
+            connection.access = self.device_access(connection.device_public_key)
+        if method == protocol.M_PAIR or method == protocol.M_HELLO:
+            return
+        if not connection.paired:
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
+        wait_ready = getattr(self.hub, "wait_ready", None)
+        if (method not in _INDEX_INDEPENDENT_METHODS
+                and wait_ready is not None and not wait_ready(0)):
+            raise ActionError(protocol.E_UNAVAILABLE, t("remote.err.host_starting"))
+        if connection.access == "readonly" and (
+            method not in _READONLY_METHODS or shell_terminal.is_shell_key(params.get("key"))
+        ):
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
+        _reject_misplaced_shell_keys(method, params)
+        if method in _CONFIRM_METHODS and not bool(params.get("confirm")):
+            raise ActionError(
+                protocol.E_USAGE,
+                t("remote.err.need_confirm"),
+            )
+
+    def _send_success(
+        self,
+        connection: Connection,
+        method: str,
+        message: dict,
+        data,
+        inbound,
+        started: float,
+    ) -> None:
+        """Shared success serialization: timing audit, writer, compression.
+
+        Used by both the serial `_handle_request` path and the split
+        sessions.watch payload worker so large list responses share response
+        routing instead of growing a second sender.
+        """
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        writer = self._writer_for_response(connection, method, inbound)
+        data_send = connection.data_send
+        plane = "data" if (data_send is not None and writer is data_send) else "control"
+        self.record_rpc_timing(
+            connection, method, duration_ms, plane=plane, ok=True,
+            req_id=int(message.get("id") or 0),
+        )
+        response = protocol.response(int(message.get("id") or 0), data)
+        negotiate_compression = (
+            not connection.compression_enabled and self._requests_compression(message)
+        )
+        if negotiate_compression:
+            response["wire"] = {"version": 1, "compression": "deflate"}
+        writer = self._writer_for_response(connection, method, inbound)
+        try:
+            writer(response)
+        except Exception as exc:
+            observe.event("remote_response_send_failed", method=method, error=str(exc))
+            try:
+                connection.send(protocol.error(
+                    int(message.get("id") or 0), protocol.E_INTERNAL, t("remote.err.internal"),
+                ))
+            except Exception:
+                return
+            return
+        if negotiate_compression:
+            connection.compression_enabled = True
+
+    def _dispatch_sessions_watch(self, connection: Connection, message: dict, *, reply=None) -> None:
+        """Split sessions.watch: subscribe inline, payload off-thread.
+
+        Authorization/startup validation and the subscribe/watch-count effect
+        run here on the channel's serial reader thread, in arrival order.
+        Only the expensive `_sessions_list_payload` runs on a bounded
+        per-connection read worker. The async completion sends the payload
+        with the shared success serializer and never touches subscription
+        state, so unwatch/disconnect races cannot gain a late subscription.
+        """
+        method = protocol.M_SESSIONS_WATCH
+        inbound = reply if reply is not None else connection.send
+        req_id = int(message.get("id") or 0)
+        params = message.get("p") if isinstance(message.get("p"), dict) else {}
+        started = time.perf_counter()
+        # Startup readiness defers exactly like handle(): no subscription, no
+        # slot taken, bounded waiter instead of blocking this channel.
+        if connection.paired:
+            wait_ready = getattr(self.hub, "wait_ready", None)
+            if wait_ready is not None and not wait_ready(0):
+                self._defer_startup_query(connection, message, wait_ready, reply=reply)
+                return
+        if not connection.read_slots.acquire(blocking=False):
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+            return
+
+        def release() -> None:
+            connection.read_slots.release()
+
+        try:
+            self._check_access(connection, method, params)
+        except ActionError as exc:
+            release()
+            inbound(protocol.error(req_id, exc.code, exc.message))
+            return
+        except Exception as exc:
+            release()
+            observe.event("remote_method_failed", method=method, error=str(exc))
+            inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+            return
+        try:
+            if self._subscribe(connection, protocol.CH_SESSIONS):
+                self.hub.watch_sessions()
+        except Exception as exc:
+            release()
+            observe.event("remote_method_failed", method=method, error=str(exc))
+            inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+            return
+
+        def run() -> None:
+            try:
+                if connection.closed:
+                    return
+                try:
+                    payload = self._sessions_list_payload(dict(params))
+                except ActionError as exc:
+                    try:
+                        inbound(protocol.error(req_id, exc.code, exc.message))
+                    except Exception:
+                        pass
+                    return
+                except Exception as exc:
+                    observe.event("remote_method_failed", method=method, error=str(exc))
+                    try:
+                        inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+                    except Exception:
+                        pass
+                    return
+                # Never re-subscribe here: watch/unwatch/disconnect may have
+                # run on the reader thread while this payload was in flight.
+                # Subscription state and hub counts were settled inline above.
+                try:
+                    self._send_success(connection, method, message, payload, inbound, started)
+                except Exception as exc:
+                    observe.event("remote_method_failed", method=method, error=str(exc))
+                    try:
+                        inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+                    except Exception:
+                        pass
+            finally:
+                release()
+
+        try:
+            threading.Thread(target=run, daemon=True, name="remote-watch-rpc").start()
         except RuntimeError:
             release()
             inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
@@ -809,37 +985,7 @@ class RemoteService:
             observe.event("remote_method_failed", method=method, error=str(exc))
             inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
             return
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        writer = self._writer_for_response(connection, method, inbound)
-        # plane 按响应实际写出的 socket 记：经 connection.data_send 发出即 data，
-        # 其余（控制面原路、未附着数据面、旧客户端）记 control。覆盖三种情形：
-        # 控制面大响应改道数据面、数据面进来的请求原路回数据面、控制面短 RPC
-        # 原路回控制面。半升级过渡态同样按实际写出归属。
-        data_send = connection.data_send
-        plane = "data" if (data_send is not None and writer is data_send) else "control"
-        self.record_rpc_timing(
-            connection, method, duration_ms, plane=plane, ok=True, req_id=req_id
-        )
-        response = protocol.response(req_id, data)
-        negotiate_compression = (
-            not connection.compression_enabled and self._requests_compression(message)
-        )
-        if negotiate_compression:
-            # 首个响应仍用裸 JSON 发出；写完后才切换，避免客户端还没收到协商结果就
-            # 按压缩格式解码。旧客户端不带 caps，因此始终维持原始载荷。
-            response["wire"] = {"version": 1, "compression": "deflate"}
-        writer = self._writer_for_response(connection, method, inbound)
-        try:
-            writer(response)
-        except Exception as exc:
-            observe.event("remote_response_send_failed", method=method, error=str(exc))
-            try:
-                connection.send(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
-            except Exception:
-                return
-            return
-        if negotiate_compression:
-            connection.compression_enabled = True
+        self._send_success(connection, method, message, data, inbound, started)
 
     @staticmethod
     def _writer_for_response(connection: Connection, method: str, inbound):
@@ -861,33 +1007,14 @@ class RemoteService:
         return isinstance(compression, list) and "deflate" in compression
 
     def _invoke(self, connection: Connection, method: str, params: dict):
-        # 每次请求都以磁盘为准：解绑立刻生效
-        if connection.paired and not self.is_known_device(connection.device_public_key):
-            self._kick(connection)
-            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_unpaired"))
-        if connection.paired:
-            connection.access = self.device_access(connection.device_public_key)
-
+        # 每次请求都以磁盘为准：解绑立刻生效（共享 _check_access）。
         if method == protocol.M_PAIR:
+            self._check_access(connection, method, params)
             return self._pair(connection, params)
         if method == protocol.M_HELLO:
+            self._check_access(connection, method, params)
             return self._hello(connection, params)
-        if not connection.paired:
-            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
-        wait_ready = getattr(self.hub, "wait_ready", None)
-        if (method not in _INDEX_INDEPENDENT_METHODS
-                and wait_ready is not None and not wait_ready(0)):
-            raise ActionError(protocol.E_UNAVAILABLE, t("remote.err.host_starting"))
-        if connection.access == "readonly" and (
-            method not in _READONLY_METHODS or shell_terminal.is_shell_key(params.get("key"))
-        ):
-            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
-        _reject_misplaced_shell_keys(method, params)
-        if method in _CONFIRM_METHODS and not bool(params.get("confirm")):
-            raise ActionError(
-                protocol.E_USAGE,
-                t("remote.err.need_confirm"),
-            )
+        self._check_access(connection, method, params)
         handler = _HANDLERS.get(method)
         if handler is None:
             raise NotImplementedError(method)

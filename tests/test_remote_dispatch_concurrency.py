@@ -39,11 +39,16 @@ class _DispatchHub:
     def __init__(self) -> None:
         self.slow_started = threading.Event()
         self.release_slow = threading.Event()
+        self.list_started = threading.Event()
+        self.release_list = threading.Event()
         self.active_reads = 0
         self.max_active_reads = 0
         self.attach_calls: list[tuple] = []
         self.inputs: list[bytes] = []
         self.sent_text: list[tuple] = []
+        self.watch_calls = 0
+        self.unwatch_calls = 0
+        self.ready = True
         self._lock = threading.Lock()
 
     # -- slow read (session.get is whitelisted) --------------------------
@@ -65,10 +70,34 @@ class _DispatchHub:
         return {"cols": cols, "rows": rows}
 
     def terminal_input(self, key, data, viewer="", *, passive=False):
-        self.inputs.append(data)
+        with self._lock:
+            self.inputs.append(data)
 
     def send_text(self, key, text, submit):
         self.sent_text.append((key, text, submit))
+
+    # -- sessions.list/watch payload: blocked to prove head-of-line --------
+    def list_snapshot(self, query: str = "", limit: int = 0,
+                      since_version: str = "", retained_keys=None) -> dict:
+        self.list_started.set()
+        self.release_list.wait(10.0)
+        return {"sessions": [], "version": "v1"}
+
+    def list_sessions(self, query: str = "", limit: int = 0) -> list:
+        self.list_started.set()
+        self.release_list.wait(10.0)
+        return []
+
+    def watch_sessions(self) -> None:
+        with self._lock:
+            self.watch_calls += 1
+
+    def unwatch_sessions(self) -> None:
+        with self._lock:
+            self.unwatch_calls += 1
+
+    def wait_ready(self, timeout: float) -> bool:
+        return self.ready
 
 
 class _ChannelFixture(unittest.TestCase):
@@ -110,6 +139,7 @@ class _ChannelFixture(unittest.TestCase):
         self.channel._owns_logical_connection = False
         self.addCleanup(self._stop_channel)
         self.addCleanup(self.hub.release_slow.set)
+        self.addCleanup(self.hub.release_list.set)
 
     def _record(self, message: dict) -> None:
         with self.changed:
@@ -227,6 +257,188 @@ class HeadOfLineTests(_ChannelFixture):
         self.assertTrue(self._response(1)["ok"])
 
 
+class SessionsListHeadOfLineTests(_ChannelFixture):
+    """sessions.list/watch payloads must not hold the serial channel.
+
+    C1: list payload construction belongs on the bounded per-connection
+    read workers; watch keeps subscribe/unsubscribe inline in arrival order
+    while only its payload runs off-thread. Async completion must never
+    re-subscribe after unwatch/disconnect.
+    """
+
+    def _slots_in_use(self) -> int:
+        return service_module._MAX_CONCURRENT_READS - self.connection.read_slots._value  # type: ignore[attr-defined]
+
+    def test_blocked_sessions_list_does_not_delay_terminal_input(self) -> None:
+        self._send(1, protocol.M_SESSIONS_LIST, {})
+        self.assertTrue(self.hub.list_started.wait(2.0), "list payload never started")
+
+        started = time.perf_counter()
+        self._send(2, protocol.M_TERMINAL_INPUT, {"key": "codex:live", "data": "YQ=="})
+        self._send(3, protocol.M_TERMINAL_INPUT, {"key": "codex:live", "data": "Yg=="})
+        second = self._response(2, timeout=_FOLLOWING_FRAME_BOUND)
+        third = self._response(3, timeout=_FOLLOWING_FRAME_BOUND)
+        elapsed = time.perf_counter() - started
+
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(third["ok"], third)
+        self.assertLess(elapsed, _FOLLOWING_FRAME_BOUND)
+        self.assertEqual(self.hub.inputs, [b"a", b"b"])
+        self.assertNotIn(1, self._response_ids())
+
+        self.hub.release_list.set()
+        first = self._response(1)
+        self.assertTrue(first["ok"], first)
+
+    def test_blocked_watch_payload_does_not_delay_input(self) -> None:
+        self._send(1, protocol.M_SESSIONS_WATCH, {})
+        self.assertTrue(self.hub.list_started.wait(2.0), "watch payload never started")
+
+        started = time.perf_counter()
+        self._send(2, protocol.M_TERMINAL_INPUT, {"key": "codex:live", "data": "YQ=="})
+        typed = self._response(2, timeout=_FOLLOWING_FRAME_BOUND)
+        elapsed = time.perf_counter() - started
+
+        self.assertTrue(typed["ok"], typed)
+        self.assertLess(elapsed, _FOLLOWING_FRAME_BOUND)
+        self.assertEqual(self.hub.inputs, [b"a"])
+        # Subscribe happened inline, in arrival order, before the payload.
+        self.assertIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 1)
+
+        self.hub.release_list.set()
+        watched = self._response(1)
+        self.assertTrue(watched["ok"], watched)
+
+    def test_watch_then_unwatch_never_resubscribes_late(self) -> None:
+        self._send(1, protocol.M_SESSIONS_WATCH, {})
+        self.assertTrue(self.hub.list_started.wait(2.0), "watch payload never started")
+        self.assertIn(protocol.CH_SESSIONS, self.connection.channels)
+
+        self._send(2, protocol.M_SESSIONS_UNWATCH, {})
+        unwatch = self._response(2, timeout=_FOLLOWING_FRAME_BOUND)
+        self.assertTrue(unwatch["ok"], unwatch)
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 1)
+            self.assertEqual(self.hub.unwatch_calls, 1)
+
+        self.hub.release_list.set()
+        watched = self._response(1, timeout=5.0)
+        self.assertTrue(watched["ok"], watched)
+        # Async completion must not re-subscribe after unwatch.
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 1)
+            self.assertEqual(self.hub.unwatch_calls, 1)
+
+    def test_watch_then_disconnect_never_resubscribes(self) -> None:
+        self._send(1, protocol.M_SESSIONS_WATCH, {})
+        self.assertTrue(self.hub.list_started.wait(2.0), "watch payload never started")
+
+        self.service.detach(self.connection)
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            watch_calls = self.hub.watch_calls
+            unwatch_calls = self.hub.unwatch_calls
+        self.assertEqual(watch_calls, 1)
+        self.assertEqual(unwatch_calls, 1)
+
+        self.hub.release_list.set()
+        time.sleep(0.3)
+        # No late subscription after disconnect; counts stay balanced.
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, watch_calls)
+            self.assertEqual(self.hub.unwatch_calls, unwatch_calls)
+        # Slot was released: a fresh connection is unaffected.
+        self.assertEqual(self._slots_in_use(), 0)
+
+    def test_duplicate_watch_keeps_single_subscription(self) -> None:
+        self._send(1, protocol.M_SESSIONS_WATCH, {})
+        self.assertTrue(self.hub.list_started.wait(2.0), "watch payload never started")
+        self.hub.list_started.clear()
+
+        self._send(2, protocol.M_SESSIONS_WATCH, {})
+        self.hub.list_started.wait(2.0)
+        # Both payloads share the release gate; both must complete without a
+        # second hub subscription.
+        self.hub.release_list.set()
+        first = self._response(1, timeout=5.0)
+        second = self._response(2, timeout=5.0)
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 1)
+            self.assertEqual(self.hub.unwatch_calls, 0)
+
+    def test_unpaired_watch_gets_no_subscription_no_slot_leak(self) -> None:
+        self.connection.paired = False
+        self._send(1, protocol.M_SESSIONS_WATCH, {})
+        denied = self._response(1, timeout=3.0)
+        self.assertFalse(denied["ok"], denied)
+        self.assertEqual(denied["e"]["code"], protocol.E_UNAUTHORIZED)
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 0)
+        self.assertFalse(self.hub.list_started.is_set())
+        self.assertEqual(self._slots_in_use(), 0)
+
+    def test_revoked_watch_gets_no_subscription_no_slot_leak(self) -> None:
+        with mock.patch.object(self.service, "is_known_device", return_value=False):
+            self._send(1, protocol.M_SESSIONS_WATCH, {})
+            denied = self._response(1, timeout=3.0)
+        self.assertFalse(denied["ok"], denied)
+        self.assertEqual(denied["e"]["code"], protocol.E_UNAUTHORIZED)
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 0)
+        self.assertFalse(self.hub.list_started.is_set())
+        self.assertEqual(self._slots_in_use(), 0)
+
+    def test_startup_watch_defers_without_subscription_or_slot_leak(self) -> None:
+        self.hub.ready = False
+        try:
+            self._send(1, protocol.M_SESSIONS_WATCH, {})
+            denied = self._response(1, timeout=20.0)
+        finally:
+            self.hub.ready = True
+        self.assertFalse(denied["ok"], denied)
+        self.assertEqual(denied["e"]["code"], protocol.E_UNAVAILABLE)
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 0)
+        self.assertFalse(self.hub.list_started.is_set())
+        self.assertEqual(self._slots_in_use(), 0)
+
+    def test_saturated_watch_is_unavailable_without_subscription(self) -> None:
+        bound = service_module._MAX_CONCURRENT_READS
+        for req_id in range(10, 10 + bound):
+            self._send(req_id, protocol.M_SESSION_GET, {"key": f"codex:{req_id}"})
+        self._wait_for(lambda: self.hub.max_active_reads == bound, timeout=10.0)
+
+        self._send(1, protocol.M_SESSIONS_LIST, {})
+        rejected = self._response(1, timeout=3.0)
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertEqual(rejected["e"]["code"], protocol.E_UNAVAILABLE)
+        self.assertFalse(self.hub.list_started.is_set())
+
+        self._send(2, protocol.M_SESSIONS_WATCH, {})
+        rejected_watch = self._response(2, timeout=3.0)
+        self.assertFalse(rejected_watch["ok"], rejected_watch)
+        self.assertEqual(rejected_watch["e"]["code"], protocol.E_UNAVAILABLE)
+        self.assertNotIn(protocol.CH_SESSIONS, self.connection.channels)
+        with self.hub._lock:
+            self.assertEqual(self.hub.watch_calls, 0)
+
+        self.hub.release_slow.set()
+        for req_id in range(10, 10 + bound):
+            self.assertTrue(self._response(req_id)["ok"])
+        self.assertEqual(self._slots_in_use(), 0)
+
+
 class WhitelistTests(unittest.TestCase):
     def test_only_slow_read_only_methods_are_offloaded(self) -> None:
         self.assertEqual(
@@ -243,9 +455,13 @@ class WhitelistTests(unittest.TestCase):
                 protocol.M_PROJECTS_LIST,
                 protocol.M_RUNTIMES_LIST,
                 protocol.M_TERMINAL_PEEK,
+                protocol.M_SESSIONS_LIST,
             }),
         )
         # Ordering-sensitive frames must never move off the reader thread.
+        # sessions.watch/unwatch keep subscribe/unsubscribe inline (C1 split:
+        # only the watch payload runs off-thread); they must never join the
+        # generic read whitelist.
         for method in (
             protocol.M_INPUT_TEXT,
             protocol.M_INPUT_KEYS,
@@ -258,6 +474,8 @@ class WhitelistTests(unittest.TestCase):
             protocol.M_TERMINAL_PROMPT,
             protocol.M_SESSION_WATCH,
             protocol.M_SESSION_UNWATCH,
+            protocol.M_SESSIONS_WATCH,
+            protocol.M_SESSIONS_UNWATCH,
             protocol.M_SESSION_MARK_READ,
             protocol.M_LAYOUT_WATCH,
             protocol.M_SESSION_NEW,
