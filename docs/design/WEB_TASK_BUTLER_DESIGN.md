@@ -897,6 +897,36 @@ Decisions for the owner at freeze:
 
 ### 10.1 Page preview (slice 4 front end, built 2026-11-03)
 
+> **Owner correction (2026-11-03, after trying the hosted page on a phone):** "做减法" — the
+> page had too much chrome and too many states, and the hand-written discussion view worked
+> poorly on mobile. Adopted the same day:
+> 1. **Three states are shown**: *waiting for you* (amber; failed or stalled work that needs
+>    the owner's decision is folded into it), *working* (a faint dot), *done* (green check).
+>    Withdrawn text keeps only its strikethrough; pure discussion shows nothing. The §3.1
+>    model is unchanged; this is only how it is presented.
+> 2. **Removed**: top-bar status chips, the right rail of pills (one marker at the sentence
+>    end instead), the settle countdown ring and "Reading" pill (a brief acknowledgement on
+>    take-up only), and the panel's "Now" card and task list (one progress line under the
+>    quote; details on demand). "Pick up here" lists only waiting items and new results and
+>    disappears when empty.
+> 3. **The discussion uses a maintained chat component**: React + assistant-ui primitives
+>    with our own styling, replacing the hand-written list and composer. On phones the
+>    discussion is a full-height bottom sheet with the composer kept above the keyboard,
+>    accepted on a physical phone.
+> Bullets below that describe the rail, chips, countdown and "Now" card are superseded.
+> Implementation (same day): React 19 + `@assistant-ui/react` 0.15.32 (MIT; github.com/assistant-ui/assistant-ui).
+> Reused: `useExternalStoreRuntime` over our own messages (owner → `user`, coordinator →
+> `assistant`, question/result kinds in `metadata.custom`), `ThreadPrimitive` Root/Viewport/
+> Messages/ViewportFooter (auto-scroll), `ComposerPrimitive` Input/Send (Enter to send,
+> IME composition guarded, autosize). Not reused: its default styles, thread list, branching,
+> edit/reload and attachments. Phones: the sheet tracks `visualViewport` height/offset so the
+> composer stays above the keyboard; page scroll is locked while it is open. Markdown on the
+> canvas uses `markdownLanguage` only (no embedded code/HTML parsers). Bundle ≈ 921 kB
+> minified / 295 kB gzip. `skipLibCheck` is on because `@radix-ui/primitive`'s published
+> declarations reference Node's `setImmediate`; adding Node globals to a browser app would
+> be worse; our own sources stay fully type-checked. Follow-up: drop it when Radix fixes
+> its types.
+
 The owner asked for the page first, polished for a future general audience. It lives in
 `cli/web/ideas/` and has no user-facing entry yet (slice 5 adds `corral ideas`).
 

@@ -1,6 +1,6 @@
 // Page state: day sections (newest first) and discussions. Persisted locally so a
 // closed tab never loses the draft. Transient view state is kept out of storage.
-import { useEffect, useState } from "preact/hooks";
+import { useSyncExternalStore } from "react";
 import { dayKey, defaultOpen } from "./dates";
 import { DaySection, Message, Span, Thread, newId } from "./model";
 
@@ -55,7 +55,9 @@ export class Store {
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
   }
 
   private set(next: Partial<State>, persist = true): void {
@@ -162,7 +164,8 @@ export class Store {
 
 /** Subscribe a component to the store; re-renders on every change. */
 export function useStore(store: Store): State {
-  const [, force] = useState(0);
-  useEffect(() => store.subscribe(() => force((n) => n + 1)), [store]);
-  return store.state;
+  return useSyncExternalStore(
+    (fn) => store.subscribe(fn),
+    () => store.state,
+  );
 }

@@ -48,6 +48,10 @@ const en = {
   question: "Question",
   account: "Account",
   signOut: "Sign out",
+  "presence.waiting": "Waiting for you",
+  "presence.working": "Working",
+  "presence.done": "Done",
+  "presence.withdrawn": "Withdrawn",
 } as const;
 
 export type Key = keyof typeof en;
@@ -99,6 +103,10 @@ const zh: Record<Key, string> = {
   question: "提问",
   account: "账号",
   signOut: "退出登录",
+  "presence.waiting": "等你回复",
+  "presence.working": "进行中",
+  "presence.done": "已完成",
+  "presence.withdrawn": "已撤回",
 };
 
 function detect(): "en" | "zh" {

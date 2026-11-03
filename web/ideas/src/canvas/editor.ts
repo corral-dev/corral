@@ -12,18 +12,20 @@ import {
   placeholder as placeholderExt,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, redo, undo } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { markdownLanguage } from "@codemirror/lang-markdown";
+import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import type { ThreadStatus } from "../model";
+import type { Presence } from "../model";
 
 export interface SpanView {
   threadId: string;
   from: number;
   to: number;
-  status: ThreadStatus;
+  status: Presence;
   active: boolean;
   unread: boolean;
+  /** Just taken up: a brief acknowledgement, the only take-up feedback. */
+  fresh: boolean;
 }
 
 export interface PendingBlock {
@@ -50,7 +52,7 @@ export const spansField = StateField.define<SpanView[]>({
 class StatusWidget extends WidgetType {
   constructor(
     readonly threadId: string,
-    readonly status: ThreadStatus,
+    readonly status: Presence,
     readonly unread: boolean,
   ) {
     super();
@@ -80,11 +82,11 @@ function buildDecorations(spans: SpanView[]): DecorationSet {
   const sorted = [...spans].filter((s) => s.to > s.from).sort((a, b) => a.from - b.from);
   const ranges = [];
   for (const s of sorted) {
-    const cls = `cm-taken is-${s.status}${s.active ? " is-active" : ""}`;
+    const cls = `cm-taken is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`;
     // Taken text is read-only, so spelling marks there are only noise (project names).
     ranges.push(Decoration.mark({ class: cls, attributes: { "data-thread": s.threadId, spellcheck: "false" } }).range(s.from, s.to));
-    // Withdrawn and pure-discussion text needs no marker unless something new arrived.
-    if ((s.status === "withdrawn" || s.status === "discussed") && !s.unread) continue;
+    // Withdrawn and quiet text carries no marker; its look (or nothing) says enough.
+    if (s.status === "withdrawn" || s.status === "quiet") continue;
     ranges.push(Decoration.widget({ widget: new StatusWidget(s.threadId, s.status, s.unread), side: 1 }).range(s.to));
   }
   return Decoration.set(ranges, true);
@@ -253,7 +255,7 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
     history(),
     guardedHistory,
     keymap.of([...defaultKeymap, ...historyKeymap]),
-    markdown(),
+    new LanguageSupport(markdownLanguage),
     syntaxHighlighting(markdownStyle),
     EditorView.lineWrapping,
     EditorView.contentAttributes.of({ spellcheck: "true", autocapitalize: "sentences" }),

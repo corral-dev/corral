@@ -91,6 +91,18 @@ export function threadStatus(thread: Thread): ThreadStatus {
   return "withdrawn";
 }
 
+/** What the owner sees (owner correction 2026-11-03): three states plus quiet ends. */
+export type Presence = "waiting" | "working" | "done" | "withdrawn" | "quiet";
+
+export function presence(thread: Thread): Presence {
+  const s = threadStatus(thread);
+  if (s === "waiting" || s === "attention") return "waiting";
+  if (s === "working") return "working";
+  if (s === "done") return "done";
+  if (s === "withdrawn") return "withdrawn";
+  return "quiet";
+}
+
 export function isUnread(thread: Thread): boolean {
   return thread.messages.some((m) => m.author !== "owner" && m.at > thread.lastReadAt);
 }

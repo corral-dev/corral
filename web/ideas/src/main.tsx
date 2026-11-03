@@ -1,4 +1,4 @@
-import { render } from "preact";
+import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { loadAccount } from "./identity";
 import { lang, t } from "./i18n";
@@ -18,7 +18,7 @@ async function start(): Promise<void> {
   const store = Store.load(seed, account?.email ?? null);
   const coordinator = new PreviewCoordinator(store);
   const root = document.getElementById("app");
-  if (root) render(<App store={store} coordinator={coordinator} settleMs={settleMs} account={account} />, root);
+  if (root) createRoot(root).render(<App store={store} coordinator={coordinator} settleMs={settleMs} account={account} />);
 }
 
 void start();

@@ -1,11 +1,12 @@
-// Page shell: top bar, "pick up here", the day sections and the discussion panel.
-import { useEffect, useState } from "preact/hooks";
+// Page shell: a quiet top bar, "pick up here" when something needs the owner, the day
+// sections and the discussion sheet.
+import { useEffect, useState } from "react";
 import { DaySection } from "./canvas/DaySection";
-import { Panel } from "./discussion/Panel";
+import { Discussion } from "./discussion/Discussion";
 import { relativeTime, t } from "./i18n";
-import { Thread, ThreadStatus, hasUnreadResult, threadStatus } from "./model";
-import type { PreviewCoordinator } from "./preview";
 import { Account, signOutUrl } from "./identity";
+import { Thread, hasUnreadResult, presence } from "./model";
+import type { PreviewCoordinator } from "./preview";
 import { Store, useStore } from "./store";
 import iconUrl from "./assets/corral-icon.png";
 
@@ -25,12 +26,12 @@ export function App({ store, coordinator, settleMs, account }: Props) {
   }, []);
 
   const threads = Object.values(state.threads);
-  const openThread = state.openThreadId ? state.threads[state.openThreadId] ?? null : null;
+  const openThread = state.openThreadId ? (state.threads[state.openThreadId] ?? null) : null;
   return (
-    <div class={`app${openThread ? " has-panel" : ""}`}>
-      <TopBar store={store} threads={threads} account={account} />
-      <main class="stage">
-        <div class="page">
+    <div className={`app${openThread ? " has-panel" : ""}`}>
+      <TopBar account={account} />
+      <main className="stage">
+        <div className="page">
           <PickUp store={store} threads={threads} now={now} />
           {state.sections.map((s) => (
             <DaySection
@@ -45,40 +46,24 @@ export function App({ store, coordinator, settleMs, account }: Props) {
           ))}
         </div>
       </main>
-      <Panel store={store} thread={openThread} now={now} onReply={(id, text) => coordinator.onReply(id, text)} />
+      <Discussion store={store} thread={openThread} onReply={(id, text) => coordinator.onReply(id, text)} />
     </div>
   );
 }
 
-function TopBar({ store, threads, account }: { store: Store; threads: Thread[]; account: Account | null }) {
+function TopBar({ account }: { account: Account | null }) {
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 4);
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
-  const by = (s: ThreadStatus) => threads.filter((th) => threadStatus(th) === s);
-  const waiting = by("waiting");
-  const attention = by("attention");
-  const working = by("working");
-  const chips: [ThreadStatus, Thread[], string][] = [];
-  if (waiting.length) chips.push(["waiting", waiting, t("countWaiting", { n: waiting.length })]);
-  if (attention.length) chips.push(["attention", attention, t("countAttention", { n: attention.length })]);
-  if (working.length) chips.push(["working", working, t("countWorking", { n: working.length })]);
   return (
-    <header class={`topbar${scrolled ? " is-scrolled" : ""}`}>
-      <div class="brand">
+    <header className={`topbar${scrolled ? " is-scrolled" : ""}`}>
+      <div className="brand">
         <img src={iconUrl} alt="" width={24} height={24} />
         <span>{t("appName")}</span>
       </div>
-      <nav class="topbar-status" aria-live="polite">
-        {chips.map(([s, list, text]) => (
-          <button key={s} class={`chip is-${s} is-button`} onClick={() => store.openThread(newest(list).id)}>
-            <span class="dot" />
-            {text}
-          </button>
-        ))}
-      </nav>
       {account && <AccountMenu account={account} />}
     </header>
   );
@@ -90,25 +75,32 @@ function AccountMenu({ account }: { account: Account }) {
     if (!open) return;
     const close = (e: Event) => {
       if (e instanceof KeyboardEvent && e.key !== "Escape") return;
-      if (e instanceof MouseEvent && (e.target as HTMLElement).closest(".account")) return;
+      if (e instanceof PointerEvent && (e.target as HTMLElement).closest(".account")) return;
       setOpen(false);
     };
-    window.addEventListener("mousedown", close);
+    window.addEventListener("pointerdown", close);
     window.addEventListener("keydown", close);
     return () => {
-      window.removeEventListener("mousedown", close);
+      window.removeEventListener("pointerdown", close);
       window.removeEventListener("keydown", close);
     };
   }, [open]);
   return (
-    <div class="account">
-      <button class="account-button" aria-haspopup="menu" aria-expanded={open} aria-label={`${t("account")}: ${account.email}`} title={account.email} onClick={() => setOpen(!open)}>
+    <div className="account">
+      <button
+        className="account-button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${t("account")}: ${account.email}`}
+        title={account.email}
+        onClick={() => setOpen(!open)}
+      >
         {account.email.slice(0, 1).toUpperCase()}
       </button>
       {open && (
-        <div class="account-menu" role="menu">
-          <div class="account-email">{account.email}</div>
-          <a class="account-item" role="menuitem" href={signOutUrl()}>
+        <div className="account-menu" role="menu">
+          <div className="account-email">{account.email}</div>
+          <a className="account-item" role="menuitem" href={signOutUrl()}>
             {t("signOut")}
           </a>
         </div>
@@ -117,35 +109,25 @@ function AccountMenu({ account }: { account: Account }) {
   );
 }
 
-function newest(list: Thread[]): Thread {
-  return [...list].sort((a, b) => b.createdAt - a.createdAt)[0];
-}
-
-const PICKUP_RANK: Partial<Record<ThreadStatus, number>> = { waiting: 0, attention: 1 };
-
+/** Only what needs the owner: questions waiting for them, then results they have not read. */
 function PickUp({ store, threads, now }: { store: Store; threads: Thread[]; now: Date }) {
   const items = threads
-    .map((th) => ({ th, status: threadStatus(th), fresh: hasUnreadResult(th) }))
-    .filter((x) => x.status === "waiting" || x.status === "attention" || x.fresh)
-    .sort((a, b) => (PICKUP_RANK[a.status] ?? 2) - (PICKUP_RANK[b.status] ?? 2) || last(b.th) - last(a.th))
-    .slice(0, 6);
+    .map((th) => ({ th, waiting: presence(th) === "waiting", fresh: hasUnreadResult(th) }))
+    .filter((x) => x.waiting || x.fresh)
+    .sort((a, b) => Number(b.waiting) - Number(a.waiting) || last(b.th) - last(a.th))
+    .slice(0, 5);
   if (!items.length) return null;
   return (
-    <section class="pickup" aria-label={t("pickUp")}>
-      <h2 class="eyebrow">{t("pickUp")}</h2>
+    <section className="pickup" aria-label={t("pickUp")}>
+      <h2 className="eyebrow">{t("pickUp")}</h2>
       <ul>
-        {items.map(({ th, status, fresh }) => (
+        {items.map(({ th, waiting }) => (
           <li key={th.id}>
-            <button
-              class={`pickup-row is-${fresh && status !== "waiting" && status !== "attention" ? "done" : status}`}
-              onClick={() => store.openThread(th.id)}
-              onMouseEnter={() => store.hover(th.id)}
-              onMouseLeave={() => store.hover(null)}
-            >
-              <span class="dot" />
-              <span class="pickup-quote">{th.quote}</span>
-              <span class="pickup-label">{fresh && status !== "waiting" && status !== "attention" ? t("newResult") : t(`status.${status}`)}</span>
-              <span class="pickup-time">{relativeTime(last(th), now.getTime())}</span>
+            <button className={`pickup-row is-${waiting ? "waiting" : "done"}`} onClick={() => store.openThread(th.id)}>
+              <span className="dot" />
+              <span className="pickup-quote">{th.quote}</span>
+              <span className="pickup-label">{waiting ? t("presence.waiting") : t("newResult")}</span>
+              <span className="pickup-time">{relativeTime(last(th), now.getTime())}</span>
             </button>
           </li>
         ))}
