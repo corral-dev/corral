@@ -215,6 +215,8 @@ textarea:focus-visible {
   width: min(100%, var(--page-w));
   margin: 0 auto;
   transition: transform 0.36s var(--ease);
+  /* DayCanvas restores its own pre-commit anchor; do not apply a second browser adjustment. */
+  overflow-anchor: none;
 }
 
 .day-head {
@@ -224,7 +226,7 @@ textarea:focus-visible {
 /* ---- day sections ---------------------------------------------------------------- */
 
 .day + .day {
-  margin-top: 64px;
+  margin-top: max(64px, var(--rollover-gap, 0px));
 }
 .day.is-folded + .day.is-folded {
   margin-top: 0;
@@ -309,7 +311,7 @@ textarea:focus-visible {
   padding: 2px 0;
   caret-color: var(--ink);
 }
-.day.is-today .cm-content {
+.day.has-writing-room .cm-content {
   min-height: 168px;
 }
 .cm-line {

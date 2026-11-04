@@ -5,7 +5,8 @@
   "scripts": {
     "build": "esbuild src/main.tsx --bundle --format=esm --target=es2022 --jsx=automatic --jsx-import-source=react '--define:process.env.NODE_ENV=\"production\"' --minify --sourcemap --outdir=dist --loader:.png=file --asset-names=[name] --public-path=dist",
     "watch": "npm run build -- --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
+    "test": "playwright test"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -19,6 +20,8 @@
     "react-textarea-autosize": "^8.5.9"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "esbuild": "^0.28.2",

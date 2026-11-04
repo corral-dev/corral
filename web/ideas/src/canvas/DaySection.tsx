@@ -3,7 +3,7 @@
 // separate rail, countdown or reading indicator (owner correction 2026-11-03).
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { dayLabel } from "../dates";
 import { t } from "../i18n";
 import { DaySection as Section, isUnread, presence } from "../model";
@@ -57,16 +57,18 @@ function sameSpans(a: SpanView[], b: SpanView[]): boolean {
 }
 
 export function DaySection({ store, state, section, now, settleMs, onSettled }: Props) {
-  const open = store.isOpen(section, now);
+  const open = store.isOpen(section);
   const label = dayLabel(section.day, now);
   const isToday = label === t("today");
+  // Keep the writing area's height after midnight, including while another day is viewed.
+  const [writingRoom] = useState(isToday);
 
   return (
-    <section className={`day${open ? " is-open" : " is-folded"}${isToday ? " is-today" : ""}`} aria-label={label}>
+    <section data-day={section.day} className={`day${open ? " is-open" : " is-folded"}${writingRoom ? " has-writing-room" : ""}`} aria-label={label}>
       <button
         className="day-head"
         aria-expanded={open}
-        onClick={() => store.toggleSection(section.day, now)}
+        onClick={() => store.toggleSection(section.day)}
         title={open ? t("fold") : t("unfold")}
       >
         <Chevron open={open} />
@@ -91,8 +93,9 @@ function DayEditor({ store, state, section, settleMs, isToday, onSettled }: Edit
   const view = useRef<EditorView | null>(null);
   const day = section.day;
 
-  // Create the editor once per mount; the store is the persisted copy of its text.
-  useEffect(() => {
+  // Mount before the parent's scroll restoration measures the new day's full height.
+  // Retain the same editor, selection, composition and undo history across date changes.
+  useLayoutEffect(() => {
     if (!host.current) return;
     const v = new EditorView({
       parent: host.current,

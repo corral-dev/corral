@@ -1037,10 +1037,26 @@ Decisions for the owner at freeze:
 > "only today open by default" applies when opening the page, not as a live midnight reset,
 > and keeping an old day open during rollover is not a new remembered manual preference.
 > Existing text stays in its original section; ongoing input is not split or moved at midnight.
-> **Acceptance pending (design only):** with the caret active both at the page top and farther
-> down, cross midnight and verify unchanged visible-content/caret coordinates, uninterrupted
-> input and an off-screen new Today section; then explicitly scroll upward and write in it.
-> No implementation or runtime acceptance is claimed by this requirement.
+> **Implementation reference (2026-11-04):** reuse the inspected `ScrollingList` example in
+> React's [`getSnapshotBeforeUpdate`](https://react.dev/reference/react/Component#getsnapshotbeforeupdate)
+> documentation: capture an existing day's position before the DOM commit and compensate the
+> document scroll before paint, rather than replace editors or restore focus. Adapt its height
+> delta to an element anchor and reserve enough separation to keep the new day completely above
+> the viewport even at page top. Retain the existing editor's writing-room geometry; freeze
+> default expansion for the page lifetime without persisting it as a manual choice. Refresh at
+> local calendar midnight and on page return, with a bounded clock-change fallback.
+> **Implemented and verified (2026-11-04):** 55 regression cases pass across Chromium and
+> WebKit desktop/mobile viewports and Firefox desktop, plus calendar tests for DST, year and
+> leap-day boundaries. Tests exercise the built page: page-top and deep-scroll anchors, frame
+> samples through midnight, editor/selection identity, continued input, undo/redo, explicit
+> upward navigation, draft persistence, manual fold choices, repeated rollover, page-return
+> events, fallback clock refresh and discussion drafts. Native Chrome window captures were
+> inspected before/after rollover and after explicitly scrolling upward: the old editor stayed
+> at y=151 and its caret at y=157.5; the new day's bottom was y=-1 until that scroll. Short
+> pages reserve only the missing trailing scroll extent, remeasured after body min-height
+> slack, so compensation cannot be clamped. A synthetic composition event checks editor
+> continuity and absence of blur/end events; physical mobile keyboards and system IME remain
+> unverified. These are web-only changes; native clients/TUI have no Ideas surface.
 > **Quiet sentence states and moving taken text (owner, 2026-11-03):** taken text keeps the
 > ordinary text colour, except done (low-contrast grey) and withdrawn (grey, struck). No
 > green text and no tinted background. State is one same-size round icon at the sentence end:
@@ -1091,6 +1107,10 @@ The owner asked for the page first, polished for a future general audience. It l
   the folder on loopback, e.g. `python3 -m http.server 47811 --bind 127.0.0.1` from
   `cli/web/ideas`, then `index.html`. `?reset` reseeds, `?lang=en|zh` forces the
   language, `?settle=<s>` shortens the 60 s window for review only.
+- **Rollover regression tests.** Run `npm ci`, `npx playwright install chromium webkit firefox`,
+  then `npm run typecheck && npm run build && npm test` in `web/ideas/`. The suite uses
+  disposable per-account browser storage and a controlled browser clock, not real drafts,
+  credentials or a production coordinator. Test configuration and sources are type-checked too.
 - **Preview data.** `src/preview.ts` seeds sample days and runs a rule-based stand-in for
   the coordinator (take-up, one question, reply handling, completion with a result post);
   the draft is kept in browser storage. These rules exercise the interface only (§6.2).

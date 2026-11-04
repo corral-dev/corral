@@ -1,7 +1,7 @@
 // Page state: day sections (newest first) and discussions. Persisted locally so a
 // closed tab never loses the draft. Transient view state is kept out of storage.
 import { useSyncExternalStore } from "react";
-import { dayKey, defaultOpen } from "./dates";
+import { dayKey } from "./dates";
 import { DaySection, Message, Span, Thread, newId } from "./model";
 
 export interface Reading {
@@ -16,6 +16,7 @@ export interface State {
   openThreadId: string | null;
   hoverThreadId: string | null;
   reading: Reading[];
+  now: Date;
 }
 
 const STORAGE_PREFIX = "corral.ideas.preview.v1";
@@ -31,13 +32,23 @@ export class Store {
   state: State;
   private listeners = new Set<Listener>();
   private saveTimer = 0;
+  private readonly defaultOpenDays = new Set<string>();
 
   constructor(
     initial: Pick<State, "sections" | "threads">,
     private readonly key: string,
   ) {
-    this.state = { ...initial, openThreadId: null, hoverThreadId: null, reading: [] };
-    this.ensureToday();
+    const now = new Date();
+    const today = dayKey(now);
+    this.defaultOpenDays.add(today);
+    const sections = initial.sections.some((s) => s.day === today)
+      ? initial.sections
+      : [{ day: today, text: "", spans: [] }, ...initial.sections];
+    this.state = {
+      ...initial,
+      sections: [...sections].sort((a, b) => b.day.localeCompare(a.day)),
+      openThreadId: null, hoverThreadId: null, reading: [], now,
+    };
     this.watchPageExit();
   }
 
@@ -90,21 +101,25 @@ export class Store {
     });
   }
 
-  private ensureToday(): void {
-    const today = dayKey(new Date());
-    if (!this.state.sections.some((s) => s.day === today)) {
-      this.state.sections = [{ day: today, text: "", spans: [] }, ...this.state.sections];
-    }
-    this.state.sections = [...this.state.sections].sort((a, b) => (a.day < b.day ? 1 : -1));
+  /** Update the clock and add only the current day, without changing existing view defaults. */
+  refreshDay(now = new Date()): void {
+    const today = dayKey(now);
+    const added = !this.state.sections.some((s) => s.day === today);
+    if (added) this.defaultOpenDays.add(today);
+    const sections = added
+      ? [{ day: today, text: "", spans: [] }, ...this.state.sections].sort((a, b) => b.day.localeCompare(a.day))
+      : this.state.sections;
+    // Publish date and sections together so the newly mounted editor sees the correct day.
+    this.set({ now, sections }, added);
   }
 
   section(day: string): DaySection | undefined {
     return this.state.sections.find((s) => s.day === day);
   }
 
-  /** Owner's choice first; otherwise only today is open. */
-  isOpen(section: DaySection, now: Date): boolean {
-    return section.open ?? defaultOpen(section.day, now);
+  /** Manual choices persist; default expansion is frozen for this page's lifetime. */
+  isOpen(section: DaySection): boolean {
+    return section.open ?? this.defaultOpenDays.has(section.day);
   }
 
   private patchSection(day: string, patch: Partial<DaySection>): void {
@@ -118,9 +133,9 @@ export class Store {
     if (reading.length !== this.state.reading.length) this.set({ reading }, false);
   }
 
-  toggleSection(day: string, now: Date): void {
+  toggleSection(day: string): void {
     const s = this.section(day);
-    if (s) this.patchSection(day, { open: !this.isOpen(s, now) });
+    if (s) this.patchSection(day, { open: !this.isOpen(s) });
   }
 
   /**
@@ -164,9 +179,8 @@ export class Store {
     }
     const thread = this.state.threads[id];
     if (!thread) return;
-    const now = new Date();
     const sections = this.state.sections.map((s) =>
-      s.day === thread.day && !this.isOpen(s, now) ? { ...s, open: true } : s,
+      s.day === thread.day && !this.isOpen(s) ? { ...s, open: true } : s,
     );
     const threads = { ...this.state.threads, [id]: { ...thread, lastReadAt: Date.now() } };
     this.set({ openThreadId: id, threads, sections });
