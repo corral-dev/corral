@@ -114,8 +114,9 @@ coordinator proposals in this document remain outside that bounded CLI work.
     in only one panel or require a separate upload-first workflow. Existing taken-up content
     remains read-only; this requirement does not reopen it. Browser feasibility, the proposed
     shared editor, local persistence, synchronization and worker delivery are specified in
-    [Ideas mixed input](IDEAS_MIXED_INPUT_DESIGN.md). Only this requirement is adopted;
-    that document's implementation choices remain proposals pending design review.
+    [Ideas mixed input](IDEAS_MIXED_INPUT_DESIGN.md). The owner approved its local-preview
+    development contract; §15 records implementation, independent reviews, deployed behavior
+    and remaining acceptance. Backend replication and real-worker delivery remain future work.
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -1155,8 +1156,12 @@ The owner asked for the page first, polished for a future general audience. It l
 input coverage, browser clipboard limits, shared CodeMirror editing, Markdown asset references,
 attachment-aware take-up, local drafts, account isolation, synchronization, safe storage and
 verified worker delivery. It extends the minimal page rather than replacing the canvas with
-posts or the forum with chat. The current preview still has no attachment implementation or
-backend; neither the design nor its acceptance plan is evidence that those capabilities ship.
+posts or the forum with chat. The local-preview implementation is deployed: canvas,
+comments and replies share mixed input, account-scoped durable originals, preview/download
+and export, while preserving frozen source and dragging. It has no replication backend or
+real-worker attachment delivery. Actual evidence and the still-open physical-device and
+hosted-pixel acceptance limits are recorded in that document's §15; the future service design
+is not a claim that those backend capabilities ship.
 
 ## 11. References
 
