@@ -280,6 +280,7 @@ live in SessKit.
 
 ### 10.5 Platforms (owner requirement 2026-11-04)
 
+
 `npx agentflex` supports macOS, Linux and Windows (x64 and arm64 builds per
 npm platform package). History discovery must use each runtime's actual
 Windows location, not a POSIX path joined by hand. Windows acceptance runs on
@@ -289,3 +290,30 @@ SSH is down) with real assistant histories created there, plus a
 Corral's own decision not to support Windows
 ([Windows compatibility](WINDOWS_COMPATIBILITY_DESIGN.md)); `corral flex`
 remains a macOS/Linux entry point that runs the same engine.
+
+### 10.6 Implementation status (2026-11-04)
+
+- Engine: `~/Codes/SessKit/crates/sesskit-stats` (Rust, rayon, window
+  pruning); owner's 7-day window in 0.36–0.52 s versus 15–25 s for the Python
+  version. Parity against the Python reference is in progress.
+- Card program: `~/Codes/AgentFlex` (private Forgejo `Max/agentflex` until the
+  public repository exists): Rust, crossterm frame diffing, same 72×19 grid for
+  terminal and PNG, embedded Spleen subset and `flate2` PNG encoding.
+  Card content follows §10.2 and the hero decision: `CODING WEEK`, a
+  square-pixel 6×7 bitmap font for the token total (two pixel rows per cell),
+  sessions / tokens per day / peak parallel, agent bar, weekday × hour heatmap.
+  Storyboard: border light, title typing, slot-machine hero digits locking
+  left to right with a white flash, count-up, bar sweep, legend fade, heatmap
+  wave, peak typing, finale beams over the values and heatmap rows, idle
+  shimmer across the hero. Verified in a real iTerm window by sequential
+  replay captures.
+- Distribution scaffolding: npm main package with a Node launcher plus six
+  platform packages, release/CI workflows for macOS, Linux (static musl) and
+  Windows (x64, arm64). Publishing needs the owner's npm login and a public
+  GitHub repository.
+- `corral flex` (planned): runs the installed `agentflex` binary when present,
+  otherwise `npx -y agentflex`; the Homebrew tap gains an `agentflex` formula
+  that Corral's formula depends on. The Python `corral wrap` implementation
+  (`wrap_*.py`, `ui/wrap_app.py`) and its README section are removed in the
+  same change, once `agentflex` is published, so the README never points at an
+  unavailable command.
