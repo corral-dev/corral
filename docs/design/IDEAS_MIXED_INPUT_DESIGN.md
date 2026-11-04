@@ -787,7 +787,7 @@ four browser download/readback cases cover URI-looking labels and unmatched pare
 
 ### Deployment and remaining acceptance
 
-Source `1379d38` is committed and pushed to Forgejo and GitHub, and deployed through the
+Source `9944cda` is committed and pushed to Forgejo and GitHub, and deployed through the
 maintained Infrastructure `ideas-web/deploy.sh` to `https://ideas.caozc.com`. The documented
 SSH fallback was needed; no SSH or proxy policy was changed. Active container JS/CSS hashes
 match the local build. Public root and asset requests remain authentication-gated (302),
@@ -806,4 +806,5 @@ as high entropy. It decodes to the fixed 1×1 test image, not a credential or us
 No ignore rule or gate weakening was added. Recheck its contents if that fixture changes.
 
 The URL-only export correction passed the updated 190-test matrix and a fresh native local
-capture; its deployment readback will supersede the initial source stamp above.
+capture (`final-current-visual.png`). Its active mounted JS/CSS hashes match the current build,
+and `deploy-current.log` records the installed source stamp.
