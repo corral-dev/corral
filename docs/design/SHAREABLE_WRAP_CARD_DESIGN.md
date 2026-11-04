@@ -1,7 +1,7 @@
 # Shareable wrap card design (`corral wrap`)
 
-Status: direction approved by the owner on 2026-11-04; not implemented. Open
-product decisions are listed in §6 and must be settled before coding.
+Status: direction and product decisions approved by the owner on 2026-11-04;
+implementation in progress.
 
 ## 1. Decision and why
 
@@ -66,11 +66,16 @@ never silently treated as zero.
 - Terminal rendering follows the terminal UI knowledge base and the global UI
   standards; visual acceptance needs an inspected fresh capture.
 
-## 6. Open product decisions
+## 6. Product decisions (owner, 2026-11-04)
 
-1. Whether tokens and recorded cost appear on the card.
-2. Default period (week, month or all retained history).
-3. Output: terminal card only, or also an exported image for posting.
+1. **Tokens yes, money no.** The card shows native token totals with their
+   coverage. It shows no monetary amount, recorded or estimated.
+2. **Default period: last 7 days.** `--month` (30 days) and `--all` (all
+   retained history) are explicit options. Claude keeps about 30 days of
+   transcripts by default, so longer periods disclose each runtime's coverage.
+3. **Output: terminal card plus image export.** The terminal card is the
+   default; an export option writes a 1200×630 social image built from the
+   same aggregated values, never a separately computed set.
 
 ## 7. Market context (searched 2026-11-04)
 
