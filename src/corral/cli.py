@@ -446,6 +446,12 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in agent_api.COMMAND_ROOT_NAMES:
         sys.exit(agent_api.dispatch(sys.argv[1:]))
 
+    # `corral wrap`: shareable animated usage card (own parser, TUI or PNG/JSON output).
+    if len(sys.argv) > 1 and sys.argv[1] == "wrap":
+        from corral import wrap_cmd
+
+        sys.exit(wrap_cmd.main(sys.argv[2:]))
+
     # `corral update`：手动触发客户端自动更新，不放进只读的 agent_api。
     if len(sys.argv) > 1 and sys.argv[1] == "update":
         build_update_parser().parse_args(sys.argv[2:])

@@ -1,7 +1,8 @@
 # Shareable wrap card design (`corral wrap`)
 
-Status: direction and product decisions approved by the owner on 2026-11-04;
-implementation in progress.
+Status: implemented 2026-11-04 (`src/corral/wrap_stats.py`, `wrap_card.py`,
+`wrap_png.py`, `wrap_cmd.py`, `ui/wrap_app.py`; tests `tests/test_wrap.py`).
+Verification evidence is in §9.
 
 ## 1. Decision and why
 
@@ -45,7 +46,10 @@ All values come from real parsed output. Unsupported or unreadable sessions
 are counted and disclosed on the card (for example "2 sessions not readable"),
 never silently treated as zero.
 
-- **Sessions:** sessions with at least one activity event inside the period.
+- **Sessions:** sessions with at least one activity event inside the period,
+  taken from Corral's listing. That listing drops sessions whose working
+  directory no longer exists; on 2026-11-04 those were 99 sessions in deleted
+  temporary directories (test harness runs), so they are excluded on purpose.
 - **Agent share:** percentage of those sessions per runtime.
 - **Tool calls:** `tool_call` events inside the period.
 - **Tokens:** SessKit usage records carry no timestamp, so in-period tokens
@@ -101,20 +105,46 @@ apply to a 72×19 widget).
 | Agents | 1.2–2.0 s | Bar grows left to right with a bright leading edge; legend items fade in one by one |
 | Heatmap | 1.6–2.8 s | Cells pop in a diagonal wave (hour + 2 × day), one bright frame then settle |
 | Peak | 2.6–3.2 s | The peak-hour cell blinks gold; the peak detail types in |
+| Beams | 2.9–3.6 s | Two gold light beams sweep across card rows and light the characters they pass (finale inspired by TTE Beams) |
 | Idle | after | A diagonal shimmer crosses the logo every 4 s; the timer sleeps between shimmers |
 
 Keys: `s` save image, `r` replay, `q` / `Esc` quit. Reduced motion
 (`TEXTUAL_ANIMATIONS=none`), `--no-anim` and non-TTY output render the final
 frame directly.
 
-### 5.3 Image export
+### 5.3 Motion engine selection (researched 2026-11-04)
+
+Corral draws the storyboard with its own frame function over the cell grid,
+borrowing effect vocabulary from mature terminal effect libraries instead of
+embedding one:
+
+- [TerminalTextEffects](https://github.com/ChrisBuilds/terminaltexteffects)
+  (Python, MIT, zero dependencies, about 40 effects) was evaluated on the real
+  colored card in an isolated environment. It preserves foreground and
+  background colors, but costs about 20 ms per frame on a 72×19 card, runs long
+  (Beams 367 frames, Decrypt 1,615 frames), emits cursor-addressed ANSI strings
+  that would need re-parsing into Textual segments, and cannot express
+  data-driven motion (count-up, bar growth, heatmap wave). Corral's frame
+  function measured 1.1 ms per frame.
+- [tachyonfx](https://github.com/ratatui/tachyonfx) (Rust/Ratatui) supplies
+  the vocabulary: coalesce (logo decode), sweep-in (agent bar), diagonal
+  pattern (heatmap wave), fade (legend). TTE Beams inspires the finale.
+- Other surveyed engines ([sysc-Go](https://github.com/Nomadcxx/sysc-Go),
+  [tui-vfx](https://lib.rs/crates/tui-vfx)) are Go/Rust and not embeddable in
+  Corral's Python TUI.
+
+### 5.4 Image export
 
 `s` or `--png PATH` writes the final frame at 1200×630: the 72×19 grid
 rendered at 16×32 pixels per cell, centered. No new dependency: an embedded
 glyph subset of the BSD-2-Clause [Spleen](https://github.com/fcambus/spleen)
 16×32 bitmap font (license retained beside the data) and a standard-library
-`zlib` PNG encoder. Pillow was rejected because Homebrew's Pillow pulls ten
-native libraries for every Corral user. Default path is
+`zlib` PNG encoder. Rejected alternatives: Pillow (Homebrew's Pillow pulls
+ten native libraries for every Corral user); Textual/Rich SVG screenshot plus a
+rasterizer (CairoSVG needs native Cairo, a headless browser is far heavier, and
+social platforms do not accept SVG). Spleen was chosen over other permissive
+bitmap fonts because it ships a native 16×32 size, which fits the 72×19 grid
+into 1200×630 without scaling. Default path is
 `corral-wrap-YYYYMMDD.png` in the current directory.
 
 ## 6. Card content constraints
@@ -152,3 +182,31 @@ parallel-session work, so those metrics lead the card. The inspected
 references (claude-code-wrapped, agent-wrapped; cloned 2026-11-04) are static;
 Corral reuses only their label/value column and activity-heatmap layout idea,
 no code, and differentiates with motion.
+
+## 9. Implementation notes and verification (2026-11-04)
+
+- **Worker processes.** Per-session reads run in a `ProcessPoolExecutor`
+  (291 sessions: 4.5 s versus 17.6 s sequential). Textual replaces
+  `sys.stderr` with a capture whose `fileno()` is -1, and a multiprocessing
+  resource tracker first started inside the app fails with
+  `ValueError: bad value(s) in fds_to_keep` (found in the real terminal run).
+  `wrap_stats.prepare_workers()` starts the tracker before the TUI; regression
+  `WorkerPoolTests`. Spawned workers re-import the entry module, so any script
+  that calls `collect` needs a `__main__` guard (the installed entry points
+  have one).
+- **Scan.** Corral's listing with a 1,000-per-runtime limit, widened ×4 for a
+  runtime whose oldest returned session is still inside the period. A cold
+  derived cache makes the first scan 10–25 s; warm runtime scans take under
+  1 s. The loading frame says "scanning history" until totals are known.
+- **Frame timing (headless, real data).** 25.5 s load with 729 loading frames,
+  maximum gap 0.12 s (the UI keeps animating while reading); 122 reveal frames,
+  maximum gap 44 ms.
+- **Real terminal (iTerm, locked session with wake loop).** Sequential frames
+  after `r` showed the border light, logo decode with white flashes, count-up,
+  agent bar sweep with leading edge, heatmap diagonal wave, peak typing and the
+  finale beam, then the idle logo shimmer; `s` wrote the PNG and the hint line
+  showed its absolute path; the PNG equals the final terminal frame. Identical
+  consecutive captures occurred while the locked display blinked off; the
+  headless timing above shows the app itself kept rendering.
+- **Exported file mode** follows the user's umask (mkstemp's 0600 is widened),
+  since the image is meant to be shared.

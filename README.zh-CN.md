@@ -110,6 +110,18 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 </details>
 
+## 晒出你的一周
+
+`corral wrap` 播放一张动态卡片，汇总最近 7 天所有助手的会话数、工具调用、token、最高并行会话数、各助手占比，以及按星期和小时排布的活跃热力图。按 `s` 保存 1200×630 PNG 用来分享，`r` 重播，`q` 退出。全部在本机读取，不上传任何数据。
+
+```bash
+corral wrap            # 最近 7 天
+corral wrap --month    # 或 --all
+corral wrap --png week.png
+```
+
+![使用示例数据的 corral wrap 动态卡片](docs/screenshots/wrap.gif)
+
 ## 用 Mac 或 iPhone 接着做
 
 原生应用与终端看到的是同一批会话：并排查看对话、追问或回答提问，都不用打开终端。

@@ -110,6 +110,18 @@ Sidebar shortcuts apply while the sidebar has focus. The footer shows actions av
 
 </details>
 
+## Share your week
+
+`corral wrap` plays an animated card of the last 7 days across every assistant: sessions, tool calls, tokens, peak parallel sessions, agent share and an hour-by-day activity map. Press `s` to save a 1200×630 PNG for posting, `r` to replay, `q` to quit. Everything is read locally; nothing is uploaded.
+
+```bash
+corral wrap            # last 7 days
+corral wrap --month    # or --all
+corral wrap --png week.png
+```
+
+![corral wrap animated card with sample data](docs/screenshots/wrap.gif)
+
 ## Pick up from your Mac or iPhone
 
 The native app shows the same sessions as the terminal: read conversations side by side, send a follow-up, or answer a question — no terminal needed.

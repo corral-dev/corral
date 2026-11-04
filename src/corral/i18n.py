@@ -1732,6 +1732,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  plan continue        Build a continuation plan without executing it\n"
             "  describe [COMMAND]   Describe session-data arguments and output fields\n"
             "\n"
+            "Share:\n"
+            "  wrap                 Animated card of your agent activity; --month/--all, --png PATH\n"
+            "\n"
             "Agent delegation:\n"
             "  run                  Submit to an exact session or create one; observe, message and collect results\n"
             "  skills               Inspect, install or remove the bundled agent skills\n"
@@ -1776,6 +1779,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  context 会话         生成接力上下文数据包\n"
             "  plan continue        生成续接计划，不执行\n"
             "  describe [命令]      查看会话数据接口的参数和输出字段\n"
+            "\n"
+            "分享：\n"
+            "  wrap                 播放助手使用情况动态卡片；--month/--all，--png 路径\n"
             "\n"
             "Agent 委派：\n"
             "  run                  向指定会话派发任务或新建会话；监控、追发并读取结果\n"
@@ -2253,6 +2259,23 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.err.relay_url_scheme": {
         "en": "Relay URL must start with wss://",
         "zh": "中继地址必须以 wss:// 开头",
+    },
+    "wrap.help.description": {
+        "en": "Show an animated card of your local agent activity; s saves a 1200x630 PNG.",
+        "zh": "播放本机助手使用情况的动态卡片；按 s 保存 1200x630 PNG。",
+    },
+    "wrap.help.month": {"en": "Last 30 days instead of 7", "zh": "统计最近 30 天（默认 7 天）"},
+    "wrap.help.all": {"en": "All retained history", "zh": "统计全部保留的历史"},
+    "wrap.help.png": {"en": "Write the card to PATH as PNG and exit", "zh": "把卡片写成 PNG 到 PATH 后退出"},
+    "wrap.help.json": {"en": "Print the card values as JSON and exit", "zh": "以 JSON 输出卡片数据后退出"},
+    "wrap.help.no_anim": {"en": "Show the final card without animation", "zh": "不播放动画，直接显示最终卡片"},
+    "wrap.hint": {"en": "s save image · r replay · q quit", "zh": "s 保存图片 · r 重播 · q 退出"},
+    "wrap.saved": {"en": "Saved {path}", "zh": "已保存 {path}"},
+    "wrap.save_failed": {"en": "Could not save the image: {error}", "zh": "图片保存失败：{error}"},
+    "wrap.load_failed": {"en": "Could not read session history: {error}", "zh": "读取会话历史失败：{error}"},
+    "wrap.too_small": {
+        "en": "Enlarge the terminal to at least {w}x{h} to see the card",
+        "zh": "终端至少需要 {w}x{h} 才能显示卡片",
     },
 }
 
