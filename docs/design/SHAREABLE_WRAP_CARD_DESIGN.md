@@ -260,11 +260,20 @@ same pattern as Biome.
 ### 10.3 Name
 
 The owner questioned "wrap" (it reads as "to wrap", not as a Spotify
-Wrapped-style recap) and asked for a cooler word. Pending decision.
+Wrapped-style recap) and asked for a cooler word. **Decision: `flex`.** The
+standalone command is `npx agentflex` (npm name free on 2026-11-04) and the
+Corral subcommand is `corral flex`; `corral wrap` is retired with it.
 
-### 10.4 Engine placement (pending owner decision)
+Hero (decision): the large block-font element is the token total with a small
+"tokens" label; the title line reads `CODING WEEK` (owner wording) with the
+period label on the right.
 
-A 1 s, Node-free-of-Python implementation needs a native engine. SessKit's
-hard rule forbids a second parser in consumers, so the recommended placement
-is a Rust engine inside SessKit, verified against the Python SessKit output on
-real histories, consumed by a standalone binary distributed through npm.
+### 10.4 Engine placement (decision)
+
+A 1 s implementation runnable through `npx` needs a native engine; npx cannot
+run Python. SessKit's hard rule forbids a second parser in consumers.
+**Decision: a multi-core Rust engine inside SessKit**, verified against the
+Python SessKit output on real histories, consumed by a standalone Rust card
+program (terminal animation and PNG export) distributed through npm platform
+packages like ccusage. The card program is downstream presentation and does not
+live in SessKit.
