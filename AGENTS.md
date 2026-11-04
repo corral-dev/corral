@@ -118,6 +118,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/SESSION_SCANNING_KNOWLEDGE_BASE.md](docs/SESSION_SCANNING_KNOWLEDGE_BASE.md): SessKit integration, runtime histories, identity, liveness and completion evidence.
 - [docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md](docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md): Pi/Codex ownership claims, managed identity and legacy migration.
 - [docs/design/WEB_TASK_BUTLER_DESIGN.md](docs/design/WEB_TASK_BUTLER_DESIGN.md): Local Markdown task planning, coordinator/executor responsibilities, boundaries and validation experiments.
+- [Ideas mixed input](docs/design/IDEAS_MIXED_INPUT_DESIGN.md): Canvas/comment image and file paste, shared editor, browser limits, offline drafts, private assets, synchronization, worker delivery and acceptance design.
 - [Agent session delegation](docs/design/AGENT_SESSION_DELEGATION_DESIGN.md): Verified CLI/control gaps, reference architectures, historical resume and fresh runtime/model creation, prompt delivery, durable monitoring, results, crash recovery and installed acceptance.
 - [Bundled agent skills](docs/design/BUNDLED_AGENT_SKILLS_DESIGN.md): Approved corral-* names, runtime skill paths, AgentSync coexistence, default registration, packaging boundaries, protected ownership, implicit selection and discovery/execution acceptance.
 - [docs/design/WINDOWS_COMPATIBILITY_DESIGN.md](docs/design/WINDOWS_COMPATIBILITY_DESIGN.md): Decision against Windows and dedicated WSL product support.

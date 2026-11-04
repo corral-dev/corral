@@ -108,6 +108,14 @@ coordinator proposals in this document remain outside that bounded CLI work.
 20. **Settle window starts at one minute** (owner, 2026-11-03). A block is handed to the
     coordinator only after one minute without edits. This is an initial value to be tuned
     from real use, not a frozen threshold (§5).
+21. **Free input includes images and files everywhere** (owner, 2026-11-04). Every Ideas
+    content-composition surface, including the text canvas and discussion comments/replies,
+    must accept pasted images and files alongside text. Do not implement attachment support
+    in only one panel or require a separate upload-first workflow. Existing taken-up content
+    remains read-only; this requirement does not reopen it. Browser feasibility, the proposed
+    shared editor, local persistence, synchronization and worker delivery are specified in
+    [Ideas mixed input](IDEAS_MIXED_INPUT_DESIGN.md). Only this requirement is adopted;
+    that document's implementation choices remain proposals pending design review.
 
 ### Delivery approach (*Proposed*, follows requirement 10)
 
@@ -1120,6 +1128,15 @@ The owner asked for the page first, polished for a future general audience. It l
   is omitted until slice 5 can make it work. The bundle is ~550 kB minified because
   `@codemirror/lang-markdown` pulls nested code-language parsers; trim before shipping in
   the package. Writing on phones is usable but not a supported target yet (§10 Later).
+
+### 10.2 Mixed text, images and files (design, 2026-11-04)
+
+[Ideas mixed input](IDEAS_MIXED_INPUT_DESIGN.md) owns the detailed design for requirement 21:
+input coverage, browser clipboard limits, shared CodeMirror editing, Markdown asset references,
+attachment-aware take-up, local drafts, account isolation, synchronization, safe storage and
+verified worker delivery. It extends the minimal page rather than replacing the canvas with
+posts or the forum with chat. The current preview still has no attachment implementation or
+backend; neither the design nor its acceptance plan is evidence that those capabilities ship.
 
 ## 11. References
 
