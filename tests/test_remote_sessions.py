@@ -2167,6 +2167,91 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertIn("claude:placeholder", self.hub.store._deleted)
         self.assertIsNone(self.hub.store.find_session("claude:real-id"))
 
+    def test_pane_accepts_input_covers_drawn_opencode_composer(self) -> None:
+        """Idle OpenCode panes draw ┃/hint and never an arrow (2026-11-04)."""
+        self.assertTrue(remote_sessions._pane_accepts_input("› codex"))
+        self.assertTrue(remote_sessions._pane_accepts_input("❯ claude"))
+        self.assertTrue(remote_sessions._pane_accepts_input("┃  Ask anything… \"fix\""))
+        self.assertTrue(
+            remote_sessions._pane_accepts_input("┃  pasted draft\n┃  Build · xhigh")
+        )
+        self.assertFalse(remote_sessions._pane_accepts_input("plain shell output"))
+        self.assertFalse(remote_sessions._pane_accepts_input(""))
+
+    def test_prepare_provisional_opencode_accepts_drawn_composer_without_hint(
+        self,
+    ) -> None:
+        """A pasted-but-unsubmitted draft hides the idle hint, yet the drawn
+        composer is still interactive (2026-11-04: retries after the image-only
+        bug failed here forever with startup_not_ready)."""
+        import time
+
+        session = _session(source="opencode", sid="534e2eeb")
+        session["provisional"] = True
+        session["keepalive_name"] = "pane-oc-draft"
+        self.hub.store.sessions = {"opencode": [session]}
+        plain = "┃  /tmp/paste-1.png\n┃\n┃  Build · Muse Spark · xhigh"
+        with (
+            mock.patch.object(self.hub, "_keepalive_name", return_value="pane-oc-draft"),
+            mock.patch.object(self.hub, "_pane_proven_dead", return_value=False),
+            mock.patch.object(
+                remote_sessions.embed, "pane_liveness", return_value="alive"
+            ),
+            mock.patch.object(remote_sessions.embed, "capture", return_value=object()),
+            mock.patch.object(remote_sessions, "_plain_pane_text", return_value=plain),
+            mock.patch.object(self.hub, "_ensure_transcript") as ensure,
+        ):
+            ensure.return_value = mock.Mock(path="hist", generation=3, messages=[])
+            result = self.hub.prepare_text_delivery(
+                "opencode:534e2eeb", time.monotonic() + 30
+            )
+        self.assertEqual(result, ("hist", 3, 0, "pane-oc-draft"))
+
+    def test_prepare_provisional_opencode_pre_tui_still_rejected(self) -> None:
+        """A pane that has not drawn anything is still not ready."""
+        import time
+
+        session = _session(source="opencode", sid="newpane")
+        session["provisional"] = True
+        session["keepalive_name"] = "pane-oc-new"
+        self.hub.store.sessions = {"opencode": [session]}
+        with (
+            mock.patch.object(self.hub, "_keepalive_name", return_value="pane-oc-new"),
+            mock.patch.object(self.hub, "_pane_proven_dead", return_value=False),
+            mock.patch.object(
+                remote_sessions.embed, "pane_liveness", return_value="alive"
+            ),
+            mock.patch.object(remote_sessions.embed, "capture", return_value=object()),
+            mock.patch.object(remote_sessions, "_plain_pane_text", return_value=""),
+        ):
+            with self.assertRaises(ActionError):
+                self.hub.prepare_text_delivery(
+                    "opencode:newpane", time.monotonic() + 2
+                )
+
+    def test_send_text_empty_submit_presses_single_guarded_enter(self) -> None:
+        """Image-only turns flush via submit-only input.text: one Enter, no
+        paste, no echo bubble (2026-11-04)."""
+        session = _session(source="opencode", sid="img1")
+        session["keepalive_name"] = "pane-oc-img"
+        self.hub.store.sessions = {"opencode": [session]}
+        events: list = []
+        self.hub._on_event = lambda channel, data: events.append(data)
+        with (
+            mock.patch.object(
+                remote_sessions.embed, "paste_detailed"
+            ) as paste,
+            mock.patch.object(
+                remote_sessions.embed, "send_key_detailed",
+                return_value=InjectionResult(True),
+            ) as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("opencode:img1", "", True)
+        paste.assert_not_called()
+        send_key.assert_called_once_with("pane-oc-img", "Enter")
+        self.assertEqual(events, [])
+
 
 def _delta_role_texts(events: list[tuple[str, dict]]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []

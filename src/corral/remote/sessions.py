@@ -291,10 +291,13 @@ def _blocked_input_cause(raw: str | None) -> str | None:
 
 def _pane_accepts_input(plain: str) -> bool:
     """True when the hosted assistant UI shows an input prompt."""
-    if "→" not in plain and "->" not in plain:
-        return False
-    # Fresh Cursor / Claude panes show the arrow once the TUI is interactive.
-    return True
+    # EditHere send_turn readiness: accept every runtime's composer chrome.
+    # Cursor shows →; Codex › and Claude ❯ never contain an arrow; OpenCode
+    # draws its composer with ┃ and an idle "Ask anything…" hint (2026-11-04:
+    # an idle OpenCode pane never satisfied the old arrow-only check, so
+    # send_turn timed out on it).
+    markers = ("→", "->", "›", "❯", "┃", "Ask anything")
+    return any(marker in plain for marker in markers)
 
 
 # Large pastes collapse into a placeholder: Claude `[Pasted text #1 +39 lines]`,
@@ -3070,7 +3073,12 @@ class SessionHub:
             runtime = str(session.get("source") or "")
             markers = {
                 "codex": ("›",), "claude": ("❯",),
-                "opencode": ("Ask anything",), "cursor": ("→", "->"),
+                # A pasted-but-unsubmitted draft replaces the idle hint, and a
+                # drawn composer without the hint is still interactive
+                # (2026-11-04: provisional retries after the image-only bug
+                # failed here forever). The ┃ composer chrome proves the
+                # OpenCode TUI has drawn; a pre-TUI pane shows neither.
+                "opencode": ("Ask anything", "┃"), "cursor": ("→", "->"),
             }.get(runtime)
             stable_since = time.monotonic()
             last = ""
