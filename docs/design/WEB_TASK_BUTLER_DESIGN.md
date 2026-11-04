@@ -103,8 +103,8 @@ coordinator proposals in this document remain outside that bounded CLI work.
     ("你考虑一下吧"); the proposals below are not yet confirmed.
 19. **The canvas groups itself by date and folds old days** (owner, 2026-11-03). Text is
     grouped automatically by the local calendar day it was written; every day except today
-    folds by default (owner, later the same day; the first version folded only days older than a week). The owner does not create or maintain the groups. Details
-    (*Proposed*) are in §4.
+    folds by default when opening the page (owner, later the same day; the first version folded only days older than a week). The owner does not create or maintain the groups.
+    Adopted midnight viewport preservation is in §10.1; other proposed editor details are in §4.
 20. **Settle window starts at one minute** (owner, 2026-11-03). A block is handed to the
     coordinator only after one minute without edits. This is an initial value to be tuned
     from real use, not a frozen threshold (§5).
@@ -1017,6 +1017,22 @@ Decisions for the owner at freeze:
 > open" exception of the second subtraction. Consequence: waiting discussions in earlier days
 > are visible only after opening that day (proposed, not adopted: the same amber "!" icon at
 > the end of a folded row).
+> **Midnight rollover must not move the working viewport (owner correction, 2026-11-04):**
+> when the local date changes, add the new "Today" section above the existing content,
+> entirely outside the current viewport, even when the owner was at the top of the page.
+> Keep the visible content and caret at exactly the same on-screen positions; retain focus,
+> selection, IME composition and the open discussion. The owner finds the new section only
+> by deliberately scrolling upward; rollover never scrolls or focuses it, including after an
+> idle period or leaving the editor. Preserve the content's visual scroll anchor, not the
+> numerical scroll offset: inserting above it may require adjusting that offset without any
+> visible movement. A date change must not fold an already open section or recreate its editor;
+> "only today open by default" applies when opening the page, not as a live midnight reset,
+> and keeping an old day open during rollover is not a new remembered manual preference.
+> Existing text stays in its original section; ongoing input is not split or moved at midnight.
+> **Acceptance pending (design only):** with the caret active both at the page top and farther
+> down, cross midnight and verify unchanged visible-content/caret coordinates, uninterrupted
+> input and an off-screen new Today section; then explicitly scroll upward and write in it.
+> No implementation or runtime acceptance is claimed by this requirement.
 > **Quiet sentence states and moving taken text (owner, 2026-11-03):** taken text keeps the
 > ordinary text colour, except done (low-contrast grey) and withdrawn (grey, struck). No
 > green text and no tinted background. State is one same-size round icon at the sentence end:
