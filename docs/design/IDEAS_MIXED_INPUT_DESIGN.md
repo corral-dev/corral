@@ -765,7 +765,8 @@ conflicting draft. A closed controller cannot publish or restore a draft into a 
   account/corrupt-schema failure, restart, exact original download and ZIP contents. A losing
   tab exports its current unsaved snapshot and staged original without overwriting the winner.
 - Native macOS PNG paste was observed in both canvas and composer as `isTrusted: true`
-  with a 17,742-byte original File. The original clipboard was restored. Fresh native-window
+  with a 17,742-byte original File; its downloaded bytes match the fixture's SHA-256 after
+  reload. The original clipboard was restored. Fresh native-window
   captures were inspected in light/dark mode, after posting, and with image preview open.
   A real headed drag moved the same 41-character quote from offset 0 to 281; before/after
   frames and committed span readback agree. Browser drag regression videos are retained.
@@ -779,5 +780,22 @@ Complete logs, fresh captures and motion artifacts are kept outside the reposito
 Firefox fixture limitations are recorded in the maintained AgentSync `AGENT_BROWSER_GUIDE.md`.
 No production debug globals, fixture routes, binaries or generated test reports are shipped.
 
-Deployment of the verified source to `https://ideas.caozc.com` is the remaining delivery step.
-The local-only storage and absent backend/real-worker boundaries in this section still apply.
+### Deployment and remaining acceptance
+
+Source `1379d38` is committed and pushed to Forgejo and GitHub, and deployed through the
+maintained Infrastructure `ideas-web/deploy.sh` to `https://ideas.caozc.com`. The documented
+SSH fallback was needed; no SSH or proxy policy was changed. Active container JS/CSS hashes
+match the local build. Public root and asset requests remain authentication-gated (302),
+`/ping` returns `OK`, and the existing signed-in Chrome session fetched the new JS with HTTP
+200 and a matching SHA-256, then mounted the editor and file inputs without a startup error.
+
+The signed-in Chrome native captures stayed blank while its document reported hidden,
+even after bounded wake/resize; they are **not** hosted visual acceptance. Fresh local
+Chrome-for-Testing pixels of the exact matching build passed, but hosted native-pixel and
+physical Safari/touch/keyboard acceptance remain open. Do not replace those limits with
+DOM, build or synthetic-event claims. Local-only storage and the absent backend/real-worker
+boundaries still apply.
+
+Retained tooling warning: leakgate flags the base64 PNG at `tests/attachments.spec.ts:17`
+as high entropy. It decodes to the fixed 1×1 test image, not a credential or user attachment.
+No ignore rule or gate weakening was added. Recheck its contents if that fixture changes.
