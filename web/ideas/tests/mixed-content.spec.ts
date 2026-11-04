@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { rewriteAssetPaths } from "../src/assets/export";
 import { attachmentSource, attachmentTokens, contentText, formatBytes, referencedAssets, splitsAttachment } from "../src/input/content";
 
 test("asset links preserve exact Markdown positions and Unicode labels", () => {
@@ -29,6 +30,13 @@ test("atomic boundaries never bisect an attachment token", () => {
   expect(splitsAttachment(source, 4, 4)).toBe(true);
   expect(splitsAttachment(source, 0, source.length)).toBe(false);
   expect(splitsAttachment(source, 0, 2)).toBe(false);
+});
+
+test("portable paths rewrite only destinations and quote unbalanced filename parentheses", () => {
+  const id = "asset_06";
+  const source = `Before ![ideas-asset:${id}](ideas-asset:${id}) after.`;
+  expect(rewriteAssetPaths(source, new Map([[id, "assets/file).png"]])))
+    .toBe(`Before ![ideas-asset:${id}](assets/file%29.png) after.`);
 });
 
 test("identities are bounded and filenames cannot inject a source URL", () => {

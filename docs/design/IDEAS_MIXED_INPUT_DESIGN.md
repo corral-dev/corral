@@ -754,7 +754,7 @@ conflicting draft. A closed controller cannot publish or restore a draft into a 
 - Strict application/test TypeScript and the production esbuild bundle pass without warnings.
   npm reports no dependency vulnerabilities. The retired textarea dependency is removed;
   the ZIP dependency is pinned to `fflate@0.8.3`.
-- Attachment/parser/repository matrix: **130 passed, 3 skipped** across desktop Chromium,
+- Attachment/parser/repository matrix: **135 passed, 3 skipped** across desktop Chromium,
   WebKit, Firefox and mobile WebKit. The three skipped cases require desktop mouse-based
   native dragging; they are not claims of physical iPhone long-press acceptance.
 - Existing calendar/midnight/selection/composition matrix: **55 passed** across five browser
@@ -780,6 +780,11 @@ Complete logs, fresh captures and motion artifacts are kept outside the reposito
 Firefox fixture limitations are recorded in the maintained AgentSync `AGENT_BROWSER_GUIDE.md`.
 No production debug globals, fixture routes, binaries or generated test reports are shipped.
 
+Portable export reference rewriting changes only the validated URL suffix, not matching text in
+an attachment label. Portable export also percent-encodes Markdown-significant parentheses
+in file paths; labels and original archive entry names remain unchanged. A parser test and
+four browser download/readback cases cover URI-looking labels and unmatched parentheses.
+
 ### Deployment and remaining acceptance
 
 Source `1379d38` is committed and pushed to Forgejo and GitHub, and deployed through the
@@ -799,3 +804,6 @@ boundaries still apply.
 Retained tooling warning: leakgate flags the base64 PNG at `tests/attachments.spec.ts:17`
 as high entropy. It decodes to the fixed 1×1 test image, not a credential or user attachment.
 No ignore rule or gate weakening was added. Recheck its contents if that fixture changes.
+
+The URL-only export correction passed the updated 190-test matrix and a fresh native local
+capture; its deployment readback will supersede the initial source stamp above.

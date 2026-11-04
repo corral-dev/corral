@@ -224,6 +224,26 @@ test("paste keeps text, image and file at the caret; originals survive reload/do
   expect(new TextDecoder().decode(entries["ideas.md"])).not.toContain("ideas-asset:");
 });
 
+test("export preserves URI-looking labels and portable paths for unmatched filename parentheses", async ({ page }) => {
+  await open(page); await select(page, (await source(page)).length);
+  await paste(page, [{ ...document, name: "response).json" }]);
+  const id = await page.evaluate(async ({ path, selector }) => {
+    const helper: typeof Helpers = await import(path); const view = helper.editor(selector);
+    const token = helper.attachmentTokens(view.state.doc.toString())[0];
+    if (!token) throw new Error("Imported reference missing");
+    view.dispatch({ changes: { from: token.from, to: token.to, insert: `[ideas-asset:${token.id}](ideas-asset:${token.id})` } });
+    return token.id;
+  }, { path: MODULE, selector: CANVAS });
+  const pending = page.waitForEvent("download"); await page.getByRole("button", { name: "Export", exact: true }).click();
+  const download = await pending; const file = await download.path(); if (!file) throw new Error("Missing archive");
+  const zip = unzipSync(await readFile(file)); const markdown = zip["ideas.md"];
+  if (!markdown) throw new Error("Missing Markdown");
+  const text = new TextDecoder().decode(markdown);
+  expect(text).toContain(`[ideas-asset:${id}](assets/`);
+  expect(text).toContain("response%29.json"); expect(text).not.toContain("](ideas-asset:");
+  expect(Object.keys(zip).some((name) => name.endsWith("response).json"))).toBe(true);
+});
+
 test("one mixed paste is one undo step and late persistence never resurrects it", async ({ page }) => {
   await open(page);
   const before = await source(page);

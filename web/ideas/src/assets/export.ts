@@ -5,14 +5,16 @@ import type { Store } from "../store";
 import { workspaceAssetIds } from "./workspace";
 import { attachmentTokens } from "../input/content";
 
-function rewrite(source: string, paths: Map<string, string>): string {
+export function rewriteAssetPaths(source: string, paths: Map<string, string>): string {
   let result = "";
   let from = 0;
   for (const token of attachmentTokens(source)) {
     const path = paths.get(token.id);
     if (!path) throw new Error(`Original file unavailable: ${token.label}`);
-    const encoded = path.split("/").map(encodeURIComponent).join("/");
-    result += source.slice(from, token.from) + source.slice(token.from, token.to).replace(`ideas-asset:${token.id}`, encoded);
+    const encoded = path.split("/").map((part) => encodeURIComponent(part).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)).join("/");
+    const suffix = `ideas-asset:${token.id})`;
+    // The tokenizer accepts this exact destination suffix. A label may repeat its URI.
+    result += source.slice(from, token.from) + source.slice(token.from, token.to - suffix.length) + encoded + ")";
     from = token.to;
   }
   return result + source.slice(from);
@@ -40,14 +42,14 @@ export async function exportIdeas(store: Store): Promise<Blob> {
     paths.set(id, original.path);
     manifest.push({ ...asset, path: original.path });
   }
-  const days = snapshot.sections.map((section) => `## ${section.day}\n\n${rewrite(section.text, paths)}`).join("\n\n");
+  const days = snapshot.sections.map((section) => `## ${section.day}\n\n${rewriteAssetPaths(section.text, paths)}`).join("\n\n");
   const discussions = Object.values(snapshot.threads).map((thread) => {
     const comments = thread.messages.map((message) => {
       const body = message.result ? `${message.result.summary}\n${message.result.evidence}` : message.text;
       const target = message.parentId ? ` (reply to ${message.parentId})` : "";
-      return `### ${message.author} — ${new Date(message.at).toISOString()}${target}\n\n${rewrite(body, paths)}`;
+      return `### ${message.author} — ${new Date(message.at).toISOString()}${target}\n\n${rewriteAssetPaths(body, paths)}`;
     });
-    return `## ${thread.id}\n\n${rewrite(thread.quote, paths)}\n\n${comments.join("\n\n")}`;
+    return `## ${thread.id}\n\n${rewriteAssetPaths(thread.quote, paths)}\n\n${comments.join("\n\n")}`;
   }).join("\n\n");
   const chunks: Uint8Array<ArrayBuffer>[] = [];
   let failure: Error | null = null;
