@@ -112,15 +112,14 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 ## 晒出你的一周
 
-`corral wrap` 播放一张动态卡片，汇总最近 7 天所有助手的会话数、工具调用、token、最高并行会话数、各助手占比，以及按星期和小时排布的活跃热力图。按 `s` 保存 1200×630 PNG 用来分享，`r` 重播，`q` 退出。全部在本机读取，不上传任何数据。
+`corral flex` 播放一张动态卡片，汇总最近 7 天所有助手的 token、会话数、每天 token、最高并行会话数、各助手占比，以及按星期和小时排布的活跃热力图。按 `s` 保存 1200×630 PNG 用来分享。全部在本机读取，不上传任何数据。这张卡片来自 [agentflex](https://github.com/corral-dev/agentflex)，不装 Corral 也能运行：
 
 ```bash
-corral wrap            # 最近 7 天
-corral wrap --month    # 或 --all
-corral wrap --png week.png
+corral flex          # 或：npx agentflex
+corral flex --month  # 或 --all、--png week.png
 ```
 
-![使用示例数据的 corral wrap 动态卡片](docs/screenshots/wrap.gif)
+![使用虚构数据的 agentflex 动态卡片](https://raw.githubusercontent.com/corral-dev/agentflex/main/docs/demo.gif)
 
 ## 用 Mac 或 iPhone 接着做
 

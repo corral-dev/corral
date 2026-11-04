@@ -112,15 +112,14 @@ Sidebar shortcuts apply while the sidebar has focus. The footer shows actions av
 
 ## Share your week
 
-`corral wrap` plays an animated card of the last 7 days across every assistant: sessions, tool calls, tokens, peak parallel sessions, agent share and an hour-by-day activity map. Press `s` to save a 1200×630 PNG for posting, `r` to replay, `q` to quit. Everything is read locally; nothing is uploaded.
+`corral flex` plays an animated card of the last 7 days across every assistant: tokens, sessions, tokens per day, peak parallel sessions, agent share and an hour-by-weekday activity map. Press `s` to save a 1200×630 PNG for posting. Everything is read locally; nothing is uploaded. The card is [agentflex](https://github.com/corral-dev/agentflex), which also runs without Corral:
 
 ```bash
-corral wrap            # last 7 days
-corral wrap --month    # or --all
-corral wrap --png week.png
+corral flex          # or: npx agentflex
+corral flex --month  # or --all, --png week.png
 ```
 
-![corral wrap animated card with sample data](docs/screenshots/wrap.gif)
+![agentflex animated card with fictional data](https://raw.githubusercontent.com/corral-dev/agentflex/main/docs/demo.gif)
 
 ## Pick up from your Mac or iPhone
 

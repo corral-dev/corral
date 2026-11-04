@@ -1,10 +1,9 @@
 # Shareable wrap card design (`corral wrap`)
 
-Status: first version implemented 2026-11-04 (`src/corral/wrap_stats.py`,
-`wrap_card.py`, `wrap_png.py`, `wrap_cmd.py`, `ui/wrap_app.py`; tests
-`tests/test_wrap.py`; evidence §9). Owner corrections of the same day (§10)
-supersede its distribution, performance target and card content; the name and
-engine placement in §10.4 await the owner's decision.
+Status: superseded by agentflex (§10). The first Python version (`corral
+wrap`, evidence §9) was removed from Corral on 2026-11-04; `corral flex` now
+launches the standalone [agentflex](https://github.com/corral-dev/agentflex)
+binary (installed, else `npx -y agentflex@latest`).
 
 ## 1. Decision and why
 
@@ -311,9 +310,11 @@ remains a macOS/Linux entry point that runs the same engine.
   platform packages, release/CI workflows for macOS, Linux (static musl) and
   Windows (x64, arm64). Publishing needs the owner's npm login and a public
   GitHub repository.
-- `corral flex` (planned): runs the installed `agentflex` binary when present,
-  otherwise `npx -y agentflex`; the Homebrew tap gains an `agentflex` formula
-  that Corral's formula depends on. The Python `corral wrap` implementation
-  (`wrap_*.py`, `ui/wrap_app.py`) and its README section are removed in the
-  same change, once `agentflex` is published, so the README never points at an
-  unavailable command.
+- `corral flex` (implemented 2026-11-04, `src/corral/flex_cmd.py`): execs the
+  installed `agentflex` binary when it is on PATH, otherwise
+  `npx --yes agentflex@latest`, passing arguments through; with neither it
+  prints one install hint and exits 1. The Python `corral wrap` modules, tests,
+  font asset and README section were removed in the same change. A Homebrew
+  `agentflex` formula for Corral's tap remains a follow-up.
+- Public repository: https://github.com/corral-dev/agentflex (MIT), README in
+  English and Chinese with a demo rendered from fictional data.
