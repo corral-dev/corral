@@ -22,6 +22,7 @@ Read the documents whose described content is relevant before deciding or changi
 - [Mobile data plane](~/Codes/Corral/cli/docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live data isolation, question state and reconnect recovery.
 - [Managed session identity](~/Codes/Corral/cli/docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md): Pi/Codex ownership, claims, plugins and legacy migration.
 - [Completion notifications](~/Codes/Corral/cli/docs/design/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md): Completed/interrupted evidence, notification preferences and sound presets, deduplication and delivery.
+- [Shareable wrap card](~/Codes/Corral/cli/docs/design/SHAREABLE_WRAP_CARD_DESIGN.md): Approved `corral wrap` direction, SessKit/Corral ownership, data feasibility, metric definitions, sharing privacy constraints and open product decisions.
 - [Historical multi-agent report](~/Codes/Corral/docs/2026-08-16-多助手会话专项汇报.md): Single-day archive, not current behavior authority.
 - [UI change-request adapter](~/Codes/Corral/docs/design/IOS_UI_CHANGE_REQUEST_DESIGN.md): Corral's optional adapter for independent UI annotation.
 
