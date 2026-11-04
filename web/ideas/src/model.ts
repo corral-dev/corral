@@ -1,6 +1,7 @@
 // Domain model for the Ideas page. Mirrors the state model in
 // docs/design/WEB_TASK_BUTLER_DESIGN.md §3.1: spans, discussions (threads), tasks and
 // questions. Discussion status is always derived, never stored.
+import type { AttachmentToken } from "./input/content";
 
 export type TaskState =
   | "blocked"
@@ -60,6 +61,8 @@ export interface Thread {
   id: string;
   day: string;
   quote: string;
+  /** Accepted attachment bindings, at UTF-16 offsets relative to the immutable quote. */
+  attachments?: AttachmentToken[];
   createdAt: number;
   summary: string;
   messages: Message[];

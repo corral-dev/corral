@@ -1,6 +1,6 @@
 // CodeMirror 6 extensions for one day section: read-only taken spans, status marks,
 // guarded undo/redo and the settle window (requirement 20).
-import { Annotation, EditorState, Extension, Prec, StateEffect, StateField, Text } from "@codemirror/state";
+import { Annotation, EditorState, Extension, Facet, Prec, StateEffect, StateField, Text } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -18,6 +18,8 @@ import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror
 import { tags } from "@lezer/highlight";
 import type { Presence } from "../model";
 import { sentenceDrag } from "./sentenceDrag";
+import { AttachmentWidget, attachmentExtensions, type AttachmentOptions } from "../input/attachments";
+import { attachmentTokens, type AttachmentToken } from "../input/content";
 
 export interface SpanView {
   threadId: string;
@@ -28,6 +30,8 @@ export interface SpanView {
   unread: boolean;
   /** Just taken up: a brief acknowledgement, the only take-up feedback. */
   fresh: boolean;
+  /** Immutable token offsets relative to the taken quote, independent of outside Markdown. */
+  attachments?: readonly AttachmentToken[];
 }
 
 export interface PendingBlock {
@@ -107,15 +111,50 @@ class SentenceWidget extends WidgetType {
   }
 }
 
-function buildDecorations(spans: SpanView[], doc: Text): DecorationSet {
-  const ranges = [...spans]
-    .filter((s) => s.to > s.from)
-    .sort((a, b) => a.from - b.from)
-    .map((s) => Decoration.replace({ widget: new SentenceWidget(doc.sliceString(s.from, s.to), s) }).range(s.from, s.to));
-  return Decoration.set(ranges);
+const assetOptions = Facet.define<AttachmentOptions, AttachmentOptions | null>({ combine: (values) => values[0] ?? null });
+
+function buildDecorations(spans: SpanView[], doc: Text, options: AttachmentOptions | null): DecorationSet {
+  const ranges = [...spans].filter((s) => s.to > s.from).sort((a, b) => a.from - b.from).flatMap((s) => {
+    const text = doc.sliceString(s.from, s.to);
+    const tokens = s.attachments ?? attachmentTokens(text);
+    if (!options || !tokens.length) return [Decoration.replace({ widget: new SentenceWidget(text, s) }).range(s.from, s.to)];
+    const pieces: ReturnType<Decoration["range"]>[] = [];
+    const addText = (from: number, to: number) => {
+      // Leave real line separators in the source/layout; replacement widgets never overlap.
+      let start = from;
+      for (const line of doc.sliceString(from, to).split("\n")) {
+        if (line) pieces.push(Decoration.replace({ widget: new SentenceWidget(line, s) }).range(start, start + line.length));
+        start += line.length + 1;
+      }
+    };
+    let from = s.from;
+    for (const token of tokens) {
+      const start = s.from + token.from;
+      const end = s.from + token.to;
+      if (start < from || end > s.to) continue;
+      addText(from, start);
+      pieces.push(Decoration.replace({ widget: new AttachmentWidget(token, options, {
+        threadId: s.threadId, className: `is-${s.status}${s.active ? " is-active" : ""}${s.fresh ? " is-fresh" : ""}`,
+      }) }).range(start, end));
+      from = end;
+    }
+    addText(from, s.to);
+    return pieces;
+  });
+  return Decoration.set(ranges, true);
 }
 
-const takenDecorations = EditorView.decorations.compute(["doc", spansField], (state) => buildDecorations(state.field(spansField), state.doc));
+const takenDecorations = EditorView.decorations.compute(["doc", spansField, assetOptions], (state) => buildDecorations(state.field(spansField), state.doc, state.facet(assetOptions)));
+
+/** New Markdown syntax must never wrap part of an already frozen source range. */
+const tokenOwnership = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged) return tr;
+  const spans = tr.state.field(spansField);
+  const invalid = attachmentTokens(tr.newDoc.toString()).some((token) => spans.some((s) =>
+    token.from < s.to && s.from < token.to && !(token.from >= s.from && token.to <= s.to),
+  ));
+  return invalid ? [] : tr;
+});
 
 /** Cursor motion and deletion treat each taken sentence as one unit. */
 const takenAtomic = EditorView.atomicRanges.of((view) =>
@@ -232,7 +271,7 @@ export function paragraphs(state: EditorState): Paragraph[] {
 
 export interface SettleOptions {
   settleMs: number;
-  onSettled: (from: number, to: number) => void;
+  onSettled: (from: number, to: number) => boolean | Promise<boolean>;
   onPending: (blocks: PendingBlock[]) => void;
 }
 
@@ -242,6 +281,8 @@ function settlePlugin(opts: SettleOptions) {
     class {
       pending: { pos: number; last: number }[] = [];
       timer: number;
+      inFlight = false;
+      alive = true;
       constructor(readonly view: EditorView) {
         this.timer = window.setInterval(() => this.tick(), 250);
       }
@@ -264,17 +305,22 @@ function settlePlugin(opts: SettleOptions) {
         return [...byBlock.values()];
       }
       tick() {
-        if (!this.pending.length) return;
+        if (!this.pending.length || this.inFlight) return;
         const now = Date.now();
-        const keep: { pos: number; last: number }[] = [];
-        for (const p of this.pending) {
-          const b = blockAt(this.view.state, p.pos);
-          if (!b) continue;
-          if (now - p.last >= opts.settleMs) opts.onSettled(b.from, b.to);
-          else keep.push(p);
-        }
-        this.pending = keep;
-        this.publish(now);
+        const candidate = this.pending.find((p) => now - p.last >= opts.settleMs);
+        if (!candidate) return this.publish(now);
+        const block = blockAt(this.view.state, candidate.pos);
+        if (!block) { this.pending = this.pending.filter((p) => p !== candidate); return; }
+        const source = this.view.state.doc.toString();
+        this.inFlight = true;
+        void Promise.resolve(opts.onSettled(block.from, block.to)).then((accepted) => {
+          if (!this.alive || !accepted || this.view.state.doc.toString() !== source) return;
+          this.pending = this.pending.filter((p) => p.pos !== candidate.pos || p.last !== candidate.last);
+        }).catch((error: unknown) => { console.error("Ideas take-up failed", error); }).finally(() => {
+          if (!this.alive) return;
+          this.inFlight = false;
+          this.publish(Date.now());
+        });
       }
       publish(now: number) {
         const blocks: PendingBlock[] = [];
@@ -285,6 +331,7 @@ function settlePlugin(opts: SettleOptions) {
         opts.onPending(blocks);
       }
       destroy() {
+        this.alive = false;
         clearInterval(this.timer);
       }
     },
@@ -293,6 +340,7 @@ function settlePlugin(opts: SettleOptions) {
 
 export interface EditorHooks extends SettleOptions {
   placeholder: string;
+  attachments?: AttachmentOptions;
   onDocChanged: (text: string, spans: SpanView[]) => void;
   onLayout: () => void;
   onOpenThread: (id: string) => void;
@@ -328,7 +376,9 @@ export function editorExtensions(hooks: EditorHooks): Extension[] {
     takenDecorations,
     takenAtomic,
     lockTaken,
+    tokenOwnership,
     sentenceDrag,
+    ...(hooks.attachments ? [assetOptions.of(hooks.attachments), attachmentExtensions(hooks.attachments)] : []),
     settlePlugin(hooks),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) hooks.onDocChanged(u.state.doc.toString(), u.state.field(spansField));

@@ -15,9 +15,9 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
+    "fflate": "0.8.3",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "react-textarea-autosize": "^8.5.9"
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

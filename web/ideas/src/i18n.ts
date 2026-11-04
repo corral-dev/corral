@@ -57,6 +57,23 @@ const en = {
   replyTo: "Reply to {name}…",
   replyingTo: "Replying to {name}",
   cancel: "Cancel",
+  attachFiles: "Add files",
+  download: "Download",
+  previewImage: "Preview image",
+  attachmentUnavailable: "Original file unavailable",
+  removeAttachment: "Remove attachment",
+  imageBytesUnavailable: "Only text or a link was available. Add the original image using Add files.",
+  fileBytesUnavailable: "This clipboard did not expose the original file. Use Add files instead.",
+  folderUnsupported: "Choose files or a ZIP archive instead of a folder.",
+  frozenImport: "Place the caret outside the frozen text before adding files.",
+  inputChanged: "This input changed while the file picker was open. Choose the files again.",
+  saveFailed: "This draft could not be saved. Keep this page open and retry.",
+  retry: "Retry",
+  identityFailed: "Your account could not be verified. Your saved content has not been opened or changed.",
+  storageFailed: "Your saved content could not be opened. No data has been replaced.",
+  exportIdeas: "Export",
+  exportFailed: "The export could not be completed. Your content has not changed.",
+  workspaceConflict: "This workspace changed in another tab. Export this draft before reloading.",
 } as const;
 
 export type Key = keyof typeof en;
@@ -117,6 +134,23 @@ const zh: Record<Key, string> = {
   replyTo: "回复 {name}…",
   replyingTo: "回复 {name}",
   cancel: "取消",
+  attachFiles: "添加文件",
+  download: "下载",
+  previewImage: "预览图片",
+  attachmentUnavailable: "原文件暂不可用",
+  removeAttachment: "移除附件",
+  imageBytesUnavailable: "剪贴板只有文字或链接，请用“添加文件”选择原图。",
+  fileBytesUnavailable: "剪贴板未提供原文件，请用“添加文件”选择。",
+  folderUnsupported: "请选择文件或 ZIP 压缩包，不能直接添加文件夹。",
+  frozenImport: "请把光标移到冻结文字之外，再添加文件。",
+  inputChanged: "选择文件期间输入位置已变化，请重新选择文件。",
+  saveFailed: "草稿未能保存，请保留此页面并重试。",
+  retry: "重试",
+  identityFailed: "暂时无法确认你的账号，尚未打开或改动已保存的内容。",
+  storageFailed: "暂时无法打开已保存的内容，原数据未被替换。",
+  exportIdeas: "导出",
+  exportFailed: "导出未完成，原内容未被改动。",
+  workspaceConflict: "另一个页面已修改这些内容，请先导出此页草稿，再重新打开。"
 };
 
 function detect(): "en" | "zh" {

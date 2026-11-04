@@ -8,7 +8,7 @@ interface Props {
   store: Store;
   state: State;
   settleMs: number;
-  onSettled: (day: string, from: number, to: number) => void;
+  onSettled: (day: string, from: number, to: number) => boolean | Promise<boolean>;
 }
 
 interface ScrollAnchor {

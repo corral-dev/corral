@@ -5,6 +5,7 @@ import { dayKey, shiftDay } from "./dates";
 import { lang } from "./i18n";
 import { DaySection, Message, Task, Thread, newId, openQuestion } from "./model";
 import type { State, Store } from "./store";
+import { attachmentTokens, contentText } from "./input/content";
 
 const PROJECTS = ["Corral", "Notely", "Beacon", "SessKit", "Grove"];
 const ASSISTANTS = ["Codex", "Claude Code", "Pi", "OpenCode", "Cursor"];
@@ -81,47 +82,48 @@ export class PreviewCoordinator {
     }
   }
 
-  onSettled(day: string, from: number, to: number): void {
+  async onSettled(day: string, from: number, to: number): Promise<boolean> {
     const range = freeRange(this.store, day, from, to);
-    if (!range) return;
+    if (!range) return true;
+    const original = this.store.section(day)?.text;
+    if (original === undefined) return true;
+    try { await this.store.flush(); } catch { return false; }
+    if (this.store.section(day)?.text !== original) return false;
     const reading = { day, ...range };
     this.store.setReading(reading, true);
-    window.setTimeout(() => {
-      this.store.setReading(reading, false);
-      const s = this.store.section(day);
-      if (!s) return;
-      const text = s.text.slice(range.from, range.to);
-      if (looksUnfinished(text)) return;
-      const project = findProject(text);
-      if (!project) {
-        const qid = newId("q");
-        const id = this.store.takeUp(day, range.from, range.to, {
-          summary: copy.summaryWaiting,
-          tasks: [],
-          questions: [{ id: qid, state: "open", blocking: false }],
-          messages: [msg("coordinator", "question", copy.whichProject, qid)],
-        });
-        void id;
-        return;
-      }
-      const assistant = pickAssistant();
-      const t = task(text, project, assistant, "queued");
-      const id = this.store.takeUp(day, range.from, range.to, {
-        summary: copy.summaryWorking(project),
-        tasks: [t],
-        questions: [],
-        messages: [msg("coordinator", "text", copy.starting(assistant, project))],
-      });
-      if (id) this.runToCompletion(id, t.id, 22_000);
-    }, 1400);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 1400));
+    this.store.setReading(reading, false);
+    try { await this.store.flush(); } catch { return false; }
+    const s = this.store.section(day);
+    if (!s || s.text !== original) return false;
+    const text = s.text.slice(range.from, range.to);
+    if (!this.store.assets.ready(text)) return false;
+    const prose = contentText(text);
+    if (looksUnfinished(prose) && !attachmentTokens(text).length) return true;
+    const project = findProject(prose);
+    if (!project) {
+      const qid = newId("q");
+      return this.store.takeUp(day, range.from, range.to, {
+        summary: copy.summaryWaiting, tasks: [], questions: [{ id: qid, state: "open", blocking: false }],
+        messages: [msg("coordinator", "question", copy.whichProject, qid)],
+      }) !== null;
+    }
+    const assistant = pickAssistant();
+    const work = task(prose, project, assistant, "queued");
+    const id = this.store.takeUp(day, range.from, range.to, {
+      summary: copy.summaryWorking(project), tasks: [work], questions: [],
+      messages: [msg("coordinator", "text", copy.starting(assistant, project))],
+    });
+    if (id) this.runToCompletion(id, work.id, 22_000);
+    return id !== null;
   }
 
   /**
    * The owner commented. `target` is the top-level comment being replied under (and whose
    * author is addressed); without it the owner started a new top-level comment.
    */
-  onReply(threadId: string, text: string, target?: { parentId: string; replyTo?: Message["author"] }): void {
-    const own = this.store.addMessage(threadId, { author: "owner", kind: "text", text, parentId: target?.parentId, replyTo: target?.replyTo });
+  async onReply(threadId: string, text: string, target?: { parentId: string; replyTo?: Message["author"] }, draftKey = `draft:${threadId}:root`, operationId = newId("m")): Promise<void> {
+    const own = await this.store.submitComment(threadId, text, draftKey, operationId, target);
     const th = this.store.state.threads[threadId];
     if (!th) return;
     const q = openQuestion(th);
@@ -142,7 +144,8 @@ export class PreviewCoordinator {
     const th = this.store.state.threads[threadId];
     if (!th) return;
     const live = th.tasks.find((t) => !["done", "failed", "canceled"].includes(t.state));
-    if (STOP.test(text)) {
+    const prose = contentText(text);
+    if (STOP.test(prose)) {
       this.clear(threadId);
       this.store.updateThread(threadId, (x) => ({
         ...x,
@@ -155,7 +158,8 @@ export class PreviewCoordinator {
     }
     const q = openQuestion(th);
     if (q) {
-      const project = findProject(text) ?? findProject(th.quote) ?? text.trim().split(/\s+/)[0];
+      if (!prose.trim()) { this.say(threadId, copy.whichProject, group, address); return; }
+      const project = findProject(prose) ?? findProject(contentText(th.quote)) ?? prose.trim().split(/\s+/)[0];
       const assistant = pickAssistant();
       const t = task(th.quote, project, assistant, "running");
       this.store.updateThread(threadId, (x) => ({
@@ -173,7 +177,7 @@ export class PreviewCoordinator {
       return;
     }
     const prev = th.tasks[th.tasks.length - 1];
-    const project = findProject(text) ?? prev?.project ?? PROJECTS[0];
+    const project = findProject(prose) ?? prev?.project ?? PROJECTS[0];
     const assistant = prev?.assistant ?? pickAssistant();
     const t = task(text, project, assistant, "running");
     this.store.updateThread(threadId, (x) => ({ ...x, summary: copy.summaryWorking(project), tasks: [...x.tasks, t] }));

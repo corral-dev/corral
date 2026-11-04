@@ -8,6 +8,8 @@ import { t } from "./i18n";
 import type { PreviewCoordinator } from "./preview";
 import { Store, useStore } from "./store";
 import iconUrl from "./assets/corral-icon.png";
+import { ExportButton } from "./input/ExportButton";
+import { PersistenceNotice } from "./input/RichContent";
 
 interface Props {
   store: Store;
@@ -22,7 +24,8 @@ export function App({ store, coordinator, settleMs }: Props) {
   const openThread = state.openThreadId ? (state.threads[state.openThreadId] ?? null) : null;
   return (
     <div className={`app${openThread ? " has-panel" : ""}`}>
-      <TopBar />
+      <TopBar store={store} />
+      <PersistenceNotice store={store} />
       <main className="stage">
         <DayCanvas
           store={store}
@@ -31,12 +34,12 @@ export function App({ store, coordinator, settleMs }: Props) {
           onSettled={(day, from, to) => coordinator.onSettled(day, from, to)}
         />
       </main>
-      <Discussion store={store} thread={openThread} onReply={(id, text, target) => coordinator.onReply(id, text, target)} />
+      <Discussion store={store} thread={openThread} onReply={(id, text, target, draftKey, operationId) => coordinator.onReply(id, text, target, draftKey, operationId)} />
     </div>
   );
 }
 
-function TopBar() {
+function TopBar({ store }: { store: Store }) {
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 4);
@@ -49,6 +52,7 @@ function TopBar() {
         <img src={iconUrl} alt="" width={24} height={24} />
         <span>{t("appName")}</span>
       </div>
+      <ExportButton store={store} />
     </header>
   );
 }

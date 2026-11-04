@@ -8,17 +8,20 @@
 import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { SpanView, external, paragraphs, setSpans, spansField } from "./editor";
+import { attachmentTokens } from "../input/content";
 
 /** The text a move takes away: the sentence, one neighbouring space, or a whole paragraph with its separator. */
 function removalRange(state: EditorState, sp: SpanView): { from: number; to: number } | null {
   const doc = state.doc;
   const ps = paragraphs(state);
-  const pi = ps.findIndex((p) => sp.from >= p.from && sp.to <= p.to);
-  if (pi < 0) return null;
-  const para = ps[pi];
-  if (para.from === sp.from && para.to === sp.to) {
-    if (pi < ps.length - 1) return { from: para.from, to: ps[pi + 1].from };
-    if (pi > 0) return { from: ps[pi - 1].to, to: para.to };
+  const first = ps.findIndex((p) => sp.from >= p.from && sp.from <= p.to);
+  const last = ps.findIndex((p) => sp.to >= p.from && sp.to <= p.to);
+  if (first < 0 || last < first) return null;
+  // One mixed unit can span several paragraphs. Apply the same separator policy to its
+  // outside edges, carrying internal blank lines verbatim instead of leaving doubled gaps.
+  if (ps[first].from === sp.from && ps[last].to === sp.to) {
+    if (last < ps.length - 1) return { from: sp.from, to: ps[last + 1].from };
+    if (first > 0) return { from: ps[first - 1].to, to: sp.to };
     return { from: sp.from, to: sp.to };
   }
   if (doc.sliceString(sp.to, sp.to + 1) === " ") return { from: sp.from, to: sp.to + 1 };
@@ -40,6 +43,8 @@ export function moveSentence(view: EditorView, threadId: string, target: number)
   // Never split another taken sentence.
   const inside = spans.find((s) => s.threadId !== threadId && pos > s.from && pos < s.to);
   if (inside) pos = pos - inside.from <= inside.to - pos ? inside.from : inside.to;
+  const asset = attachmentTokens(doc.toString()).find((token) => pos > token.from && pos < token.to);
+  if (asset) pos = pos - asset.from <= asset.to - pos ? asset.from : asset.to;
   const text = doc.sliceString(sp.from, sp.to);
   const changes = state.changes([
     { from: rem.from, to: rem.to },
@@ -78,6 +83,7 @@ function endDrag(): Dragging | null {
 }
 
 function startDrag(e: DragEvent, view: EditorView): void {
+  if (e.target instanceof Element && e.target.closest("button, a")) return;
   const el = (e.target as HTMLElement).closest?.<HTMLElement>(".cm-taken[data-thread]");
   const id = el?.dataset.thread;
   const span = id ? view.state.field(spansField).find((s) => s.threadId === id) : undefined;

@@ -1,0 +1,92 @@
+.attachment {
+  display: inline-flex;
+  flex-direction: column;
+  max-width: 100%;
+  margin: 3px 2px;
+  vertical-align: middle;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: calc(var(--radius) - 5px);
+  white-space: normal;
+  font: 13px/1.45 var(--font);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.attachment-caption {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 6px 10px;
+  min-width: 0;
+}
+.attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-size, .attachment-detail { flex: none; color: var(--ink-2); font-size: 12px; }
+.attachment-download { flex: none; color: var(--ink-2); font-size: 12px; text-decoration: none; }
+.attachment-download:hover { color: var(--ink); text-decoration: underline; }
+.attachment-remove { flex: none; min-width: 24px; min-height: 28px; color: var(--ink-2); font-size: 19px; }
+.attachment-preview { display: block; width: 100%; padding: 4px 4px 0; }
+.attachment-preview img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(100%, 480px);
+  max-height: min(320px, 40dvh);
+  object-fit: contain;
+  border-radius: calc(var(--radius) - 10px);
+}
+.attachment.is-image { max-width: min(100%, 490px); }
+.attachment.is-unavailable { border-color: var(--attention); }
+.attachment.is-unavailable .attachment-caption { flex-wrap: wrap; }
+.cm-taken.attachment { margin-right: 5px; padding: 2px; border-color: transparent; }
+.asset-dialog {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 40px 12px 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
+}
+.asset-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.asset-dialog img { display: block; max-width: 100%; max-height: calc(100dvh - 100px); object-fit: contain; }
+.asset-dialog-close { position: absolute; top: 4px; right: 8px; width: 32px; height: 32px; font-size: 26px; }
+.attach-files {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 6px;
+  color: var(--ink-2);
+  font: 12px/1.5 var(--font);
+  border-radius: calc(var(--radius) - 5px);
+}
+.attach-files:hover { background: var(--surface-2); color: var(--ink); }
+.day-input-actions { display: flex; align-items: center; gap: 8px; padding-top: 6px; }
+.asset-error { color: var(--attention); font-size: 13px; line-height: 1.5; }
+.asset-error:empty { display: none; }
+.asset-error button { margin-left: 8px; text-decoration: underline; }
+.mixed-input { flex: 1; min-width: 0; }
+.mixed-composer { min-width: 0; font: 16px/1.5 var(--font); }
+.mixed-composer .cm-editor { background: none; color: var(--ink); }
+.mixed-composer .cm-scroller { max-height: min(240px, 35dvh); overflow-y: auto; font: inherit; }
+.mixed-composer .cm-content { min-height: 36px; padding: 6px 0; caret-color: var(--ink); }
+.mixed-composer .cm-line { padding: 0; }
+.mixed-composer .cm-placeholder { color: var(--ink-3); }
+.mixed-composer .cm-focused { outline: none; }
+.mixed-composer .attachment-preview img { max-height: 128px; }
+.mixed-composer .attachment-caption { padding: 4px 7px; gap: 6px; }
+.mixed-input > .attach-files { margin-left: -6px; }
+.rich-content { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rich-content .attachment { vertical-align: middle; }
+.export-control { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.persistence-error { max-width: var(--page-text); margin: 4px auto; padding: 8px 20px; }
+.startup-error { max-width: 460px; margin: 18vh auto; padding: 24px; line-height: 1.6; }
+.startup-error button { display: block; margin-top: 16px; padding: 8px 16px; border-radius: calc(var(--radius) - 5px); background: var(--surface-2); }
+@media (pointer: coarse) {
+  .attach-files { min-height: 40px; }
+  .attachment-remove { min-width: 32px; min-height: 34px; }
+  .attachment-download { padding: 5px 0; }
+}

@@ -210,23 +210,28 @@ test("an open discussion, its draft and composer selection survive midnight", as
     } },
   });
   await page.locator(".cm-taken").click();
-  const composer = page.locator("textarea.composer-input");
+  const composer = page.locator(".mixed-composer .cm-content");
   await composer.fill("A reply that is still being written.");
   await composer.evaluate((el) => {
-    if (!(el instanceof HTMLTextAreaElement)) throw new Error("Missing discussion textarea");
-    el.setSelectionRange(2, 8);
+    const text = el.querySelector(".cm-line")?.firstChild;
+    const selection = window.getSelection();
+    if (!(text instanceof Text) || !selection) throw new Error("Missing discussion text selection");
+    const range = document.createRange();
+    range.setStart(text, 2); range.setEnd(text, 8);
+    selection.removeAllRanges(); selection.addRange(range);
     Object.assign(window, { discussionInput: el });
   });
+  await page.clock.runFor(32);
   const before = await composer.evaluate((el) => ({ top: el.getBoundingClientRect().top, left: el.getBoundingClientRect().left }));
   await page.clock.runFor(10_000);
   expect(await composer.evaluate((el) => {
-    if (!(el instanceof HTMLTextAreaElement)) throw new Error("Missing discussion textarea");
+    const selection = window.getSelection();
     return {
       same: el === (window as unknown as { discussionInput: Element }).discussionInput,
-      focused: el === document.activeElement, start: el.selectionStart, end: el.selectionEnd,
+      focused: el === document.activeElement, start: selection?.anchorOffset, end: selection?.focusOffset,
     };
   })).toEqual({ same: true, focused: true, start: 2, end: 8 });
-  await expect(composer).toHaveValue("A reply that is still being written.");
+  await expect(composer).toHaveText("A reply that is still being written.");
   const after = await composer.evaluate((el) => ({ top: el.getBoundingClientRect().top, left: el.getBoundingClientRect().left }));
   expect(after).toEqual(before);
   expect(await page.locator(`[data-day="${NEXT}"]`).evaluate((el) => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(0);

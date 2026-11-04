@@ -3,6 +3,10 @@
 import { useSyncExternalStore } from "react";
 import { dayKey } from "./dates";
 import { DaySection, Message, Span, Thread, newId } from "./model";
+import { AssetController } from "./assets/controller";
+import { AssetRepository, RepositoryError, type AuditEvent } from "./assets/repository";
+import { validateWorkspace, workspaceAssetIds, type ComposerDraft, type WorkspaceData } from "./assets/workspace";
+import { attachmentTokens, splitsAttachment } from "./input/content";
 
 export interface Reading {
   day: string;
@@ -10,9 +14,7 @@ export interface Reading {
   to: number;
 }
 
-export interface State {
-  sections: DaySection[];
-  threads: Record<string, Thread>;
+export interface State extends WorkspaceData {
   openThreadId: string | null;
   hoverThreadId: string | null;
   reading: Reading[];
@@ -33,10 +35,16 @@ export class Store {
   private listeners = new Set<Listener>();
   private saveTimer = 0;
   private readonly defaultOpenDays = new Set<string>();
+  private mutation = 0;
+  private savedMutation = 0;
+  private pendingSave: Promise<void> = Promise.resolve();
+  private audit: AuditEvent[] = [];
+  private detachExit = () => {};
 
   constructor(
-    initial: Pick<State, "sections" | "threads">,
+    initial: WorkspaceData,
     private readonly key: string,
+    readonly assets: AssetController,
   ) {
     const now = new Date();
     const today = dayKey(now);
@@ -49,20 +57,43 @@ export class Store {
       sections: [...sections].sort((a, b) => b.day.localeCompare(a.day)),
       openThreadId: null, hoverThreadId: null, reading: [], now,
     };
-    this.watchPageExit();
   }
 
-  static load(seed: () => Pick<State, "sections" | "threads">, account: string | null): Store {
+  static async load(seed: () => Pick<State, "sections" | "threads">, account: string | null): Promise<Store> {
     const key = storageKey(account);
-    const params = new URLSearchParams(location.search);
-    if (params.has("reset")) localStorage.removeItem(key);
+    const assets = new AssetController(new AssetRepository(key));
     try {
-      const raw = localStorage.getItem(key);
-      if (raw) return new Store(JSON.parse(raw), key);
-    } catch {
-      // A corrupt saved copy falls back to the seed rather than blocking the page.
-    }
-    return new Store(seed(), key);
+      const saved = await assets.hydrate();
+      let initial: WorkspaceData;
+      if (saved) initial = validateWorkspace(saved.data);
+      else {
+        const legacy = localStorage.getItem(key);
+        initial = validateWorkspace(legacy === null ? seed() : JSON.parse(legacy));
+      }
+      let store = new Store(initial, key, assets);
+      if (!saved) {
+        try { await store.saveNow("workspace.migrate", "system"); }
+        catch (error) {
+          if (!(error instanceof RepositoryError) || error.code !== "conflict") throw error;
+          // Another tab won create-only migration. Adopt its canonical snapshot, never overwrite it.
+          const winner = await assets.hydrate();
+          if (!winner) throw error;
+          store = new Store(validateWorkspace(winner.data), key, assets);
+        }
+      }
+      // A committed pending send already exists in the canonical post list. Heal only its
+      // original draft; later typed text remains an independent draft after a restart.
+      for (const [draftKey, draft] of Object.entries(store.state.drafts)) {
+        const pending = draft.pending;
+        if (!pending || !Object.values(store.state.threads).some((thread) => thread.messages.some((message) => message.id === pending.id))) continue;
+        const sameRevision = pending.revision === draft.revision;
+        store.state.drafts = { ...store.state.drafts, [draftKey]: { text: sameRevision && draft.text === pending.source ? "" : draft.text, revision: draft.revision } };
+        store.mutation += 1;
+      }
+      if (store.mutation) await store.saveNow("draft.reconcile", "system");
+      store.watchPageExit();
+      return store;
+    } catch (error) { assets.close(); throw error; }
   }
 
   subscribe(fn: Listener): () => void {
@@ -72,33 +103,114 @@ export class Store {
     };
   }
 
-  private set(next: Partial<State>, persist = true): void {
+  private set(next: Partial<State>, persist = true, audit: AuditEvent = { actor: "owner", action: "workspace.edit", targetId: "workspace", at: Date.now() }): void {
+    if (!this.assets.active) return;
     this.state = { ...this.state, ...next };
     for (const fn of this.listeners) fn();
-    if (persist) this.scheduleSave();
+    if (persist) { this.mutation += 1; this.audit.push(audit); this.scheduleSave(); }
   }
 
   private scheduleSave(): void {
     clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(() => this.saveNow(), 250);
+    this.saveTimer = window.setTimeout(() => { void this.saveNow().catch(() => this.publishSaveFailure()); }, 250);
   }
 
-  /** Writes immediately; also runs when the page is hidden or closed, so no edit is lost. */
-  saveNow(): void {
+  /** Begin a transactional save now. Only its returned promise establishes durability. */
+  async saveNow(action = "workspace.save", actor: AuditEvent["actor"] = "owner"): Promise<void> {
     clearTimeout(this.saveTimer);
     this.saveTimer = 0;
-    const { sections, threads } = this.state;
-    localStorage.setItem(this.key, JSON.stringify({ sections, threads }));
+    const data = this.snapshot();
+    const mutation = this.mutation;
+    const events = [...this.audit];
+    const audit = events.length ? events : [{ actor, action, targetId: "workspace", at: Date.now() }];
+    const save = this.assets.commit(data, workspaceAssetIds(data), audit).then(() => {
+      this.savedMutation = Math.max(this.savedMutation, mutation);
+      this.audit = this.audit.filter((event) => !events.includes(event));
+      // Text-only compatibility mirror is secondary; it never overrides canonical IDB.
+      try { localStorage.setItem(this.key, JSON.stringify(data)); }
+      catch { console.info("Ideas compatibility mirror unavailable; canonical content is saved."); }
+    });
+    this.pendingSave = save;
+    return save;
+  }
+
+  snapshot(): WorkspaceData {
+    const { sections, threads, drafts } = this.state;
+    return { sections, threads, drafts };
+  }
+
+  flush(): Promise<void> {
+    if (!this.assets.active) return Promise.reject(new Error("This workspace is no longer active."));
+    return this.saveTimer || (this.savedMutation < this.mutation && !this.assets.error) ? this.saveNow() : this.pendingSave;
+  }
+
+  private publishSaveFailure(): void {
+    if (!this.assets.active) return;
+    // The controller exposes the typed error to the recovery UI; keep every local draft.
+    for (const listener of this.listeners) listener();
+  }
+
+  draft(key: string): ComposerDraft { return this.state.drafts[key] ?? { text: "", revision: 0 }; }
+
+  updateDraft(key: string, text: string): void {
+    const previous = this.draft(key);
+    this.set({ drafts: { ...this.state.drafts, [key]: { text, revision: previous.revision + 1 } } });
+  }
+
+  /** One message, dependency set, audit and conditional draft clearing per send identity. */
+  async submitComment(threadId: string, source: string, draftKey: string, messageId: string, target?: { parentId: string; replyTo?: Message["author"] }): Promise<string> {
+    const thread = this.state.threads[threadId];
+    if (!thread) throw new Error("This discussion is no longer available.");
+    const draft = this.draft(draftKey);
+    const matchesDraft = draft.text === source;
+    const revision = draft.pending?.id === messageId && draft.pending.source === source ? draft.pending.revision ?? draft.revision : draft.revision;
+    const pending = { id: messageId, source, revision };
+    const nextDraft = matchesDraft ? { ...draft, text: "", pending } : draft;
+    const existing = thread.messages.find((message) => message.id === messageId);
+    if (existing && existing.text !== source) throw new Error("This send identity belongs to different content.");
+    const message: Message = existing ?? { id: messageId, at: Date.now(), author: "owner", kind: "text", text: source, parentId: target?.parentId, replyTo: target?.replyTo };
+    this.set({
+      threads: { ...this.state.threads, [threadId]: { ...thread, messages: existing ? thread.messages : [...thread.messages, message] } },
+      drafts: { ...this.state.drafts, [draftKey]: nextDraft },
+    }, true, { actor: "owner", action: "comment.submit", targetId: messageId, at: message.at });
+    try { await this.saveNow(); }
+    catch (error) {
+      const current = this.draft(draftKey);
+      if (this.assets.active && matchesDraft && current.revision === revision && current.pending?.id === messageId && current.pending.revision === revision && !current.text) {
+        this.set({ drafts: { ...this.state.drafts, [draftKey]: { ...current, text: source, pending } } }, false);
+      }
+      throw error;
+    }
+    const current = this.draft(draftKey);
+    if (current.revision === revision && current.pending?.id === messageId) {
+      this.set({ drafts: { ...this.state.drafts, [draftKey]: { text: current.text, revision: current.revision } } }, false);
+    }
+    return messageId;
   }
 
   private watchPageExit(): void {
     const flush = () => {
-      if (this.saveTimer) this.saveNow();
+      if (this.saveTimer) void this.saveNow().catch(() => this.publishSaveFailure());
     };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!this.assets.active || (this.savedMutation >= this.mutation && !this.assets.hasStaged && !this.assets.error)) return;
+      event.preventDefault(); event.returnValue = "";
+    };
+    const visibility = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("beforeunload", beforeUnload);
     window.addEventListener("pagehide", flush);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") flush();
-    });
+    document.addEventListener("visibilitychange", visibility);
+    this.detachExit = () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }
+
+  /** Call only after durable handoff; closing is not a way to discard unsaved user content. */
+  close(): void {
+    clearTimeout(this.saveTimer); this.saveTimer = 0;
+    this.detachExit(); this.listeners.clear(); this.assets.close();
   }
 
   /** Update the clock and add only the current day, without changing existing view defaults. */
@@ -144,16 +256,17 @@ export class Store {
    */
   takeUp(day: string, from: number, to: number, init: Omit<Thread, "id" | "day" | "quote" | "createdAt" | "lastReadAt">): string | null {
     const s = this.section(day);
-    if (!s || from >= to || to > s.text.length) return null;
+    if (!s || from < 0 || from >= to || to > s.text.length || splitsAttachment(s.text, from, to)) return null;
     if (s.spans.some((sp) => sp.from < to && from < sp.to)) return null;
     const quote = s.text.slice(from, to);
-    if (!quote.trim()) return null;
+    if (!quote.trim() || this.savedMutation < this.mutation || !this.assets.ready(quote)) return null;
     const id = newId("th");
     const now = Date.now();
-    const thread: Thread = { id, day, quote, createdAt: now, lastReadAt: now - 1, ...init };
+    const attachments = attachmentTokens(s.text).filter((token) => token.from >= from && token.to <= to).map((token) => ({ ...token, from: token.from - from, to: token.to - from }));
+    const thread: Thread = { ...init, id, day, quote, attachments, createdAt: now, lastReadAt: now - 1 };
     const spans = [...s.spans, { threadId: id, from, to }].sort((a, b) => a.from - b.from);
-    this.set({ threads: { ...this.state.threads, [id]: thread } });
-    this.patchSection(day, { spans });
+    this.set({ threads: { ...this.state.threads, [id]: thread }, sections: this.state.sections.map((section) => section.day === day ? { ...section, spans } : section) }, true,
+      { actor: "system", action: "source.take_up", targetId: id, at: now });
     return id;
   }
 

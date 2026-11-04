@@ -7,14 +7,16 @@ export interface Account {
 
 const USERINFO = "/oauth2/userinfo";
 
+/** Only an explicit loopback static preview has an anonymous single-user workspace. */
 export async function loadAccount(): Promise<Account | null> {
-  try {
-    const res = await fetch(USERINFO, { credentials: "same-origin", headers: { Accept: "application/json" } });
-    if (!res.ok || !res.headers.get("content-type")?.includes("json")) return null;
-    const body = (await res.json()) as { email?: string; user?: string };
-    const email = (body.email || body.user || "").trim().toLowerCase();
-    return email ? { email } : null;
-  } catch {
-    return null;
-  }
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  const response = await fetch(USERINFO, { credentials: "same-origin", headers: { Accept: "application/json" } });
+  if (loopback && response.status === 404) return null;
+  if (!response.ok || !response.headers.get("content-type")?.includes("json")) throw new Error("Account verification unavailable.");
+  const body: unknown = await response.json();
+  if (typeof body !== "object" || body === null) throw new Error("Account response is invalid.");
+  const email = "email" in body && typeof body.email === "string" ? body.email : "user" in body && typeof body.user === "string" ? body.user : "";
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) throw new Error("Account identity is missing.");
+  return { email: normalized };
 }

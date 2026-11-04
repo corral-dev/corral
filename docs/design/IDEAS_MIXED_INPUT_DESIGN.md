@@ -1,10 +1,12 @@
 # Ideas mixed input: text, images and files
 
-> Status: **detailed proposal, not implemented** (2026-11-04).
+> Status: **direction approved; development design and implementation in progress** (2026-11-04).
 > The owner requirement is adopted in [Web Task Butler, requirement 21](WEB_TASK_BUTLER_DESIGN.md#1-owner-requirements-2026-09-29).
-> All technical choices, numerical limits and rollout slices below are recommendations,
-> not additional owner decisions. This document does not authorize implementation,
-> deployment, a new native client feature or permanent deletion of user data.
+> The owner approved the direction, requested independent subagent review and implementation,
+> and explicitly required that frozen sentences, dragging and existing editing behavior remain
+> intact. Section 15 defines the development contract. Numerical defaults remain tunable;
+> neither approval nor this document claims implemented or accepted behavior, authorizes a new
+> native client feature, or permits permanent deletion of user data.
 
 ## 1. Outcome and scope
 
@@ -540,8 +542,8 @@ cross-device or worker delivery. Production feature completion requires C and D.
    browser tests. Existing Corral image/partial-delivery regressions apply only if those
    mechanisms change. Record source/artifact, actual path and matching evidence per claim.
 
-No implementation tests, clipboard device probes, new screenshots, runtime calls or
-cross-device attachment behavior were performed for this design-only task.
+The initial design-only pass performed no implementation/device/runtime acceptance.
+Implementation evidence and remaining boundaries are recorded in §15 as work proceeds.
 
 ## 14. References
 
@@ -577,3 +579,205 @@ Product interaction, session control and global rules remain in their authoritie
 [Web interaction](~/.config/agentsync/docs/WEB_APP_INTERACTION_GUIDE.md),
 [offline architecture](~/.config/agentsync/docs/OFFLINE_FIRST_ARCHITECTURE_GUIDE.md), and
 [data integrity](~/.config/agentsync/docs/BACKEND_DATA_INTEGRITY_GUIDE.md).
+
+## 15. Development contract (owner approved, 2026-11-04)
+
+### Delivery boundary
+
+Implement mixed input completely on the existing Ideas page, including durable originals,
+all composing surfaces, readable frozen quotes/comments and regression-safe editing. The
+currently absent production coordinator is not invented as a side effect of a clipboard
+feature: cross-device service replication and real-worker dispatch remain dependent on the
+parent product backend. Expose no fake upload, delivery or worker-success state. Maintain
+asset/readiness contracts so that future integration cannot forward incomplete material.
+The current account-scoped preview must be usable and deployed, not left as an unconnected
+component demo. Native Corral clients still have no Ideas surface.
+
+### Invariants that block delivery
+
+1. Text-only frozen sentences retain their DOM treatment, background states, native
+   press/move drag, wrapped edge geometry, trailing gap, same-day restriction and exact
+   text. Attachment support cannot change spacing or rewrite unrelated Markdown.
+2. Import/replacement touching any locked source range is rejected atomically. Ordinary
+   editing, cut, paste-over-selection, mobile history and undo/redo cannot remove part of a
+   frozen sentence or its file reference. Drag is the existing explicit external move,
+   never an unlocked text edit.
+3. A taken span containing assets renders them without nested replacement decorations.
+   The text and referenced assets remain one locked ownership range; the existing move
+   carries the exact source and thread mapping. Preview/download actions never initiate
+   a sentence drag or open a different discussion.
+4. Asset tokens are atomic but not otherwise read-only in drafts. Source inside code
+   examples is not an attachment. Async persistence/preview completion cannot dispatch a
+   replacement, restore removed content, move the caret or add an undo frame.
+5. Bytes, content revisions and actor-attributed audit commit transactionally. The editor
+   may render immediately, but a failed local commit remains recoverable and cannot clear
+   a composer or trigger take-up. A newer revision always follows an older save in the
+   same account's serialized write queue.
+6. Sending a comment waits for local commit of the exact submitted revision and creates
+   one message. Repeated Enter/click during that commit cannot duplicate it. Typing after
+   submission starts is a new draft and is not cleared by the old completion.
+7. Changing reply target/thread retains each draft separately. Account changes neither
+   reveal another account's asset nor flush that account's content using a new identity.
+
+### Concrete modules and integration
+
+- `assets/repository.ts`: non-UI, account-scoped IndexedDB connection; separate original
+  Blob records, asset metadata, workspace snapshot and append-only audit stores. Operations:
+  load current workspace, transactionally save a snapshot with newly staged originals,
+  read/list account assets, and clone an occurrence without altering original bytes.
+  Fail closed on unsupported/corrupt schema and blocked upgrades; expose typed errors.
+  No service calls, DOM, React, permanent cleanup or base64.
+- `assets/controller.ts`: hydrated in-memory metadata/Blob cache over that repository,
+  serialized saves, import validation/IDs and subscriber notifications. Keep object-URL
+  lifecycle in the view layer. A source token addresses an immutable local asset occurrence;
+  separate blob identity allows copying an occurrence without duplicate original storage.
+- `input/content.ts`: use the existing Markdown parser to recognize complete asset links
+  and images outside code, escape labels, serialize new references, provide immutable
+  source ranges, and derive referenced IDs. No arbitrary HTML or remote-image fetching.
+- `input/attachments.ts`: CodeMirror paste/drop/picker insertion, reference widgets,
+  atomic ranges and clipboard remapping. Caller supplies the active account repository,
+  source identity, lock predicate, error handler and persistence barrier. Keep import event
+  handling below sentence-drag handling and above ordinary external file drop handling.
+- `input/assetView.ts` plus `input/attachments.css`: one DOM construction path for named
+  file/image content and an accessible native dialog for image preview. The canvas widget
+  and read-only forum renderer reuse it. Originals of unsupported image types are files.
+- `input/MixedComposer.tsx`: compact CM editor using the same attachment extension,
+  per-target draft identity, guarded Enter/composition handling and send barrier. The
+  forum shell, comment ordering and keyboard-aware sheet remain in `Discussion.tsx`.
+- `store.ts` / `main.tsx`: asynchronous hydration before the editor mounts; migrate the
+  current account's legacy snapshot, preserve legacy content until committed readback,
+  persist drafts with workspace state and surface actual persistence exceptions. A small
+  text-only compatibility snapshot may remain for existing consumers, but never contains
+  binary data or overrides a newer canonical transactional snapshot.
+- `canvas/editor.ts`: share attachment extensions while retaining taken-span history
+  guards and sentence dragging. Split rendering at asset tokens for mixed taken spans;
+  logical lock ranges and move commands continue to use complete original source ranges.
+  `DaySection.tsx` supplies the controller without recreating its EditorView.
+- `preview.ts`: simulation remains explicit; do not take up incomplete/persistence-failed
+  blocks or try to describe an asset by parsing its generated ID as natural language.
+  Attachment-only input is retained; simulated questions/results remain ordinary comments.
+
+### Revision and transaction protocol
+
+A Store instance owns a monotonic workspace revision. Every mutation captures a complete
+immutable snapshot and serializes its save after prior revisions. Pending import records
+are included in the same IDB transaction as any snapshot that references them. Only the
+transaction `complete` event resolves the durability promise, not request success. A failed
+save retains staged originals and a recoverable editor snapshot; later successful saves
+can heal it without re-pasting. Background saves do not move selection or enter CM history.
+
+On boot, validate the canonical account snapshot first. If none exists, validate and migrate
+only that account's legacy JSON; do not silently replace corrupt content with sample data.
+An unavailable database is a visible recoverable failure, not permission to claim durable
+attachment support. Compatible legacy text mirrors are secondary and may fail separately
+without undoing an already committed canonical save.
+
+Imports allocate source tokens synchronously, retaining File/Blob objects in memory until
+the transaction commits. Undo/remove only changes source usage; original records remain
+available for redo. Duplicate transport MIME representations are collapsed only when their
+relationship is known; separate identical files remain separate occurrences. Preflight batch
+limits before modifying a selection. Preserve ordinary text paste when no files are exposed.
+
+### Independent review and test plan
+
+Before integrating UI changes, obtain two read-only reviews: (a) persistence/account isolation,
+transaction ordering, migration and security; (b) source-range invariants and test sufficiency
+for frozen-content compatibility. Reviewers identify concrete failure sequences and required
+checks, not new UI designs or styling. The primary owns all editor/UI implementation and
+visual acceptance. Findings are accepted or rebutted with source/test evidence before shipping.
+
+Tests must cover both unchanged text-only behavior and mixed frozen content. Add import,
+atomic-delete, undo/remove-before-save, copy across editors, post/reply draft recovery,
+attachment-only send, quota/transaction failure, account isolation, reload and original-byte
+readback. Actual native sentence drag must move the same thread/reference source without
+added spaces, then tolerate an external file drop and later typing. Exercise desktop
+Chromium/WebKit plus mobile browser automation, and inspect the installed physical iPhone
+Safari page where available. A synthetic clipboard test never proves OS-file exposure.
+
+Concurrent midnight-rollover work owns App/store/day-canvas/package/test-harness edits until
+its handoff. Work first in new attachment modules and independent tests; integrate narrowly
+at agreed hooks without copying away, reverting or committing the other task's source.
+
+### Review corrections (independent read-only reviews, 2026-11-04)
+
+Both reviews are accepted with the following bounded corrections before integration:
+
+- Authentication has three outcomes: explicit loopback local preview, authenticated account,
+  and unavailable/invalid identity. Hosted failures never fall through to shared anonymous
+  storage. Late asynchronous work remains bound to the controller/account that created it.
+- Canonical corruption, legacy corruption and missing data are distinct. Only missing data
+  seeds examples; reset never deletes the only unreconciled copy. Migration is create-if-absent
+  with CAS and readback, not an unconditional initial save.
+- The IDB account revision is checked inside the save transaction. A per-controller queue
+  alone cannot coordinate tabs. A conflict retains local intent and requires reconciliation;
+  no silent last-whole-snapshot overwrite. `takeUp` snapshots thread and span together.
+- Save completion acknowledges only its captured immutable dependency/audit set. New imports
+  staged during that save remain staged. A rejection cannot poison the later save queue.
+  Repository operations enforce account scope and immutable blob/metadata identities.
+- Comment submission captures operation/message identity and draft revision synchronously.
+  The message, dependency/audit records and conditional original-draft clearing are one
+  transaction. A retry of that submission reuses its identity, not a duplicate new message.
+- Import preflights the entire selection against logical locks before allocating a visible
+  occurrence; the existing partial `changeFilter` is not import authorization. Rejection
+  changes neither source, selection, spans nor history.
+- UTF-16 half-open source ranges are shared by parser/editor/store. A token cannot straddle
+  a taken boundary. Taken asset bindings are pinned relative to the immutable quote, so
+  adding Markdown delimiters outside it cannot reinterpret the accepted attachment.
+- Mixed frozen units may span paragraphs. Move by current thread identity, carry exact
+  source/reference IDs, snap outside both taken units and draft tokens, and preserve the
+  existing pure-text spacing and same-day rules.
+- Delayed preview take-up verifies the current candidate/revision after every wait. The
+  settle scheduler retains/re-evaluates a candidate rejected for incomplete persistence;
+  success later cannot leave it permanently ineligible or freeze stale coordinates.
+
+Research exemption for these defect attributions: internal source contracts and reproduced
+local range transformations; current platform semantics remain supported by §14 references.
+
+### Review and implementation evidence
+
+Persistence/account review and frozen-source invariant review completed. A second read-only
+review of actual persistence code found a same-text/new-draft revision gap: retyping an earlier
+sent body could be mistaken for the original draft during restart, and an old failed send
+could restore text into a deliberately cleared newer draft. The correction binds pending
+receipts, success clearing, failure restoration and restart reconciliation to the originating
+draft revision/operation. Text equality is only an additional check, never identity. New
+editing clears the old pending receipt; successful sends retire it. Tests cover equal text
+retyped later, typing during commit and clearing while an old submission fails.
+
+CAS conflict recovery uses a visible export-before-reload path, not a misleading Retry loop.
+Export packages the current in-memory snapshot and staged original bytes; native before-unload
+protection remains active while edits cannot be committed. No automatic refresh discards a
+conflicting draft. A closed controller cannot publish or restore a draft into a newer account.
+
+### Verified local acceptance (2026-11-04)
+
+- Strict application/test TypeScript and the production esbuild bundle pass without warnings.
+  npm reports no dependency vulnerabilities. The retired textarea dependency is removed;
+  the ZIP dependency is pinned to `fflate@0.8.3`.
+- Attachment/parser/repository matrix: **130 passed, 3 skipped** across desktop Chromium,
+  WebKit, Firefox and mobile WebKit. The three skipped cases require desktop mouse-based
+  native dragging; they are not claims of physical iPhone long-press acceptance.
+- Existing calendar/midnight/selection/composition matrix: **55 passed** across five browser
+  configurations. This includes the new shared composer retaining its DOM, draft and
+  selection through midnight; composition dispatch tests do not prove hardware IME behavior.
+- Coverage includes atomic frozen imports, protected history, wrapped/multi-paragraph moves,
+  delimiter reinterpretation, copy identity, pending-send races, stale take-up, quota/abort,
+  account/corrupt-schema failure, restart, exact original download and ZIP contents. A losing
+  tab exports its current unsaved snapshot and staged original without overwriting the winner.
+- Native macOS PNG paste was observed in both canvas and composer as `isTrusted: true`
+  with a 17,742-byte original File. The original clipboard was restored. Fresh native-window
+  captures were inspected in light/dark mode, after posting, and with image preview open.
+  A real headed drag moved the same 41-character quote from offset 0 to 281; before/after
+  frames and committed span readback agree. Browser drag regression videos are retained.
+- The 390×844 responsive discussion was inspected with no horizontal overflow. This is
+  emulation, not physical Safari acceptance. The paired iPad's fresh screen was locked and
+  its device state required a passcode; physical iPhone keyboard, long-press, picker and IME
+  acceptance remains open. Native Mac/iPhone and TUI clients have no Ideas composing surface.
+
+Complete logs, fresh captures and motion artifacts are kept outside the repository under
+`~/.config/corral/development/ideas-mixed-input/`. Reusable native-paste verification and
+Firefox fixture limitations are recorded in the maintained AgentSync `AGENT_BROWSER_GUIDE.md`.
+No production debug globals, fixture routes, binaries or generated test reports are shipped.
+
+Deployment of the verified source to `https://ideas.caozc.com` is the remaining delivery step.
+The local-only storage and absent backend/real-worker boundaries in this section still apply.

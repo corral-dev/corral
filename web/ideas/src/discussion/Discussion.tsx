@@ -4,11 +4,13 @@
 // reply). Every comment looks the same, results and questions included.
 // Desktop: a panel at the right. Phones: a full-height sheet above the keyboard.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import TextareaAutosize from "react-textarea-autosize";
+import type { EditorView } from "@codemirror/view";
+import { MixedComposer } from "../input/MixedComposer";
+import { RichContent } from "../input/RichContent";
 import { relativeTime, t } from "../i18n";
 import { Message, Thread, openQuestion, presence } from "../model";
 import type { Store } from "../store";
-import { CloseIcon, SendIcon } from "../ui/icons";
+import { CloseIcon } from "../ui/icons";
 
 export interface ReplyTarget {
   parentId: string;
@@ -18,7 +20,7 @@ export interface ReplyTarget {
 interface Props {
   store: Store;
   thread: Thread | null;
-  onReply: (threadId: string, text: string, target?: ReplyTarget) => void;
+  onReply: (threadId: string, text: string, target: ReplyTarget | undefined, draftKey: string, operationId: string) => Promise<void>;
 }
 
 export function Discussion({ store, thread, onReply }: Props) {
@@ -48,7 +50,7 @@ export function Discussion({ store, thread, onReply }: Props) {
     <aside ref={sheet} className={`sheet${open ? " is-open" : ""}`} aria-label={t("coordinator")} inert={!open} aria-hidden={!open}>
       {shown && (
         <div className="sheet-card">
-          <ThreadView key={shown.id} thread={shown} onReply={onReply} onClose={() => store.openThread(null)} />
+          <ThreadView key={shown.id} store={store} thread={shown} onReply={onReply} onClose={() => store.openThread(null)} />
         </div>
       )}
     </aside>
@@ -86,10 +88,10 @@ function bodyOf(m: Message): string {
   return m.text;
 }
 
-function ThreadView({ thread, onReply, onClose }: { thread: Thread; onReply: Props["onReply"]; onClose: () => void }) {
+function ThreadView({ store, thread, onReply, onClose }: { store: Store; thread: Thread; onReply: Props["onReply"]; onClose: () => void }) {
   const [target, setTarget] = useState<ReplyTarget | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<EditorView | null>(null);
   const status = presence(thread);
   const now = Date.now();
 
@@ -127,18 +129,18 @@ function ThreadView({ thread, onReply, onClose }: { thread: Thread; onReply: Pro
       </header>
       <div className="thread-scroll" ref={scroller}>
         <div className="post">
-          <p className="post-text">{thread.quote}</p>
+          <p className="post-text"><RichContent store={store} source={thread.quote} tokens={thread.attachments} /></p>
           {thread.summary && <p className="post-meta">{thread.summary}</p>}
         </div>
         <ol className="comments">
           {roots.map((root) => (
             <li key={root.id} className="comment-group">
-              <Comment message={root} now={now} onReply={reply} />
+              <Comment store={store} message={root} now={now} onReply={reply} />
               {repliesOf(root.id).length > 0 && (
                 <ol className="replies">
                   {repliesOf(root.id).map((r) => (
                     <li key={r.id}>
-                      <Comment message={r} now={now} onReply={reply} />
+                      <Comment store={store} message={r} now={now} onReply={reply} />
                     </li>
                   ))}
                 </ol>
@@ -148,21 +150,23 @@ function ThreadView({ thread, onReply, onClose }: { thread: Thread; onReply: Pro
         </ol>
       </div>
       <Composer
+        store={store}
+        draftKey={`draft:${thread.id}:${target ? `${target.parentId}:${target.replyTo ?? "direct"}` : "root"}`}
         inputRef={input}
         target={target}
         targetName={targetName}
         placeholder={target ? t("replyTo", { name: targetName }) : openQuestion(thread) ? t("answer") : t("comment")}
         onCancelTarget={() => setTarget(null)}
-        onSend={(text) => {
-          onReply(thread.id, text, target ?? undefined);
-          setTarget(null);
+        onSend={async (text, draftKey, operationId) => {
+          await onReply(thread.id, text, target ?? undefined, draftKey, operationId);
+          if (!store.draft(draftKey).text) setTarget(null);
         }}
       />
     </div>
   );
 }
 
-function Comment({ message, now, onReply }: { message: Message; now: number; onReply: (m: Message) => void }) {
+function Comment({ store, message, now, onReply }: { store: Store; message: Message; now: number; onReply: (m: Message) => void }) {
   const name = authorName(message.author);
   return (
     <article className={`comment is-${message.author}`} data-comment={message.id}>
@@ -178,7 +182,7 @@ function Comment({ message, now, onReply }: { message: Message; now: number; onR
         </div>
         <p className="comment-body">
           {message.replyTo && <span className="mention">@{authorName(message.replyTo)} </span>}
-          {bodyOf(message)}
+          <RichContent store={store} source={bodyOf(message)} />
         </p>
         <button className="comment-action" onClick={() => onReply(message)}>
           {t("replyAction")}
@@ -188,62 +192,21 @@ function Comment({ message, now, onReply }: { message: Message; now: number; onR
   );
 }
 
-const coarsePointer = () => window.matchMedia("(pointer: coarse)").matches;
-
 function Composer(props: {
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  store: Store;
+  draftKey: string;
+  inputRef: React.RefObject<EditorView | null>;
   target: ReplyTarget | null;
   targetName: string;
   placeholder: string;
   onCancelTarget: () => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, draftKey: string, operationId: string) => Promise<void>;
 }) {
-  const [value, setValue] = useState("");
-  const send = () => {
-    const text = value.trim();
-    if (!text) return;
-    props.onSend(text);
-    setValue("");
-  };
-  return (
-    <form
-      className="composer-bar"
-      onSubmit={(e) => {
-        e.preventDefault();
-        send();
-      }}
-    >
-      {props.target && (
-        <div className="replying">
-          <span>{t("replyingTo", { name: props.targetName })}</span>
-          <button type="button" className="replying-cancel" onClick={props.onCancelTarget} aria-label={t("cancel")} title={t("cancel")}>
-            <CloseIcon />
-          </button>
-        </div>
-      )}
-      <div className="composer">
-        <TextareaAutosize
-          ref={props.inputRef}
-          className="composer-input"
-          minRows={1}
-          maxRows={6}
-          value={value}
-          placeholder={props.placeholder}
-          aria-label={props.placeholder}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            // Desktop: Enter sends, Shift+Enter breaks the line. Touch keyboards: Return is a
-            // line break and the button sends. Never send while an IME is composing.
-            if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
-            if (coarsePointer()) return;
-            e.preventDefault();
-            send();
-          }}
-        />
-        <button className="send" type="submit" disabled={!value.trim()} aria-label={t("send")} title={t("send")}>
-          <SendIcon />
-        </button>
-      </div>
-    </form>
-  );
+  return <div className="composer-bar">
+    {props.target && <div className="replying">
+      <span>{t("replyingTo", { name: props.targetName })}</span>
+      <button type="button" className="replying-cancel" onClick={props.onCancelTarget} aria-label={t("cancel")} title={t("cancel")}><CloseIcon /></button>
+    </div>}
+    <MixedComposer key={props.draftKey} store={props.store} draftKey={props.draftKey} inputRef={props.inputRef} placeholder={props.placeholder} onSend={props.onSend} />
+  </div>;
 }

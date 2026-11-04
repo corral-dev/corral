@@ -10,6 +10,9 @@ import { DaySection as Section, isUnread, presence } from "../model";
 import type { State, Store } from "../store";
 import { Chevron } from "../ui/icons";
 import { SpanView, editorExtensions, external, setSpans, spansField } from "./editor";
+import { AttachmentPicker } from "../input/MixedComposer";
+import { attachmentTokens } from "../input/content";
+import type { AttachmentOptions } from "../input/attachments";
 
 interface Props {
   store: Store;
@@ -17,7 +20,7 @@ interface Props {
   section: Section;
   now: Date;
   settleMs: number;
-  onSettled: (day: string, from: number, to: number) => void;
+  onSettled: (day: string, from: number, to: number) => boolean | Promise<boolean>;
 }
 
 const FRESH_MS = 2500;
@@ -36,6 +39,7 @@ function spanViews(state: State, section: Section): SpanView[] {
         active: state.openThreadId === s.threadId || state.hoverThreadId === s.threadId,
         unread: isUnread(th),
         fresh: now - th.createdAt < FRESH_MS,
+        attachments: th.attachments ?? attachmentTokens(th.quote),
       };
     });
 }
@@ -85,13 +89,15 @@ interface EditorProps {
   section: Section;
   settleMs: number;
   isToday: boolean;
-  onSettled: (day: string, from: number, to: number) => void;
+  onSettled: (day: string, from: number, to: number) => boolean | Promise<boolean>;
 }
 
 function DayEditor({ store, state, section, settleMs, isToday, onSettled }: EditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const day = section.day;
+  const [error, setError] = useState("");
+  const attachments: AttachmentOptions = { controller: store.assets, locked: (state) => state.field(spansField), onError: setError };
 
   // Mount before the parent's scroll restoration measures the new day's full height.
   // Retain the same editor, selection, composition and undo history across date changes.
@@ -103,6 +109,7 @@ function DayEditor({ store, state, section, settleMs, isToday, onSettled }: Edit
         doc: section.text,
         extensions: editorExtensions({
           placeholder: isToday ? t("placeholder") : "",
+          attachments,
           settleMs,
           onSettled: (from, to) => onSettled(day, from, to),
           onPending: () => {},
@@ -136,6 +143,10 @@ function DayEditor({ store, state, section, settleMs, isToday, onSettled }: Edit
   return (
     <div className="day-body">
       <div className="editor-host" ref={host} />
+      <div className="day-input-actions">
+        <AttachmentPicker view={view} options={attachments} />
+        {error && <span className="asset-error" role="alert">{error}</span>}
+      </div>
     </div>
   );
 }
