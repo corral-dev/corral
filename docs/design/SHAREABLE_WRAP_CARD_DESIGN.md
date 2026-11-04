@@ -277,3 +277,15 @@ Python SessKit output on real histories, consumed by a standalone Rust card
 program (terminal animation and PNG export) distributed through npm platform
 packages like ccusage. The card program is downstream presentation and does not
 live in SessKit.
+
+### 10.5 Platforms (owner requirement 2026-11-04)
+
+`npx agentflex` supports macOS, Linux and Windows (x64 and arm64 builds per
+npm platform package). History discovery must use each runtime's actual
+Windows location, not a POSIX path joined by hand. Windows acceptance runs on
+the Windows 11 test VM (infra guide: `win` / `win-test`, QGA fallback while its
+SSH is down) with real assistant histories created there, plus a
+`windows-latest` CI job in the standalone repository. This does not change
+Corral's own decision not to support Windows
+([Windows compatibility](WINDOWS_COMPATIBILITY_DESIGN.md)); `corral flex`
+remains a macOS/Linux entry point that runs the same engine.
