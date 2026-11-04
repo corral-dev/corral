@@ -1,8 +1,10 @@
 # Shareable wrap card design (`corral wrap`)
 
-Status: implemented 2026-11-04 (`src/corral/wrap_stats.py`, `wrap_card.py`,
-`wrap_png.py`, `wrap_cmd.py`, `ui/wrap_app.py`; tests `tests/test_wrap.py`).
-Verification evidence is in §9.
+Status: first version implemented 2026-11-04 (`src/corral/wrap_stats.py`,
+`wrap_card.py`, `wrap_png.py`, `wrap_cmd.py`, `ui/wrap_app.py`; tests
+`tests/test_wrap.py`; evidence §9). Owner corrections of the same day (§10)
+supersede its distribution, performance target and card content; the name and
+engine placement in §10.4 await the owner's decision.
 
 ## 1. Decision and why
 
@@ -210,3 +212,59 @@ no code, and differentiates with motion.
   headless timing above shows the app itself kept rendering.
 - **Exported file mode** follows the user's umask (mkstemp's 0600 is widened),
   since the image is meant to be shared.
+
+## 10. Owner corrections, round 2 (2026-11-04)
+
+These supersede §1 (distribution), §3 (performance), §4–§5 (card content) and
+§7 item 3 where they conflict.
+
+### 10.1 Zero-friction distribution and speed
+
+- **Run without installing Corral.** The card must run on demand with a
+  single command such as `npx <name>`; installing Corral is not required.
+  `corral <subcommand>` keeps working for Corral users.
+- **Statistics complete within 1 second** for the default 7-day period. The
+  first version took 5–25 s.
+- **Install-time background precomputation was considered and rejected.**
+  `npx` has no install phase; pnpm 10 and Bun block dependency lifecycle
+  scripts by default and npm users often pass `--ignore-scripts`; a package that
+  reads AI conversation history from an install hook looks like a supply-chain
+  attack. Use an incremental per-file summary cache instead (only bytes or rows
+  added since the last run are parsed). Corral's existing background scan
+  worker may keep that cache warm for Corral users. The cold first run must
+  still meet the 1 s target.
+
+Measured 2026-11-04 on the owner's machine (7-day window): 160 recent JSONL
+files, 670 MB (Claude 256 MB, Codex 59 MB, Pi 318 MB) plus OpenCode rows in
+a 1.5 GB SQLite database. The first version spent scan 7.2 s, activity 3.5 s
+and usage 10.4 s single-threaded, parsing every file twice. A native SIMD
+multi-threaded literal scan (ripgrep) covered the same 670 MB in 0.04–0.06 s
+warm, and a time-filtered SQLite query takes milliseconds, so a native
+multi-core engine with window pruning (JSONL files are append-ordered: read
+backwards from the end until timestamps leave the window) fits well inside 1 s.
+The direct competitor ccusage ships a native binary through npm platform
+packages (`optionalDependencies` per OS/arch, checked with `npm view`), the
+same pattern as Biome.
+
+### 10.2 Card content
+
+- Remove the large `CORRAL` logo: it reads as an advertisement. The card
+  states its own purpose instead; the GitHub address stays as the only,
+  low-key promotion in the bottom-right border.
+- Remove the coverage disclosure (for example "11 without token data") from
+  the card; it carries no value for the reader. Coverage stays in `--json`.
+- Replace TOOL CALLS with average tokens per day.
+- Remove the absolute date range (the period label already says "last 7
+  days") and the `Mon-Sun` heatmap caption.
+
+### 10.3 Name
+
+The owner questioned "wrap" (it reads as "to wrap", not as a Spotify
+Wrapped-style recap) and asked for a cooler word. Pending decision.
+
+### 10.4 Engine placement (pending owner decision)
+
+A 1 s, Node-free-of-Python implementation needs a native engine. SessKit's
+hard rule forbids a second parser in consumers, so the recommended placement
+is a Rust engine inside SessKit, verified against the Python SessKit output on
+real histories, consumed by a standalone binary distributed through npm.
