@@ -48,16 +48,76 @@ never silently treated as zero.
 - **Sessions:** sessions with at least one activity event inside the period.
 - **Agent share:** percentage of those sessions per runtime.
 - **Tool calls:** `tool_call` events inside the period.
-- **Tokens:** sum of SessKit usage summaries for in-period records; coverage
-  gaps reported as such. Monetary amounts only when recorded natively; no
-  price lookup or estimate.
+- **Tokens:** SessKit usage records carry no timestamp, so in-period tokens
+  use `summarize_usage` with a `UsageSelection` of the message ids whose
+  activity events fall inside the period. A session whose whole history lies
+  inside the period contributes its full summary. Records that cannot be
+  attributed are disclosed as uncovered, never guessed. No monetary amount
+  (owner decision, §7).
 - **Peak parallel sessions:** the maximum number of sessions that were active
   at the same moment. A session's active intervals are built from its event
   timestamps, merging consecutive events whose gap is at most 5 minutes
   (Corral policy constant). Using the first-to-last event span is wrong: idle
   sessions left open across days inflated the probe's result to 20.
 
-## 5. Card content constraints
+## 5. Layout and motion (owner requirement 2026-11-04: animated, eye-catching)
+
+The owner requires the terminal card to move: a designed, eye-catching motion
+sequence, not a static printout. Motion reveals the real values; it never
+fakes data or delays exit.
+
+### 5.1 Grid
+
+One fixed cell grid of 72 columns × 19 rows (fits an 80×24 terminal) is the
+single source for the terminal frame and the exported image. Card background
+is a forced warm black regardless of terminal theme, so screenshots look the
+same everywhere. Palette: text `#EDE6DE`, dim `#8A817A`, dragon red
+`#BA1F14` (logo, as in the splash), gold `#D9A441` (light and highlights),
+runtime colors from the theme.
+
+| Rows | Content |
+|---|---|
+| 0, 18 | Rounded border; the bottom border embeds `github.com/corral-dev/corral` |
+| 2–4 | `corral` block logo (splash font) left; `WRAP`, date range and period right |
+| 6–8 | Four stat columns: label, large value, dim detail (sessions / tool calls / tokens / peak parallel) |
+| 10–11 | Agent share stacked bar and legend |
+| 13–17 | Activity heatmap: 7 days × 24 hours in half-block cells (two days per row), hour axis below |
+
+A terminal smaller than the card shows a one-line resize hint instead of a
+clipped card.
+
+### 5.2 Storyboard
+
+Time 0 is when the data is complete. Frames target 30 fps inside the card
+widget only (the full-screen snapshot limit of the dragon overlay does not
+apply to a 72×19 widget).
+
+| Phase | Time | Motion |
+|---|---|---|
+| Loading | real duration | Dim border; logo cells flicker as decoding noise; stat values climb live from real partial counts; a gold light travels along the bottom border as read progress |
+| Border | 0.0–0.5 s | A gold head runs clockwise around the border, leaving it lit |
+| Logo | 0.2–0.9 s | Each logo cell resolves from `░▒▓` noise to its final glyph at a random moment, flashing white once |
+| Numbers | 0.6–1.8 s | Values count up with ease-out, 0.12 s stagger; each lands with a 0.15 s gold flash |
+| Agents | 1.2–2.0 s | Bar grows left to right with a bright leading edge; legend items fade in one by one |
+| Heatmap | 1.6–2.8 s | Cells pop in a diagonal wave (hour + 2 × day), one bright frame then settle |
+| Peak | 2.6–3.2 s | The peak-hour cell blinks gold; the peak detail types in |
+| Idle | after | A diagonal shimmer crosses the logo every 4 s; the timer sleeps between shimmers |
+
+Keys: `s` save image, `r` replay, `q` / `Esc` quit. Reduced motion
+(`TEXTUAL_ANIMATIONS=none`), `--no-anim` and non-TTY output render the final
+frame directly.
+
+### 5.3 Image export
+
+`s` or `--png PATH` writes the final frame at 1200×630: the 72×19 grid
+rendered at 16×32 pixels per cell, centered. No new dependency: an embedded
+glyph subset of the BSD-2-Clause [Spleen](https://github.com/fcambus/spleen)
+16×32 bitmap font (license retained beside the data) and a standard-library
+`zlib` PNG encoder. Pillow was rejected because Homebrew's Pillow pulls ten
+native libraries for every Corral user. Default path is
+`corral-wrap-YYYYMMDD.png` in the current directory.
+
+## 6. Card content constraints
 
 - Local only: nothing is uploaded, no network call.
 - Built for sharing: no prompts, message text, session titles, file paths or
@@ -66,7 +126,7 @@ never silently treated as zero.
 - Terminal rendering follows the terminal UI knowledge base and the global UI
   standards; visual acceptance needs an inspected fresh capture.
 
-## 6. Product decisions (owner, 2026-11-04)
+## 7. Product decisions (owner, 2026-11-04)
 
 1. **Tokens yes, money no.** The card shows native token totals with their
    coverage. It shows no monetary amount, recorded or estimated.
@@ -77,7 +137,7 @@ never silently treated as zero.
    default; an export option writes a 1200×630 social image built from the
    same aggregated values, never a separately computed set.
 
-## 7. Market context (searched 2026-11-04)
+## 8. Market context (searched 2026-11-04)
 
 Many Claude Code "wrapped" cards already exist, for example
 [claude-code-wrapped](https://github.com/kschrader/claude-code-wrapped),
@@ -88,4 +148,7 @@ ccusage). [ccusage](https://github.com/ccusage/ccusage) now reports several
 agents and drove screenshot sharing through
 [a show-and-tell thread](https://github.com/ryoppippi/ccusage/discussions/26).
 Corral's distinguishing content is cross-runtime coverage of five agents and
-parallel-session work, so those metrics lead the card.
+parallel-session work, so those metrics lead the card. The inspected
+references (claude-code-wrapped, agent-wrapped; cloned 2026-11-04) are static;
+Corral reuses only their label/value column and activity-heatmap layout idea,
+no code, and differentiates with motion.
