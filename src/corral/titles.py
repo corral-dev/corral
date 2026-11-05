@@ -53,6 +53,39 @@ _ROLE_PREFIX_RE = re.compile(
     r"^(?:User|Assistant|用户|助手)\s*[:：]\s*",
     flags=re.IGNORECASE,
 )
+# 单个 emoji 簇：旗帜（区域指示符成对）、keycap、杂项符号与常用 pictographic，
+# 含 VS16、肤色修饰与 ZWJ 连接序列（如 👨‍💻）。
+_EMOJI_CLUSTER = (
+    r"(?:[\U0001F1E6-\U0001F1FF]{2}|[\d#*@]\uFE0F?\u20E3"
+    r"|[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u00A9\u00AE\u203C\u2049\u3030\u303D\u3297\u3299]"
+    r"(?:\uFE0F|\U0001F3FB-\U0001F3FF)?"
+    r"(?:\u200D[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u00A9\u00AE]"
+    r"(?:\uFE0F|\U0001F3FB-\U0001F3FF)?)*)"
+)
+_LEADING_ONE_EMOJI_RE = re.compile(r"^" + _EMOJI_CLUSTER)
+
+
+def _strip_leading_emojis(text: str) -> str:
+    """去掉标题开头的连续 emoji（校验用，不计入正文判断）。"""
+    stripped = text.strip()
+    while True:
+        match = _LEADING_ONE_EMOJI_RE.match(stripped)
+        if not match:
+            return stripped
+        stripped = stripped[match.end():].lstrip()
+
+
+def _count_leading_emojis(text: object) -> int:
+    if not isinstance(text, str):
+        return 0
+    stripped = text.strip()
+    count = 0
+    while True:
+        match = _LEADING_ONE_EMOJI_RE.match(stripped)
+        if not match:
+            return count
+        count += 1
+        stripped = stripped[match.end():].lstrip()
 
 # 状态列统一枚举：Claude / Codex 两个来源共用同一套标签和判定优先级。
 # 优先级（高到低）：已中断 > 待回复 > 已完成 > 空（无法判断末轮角色时不展示状态）。
@@ -276,7 +309,7 @@ def _is_machine_slug(text: str | None) -> bool:
     line = _title_line(text)
     if not line:
         return False
-    return bool(re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+){2,}", line))
+    return bool(re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+){2,}", _strip_leading_emojis(line)))
 
 
 def _is_terminal_small_talk(text: str | None) -> bool:
@@ -291,6 +324,10 @@ def _is_terminal_small_talk(text: str | None) -> bool:
 def _is_low_value_title(text: str | None) -> bool:
     line = _title_line(text)
     if not line:
+        return True
+    # 模型标题带 emoji 前缀：先去掉再看正文，否则 "🔧 实现" 会绕过正文黑名单。
+    line = _strip_leading_emojis(line)
+    if not line or _is_insufficient_title(line):
         return True
     if not any(char.isalnum() for char in line):
         return True
@@ -630,7 +667,14 @@ def _build_batch_prompt(sessions: list[dict]) -> str:
         "中英夹杂时跟用户提问里占比更高的一侧。"
         f"只有用户提问看不出主语言时，才用{fallback_lang}。"
         "不要因为本说明是中文就把英文会话译成中文。"
-        f"若任务信息不足、无法概括这次工作，该 id 的值必须是 {INSUFFICIENT_TITLE_TOKEN}，不要编造标题。"
+        "### Emoji 规则：每个标题必须以恰好 1 个 emoji 开头（emoji + 一个空格 + 正文）。"
+        "Every title MUST start with exactly one emoji, followed by a single space, then the title text. "
+        "选择最贴切任务领域或动作的一个，找不到贴切的才用 🔧/📝 通用："
+        "🔧修复 🐛缺陷 ✨功能 📝文档 🧪测试 🔍排查 🎨界面 ⚡️性能 🔒安全 📦依赖 🚀发布 🗂️整理 💬讨论。"
+        "emoji 不计入字数限制；不要把 emoji 放末尾，不要用多个 emoji，不要加引号。"
+        "示例：{\"a\": \"🔧 修复登录闪退\", \"b\": \"📝 补充部署文档\", \"c\": \"🚀 Fix checkout crash\"}。"
+        f"若任务信息不足、无法概括这次工作，该 id 的值必须是 {INSUFFICIENT_TITLE_TOKEN}"
+        "（原样返回，不要加 emoji），不要编造标题。"
         "只输出一个 JSON 对象，键是 id，值是标题字符串或 "
         f"{INSUFFICIENT_TITLE_TOKEN}，不要输出任何其他文字。\n\n"
         f"{payload}"

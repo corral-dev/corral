@@ -550,5 +550,61 @@ class TitleGenerationStateTests(unittest.TestCase):
         self.assertFalse(needs)
 
 
+class EmojiTitleTests(unittest.TestCase):
+    def test_prompt_requires_single_leading_emoji(self) -> None:
+        session = _session(first_user_msg="修复登录失败", fallback_title="修复登录失败")
+        prompt = titles._build_batch_prompt([session])
+        self.assertIn("exactly one emoji", prompt)
+        self.assertIn("🔧 修复登录闪退", prompt)
+        self.assertIn(titles.INSUFFICIENT_TITLE_TOKEN, prompt)
+
+    def test_strip_leading_emojis(self) -> None:
+        self.assertEqual(titles._strip_leading_emojis("🔧 修复登录失败"), "修复登录失败")
+        self.assertEqual(titles._strip_leading_emojis("🔧修复登录失败"), "修复登录失败")
+        self.assertEqual(titles._strip_leading_emojis("🚀 Fix checkout crash"), "Fix checkout crash")
+        self.assertEqual(titles._strip_leading_emojis("👨‍💻 修 bug"), "修 bug")
+        self.assertEqual(titles._strip_leading_emojis("🇨🇳 测试"), "测试")
+        self.assertEqual(titles._strip_leading_emojis("修复登录失败 🔧"), "修复登录失败 🔧")
+        self.assertEqual(titles._strip_leading_emojis('"🔧 修复"'), '"🔧 修复"')
+        self.assertEqual(titles._strip_leading_emojis("__INSUFFICIENT__"), "__INSUFFICIENT__")
+
+    def test_emoji_does_not_launder_junk_body(self) -> None:
+        self.assertTrue(titles._is_low_value_title("🔧 实现"))
+        self.assertTrue(titles._is_low_value_title("🔧🔧 实现"))
+        self.assertTrue(titles._is_low_value_title("🖼️"))
+        self.assertTrue(titles._is_low_value_title("🔧 ..."))
+        self.assertTrue(titles._is_low_value_title("🤷 __INSUFFICIENT__"))
+        self.assertTrue(titles._is_machine_slug("🔧 fix-corral-ci-failures"))
+        self.assertFalse(titles._is_low_value_title("🔧 修复登录失败"))
+        self.assertFalse(titles._is_low_value_title("🚀 Fix checkout crash"))
+
+    def test_emoji_model_title_accepted_and_cached(self) -> None:
+        session = _session(id="emo", first_user_msg="修复登录失败", fallback_title="修复登录失败")
+        cache: dict = {}
+        raw = titles._BatchRaw({"cursor:emo": "🔧 修复登录失败"}, kind="ok")
+        with (
+            mock.patch.object(titles, "generate_titles_batch", return_value=raw),
+            mock.patch.object(titles, "save_cache"),
+        ):
+            result = titles.refresh_titles([session], cache, generator=mock.Mock())
+        self.assertEqual(result, {"cursor:emo": "🔧 修复登录失败"})
+        title, needs = titles.resolve_initial_title(session, cache)
+        self.assertEqual(title, "🔧 修复登录失败")
+        self.assertFalse(needs)
+
+    def test_emoji_junk_and_polluted_token_are_invalid(self) -> None:
+        for raw_title in ("🔧 实现", "🤷 __INSUFFICIENT__", "🔧 ..."):
+            with self.subTest(raw_title=raw_title):
+                session = _session(id="junk", first_user_msg="修复登录失败", fallback_title="修复登录失败")
+                cache: dict = {}
+                raw = titles._BatchRaw({"cursor:junk": raw_title}, kind="ok")
+                with (
+                    mock.patch.object(titles, "generate_titles_batch", return_value=raw),
+                    mock.patch.object(titles, "save_cache"),
+                ):
+                    self.assertEqual(titles.refresh_titles([session], cache, generator=mock.Mock()), {})
+                self.assertEqual(cache["cursor:junk"]["failure_reason"], "invalid")
+
+
 if __name__ == "__main__":
     unittest.main()
