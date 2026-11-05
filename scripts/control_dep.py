@@ -43,6 +43,11 @@ WHEEL_SHA256: str | None = (
     "622c239093d08b7a56de22ecce7ca612cb6743387b57dbdcaa5507c60ed73f62"
 )
 REQUIRES = f"{PACKAGE}>={VERSION}"
+# Requires-Python of the published wheel (from its metadata; pip reports
+# "3.15.2 not in '<3.15,>=3.10'"). Release tooling that builds a scratch
+# interpreter (verify_clean_install.py) must stay inside this range.
+# Bump together with WHEEL_URL / WHEEL_SHA256 when the coordinator publishes.
+REQUIRES_PYTHON = ">=3.10,<3.15"
 
 
 def published() -> bool:

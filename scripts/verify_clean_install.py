@@ -30,14 +30,66 @@ def _clean_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
 
 
-def _resolve_python() -> str:
-    """Prefer a Python whose ensurepip works (Homebrew / CORRAL_CLEAN_PYTHON)."""
+def _spec_allows(spec: str, version: tuple[int, int]) -> bool:
+    """Minimal Requires-Python matcher for comma-separated >=,>,<=,<,== on major.minor."""
+    for clause in spec.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for op in (">=", "<=", "==", ">", "<", "~="):
+            if clause.startswith(op):
+                want = tuple(int(p) for p in clause[len(op):].strip().split(".")[:2])
+                break
+        else:
+            raise ValueError(f"unsupported Requires-Python clause: {clause!r}")
+        if op == ">=" and not (version >= want):
+            return False
+        if op == ">" and not (version > want):
+            return False
+        if op == "<=" and not (version <= want):
+            return False
+        if op == "<" and not (version < want):
+            return False
+        if op == "==" and not (version[: len(want)] == want):
+            return False
+        if op == "~=":
+            raise ValueError(f"unsupported Requires-Python clause: {clause!r}")
+    return True
+
+
+def _candidate_version(candidate: str) -> tuple[int, int] | None:
+    probe = subprocess.run(
+        [candidate, "-c", "import sys; print(sys.version_info[0]); print(sys.version_info[1])"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if probe.returncode != 0:
+        return None
+    try:
+        major, minor = (int(line) for line in probe.stdout.split()[:2])
+    except ValueError:
+        return None
+    return (major, minor)
+
+
+def _resolve_python(spec: str | None = None) -> str:
+    """Prefer a Python whose ensurepip works (Homebrew / CORRAL_CLEAN_PYTHON).
+
+    When spec (a Requires-Python range) is given, skip interpreters outside
+    it: a newer-than-allowed default python3 (e.g. 3.15 vs the control
+    artifact's <3.15) otherwise fails only later at pip install time.
+    """
     candidates = [
         os.environ.get("CORRAL_CLEAN_PYTHON"),
         "/opt/homebrew/bin/python3",
+        # Release tooling standardizes on 3.12 (Linux lane, checkout prepare);
+        # only chosen when it satisfies the spec, skipped when absent.
+        "/opt/homebrew/bin/python3.12",
         "/usr/local/bin/python3",
         sys.executable,
     ]
+    workable: list[str] = []
     for candidate in candidates:
         if not candidate or not pathlib.Path(candidate).exists():
             continue
@@ -46,9 +98,21 @@ def _resolve_python() -> str:
             capture_output=True,
             check=False,
         )
-        if probe.returncode == 0:
-            return candidate
-    return sys.executable
+        if probe.returncode != 0:
+            continue
+        if spec is not None:
+            version = _candidate_version(candidate)
+            if version is None or not _spec_allows(spec, version):
+                continue
+        if candidate not in workable:
+            workable.append(candidate)
+    if workable:
+        return workable[0]
+    tried = [c for c in candidates if c]
+    raise SystemExit(
+        f"error: no candidate interpreter satisfies Requires-Python {spec or 'unknown'} "
+        f"(tried: {', '.join(tried)}; override with CORRAL_CLEAN_PYTHON)"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,7 +139,11 @@ def main(argv: list[str] | None = None) -> int:
             control_requirement = None  # unpublished: skipped below, never invented
     else:
         control_requirement = None
-    python = _resolve_python()
+    python = _resolve_python(
+        control_dep.REQUIRES_PYTHON
+        if control_dep is not None and control_requirement is not None
+        else None
+    )
 
     env = _clean_env()
     with tempfile.TemporaryDirectory(prefix="corral-clean-install-") as tmp:
