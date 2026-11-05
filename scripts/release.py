@@ -610,7 +610,11 @@ class Context:
 
 
 def phase_cli_env(ctx: Context) -> str:
-    must([sys.executable, "scripts/dev_env.py", "prepare", "--repo", str(ctx.cli)], ctx.log("cli.env"),
+    # Pin the checkout interpreter: agent-session-control requires <3.15 and a
+    # fresh venv otherwise inherits the newest interpreter on the machine.
+    # Mirrors the Linux lane's `uv venv --python 3.12` convention.
+    must([sys.executable, "scripts/dev_env.py", "prepare", "--python", "3.12",
+          "--repo", str(ctx.cli)], ctx.log("cli.env"),
          "checkout environment preparation failed", cwd=ctx.cli)
     return "prepared .venv"
 
