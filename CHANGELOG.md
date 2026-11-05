@@ -6,6 +6,20 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Session titles now start with a task emoji (🔧 fix, ✨ feature, 📝 docs, 🚀 release…), chosen for the task domain so sessions are easier to scan and remember. Existing titles stay unchanged.
+- New `corral flex` command launches the shareable agentflex activity card (animated, with PNG export), replacing the retired Python `corral wrap`.
+- Remote image-only turns now submit correctly, and freshly created OpenCode sessions report input readiness instead of timing out.
+
+### 简体中文
+
+- 会话标题现在以任务 emoji 开头（🔧修复、✨功能、📝文档、🚀发布……），按任务领域选择，扫列表时更好认、更好记；已有标题保持不变。
+- 新增 `corral flex` 命令，打开可分享的 agentflex 动态卡片（带动画，支持 PNG 导出），替代已退役的 Python 版 `corral wrap`。
+- 远程纯图片消息现在可正常发出，新建的 OpenCode 会话能正确上报输入就绪，不再超时。
+
 ## 0.24.359
 
 ### English
