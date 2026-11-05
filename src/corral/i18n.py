@@ -592,6 +592,31 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "New session",
         "zh": "新建会话",
     },
+    "modal.cancel": {"en": "Cancel", "zh": "取消"},
+    "modal.project_more": {"en": "More…", "zh": "更多…"},
+    "modal.open_directory": {"en": "Open Folder…", "zh": "打开文件夹…"},
+    "modal.directory_invalid": {
+        "en": "Choose an existing, accessible folder.",
+        "zh": "请选择存在且可访问的文件夹。",
+    },
+    "remote.project.host_mismatch": {
+        "en": "This folder belongs to a different host. Select this Mac first.",
+        "zh": "文件夹与所选开发机不匹配，请先选择这台 Mac。",
+    },
+    "remote.help.allow_project": {
+        "en": (
+            "Allow a local folder for new sessions (local configuration write). "
+            "Example: corral remote allow-project ~/project --host-id HOST --json"
+        ),
+        "zh": (
+            "允许本机文件夹用于新会话（修改本机配置）。"
+            "示例：corral remote allow-project ~/project --host-id HOST --json"
+        ),
+    },
+    "remote.help.expected_host": {
+        "en": "Expected local host ID from remote status",
+        "zh": "remote status 返回的本机标识",
+    },
     "modal.column_project": {
         "en": "Project",
         "zh": "项目",

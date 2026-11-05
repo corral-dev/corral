@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from corral.remote import cli as remote_cli
@@ -78,6 +80,92 @@ class RemoteEnvelopeTests(unittest.TestCase):
 
     def test_bin_returns_usable_identity(self) -> None:
         self.assertTrue(remote_cli._bin())
+
+
+class AllowProjectTests(unittest.TestCase):
+    """A desktop folder grant is local, host-guarded and idempotent."""
+
+    def test_parser_requires_an_expected_host(self) -> None:
+        parser = remote_cli.build_parser()
+        args = parser.parse_args(["allow-project", "/tmp", "--host-id", "h1"])
+        self.assertEqual((args.path, args.host_id, args.dry_run), ("/tmp", "h1", False))
+        with self.assertRaises(SystemExit):
+            with mock.patch("sys.stderr"):
+                parser.parse_args(["allow-project", "/tmp"])
+
+    def test_host_mismatch_writes_nothing(self) -> None:
+        state = _state()
+        args = argparse.Namespace(path="/tmp", host_id="other", json=True, dry_run=False)
+        with (
+            mock.patch.object(remote_config, "read_state_from_disk", return_value=state),
+            mock.patch.object(remote_config, "save_state") as save,
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = remote_cli._cmd_allow_project(args)
+        self.assertEqual(code, remote_cli.EXIT_USAGE)
+        save.assert_not_called()
+        self.assertEqual(json.loads(buf.getvalue())["error"]["code"], "host_mismatch")
+
+    def test_missing_directory_is_a_usage_error(self) -> None:
+        state = _state()
+        args = argparse.Namespace(path="/definitely/missing/corral", host_id="h1",
+                                  json=True, dry_run=False)
+        with (
+            mock.patch.object(remote_config, "read_state_from_disk", return_value=state),
+            mock.patch.object(remote_config, "save_state") as save,
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = remote_cli._cmd_allow_project(args)
+        self.assertEqual(code, remote_cli.EXIT_USAGE)
+        save.assert_not_called()
+        self.assertEqual(json.loads(buf.getvalue())["error"]["code"], "invalid_directory")
+
+    def test_dry_run_and_real_grant_share_a_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            chosen = str(Path(td).resolve())
+            state = _state()
+            args = argparse.Namespace(path=chosen, host_id="h1", json=True, dry_run=True)
+            with (
+                mock.patch.object(remote_config, "read_state_from_disk", return_value=state),
+                mock.patch.object(remote_config, "save_state") as save,
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    self.assertEqual(remote_cli._cmd_allow_project(args), 0)
+            save.assert_not_called()
+            rehearsal = json.loads(buf.getvalue())["data"]
+            self.assertEqual(rehearsal, {"host_id": "h1", "path": chosen,
+                                         "changed": False, "dry_run": True})
+
+            args.dry_run = False
+            saved = []
+            with (
+                mock.patch.object(remote_config, "read_state_from_disk",
+                                  side_effect=lambda: state),
+                mock.patch.object(remote_config, "save_state", side_effect=saved.append),
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    self.assertEqual(remote_cli._cmd_allow_project(args), 0)
+            self.assertEqual(json.loads(buf.getvalue())["data"],
+                             {"host_id": "h1", "path": chosen,
+                              "changed": True, "dry_run": False})
+            self.assertEqual(saved[0].cwd_whitelist, [chosen])
+
+            # Repeating the same grant changes nothing and cannot duplicate it.
+            with (
+                mock.patch.object(remote_config, "read_state_from_disk",
+                                  side_effect=lambda: state),
+                mock.patch.object(remote_config, "save_state") as save,
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    self.assertEqual(remote_cli._cmd_allow_project(args), 0)
+            save.assert_not_called()
+            self.assertFalse(json.loads(buf.getvalue())["data"]["changed"])
+            self.assertEqual(state.cwd_whitelist, [chosen])
 
 
 class RemoteDryRunTests(unittest.TestCase):

@@ -1757,6 +1757,7 @@ class RemoteService:
         return {"ok": True}
 
     def _session_new(self, connection: Connection, params: dict):
+        self.refresh_state()
         runtime = str(params.get("runtime") or "").strip()
         if not runtime:
             raise ActionError(protocol.E_USAGE, t("remote.err.pick_assistant"))

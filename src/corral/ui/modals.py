@@ -21,6 +21,7 @@ from corral.i18n import t
 from corral.projects import fuzzy_match
 from corral.textutil import fit_cell, text_width
 from corral.theme import runtime_label_style
+from corral.ui.directory_picker import DirectoryPickerModal
 from corral.ui.dismiss import OutsideClickDismiss
 from corral.ui.quick_filters import FilterChip, QuickFilters
 from corral.ui.session_list import NoSelectListItem
@@ -289,6 +290,24 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     NewSessionModal #ns-runtimes {
         width: 1fr;
     }
+    NewSessionModal #ns-project-head {
+        height: 1;
+    }
+    NewSessionModal #ns-project-head Input {
+        width: 1fr;
+    }
+    NewSessionModal #ns-more {
+        height: 1;
+        width: auto;
+        min-width: 9;
+        border: none;
+        margin-left: 1;
+        background: $panel;
+    }
+    NewSessionModal #ns-more:hover,
+    NewSessionModal #ns-more:focus {
+        background: $panel-lighten-1;
+    }
     NewSessionModal ListView {
         height: 1fr;
         background: $surface;
@@ -382,12 +401,14 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                     yield Static("─" * 120, id="ns-quick-divider")
             with Horizontal(id="ns-columns"):
                 with Vertical(id="ns-project-column"):
-                    yield Input(
-                        value=self._initial_query,
-                        placeholder=t("modal.project_filter_placeholder"),
-                        id="ns-project-filter",
-                        select_on_focus=False,
-                    )
+                    with Horizontal(id="ns-project-head"):
+                        yield Input(
+                            value=self._initial_query,
+                            placeholder=t("modal.project_filter_placeholder"),
+                            id="ns-project-filter",
+                            select_on_focus=False,
+                        )
+                        yield Button(t("modal.project_more"), id="ns-more", compact=True)
                     yield ListView(
                         *self._project_items(self._visible),
                         id="ns-projects",
@@ -498,7 +519,28 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
             self._pack_quick_starts()
         self.query_one("#ns-project-filter", Input).focus()
 
+    async def _select_directory(self, cwd: str | None) -> None:
+        if cwd is None:
+            self.query_one("#ns-more", Button).focus()
+            return
+        if not any(project[0] == cwd for project in self._projects):
+            self._projects = [(cwd, os.path.basename(cwd) or cwd, cwd), *self._projects]
+        filt = self.query_one("#ns-project-filter", Input)
+        with filt.prevent(Input.Changed):
+            filt.value = ""
+        self._visible = list(self._projects)
+        projects = self.query_one("#ns-projects", ListView)
+        await projects.clear()
+        await projects.extend(self._project_items(self._visible))
+        projects.index = self._index_of_cwd(self._visible, cwd)
+        self.query_one("#ns-error", Label).update("")
+        projects.focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ns-more":
+            event.stop()
+            self.app.push_screen(DirectoryPickerModal(self._selected_cwd() or ""), self._select_directory)
+            return
         if not isinstance(event.button, _QuickStartChip):
             return
         event.stop()

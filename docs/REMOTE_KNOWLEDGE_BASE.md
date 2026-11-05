@@ -364,6 +364,7 @@ Reference: inspected the existing TUI `action_delete_session`/group flow, Apple 
 - `session.delete` / `session.stop` 必须带 `confirm: true`（手机端确认框之后再发）。
 - `corral remote pair --readonly`：只能看会话 / 画面 / 搜索，不能输入或改会话。
 - 新建会话的工作目录限定在已知项目或 `cwd_whitelist`。
+- Desktop folder selection (owner request 2026-11-05): `corral remote allow-project <path> --host-id <expected-id> --json [--dry-run]` locally validates an existing accessible directory and adds its resolved path to `cwd_whitelist` idempotently. The expected host ID must match the local state; mismatches and invalid paths do not write. Dry-run reads existing state without generating identity/config. Return `host_id`, `path`, `changed`, `dry_run` in the normal envelope; usage errors use exit 2. No network RPC can add a whitelist entry. Mac calls this only after explicit native folder selection for the same local host, then uses unchanged session-creation receipts. The service refreshes disk state before creation. Mobile has no custom-path chooser; existing full/readonly permissions remain unchanged.
 - `session.new` / `session.resume` / `session.restart`（含接力、分叉）在托管后最多再等 1 秒：助手这期间非零退出就返回 `unavailable`，错误文案带退出码和助手打印的报错行（如缺依赖、参数不认），不登记托管；客户端原样展示。机制见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) §6「Startup failure must show the reason」。
 - 限流错误码 `rate_limited`：配对尝试、输入、新建会话、推送登记、建通道。
 - `corral remote rotate-key` 轮换中继 Ed25519 注册密钥；公开路由标识由 X25519 公钥派生，手机不必重扫。

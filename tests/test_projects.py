@@ -363,6 +363,32 @@ class ProjectEntriesTests(unittest.TestCase):
             self.assertEqual(pure["count"], 0)
 
 
+class ResolveDirectoryTests(unittest.TestCase):
+    """An explicitly chosen desktop folder must be a real, readable directory."""
+
+    def test_resolves_existing_directory_and_expands_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = _temp_root(td)
+            chosen = root / "project"
+            chosen.mkdir()
+            self.assertEqual(projects.resolve_directory(str(chosen)), str(chosen))
+            with mock.patch.dict(os.environ, {"HOME": str(root)}):
+                self.assertEqual(projects.resolve_directory("~/project"), str(chosen))
+
+    def test_rejects_empty_missing_file_and_unreadable_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = _temp_root(td)
+            file_path = root / "note.txt"
+            file_path.write_text("x", encoding="utf-8")
+            for raw in ("", "   ", str(root / "missing"), str(file_path)):
+                with self.assertRaises(ValueError):
+                    projects.resolve_directory(raw)
+
+    def test_rejects_relative_paths_that_do_not_exist_from_cwd(self) -> None:
+        with self.assertRaises(ValueError):
+            projects.resolve_directory("definitely-missing-relative-project")
+
+
 class DirectLaunchProjectTests(unittest.TestCase):
     """`corral claude <project>` 与透传分流。"""
 

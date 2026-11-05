@@ -30,7 +30,7 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 
 调任何子命令前先确认入口与能力。`corral` 不在 PATH 上时，按下面可信源装到用户目录后继续原任务（用户要这个能力即已授权用户目录安装；`sudo`/系统目录/覆盖已装版本仍需显式授权）：
 
-- 可信源：`github.com/x0c/corral`（`corral` 包）。安装渠道三选一：`pipx install corral`、`brew install x0c/corral/corral`、源码树内 `bash cli/scripts/dev-install.sh`（editable，供开发）。
+- 可信源：`github.com/corral-dev/corral`（`corral` 不在 PyPI，无 `pipx install corral`）。安装渠道三选一：`brew install x0c/tap/corral`、`curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash`、源码树内 `bash cli/scripts/dev-install.sh`（editable，供开发）。
 - 装完先钉绝对路径并验能力（之后全会话只用该绝对路径；`next_commands` 给的即是）：
 
 ```bash
@@ -292,12 +292,15 @@ corral list --live --keepalive --compact
 上面的 `list`/`search`/`show`/`share`/`export`/`context`/`plan continue`/`describe`/`diagnose`
 是只读的；下面这些**真的会改本机状态**，调用前先认：
 
-- `corral remote on/off/pair/unpair/rotate-key/rename`：开关常驻服务、配对手机、解绑设备、轮换密钥、改名。`describe` 不覆盖它们，用 `--help` 看参数。副作用命令统一支持 `--dry-run`（只演练不更改；输出形状与真实执行一致，多 `dry_run: true`，`changed` 恒 false）：
+- `corral remote on/off/pair/unpair/rotate-key/rename/allow-project`：开关常驻服务、配对手机、解绑设备、轮换密钥、改名、放行本机文件夹。`describe` 不覆盖它们，用 `--help` 看参数。副作用命令统一支持 `--dry-run`（只演练不更改；输出形状与真实执行一致，多 `dry_run: true`，`changed` 恒 false）：
 
 ```bash
 corral remote off --dry-run --json   # 先看会关掉哪个 pid，再决定是否真关
 corral remote unpair <id> --dry-run --json
+corral remote allow-project ~/scratch --host-id <id> --dry-run --json
 ```
+
+  `allow-project` is a local desktop grant: it requires the current local host ID, resolves an existing accessible directory, and appends it to `cwd_whitelist` idempotently. No remote RPC can grant a directory; `--host-id` mismatch and invalid paths exit 2 without writing.
 
   `pair` automatically turns the service on before generating a code; `--dry-run` reports `would_start_service` without changes. `on`/`off` 已是开关语义（重复执行收敛到 `changed: false`）；`unpair` 找不到设备报退出码 3（`not_found`）；`login`/`logout` 是鉴权引导步骤，不支持 `--dry-run`。`--json` 下 envelope 与读命令同形状（含 `error.code`/`hint`/`next_commands` 与 `meta.version`）。
 - `corral cache clear --dry-run`：预览将清理的缓存，不删除；`corral shim install/uninstall --dry-run`：预览将改的 shell 配置，不写文件。

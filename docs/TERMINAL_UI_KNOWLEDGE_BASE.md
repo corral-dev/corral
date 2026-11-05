@@ -501,6 +501,12 @@ label; no fresh Mac visual acceptance is claimed. iPhone has no split-group entr
 
 ### 新建、恢复与高级操作
 
+#### Custom project directories (owner request 2026-11-05)
+
+New Session provides **More… → Open Folder…** in the project column. A terminal directory picker accepts a typed/pasted path and browses directories; use public Textual `Input`, `DirectoryTree` and `Button` controls. Expand `~`, resolve relative paths, and reject empty, missing, non-directory or inaccessible targets without leaving the picker. Choosing a valid directory selects it in the existing project list, clears any filter hiding it, and preserves the assistant. Selection alone never launches; the usual assistant confirmation launches in that exact directory. Cancelling preserves the existing selection. Quick Start is recorded only after successful hosting. iPhone/iPad deliberately have no equivalent; Mac uses a native folder panel (Apple UI KB).
+
+Inspected references: existing `TextInputModal` for input/dismissal, `NewSessionModal` for project selection and the public [Textual DirectoryTree](https://textual.textualize.io/widgets/directory_tree/) for filesystem navigation. Reuse those native Textual controls rather than drawing a file browser. This is Corral launch/presentation policy; SessKit remains unchanged.
+
 #### New Session Quick Start combinations (2026-10-14 owner correction)
 
 Quick Start means remembered Agent + Project combinations, matching the Mac
@@ -674,7 +680,7 @@ Runtime/project quick filters live in `src/corral/ui/quick_filters.py` (`QuickFi
 | 侧边栏记忆的多窗口一致性 | `split_layout.py`、`ui/main_screen.py` | `SidebarLayoutDB`、`MainScreen._apply_layout_change()`、`_poll_layout_state()` | 所有写入必须走库（事务内重读最新再叠加），界面只持有只读快照；每秒轮询 `revision`，只有 `sidebar_fingerprint()` 变了才重建列表；回归 `SidebarLayoutDBTests`、`test_follows_sidebar_memory_changed_by_another_window` |
 | 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py`、`ui/app.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()`、`block-cursor-*` | ≥2 格才标：当前组卡和全部成员贴 `-in-split`；激活格对应成员再贴 `-split-active`；光标停在组卡上时整组再贴 `-group-selected`（成员与组卡同档高光），激活格仍格外高光；光标叠加态仍用 `_SIDEBAR_SPLIT_LADDER` 的四级阶梯；**`block-cursor-background` 必须等于 `sidebar-split-cursor-background`**（独立项选中与组内选中同色）；单格与 `__hint__` 不标，全量重建后重新贴标；回归 `SidebarSplitHighlightTests`（含 `test_standalone_and_group_member_selection_share_cursor_color`） |
 | 状态详情与已读确认 | `ui/main_screen.py`、`ui/controllers/attention_reader.py`、`store.py` | 详情头状态、可见即已读、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；红点在右侧内容成功可见后立即清除（分屏下所有可见格一起），切换、失败或失焦取消 |
-| 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`action_new_session()`、`_on_runtime_pick()` | 侧边栏「＋ 新建」或全局 `Ctrl+N` 弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径；顶栏本地筛选框，**打开即聚焦，立刻可打字**；项目列表持焦时 `/` 仍可回到筛选框；按名/路径 `projects.fuzzy_match`，查询**不写回** `NavState.project_query`，但可带入侧边栏当前筛选作初值）、右栏运行时；←→ 换栏（筛选框持焦时无效）、筛选框 ↓/Enter 落到项目列表、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。单字母 `n` 仍不绑 |
+| 新建会话 | `ui/main_screen.py`、`ui/modals.py`、`ui/directory_picker.py` | `new_session_flow()`、`NewSessionModal`、`DirectoryPickerModal`、`action_new_session()`、`_on_runtime_pick()` | 侧边栏「＋ 新建」或全局 `Ctrl+N` 弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径；顶栏本地筛选框 + 「更多…」按钮同一行，**打开即聚焦筛选框，立刻可打字**；项目列表持焦时 `/` 仍可回到筛选框；按名/路径 `projects.fuzzy_match`，查询**不写回** `NavState.project_query`，但可带入侧边栏当前筛选作初值；「更多…」打开 `DirectoryPickerModal` 选任意已存在目录，选中后并入项目列表并清空筛选，助手选择保留）、右栏运行时；←→ 换栏（筛选框持焦时无效）、筛选框 ↓/Enter 落到项目列表、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。单字母 `n` 仍不绑 |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py`、`agent_api.py` | `action_handoff()`、`choose_target_runtime()`、`export_share_to_cache()`、`ConfirmModal` | `Session actions` / `会话操作` 弹窗分两组：「本会话」导出 / 分叉 / 重启，「读取本会话历史后新建」列出各运行时；只有助手名带品牌色，不可用项变灰且方向键跳过；导出写 share JSON 并复制路径，重启仅正托管可用且选定后立刻执行（**不再二次确认**，2026-09-13）；结束会话仍先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`_delete_session_group()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | 选中的是会话组卡时走 `_delete_session_group()`（整组删，逐条容错）；`ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
@@ -920,6 +926,8 @@ python3 docs/screenshots/capture.py
 ```
 
 检查 `docs/screenshots/list.png`：左栏新建项、搜索框与筛选行的末行间隔是否连续可点击；新建项在最上，搜索框与一行筛选（`Agent: All ▾  Project: All ▾  ▐X▌ Active`）在其下，筛选行拥有组后空行；会话卡是否固定三行、首行圆点在最左、无圆点的卡片标题顶到最左不留空格、运行时与时间各自靠右且助手名成一列、标题未整行变绿；三条演示会话的时间是否呈现由亮到暗的梯度（夹具刻意铺成「刚刚 / 快一小时前 / 大半天前」，见 `capture.py` 的 `_DEMO_AGES`）；斑马纹按块可见（独立会话与会话组各一块，组卡与成员同色），选中底明显强于条纹；右栏是否为完整对话且详情头有文字状态；宽格右上角应出现会话小窗（夹具是静态预览，浮层同样要画）；Footer 是否存在且**不得出现** `Back to list` / `Toggle sidebar` / `返回列表` / `显隐侧栏`；右端应先出现 `x0c/corral` 再跟版本号；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
+
+检查 `docs/screenshots/new-session.png`：新建弹窗里项目筛选框与「更多…」在同一行、右栏助手完整、Footer 快捷键齐备，不得出现 emoji 豆腐块或按钮被挤出视口。
 
 改动会话小窗时，`list.png` 已能覆盖**静态预览格**上的浮层；实时托管格仍须另跑一次带真实 tmux 的出图：把 `keepalive._BASE_ARGV` 指到一个临时 socket、在上面建一个会话、用 `SplitPaneArea.show_hosted_group()` 挂进右栏，再 `app.save_screenshot()` + 复用 `capture.py` 的 `_svg_to_png()`，深浅两种底色（`osc_report`）各出一张肉眼看。重点看：收起态是否恰好三行（条数 / 最初 / 最近）且贴在标题栏下一行、右侧留一列；上下顺序是否由旧到新；展开态过长提问是否四行截断带 `...`、奇数提问块是否有同色系绿斑马纹（不是灰）、提问很多时是否封顶并可滚轮看到中间与最早几条（**不得**再出现「中间省略 N 条」）、末行“点击收起”是否在；`▶` / `▼` 是否被渲成豆腐块（换字形前先确认是出图字体问题还是产品问题——同块的 `◀` / `▶` 覆盖面最广，`▸` / `▾` 实测会缺字形）。
 

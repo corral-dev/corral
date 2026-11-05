@@ -23,6 +23,7 @@ import threading
 import time
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest import mock
 
 from corral import i18n
@@ -59,6 +60,7 @@ import corral
 from corral import ui_prefs as _ui_prefs
 from corral.models import LaunchPlan
 from corral.ui.app import _TERMINAL_RESTORE, CorralApp, restore_terminal, run_app
+from corral.ui.directory_picker import DirectoryPickerModal
 from corral.ui.embed_pane import EmbedPane
 from corral.ui.modals import (
     COPY_SESSION_CHOICE,
@@ -155,6 +157,20 @@ async def _wait_until(predicate, *, tries: int = 500, interval: float = 0.01) ->
             return
         await asyncio.sleep(interval)
     raise AssertionError("timed out waiting for condition")
+
+
+async def _wait_quick_filter(pilot, app, expect, *, tries: int = 200) -> None:
+    """TUI 快捷筛选是异步重建：模式落地且重建释放后才能再点。
+
+    只等 nav 会在重建尚未完成时发下一次点击，按下/抬起跨过重排就被吞掉。
+    """
+    for _ in range(tries):
+        if (app.screen.nav.quick_filter is expect
+                and not app.screen._rebuild_lock.locked()):
+            await pilot.pause()
+            return
+        await pilot.pause(delay=0.02)
+    raise AssertionError(f"quick filter never reached {expect}")
 
 
 def _live_split_sessions(n: int) -> list[dict]:
@@ -4780,20 +4796,23 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 app.screen._update_header()
                 quick = app.screen.query_one("#attention-filter", Button)
                 self.assertFalse(quick.has_class("-chosen"))
+
+                # The async toggle still owns the rebuild when the click
+                # returns; wait for the mode to appear before clicking again.
                 await pilot.click(quick)
+                await _wait_quick_filter(pilot, app, SessionQuickFilter.FOCUS)
                 await pilot.pause()
-                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.FOCUS)
                 self.assertTrue(quick.has_class("-chosen"))
                 # Fixture sessions ran minutes ago: all stay in Focus.
                 self.assertEqual(str(metadata.render()), "3/3")
                 await pilot.click(quick)
+                await _wait_quick_filter(pilot, app, SessionQuickFilter.ACTIVE)
                 await pilot.pause()
-                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.ACTIVE)
                 self.assertTrue(quick.has_class("-chosen"))
                 self.assertEqual(str(quick.label), "Active")
                 await pilot.click(quick)
+                await _wait_quick_filter(pilot, app, SessionQuickFilter.ALL)
                 await pilot.pause()
-                self.assertEqual(app.screen.nav.quick_filter, SessionQuickFilter.ALL)
                 self.assertFalse(quick.has_class("-chosen"))
                 self.assertEqual(str(quick.label), "Focus")
                 self.assertEqual(str(metadata.render()), "3")
@@ -9473,6 +9492,81 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause(delay=0.2)
         self.assertEqual(result_holder.get("result"), ("/tmp/beta", "codex"))
+
+    async def test_new_session_modal_more_selects_any_folder(self) -> None:
+        """More… opens the desktop folder picker; the choice keeps the runtime."""
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause()
+            with tempfile.TemporaryDirectory() as td:
+                chosen = str(Path(td).resolve())
+                result_holder = {}
+
+                async def _open():
+                    result_holder["result"] = await app.push_screen_wait(
+                        NewSessionModal(
+                            [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                            [
+                                RuntimeChoice("claude", "Claude", "", True),
+                                RuntimeChoice("codex", "Codex", "", True),
+                            ],
+                            runtime_index=1,
+                        )
+                    )
+
+                app.run_worker(_open())
+                await pilot.pause(delay=0.2)
+                modal = app.screen
+                self.assertIsInstance(modal, NewSessionModal)
+                await pilot.click("#ns-more")
+                await pilot.pause(delay=0.2)
+                picker = app.screen
+                self.assertIsInstance(picker, DirectoryPickerModal)
+                path_input = picker.query_one("#directory-path", Input)
+                path_input.value = chosen
+                await pilot.press("enter")
+                await pilot.pause(delay=0.3)
+                self.assertIs(app.screen, modal)
+                self.assertEqual(modal._row("#ns-projects").value, chosen)
+                self.assertEqual(modal.query_one("#ns-project-filter", Input).value, "")
+                await pilot.press("enter")  # project -> runtime column
+                await pilot.press("enter")  # Codex stays selected and confirms
+                await pilot.pause(delay=0.2)
+            self.assertEqual(result_holder.get("result"), (chosen, "codex"))
+
+    async def test_new_session_modal_directory_picker_rejects_bad_path(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause()
+
+            async def _open():
+                await app.push_screen_wait(
+                    NewSessionModal(
+                        [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            await pilot.click("#ns-more")
+            await pilot.pause(delay=0.2)
+            picker = app.screen
+            self.assertIsInstance(picker, DirectoryPickerModal)
+            picker.query_one("#directory-path", Input).value = "/definitely/missing"
+            await pilot.press("enter")
+            await pilot.pause(delay=0.2)
+            self.assertIs(app.screen, picker)
+            self.assertIn("folder", str(picker.query_one("#directory-error", Label).content))
+            await pilot.press("escape")
+            await pilot.pause(delay=0.3)
+            self.assertIs(app.screen, modal)
+            self.assertEqual(modal._row("#ns-projects").value, "/tmp/alpha")
+            await pilot.press("escape")
+            await pilot.pause(delay=0.2)
 
     async def test_new_session_modal_arrow_keys_switch_columns(self) -> None:
         store, _ = _make_store()

@@ -1,11 +1,14 @@
 """Failure injection for creation identity, startup and native input confirmation."""
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -42,6 +45,30 @@ class ReliabilityTests(unittest.TestCase):
         mismatch = service._session_new(connection, {**params, "runtime": "claude"})
         self.assertEqual(mismatch["reason"], "digest_mismatch")
         self.assertEqual(hub.new_session.call_count, 1)
+
+    def test_desktop_folder_grant_reaches_creation_without_a_service_restart(self):
+        """The local allow-project command must be seen by the running host."""
+        from corral.remote import cli as remote_cli
+        from corral.remote import config as remote_config
+
+        hub = mock.Mock(spec=SessionHub)
+        hub.new_session.return_value = {"key": "codex:granted", "id": "granted"}
+        service = RemoteService(hub)
+        connection = Connection("fixture-device", lambda _: None)
+        with tempfile.TemporaryDirectory() as td:
+            chosen = str(Path(td).resolve())
+            service._session_new(connection, {"runtime": "codex", "cwd": chosen})
+            self.assertEqual(service.state.cwd_whitelist, [])
+            self.assertNotIn(chosen, hub.new_session.call_args.kwargs["whitelist"])
+
+            args = mock.Mock(path=chosen, host_id=service.state.host_id, json=True, dry_run=False)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(remote_cli._cmd_allow_project(args), 0)
+            self.assertIn(chosen, remote_config.load_state().cwd_whitelist)
+
+            ratelimit.SESSION_CREATE.reset()
+            service._session_new(connection, {"runtime": "codex", "cwd": chosen})
+            self.assertIn(chosen, hub.new_session.call_args.kwargs["whitelist"])
 
     def test_async_receipt_delivers_on_live_injection_without_native_history(self):
         """Option B (2026-10-15): injection into a live pane is the proof.

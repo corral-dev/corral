@@ -517,6 +517,43 @@ async def _capture_search() -> None:
                 split_layout.reset_default_layout_db()
 
 
+async def _capture_new_session() -> None:
+    """新建会话弹窗：项目筛选、Quick Start 与「更多…」任意文件夹入口。"""
+    from corral import recent_starts, split_layout
+    from corral.ui.modals import NewSessionModal, RuntimeChoice
+
+    store = _demo_store()
+    sessions = store.all_sessions()
+    projects = []
+    for session in sessions:
+        cwd = session.get("cwd") or ""
+        if cwd and all(cwd != item[0] for item in projects):
+            projects.append((cwd, cwd.rstrip("/").split("/")[-1], cwd))
+    choices = [
+        RuntimeChoice(rid, name, "", True)
+        for rid, name in (("claude", "Claude"), ("codex", "Codex"), ("opencode", "OpenCode"),
+                          ("cursor", "Cursor"), ("pi", "Pi"))
+    ]
+    with tempfile.TemporaryDirectory() as layout_td:
+        with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": layout_td}, clear=False):
+            split_layout.reset_default_layout_db()
+            try:
+                app = CorralApp(store, embed_ok=False, osc_report=_DEMO_OSC_REPORT)
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await pilot.pause(delay=0.5)
+                    combos = [
+                        recent_starts.RecentStart("claude", projects[0][0], projects[0][1]),
+                        recent_starts.RecentStart("codex", projects[0][0], projects[0][1]),
+                    ] if projects else []
+                    modal = NewSessionModal(projects, choices, recent_combos=combos)
+                    await app.push_screen(modal, lambda *_: None)
+                    await pilot.pause(delay=0.5)
+                    _save_frame(app, OUT_DIR / "new-session.png")
+                    print(f"wrote {OUT_DIR / 'new-session.png'}")
+            finally:
+                split_layout.reset_default_layout_db()
+
+
 async def _collapse_hud(pilot) -> None:
     await pilot.press("ctrl+g")
     await pilot.pause(delay=0.2)
@@ -586,6 +623,7 @@ async def _capture_demo_gif() -> None:
 def main() -> None:
     asyncio.run(_capture())
     asyncio.run(_capture_search())
+    asyncio.run(_capture_new_session())
     asyncio.run(_capture_demo_gif())
 
 

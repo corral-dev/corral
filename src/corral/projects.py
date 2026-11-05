@@ -49,6 +49,21 @@ class _LocalizedLabel:
 UNKNOWN_PROJECT_LABEL = _LocalizedLabel("project.unknown_dir")
 
 
+def resolve_directory(raw: str) -> str:
+    """Resolve an explicit desktop directory choice without creating anything."""
+    from pathlib import Path
+
+    if not raw.strip():
+        raise ValueError(t("modal.directory_invalid"))
+    try:
+        path = Path(raw).expanduser().resolve(strict=True)
+        if not path.is_dir() or not os.access(path, os.R_OK | os.X_OK):
+            raise ValueError(t("modal.directory_invalid"))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(t("modal.directory_invalid")) from exc
+    return str(path)
+
+
 def normalize_cwd(cwd: object) -> str:
     """把工作目录归一化为分组/过滤用的唯一键；空值或根目录归一为空字符串。"""
     text = str(cwd or "").strip()

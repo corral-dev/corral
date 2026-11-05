@@ -186,6 +186,18 @@ acceptance proves host liveness and input routing.
 <!-- 该文档整理/压缩于 2026-10-20 -->
 
 
+## Asynchronous sidebar toggles
+
+The quick-filter button advances through Focus, Active and All and then awaits
+the list rebuild on the same message pump. A screenshot-style `pause()` after
+the click returns before that rebuild releases; a second click then lands while
+the row re-lays out and its press is lost (2026-11-05: the tri-state regression
+reproduced twice in the shared gate but never in an isolated long-pause run).
+Tests must poll the observed mode **and** `MainScreen._rebuild_lock` release,
+then pump one frame before the next click. Keep the real click path and the
+per-mode label, class and count assertions; do not replace it with a direct
+`toggle_attention_filter()` call or a longer fixed sleep.
+
 ## Packaged entry points and isolated delegation fixtures
 
 Use the shared [launcher/child-process environment check](~/.config/agentsync/docs/AGENT_WORKSPACE_ENVIRONMENT_GUIDE.md#launcher-and-child-process-environment-identity)

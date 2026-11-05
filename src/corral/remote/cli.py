@@ -938,6 +938,30 @@ def _cmd_unpair(args) -> int:
     return EXIT_OK
 
 
+def _cmd_allow_project(args) -> int:
+    """A local desktop grant; deliberately not available through an RPC."""
+    from corral.projects import resolve_directory
+
+    as_json = args.json or not sys.stdout.isatty()
+    state = remote_config.read_state_from_disk()
+    if not state.host_id or state.host_id != args.host_id:
+        return _fail(t("remote.project.host_mismatch"), as_json,
+                     code="host_mismatch", exit_code=EXIT_USAGE,
+                     next_commands=[f"{_bin()} remote status --json"])
+    try:
+        path = resolve_directory(args.path)
+    except ValueError as exc:
+        return _fail(str(exc), as_json, code="invalid_directory", exit_code=EXIT_USAGE)
+    dry_run = _is_dry_run(args)
+    changed = path not in state.cwd_whitelist and not dry_run
+    if changed:
+        state.cwd_whitelist.append(path)
+        remote_config.save_state(state)
+    data = {"host_id": state.host_id, "path": path, "changed": changed, "dry_run": dry_run}
+    print(_envelope(True, data) if as_json else path)
+    return EXIT_OK
+
+
 def _cmd_rename(args) -> int:
     state = remote_config.load_state()
     dry_run = _is_dry_run(args)
@@ -1134,6 +1158,13 @@ def build_parser(*, include_internal: bool = False, prog: str = "corral remote")
     rename.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     rename.set_defaults(func=_cmd_rename)
 
+    allow_project = sub.add_parser("allow-project", help=t("remote.help.allow_project"),
+                                   description=t("remote.help.allow_project"))
+    allow_project.add_argument("path", help=t("modal.open_directory"))
+    allow_project.add_argument("--host-id", required=True, help=t("remote.help.expected_host"))
+    allow_project.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
+    allow_project.set_defaults(func=_cmd_allow_project)
+
     login = sub.add_parser("login", help=t("remote.help.login"))
     login.add_argument("--relay-url", help=t("remote.help.relay_url"))
     login.set_defaults(func=_cmd_login)
@@ -1144,7 +1175,10 @@ def build_parser(*, include_internal: bool = False, prog: str = "corral remote")
     whoami = sub.add_parser("whoami", help=t("remote.help.whoami"))
     whoami.set_defaults(func=_cmd_whoami)
 
-    for action in (on, start, off, stop, pair, status, devices, unpair, rotate, rename, login, logout, whoami):
+    for action in (
+        on, start, off, stop, pair, status, devices, unpair, rotate, rename,
+        allow_project, login, logout, whoami,
+    ):
         action.add_argument("--json", action="store_true", help=t("remote.help.json"))
     return parser
 
