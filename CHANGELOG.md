@@ -6,6 +6,20 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Adding a split pane is instant: the new pane appears immediately with its title bar and a `Starting…` hint, then tmux hosting, the control channel and the first frame arrive in the background. The pane converts in place when the session is ready and disappears if hosting fails, instead of nothing happening until the agent was ready.
+- Pane chrome is now a single bottom strip: the session title moved below the terminal, and the hint row only appears when there is something to say (restart, input not receiving keystrokes), instead of always showing an empty bar.
+- New Session can open any folder through More → Open Folder…
+
+### 简体中文
+
+- 加分屏不再等托管：新格子立刻出现，带标题栏与「正在启动…」提示，tmux 建窗、控制通道与首帧随后在后台完成；会话就绪时就地转正，启动失败则自动收起。以前要等助手起好才有任何反应。
+- 分屏底栏合并成一条：会话标题移到终端下方，提示行只在有内容时出现（重启、输入不生效），不再常驻一条空白行。
+- 新建会话可从「更多 → 打开文件夹…」选任意目录。
+
 ## 0.24.360
 
 ### English
