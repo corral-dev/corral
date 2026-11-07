@@ -51,7 +51,8 @@ def projected_embed_sizes(
     `PaneCell` 只有非首格占一列左间距（`margin-left: 1`），剩余列按 `1fr` 从左
     到右均分。Textual 不是「余数给最后几格」，而是 Fraction 累加后再
     `floor(next) - floor(x)`；四格且行宽为 4k+1 时实际是 `[n, n+1, n, n+1]`，
-    不是 `[n, n, n+1, n+1]`。标题与底条各占一行（均在底部）。
+    不是 `[n, n, n+1, n+1]`。标题与底条各占一行（均在底部）；底条无提示时
+    自动隐藏（单标题条），此处保守仍按两行预留，终端只会略矮一行，不溢出。
     """
     if count <= 0:
         return []
@@ -232,6 +233,9 @@ class _PaneFooter(Static):
 
     def __init__(self, **kwargs) -> None:
         super().__init__("", **kwargs)
+        # 空底条不占行：标题搬到底部后标题栏与底条叠在一起，底条无提示时
+        # 若仍占一行就是“双下巴”。有提示（重启/未接管）时才露出一行。
+        self.display = False
 
     def set_state(
         self, active: bool, masked: bool, *, restart_target: bool = False
@@ -239,11 +243,13 @@ class _PaneFooter(Static):
         """active=本格持有输入；masked=本格是实时会话但输入在别处。"""
         self.set_class(active, "-active")
         if restart_target:
-            self.update(t("pane.restart_hint"))
+            text = t("pane.restart_hint")
         elif masked:
-            self.update(t("pane.masked_hint"))
+            text = t("pane.masked_hint")
         else:
-            self.update("")
+            text = ""
+        self.update(text)
+        self.display = bool(text.strip())
 
 
 class PaneCell(Vertical):
