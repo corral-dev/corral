@@ -51,7 +51,7 @@ def projected_embed_sizes(
     `PaneCell` 只有非首格占一列左间距（`margin-left: 1`），剩余列按 `1fr` 从左
     到右均分。Textual 不是「余数给最后几格」，而是 Fraction 累加后再
     `floor(next) - floor(x)`；四格且行宽为 4k+1 时实际是 `[n, n+1, n, n+1]`，
-    不是 `[n, n, n+1, n+1]`。顶、底栏各占一行。
+    不是 `[n, n, n+1, n+1]`。标题与底条各占一行（均在底部）。
     """
     if count <= 0:
         return []
@@ -247,7 +247,10 @@ class _PaneFooter(Static):
 
 
 class PaneCell(Vertical):
-    """单格：标题栏 + EmbedPane + 底条高亮，右上角可浮一个会话小窗。"""
+    """单格：EmbedPane + 标题栏 + 底条高亮，右上角可浮一个会话小窗。
+
+    标题栏在底部（输入之下）：注意力在最新消息与输入处，标题只做底部署名。
+    """
 
     ALLOW_SELECT = False
 
@@ -362,14 +365,15 @@ class PaneCell(Vertical):
             pass
 
     def compose(self):
-        yield _PaneHeader(
-            self._title, self._close_self, closable=self._closable, classes="header",
-        )
+        # 标题在底部：Embed 顶上，标题与底条依次压底（底条仍是最后一行）。
         yield EmbedPane(
             on_focus_list=self._on_focus_list,
             on_restart=self._restart_self,
             osc_report=self._osc_report,
             id=f"embed-{self.spec.cell_id}",
+        )
+        yield _PaneHeader(
+            self._title, self._close_self, closable=self._closable, classes="header",
         )
         yield _PaneFooter(classes="footer")
         # 浮层放在最后：同层内单独排版，dock 到右上角，不参与上面三个的纵向堆叠。
