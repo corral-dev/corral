@@ -74,6 +74,16 @@ def projected_embed_sizes(
 HUD_EXPAND_MIN_PANE_WIDTH = 60
 
 
+# 待启动占位格的 session key 前缀：此刻还没有真实会话（也没有 keepalive 名），
+# 只有格子本身。所有按 `__` 前缀跳过的逻辑（焦点、高光、Enter 重启、会话组持久化）
+# 因此自动把它当占位而非会话。
+PENDING_PREFIX = "__pending__:"
+
+
+def is_pending_key(key: str) -> bool:
+    return key.startswith(PENDING_PREFIX)
+
+
 @dataclass
 class PaneSpec:
     """单格绑定的会话。"""
@@ -82,9 +92,17 @@ class PaneSpec:
     keepalive_name: str | None = None
     cell_id: str = ""
     is_shell: bool = False
+    # 待启动占位格的标题：此刻还没有会话可用 `_pane_title` 推导，直接给出最终标题
+    # （与托管完成后的那一份保持一致，避免转正时标题跳一下）。
+    title: str | None = None
     # The mounted/pending binding outlives transient scan rows and async mounts.
     session: dict | None = field(default=None, repr=False, compare=False)
     detail_renderer: Callable[[], Text | str] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def is_pending(self) -> bool:
+        """已占好格子、宿主（tmux 建窗 + 助手进程）还没回来的那种格。"""
+        return is_pending_key(self.session_key)
 
 
 class _PaneClose(Static):
@@ -439,6 +457,7 @@ class PaneCell(Vertical):
         pane = self.embed_pane()
         if pane is None:
             return
+        pane.set_pending(self.spec.is_pending)
         if self.spec.keepalive_name:
             pane.focus_session(
                 self.spec.keepalive_name,
@@ -665,6 +684,10 @@ class PaneCell(Vertical):
             if self._restarting_hint:
                 # 重启中占位：标题栏常驻「正在重启…」，不许被常规重算盖掉。
                 header.set_restart_hint(t("pane.restarting"))
+            elif self.spec.is_pending:
+                # 加格先出格子（机主要求 2026-11-07）：画面区保持空白终端底色，
+                # 阶段只写在标题栏提示位，与「正在重启…」同一格。
+                header.set_restart_hint(t("pane.starting"))
             else:
                 # 「Enter restart」只放底条（2026-10-25）：标题栏只留临时的「正在重启…」。
                 header.set_restart_hint("")
@@ -765,6 +788,96 @@ class SplitPaneArea(Vertical):
 
     def can_add_pane(self) -> bool:
         return len(self._panes) < MAX_PANES
+
+    def has_pending_panes(self) -> bool:
+        """右栏里还有已占位、宿主未回的格子（见 `add_pending_pane`）。"""
+        return any(spec.is_pending for spec in self._panes)
+
+    def add_pending_pane(
+        self,
+        runtime_id: str,
+        cwd: str | None,
+        *,
+        title: str,
+        is_shell: bool = False,
+    ) -> str | None:
+        """立刻占一格：宿主（tmux 建窗 + 助手进程 + 首帧）在后台接着做。
+
+        机主要求 2026-11-07：加格的反馈不得等托管。返回这个占位格的 session key
+        （`__pending__:<token>`，也是宿主回来后转正/撤销用的句柄）；满格返回 None。
+        句柄必须用 session key 而不是 `cell_id`：格池第一次绑定会把 spec 的
+        `cell_id` 改写成控件自己的 id（见 `PaneCell.rebind`），那个值在占位期不稳定。
+        占位格的内容区保持空白终端底色（不写“连接中…”画布文案），阶段只在标题栏
+        提示位写明。它不是会话：不抢焦点、不占输入、不进会话组记忆（见模块顶部
+        `PENDING_PREFIX` 说明），`__` 前缀已让现有跳过高光/重启提示/持久化的逻辑生效。
+        """
+        if not self.can_add_pane():
+            return None
+        import corral
+
+        project = corral._normalize_cwd(cwd)
+        if (
+            not self.allow_cross_project
+            and self.current_project
+            and project
+            and project != self.current_project
+        ):
+            self.current_project = project
+            self._panes = []
+        elif not self.current_project:
+            self.current_project = project
+        cell_id = self._new_cell_id()
+        spec = PaneSpec(
+            session_key=f"{PENDING_PREFIX}{cell_id}",
+            cell_id=cell_id,
+            is_shell=is_shell,
+            title=title,
+            session={"source": runtime_id, "id": "", "cwd": cwd or ""},
+        )
+        # 先按旧组合算好 entries，再把占位格接在后面：`_hosted_entry_tuples()`
+        # 读的是 `self._panes`，顺序反了会把同一个占位 spec 排两次。
+        rebuild = [*self._hosted_entry_tuples(), (spec, spec.session, None)]
+        self._panes = [*self._panes, spec]
+        self._schedule_mount(rebuild, focus_key=self._focus_key)
+        return spec.session_key
+
+    def _hosted_entry_tuples(
+        self,
+    ) -> list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]]:
+        """现有格→(spec, 会话, renderer)，保持已绑定内容；缺会话时沿用旧绑定。"""
+        entries: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]] = []
+        for spec in self._panes:
+            session = spec.session or {
+                "source": spec.session_key.partition(":")[0],
+                "id": spec.session_key.partition(":")[2],
+                "cwd": self.current_project or "",
+            }
+            entries.append((spec, session, self._renderer_for_spec(spec)))
+        return entries
+
+    def _renderer_for_spec(self, spec: PaneSpec) -> Callable[[], Text | str] | None:
+        """格子此刻该沿用的 renderer：已结束格优先用格子里的回退，再退回 spec。"""
+        cell = self._cell_for_spec(spec)
+        renderer_fn = spec.detail_renderer
+        if cell is not None:
+            renderer_fn = cell._ended_fallback or renderer_fn  # noqa: SLF001
+            if renderer_fn is None and not spec.keepalive_name:
+                pane = cell.embed_pane()
+                if pane is not None:
+                    renderer_fn = pane._detail_renderer  # noqa: SLF001
+        return renderer_fn
+
+    def abort_pending_pane(self, pending_key: str | None) -> None:
+        """宿主失败：把还没转正的占位格收回格池，回到加格前的组合。"""
+        if not pending_key:
+            return
+        target = next((p for p in self._panes if p.session_key == pending_key), None)
+        if target is None or not target.is_pending:
+            return
+        self._panes = [p for p in self._panes if p.session_key != pending_key]
+        if target.session_key == self._focus_key:
+            self._focus_key = self._panes[-1].session_key if self._panes else None
+        self.call_next(self._park_cell_async, target)
 
     @property
     def focus_key(self) -> str | None:
@@ -1126,7 +1239,7 @@ class SplitPaneArea(Vertical):
         for cell, (session, kname, renderer) in zip(cells, entries, strict=False):
             cell.spec.session = session
             cell.spec.detail_renderer = renderer
-            cell.set_title(self._pane_title(session))
+            cell.set_title(self._pane_title(session, cell.spec))
             cell.set_closable(self.panes_closable)
             cell._bind_renderers(renderer, hosted=bool(kname))  # noqa: SLF001
             pane = cell.embed_pane()
@@ -1173,7 +1286,13 @@ class SplitPaneArea(Vertical):
         focus: bool = False,
         focus_pane: bool = False,
         is_shell: bool = False,
+        replace_pending_key: str | None = None,
     ) -> None:
+        """追加一格托管会话；`replace_pending_key` 指向待启动占位格时就地转正。
+
+        转正必须用同一个 `PaneCell` 与同一位置（机主要求 2026-11-07）：新增一列
+        会让右栏抖一下，也会把刚出现的那一格挤到别处。
+        """
         import corral
 
         key = make_session_key(session)
@@ -1198,7 +1317,14 @@ class SplitPaneArea(Vertical):
         )
         resolved = self.store.resolve_bound_sessions(self.hosted_identity())
         rebuild: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]] = []
+        placed = False
         for p, current in zip(self._panes, resolved, strict=True):
+            if replace_pending_key is not None and p.session_key == replace_pending_key:
+                # 占位格转正：格子、位置、宽度都不动，只换绑定。
+                spec.cell_id = p.cell_id
+                rebuild.append((spec, session, renderer))
+                placed = True
+                continue
             sess = current if current is not None else p.session
             if sess is None:
                 # A legacy binding still identifies its exact terminal even
@@ -1212,16 +1338,10 @@ class SplitPaneArea(Vertical):
             for attribute in ("_focus_key", "_focus_intent_key", "_input_claim_key"):
                 if getattr(self, attribute) == old_key:
                     setattr(self, attribute, p.session_key)
-            cell = self._cell_for_spec(p)
-            renderer_fn = p.detail_renderer
-            if cell is not None:
-                renderer_fn = cell._ended_fallback or renderer_fn  # noqa: SLF001
-                if renderer_fn is None and not p.keepalive_name:
-                    pane = cell.embed_pane()
-                    if pane is not None:
-                        renderer_fn = pane._detail_renderer  # noqa: SLF001
+            renderer_fn = self._renderer_for_spec(p)
             rebuild.append((p, sess, renderer_fn))
-        rebuild.append((spec, session, renderer))
+        if not placed:
+            rebuild.append((spec, session, renderer))
         self._panes = [s for s, _, _ in rebuild]
         focus_key = key if focus else self._focus_key
         self._schedule_mount(rebuild, focus_key=focus_key, focus_pane=focus_pane)
@@ -1298,7 +1418,9 @@ class SplitPaneArea(Vertical):
 
         return uuid.uuid4().hex[:8]
 
-    def _pane_title(self, session: dict) -> str:
+    def _pane_title(self, session: dict, spec: PaneSpec | None = None) -> str:
+        if spec is not None and spec.title:
+            return spec.title
         from corral.models import SHELL_RUNTIME_ID
 
         source = str(session.get("source") or "")
@@ -1311,9 +1433,28 @@ class SplitPaneArea(Vertical):
         from corral.projects import session_project_label
 
         project = session_project_label(session)
+        return self._format_pane_title(runtime.display_name, project, title)
+
+    def _format_pane_title(self, display_name: str, project: str, title: str) -> str:
         if self.title_with_project:
             return f"{project} · {title}"
-        return f"{runtime.display_name} · {project} · {title}"
+        return f"{display_name} · {project} · {title}"
+
+    def pending_pane_title(
+        self, session: dict, *, title_override: str | None = None,
+    ) -> str:
+        """待启动占位格的标题：与托管成功后 `_pane_title` 给的那一份一致。"""
+        from corral.models import SHELL_RUNTIME_ID
+        from corral.projects import session_project_label
+
+        source = str(session.get("source") or "")
+        if source == SHELL_RUNTIME_ID:
+            return t("shell.pane_title")
+        runtime = self.store.registry.get(source)
+        title = title_override if title_override is not None else self.store.get_title(session)
+        return self._format_pane_title(
+            runtime.display_name, session_project_label(session), title,
+        )
 
     def _sync_leading_cells(self) -> None:
         """可见格里最左一格去左边距；闲置格不参与 :first-child，故用手写标记。"""
@@ -1362,6 +1503,11 @@ class SplitPaneArea(Vertical):
         return remaining[0].session_key
 
     def _close_spec(self, spec: PaneSpec, *, notify: bool = True) -> None:
+        if spec.is_pending:
+            # 启动中的占位格还没有会话可关：此刻收格，宿主回来时又会把它摆回来。
+            # 请先等它转正（或宿主失败自动移除），这一下响铃告诉用户按键收到了。
+            self.app.bell()
+            return
         remaining_focus = self._remaining_focus_key(spec)
         self._panes = [p for p in self._panes if p.cell_id != spec.cell_id]
         self._focus_key = remaining_focus
@@ -1533,7 +1679,7 @@ class SplitPaneArea(Vertical):
         # 先把要用的前缀解冻并改绑，其余收回池里。
         self._panes = [s for s, _, _ in entries]
         for index, (spec, session, renderer) in enumerate(entries):
-            title = self._pane_title(session)
+            title = self._pane_title(session, spec)
             pool[index].rebind(
                 spec,
                 title=title,
@@ -1541,7 +1687,7 @@ class SplitPaneArea(Vertical):
                 target_size=target_sizes[index] if target_sizes is not None else None,
                 discard_stale_screen=composition_changed,
             )
-            pool[index].set_closable(self.panes_closable)
+            pool[index].set_closable(self.panes_closable and not spec.is_pending)
         for spare in pool[len(entries):]:
             if not spare._pooled:  # noqa: SLF001
                 spare.park()
@@ -1606,9 +1752,9 @@ class SplitPaneArea(Vertical):
             pool = self._pool_cells()
         self._panes = [s for s, _, _ in entries]
         for index, (spec, session, renderer) in enumerate(entries):
-            title = self._pane_title(session)
+            title = self._pane_title(session, spec)
             pool[index].rebind(spec, title=title, detail_renderer=renderer)
-            pool[index].set_closable(self.panes_closable)
+            pool[index].set_closable(self.panes_closable and not spec.is_pending)
         for spare in pool[len(entries):]:
             spare.park()
         self._sync_leading_cells()

@@ -72,10 +72,7 @@ class HostControllerMixin:
             if self._host_pending > 0 and not add_pane:
                 self.app.bell()
                 return
-            if (
-                add_pane
-                and (area.pane_count() + self._host_pending) >= MAX_PANES
-            ):
+            if add_pane and area.pane_count() >= MAX_PANES:
                 self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
@@ -95,10 +92,7 @@ class HostControllerMixin:
             if self._host_pending > 0 and not add_pane:
                 self.app.bell()
                 return
-            if (
-                add_pane
-                and (area.pane_count() + self._host_pending) >= MAX_PANES
-            ):
+            if add_pane and area.pane_count() >= MAX_PANES:
                 self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
@@ -110,15 +104,60 @@ class HostControllerMixin:
                 return
             ident = keepalive.new_session_ident()
 
+        # 先占格子再托管（机主要求 2026-11-07）：`host_pane_size` 按「加上这一格
+        # 之后」算最终尺寸，必须在占位格进栏之前取。之后 tmux 建窗、控制通道预热
+        # 与首帧抓取全在后台继续，用户按下键的那一刻就已经看到分屏。
         width, height = area.host_pane_size()
+        pending_key = None
+        if add_pane:
+            pending_key = area.add_pending_pane(
+                request.target_runtime_id,
+                self._pending_cwd(request),
+                title=self._pending_pane_title(request, native_resume),
+            )
+            if pending_key is None:
+                self.notify(t("split.full", n=MAX_PANES))
+                self.app.bell()
+                return
         self._host_pending += 1
         self._host_and_focus(
-            request, plan, ident, native_resume, width, height, add_pane=add_pane,
+            request, plan, ident, native_resume, width, height,
+            add_pane=add_pane, pending_key=pending_key,
+        )
+
+    def _pending_cwd(self, request) -> str | None:
+        import corral
+
+        if isinstance(request, corral.LaunchRequest):
+            return str(request.session.get("cwd") or "") or None
+        return request.cwd
+
+    def _pending_pane_title(self, request, native_resume: bool) -> str:
+        """占位格标题：与托管成功后那一份标题一致，转正时标题不跳。"""
+        import corral
+
+        area = self._split_area()
+        if isinstance(request, corral.LaunchRequest):
+            if native_resume:
+                return area.pending_pane_title(request.session)
+            source = self.store.registry.get(
+                str(request.session.get("source") or "")
+            ).display_name
+            if getattr(request, "copy_session", False):
+                title = request.title or t("session.title.copy", name=source)
+            else:
+                title = request.title or t("session.title.handoff", name=source)
+            return area.pending_pane_title(request.session, title_override=title)
+        runtime = self.store.registry.get(request.target_runtime_id)
+        return area.pending_pane_title(
+            {"source": request.target_runtime_id, "id": "", "cwd": request.cwd or ""},
+            title_override=t("session.title.new", name=runtime.display_name),
         )
 
     @work(thread=True, group="host")
     def _host_and_focus(
-        self, request, plan, ident, native_resume, width, height, *, add_pane: bool = False,
+        self, request, plan, ident, native_resume, width, height, *,
+        add_pane: bool = False, pending_key: str | None = None,
     ) -> None:
         import time
 
@@ -139,34 +178,39 @@ class HostControllerMixin:
                 ok=False,
             )
             corral._log_embed_error("内嵌会话启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed)
+            self.app.call_from_thread(self._on_host_failed, pending_key)
             return
-        # 新 tmux 会话刚建好：控制通道（`tmux -C attach`，含 `_ready.wait` +
-        # pane_id 查询，重启瞬间 tmux 正忙时是主线程卡顿的来源之一）在这里
-        # 直接预热。主线程 `focus_session` 随后进来是池命中，只换回调 + LRU，
-        # 约 0ms；预热失败也不影响，全部路径仍会自动回退外部 fork。
-        try:
-            embed.open_channel(name)
-        except Exception:  # noqa: BLE001 预热失败不该影响托管成功收尾
-            pass
         observe.event(
             "host_session",
             duration_ms=int((time.perf_counter() - t0) * 1000),
             runtime=runtime,
             ok=True,
+            pending=bool(pending_key),
         )
+        # 先把格子交给界面（已占好的占位格就地转正），再预热控制通道：
+        # 预热是首帧渲染的准备，不得挡在「分屏出现」前面（机主要求 2026-11-07）。
+        # 预热失败也不影响，全部路径仍会自动回退外部 fork。
         self.app.call_from_thread(
-            self._on_embed_hosted, request, name, native_resume, add_pane,
+            self._on_embed_hosted, request, name, native_resume, add_pane, pending_key,
         )
+        try:
+            embed.open_channel(name)
+        except Exception:  # noqa: BLE001 预热失败不该影响托管成功收尾
+            pass
 
-    def _on_host_failed(self) -> None:
-        """host worker 失败收尾：释放托管计数并给用户终端响铃。"""
+    def _on_host_failed(self, pending_key: str | None = None) -> None:
+        """host worker 失败收尾：移除占位格、释放托管计数并给用户终端响铃。"""
         self._host_pending = max(0, self._host_pending - 1)
+        try:
+            self._split_area().abort_pending_pane(pending_key)
+        except Exception:  # noqa: BLE001 分栏重建中间态缺件时静默跳过
+            pass
         self._restore_direct_search_focus()
         self.app.bell()
 
     def _on_embed_hosted(
         self, request, name: str, native_resume: bool, add_pane: bool = False,
+        pending_key: str | None = None,
     ) -> None:
         """`_host_and_focus` worker 成功后的收尾：只在主线程操作 Textual/store 状态。
 
@@ -225,8 +269,10 @@ class HostControllerMixin:
         # 新建 / 接力托管成功同样是明确意图：用户就是来跟这个新会话说话的。
         autofocus = self._can_autofocus()
         if add_pane:
+            # 占位格就地转正；占位格已不在（启动期间被别的流程换掉）时退回追加。
             area.add_hosted_pane(
                 current, name, fallback, focus=True, focus_pane=autofocus,
+                replace_pending_key=pending_key,
             )
         elif self._split_store.get_group(corral.session_key(current)) is not None:
             # 重启的是会话组里的成员：整组一起摆回去，只是它那一格从静态预览换成
@@ -302,24 +348,31 @@ class HostControllerMixin:
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
-        if self._host_pending > 0:
-            self.app.bell()
-            return
-        if area.pane_count() + self._host_pending >= MAX_PANES:
-            self.notify(t("split.full", n=MAX_PANES))
-            self.app.bell()
-            return
         plan = _shell_launch_plan(cwd)
         from corral import keepalive
 
         ident = keepalive.new_session_ident()
+        # 先占格子：与其它加格路径一致，用户不必等 tmux 回来才看到这一格。
         width, height = area.host_pane_size()
+        pending_key = area.add_pending_pane(
+            SHELL_RUNTIME_ID,
+            cwd,
+            title=area.pending_pane_title({"source": SHELL_RUNTIME_ID, "id": "", "cwd": cwd}),
+            is_shell=True,
+        )
+        if pending_key is None:
+            self.notify(t("split.full", n=MAX_PANES))
+            self.app.bell()
+            return
         self._host_pending += 1
-        self._host_shell_and_focus(cwd, plan, ident, width, height)
+        self._host_shell_and_focus(
+            cwd, plan, ident, width, height, pending_key=pending_key,
+        )
 
     @work(thread=True, group="host")
     def _host_shell_and_focus(
         self, cwd: str, plan: LaunchPlan, ident: str, width: int, height: int,
+        *, pending_key: str | None = None,
     ) -> None:
         import time
 
@@ -339,17 +392,24 @@ class HostControllerMixin:
                 ok=False,
             )
             corral._log_embed_error("内嵌 shell 启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed)
+            self.app.call_from_thread(self._on_host_failed, pending_key)
             return
         observe.event(
             "host_session",
             duration_ms=int((time.perf_counter() - t0) * 1000),
             runtime=SHELL_RUNTIME_ID,
             ok=True,
+            pending=bool(pending_key),
         )
-        self.app.call_from_thread(self._on_shell_hosted, name, cwd)
+        self.app.call_from_thread(self._on_shell_hosted, name, cwd, pending_key)
+        try:
+            embed.open_channel(name)
+        except Exception:  # noqa: BLE001 预热失败不影响托管成功收尾
+            pass
 
-    def _on_shell_hosted(self, name: str, cwd: str) -> None:
+    def _on_shell_hosted(
+        self, name: str, cwd: str, pending_key: str | None = None,
+    ) -> None:
         self._host_pending = max(0, self._host_pending - 1)
         area = self._split_area()
         current = self.store.register_hosted_session(
@@ -365,6 +425,7 @@ class HostControllerMixin:
             focus=True,
             focus_pane=self._can_autofocus(),
             is_shell=True,
+            replace_pending_key=pending_key,
         )
         self._persist_split_composition()
 
@@ -375,11 +436,22 @@ class HostControllerMixin:
         direct = self.direct
         area = self._split_area()
         width, height = area.host_pane_size()
+        runtime = self.store.registry.get(direct.runtime_id)
+        pending_key = area.add_pending_pane(
+            direct.runtime_id,
+            direct.plan.cwd,
+            title=area.pending_pane_title(
+                {"source": direct.runtime_id, "id": "", "cwd": direct.plan.cwd or ""},
+                title_override=t("session.title.new", name=runtime.display_name),
+            ),
+        )
         self._host_pending += 1
-        self._host_direct_worker(direct, width, height)
+        self._host_direct_worker(direct, width, height, pending_key=pending_key)
 
     @work(thread=True, group="host")
-    def _host_direct_worker(self, direct, width: int, height: int) -> None:
+    def _host_direct_worker(
+        self, direct, width: int, height: int, *, pending_key: str | None = None,
+    ) -> None:
         import time
 
         import corral
@@ -399,17 +471,20 @@ class HostControllerMixin:
                 ok=False,
             )
             corral._log_embed_error("直启会话启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed)
+            self.app.call_from_thread(self._on_host_failed, pending_key)
             return
         observe.event(
             "host_session",
             duration_ms=int((time.perf_counter() - t0) * 1000),
             runtime=runtime,
             ok=True,
+            pending=bool(pending_key),
         )
-        self.app.call_from_thread(self._on_direct_hosted, name)
+        self.app.call_from_thread(self._on_direct_hosted, name, pending_key)
 
-    def _on_direct_hosted(self, name: str) -> None:
+    def _on_direct_hosted(
+        self, name: str, pending_key: str | None = None,
+    ) -> None:
         self._host_pending = max(0, self._host_pending - 1)
         area = self._split_area()
         direct = self.direct
@@ -430,12 +505,20 @@ class HostControllerMixin:
         # pane 尚未创建时 set_focus 失败就放弃——真机默认焦点在侧边栏，
         # 不带 focus_pane 的挂载收尾会把焦点还回去（corral cursor 真机复现）。
         autofocus = self._can_autofocus()
-        area.show_hosted_group(
-            _normalize_cwd(cwd),
-            [(session, name, None)],
-            focus_key=key,
-            focus_pane=autofocus,
-        )
+        if pending_key is not None and any(
+            spec.session_key == pending_key for spec in area.pane_specs()
+        ):
+            area.add_hosted_pane(
+                session, name, None, focus=True, focus_pane=autofocus,
+                replace_pending_key=pending_key,
+            )
+        else:
+            area.show_hosted_group(
+                _normalize_cwd(cwd),
+                [(session, name, None)],
+                focus_key=key,
+                focus_pane=autofocus,
+            )
         self._persist_split_composition()
         self._begin_attention_read(key)
         self.call_next(self._rebuild_list, key)

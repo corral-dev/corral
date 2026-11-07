@@ -4135,7 +4135,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     expected_now = _expected()
                     if not expected_now or any(width < 40 for _, width, _ in expected_now):
                         return False
-                    return sorted(resize_calls) == sorted(expected_now)
+                    return sorted(resize_calls[-len(expected_now):]) == sorted(expected_now)
 
                 await _wait_until(_resizes_match_layout, tries=200)
                 expected = _expected()
@@ -4143,10 +4143,17 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     all(width >= 40 for _, width, _ in expected),
                     f"test fixture panes must be >= MIN_HOST_WIDTH: {expected}",
                 )
-                self.assertEqual(sorted(resize_calls), sorted(expected))
+                # 底条无提示时自动隐藏（单标题条），终端内容因此可能比预测多一行：
+                # 允许「先按预测尺寸、布局落定后校正一行」，但每个尺寸只能下发一次，
+                # 且最终必须等于真实布局尺寸（防的是落定后又来回 resize）。
+                self.assertLessEqual(len(resize_calls), 2 * len(expected))
+                self.assertEqual(len(set(resize_calls)), len(resize_calls),
+                                 f"同一个尺寸不得重复下发：{resize_calls}")
+                settled = sorted(resize_calls[-len(expected):])
+                self.assertEqual(settled, sorted(expected))
                 await pilot.pause(delay=0.4)
                 self.assertEqual(
-                    sorted(resize_calls), sorted(expected),
+                    sorted(resize_calls[-len(expected):]), sorted(expected),
                     "布局落定后的 Resize 不得在 200ms 后再次调回相同尺寸",
                 )
 
@@ -4201,11 +4208,22 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(pane._grid, "切单格前不得先恢复旧的半宽缓存")  # noqa: SLF001
                 await pilot.pause(delay=0.05)
                 expected = (target_name, pane.size.width, pane.size.height)
-                self.assertEqual(resize_calls, [expected])
+                # 底条隐藏后内容多一行：允许预测尺寸 + 落定校正各一次，
+                # 但不得重复下发相同尺寸，且收尾必须停在真实布局尺寸。
+                self.assertLessEqual(len(resize_calls), 2)
+                self.assertEqual(len(set(resize_calls)), len(resize_calls),
+                                 f"同一个尺寸不得重复下发：{resize_calls}")
+                await _wait_until(lambda: resize_calls[-1] == expected, tries=100)
+                self.assertEqual(resize_calls[-1], expected)
+                settled_count = len(resize_calls)
                 await pilot.pause(delay=0.35)
                 self.assertEqual(
-                    resize_calls, [expected],
+                    len(resize_calls), settled_count,
                     "布局落定后的尺寸回报不得在 200ms 后重复 resize",
+                )
+                self.assertEqual(
+                    resize_calls[-1], expected,
+                    "落定后尺寸必须停在真实布局尺寸",
                 )
 
     def test_capture_uses_projected_single_pane_size_until_layout_arrives(self) -> None:
@@ -6055,6 +6073,109 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("keepalive_name", old_request_session)
                 pane = await _wait_for_embed_pane(app.screen)
                 await _wait_until(lambda: pane.session_name == "corral-claude-s0")
+
+    async def test_add_pane_shows_pending_cell_before_host_returns(self) -> None:
+        """加格先出格子：托管还在路上时，占位格已经出现在右栏（机主要求 2026-11-07）。"""
+        store, registry = _make_store()
+        registry.build_new_session_plan = lambda request: LaunchPlan(("claude",), "/tmp")
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed_host(*args, **kwargs):
+            started.set()
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("测试未能及时释放 delayed_host")
+            return "corral-claude-pending"
+
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.host_session", side_effect=delayed_host):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                before = len(area.pane_specs())
+
+                app.screen._embed_open(
+                    corral.NewSessionRequest("claude", "/tmp"), add_pane=True,
+                )
+                await _wait_until(lambda: len(area.pane_specs()) == before + 1)
+
+                pending = area.pane_specs()[-1]
+                self.assertTrue(pending.is_pending)
+                self.assertIsNone(pending.keepalive_name)
+                cell = next(c for c in area.cells() if c.spec.cell_id == pending.cell_id)
+                header = cell._pane_header()  # noqa: SLF001
+                self.assertIn(t("pane.starting"), str(header._hint_widget.render()))  # noqa: SLF001
+                # 还没有会话可关：占位期间不露 ✕。
+                self.assertFalse(header._close_widget.display)  # noqa: SLF001
+                # 占位格不抢焦点、不进侧栏会话组。
+                self.assertFalse(cell.has_focus_within)
+                self.assertIsNone(app.screen._split_store.get_group(pending.session_key))
+
+                await _wait_until(started.is_set)
+                release.set()
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_until(lambda: not area.has_pending_panes())
+                # 就地转正：格数不变、同一个 cell_id，不再是占位格。
+                self.assertEqual(len(area.pane_specs()), before + 1)
+                specs = {spec.cell_id: spec for spec in area.pane_specs()}
+                promoted = specs[pending.cell_id]
+                self.assertFalse(promoted.is_pending)
+                self.assertEqual(promoted.keepalive_name, "corral-claude-pending")
+                await _wait_for_embed_session(app.screen, "corral-claude-pending")
+                cell = next(c for c in area.cells() if c.spec.cell_id == pending.cell_id)
+                self.assertTrue(cell._pane_header()._close_widget.display)  # noqa: SLF001
+
+    async def test_pending_cell_removed_when_host_fails(self) -> None:
+        """宿主失败：占位格自己消失，右栏回到加格前的组合。"""
+        store, registry = _make_store()
+        registry.build_new_session_plan = lambda request: LaunchPlan(("claude",), "/tmp")
+        app = CorralApp(store, embed_ok=True)
+
+        with (
+            mock.patch("corral.embed.host_session", side_effect=RuntimeError("模拟启动失败")),
+            mock.patch.object(corral, "_log_embed_error"),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                before = len(area.pane_specs())
+                app.screen._embed_open(
+                    corral.NewSessionRequest("claude", "/tmp"), add_pane=True,
+                )
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_until(lambda: not area.has_pending_panes())
+                self.assertEqual(len(area.pane_specs()), before)
+
+    async def test_selection_follow_keeps_pending_cell(self) -> None:
+        """启动期间移动选择：选择跟随不得整排重挂把占位格拆掉。"""
+        store, registry = _make_store()
+        registry.build_new_session_plan = lambda request: LaunchPlan(("claude",), "/tmp")
+        release = threading.Event()
+
+        def delayed_host(*args, **kwargs):
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("测试未能及时释放 delayed_host")
+            return "corral-claude-keep"
+
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.host_session", side_effect=delayed_host):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                app.screen._embed_open(
+                    corral.NewSessionRequest("claude", "/tmp"), add_pane=True,
+                )
+                await _wait_until(lambda: area.has_pending_panes())
+                pending_ids = [s.session_key for s in area.pane_specs() if s.is_pending]
+
+                await pilot.press("down")
+                await pilot.pause(delay=0.3)
+                self.assertTrue(area.has_pending_panes())
+                self.assertEqual(
+                    [s.session_key for s in area.pane_specs() if s.is_pending], pending_ids,
+                )
+                release.set()
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
 
     async def test_host_failure_releases_single_flight_guard(self) -> None:
         store, registry = _make_store()

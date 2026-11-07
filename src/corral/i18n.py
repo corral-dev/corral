@@ -85,6 +85,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Restarting…",
         "zh": "正在重启…",
     },
+    "pane.starting": {
+        "en": "Starting…",
+        "zh": "正在启动…",
+    },
     "action.toggle_hud": {
         "en": "Session card",
         "zh": "会话小窗",

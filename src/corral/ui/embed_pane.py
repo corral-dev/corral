@@ -384,6 +384,9 @@ class EmbedPane(Widget):
         # render_line 热路径里每行每帧都重新解析一次组件样式。
         self._selection_style_cache: tuple[str, Style] | None = None
         self._detail_renderer = detail_renderer
+        # 待启动占位格（加格后宿主未回）：已占好位置但还不是会话，画面区保持空白
+        # 终端底色，不写任何中间态文案（见 Terminal UI KB「加格先出格子」）。
+        self._pending = False
         self._on_focus_list = on_focus_list
         # 静态预览格 / 已结束格上按回车 = 重启这条会话（见 `_is_restart_target`）。
         self._on_restart = on_restart
@@ -561,6 +564,8 @@ class EmbedPane(Widget):
             or self._grid is None
             or discard_stale_screen
         )
+        # 切到真实托管会话 = 不再是占位格。
+        self._pending = False
         if reset_capture:
             self._capture_generation += 1
             self._cancel_pending_tmux_resize()
@@ -673,8 +678,22 @@ class EmbedPane(Widget):
         self.invalidate_detail()
         self.post_message(ModeChanged())
 
+    def set_pending(self, pending: bool) -> None:
+        """标记这一格是否在等宿主回来（占位格）：占位期间画面区保持空白终端底色。
+
+        空白而不是「还没有会话」提示：这一格已经不是「挑一个会话看看」的状态，
+        而是在启动中（机主要求 2026-11-07）。阶段只写在标题栏提示位。
+        """
+        if self._pending == pending:
+            return
+        self._pending = pending
+        self._static_key = None
+        self._static_strips_cache = None
+        self.refresh()
+
     def clear(self) -> None:
         self._stash_screen()
+        self._pending = False
         self._capture_generation += 1
         self._cancel_pending_tmux_resize()
         old_name = self.session_name
@@ -1333,6 +1352,9 @@ class EmbedPane(Widget):
         if (renderer := self._detail_renderer) is not None:
             rendered = renderer()
             return Text(rendered) if isinstance(rendered, str) else rendered
+        if self._pending:
+            # 加格先出格子：空白终端底色，阶段只写在标题栏提示位。
+            return Text()
         if self.session_name is None:
             return Text(t("detail.pick_session"))
         # 会话已聚焦但还没有第一帧：连接/抓帧是后台实现细节，不能暴露成用户
@@ -1359,6 +1381,8 @@ class EmbedPane(Widget):
         跑完退出的会话（画面已换成「会话已结束」）。托管首帧尚未到达那种回退态
         不算——那条会话正活着，回车必须原样转发给助手。
         """
+        if self._pending:
+            return False
         return self.dead or self._is_detail_view()
 
     def _uses_detail_window(self) -> bool:

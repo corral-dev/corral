@@ -1138,6 +1138,10 @@ class MainScreen(
         area = self._split_area()
         if area.any_embed_focused():
             return
+        if area.has_pending_panes():
+            # 有格子正在启动（已占位、宿主未回）：此刻右栏组合是用户刚才那次明确
+            # 操作的现场，选择跟随不得整排重挂把占位格拆掉（机主要求 2026-11-07）。
+            return
         if session_list.is_new_session_selected():
             # 已在新建提示格时勿重复挂载，否则 remount 会抢走列表焦点
             if area.ordered_session_keys() == ["__hint__"]:
