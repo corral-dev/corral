@@ -360,3 +360,29 @@ remains a macOS/Linux entry point that runs the same engine.
   glyphs inked there, such as `/` and brackets, shift down to fit).
 - **Engine.** Per-model window tokens come from `sesskit-stats`
   (`SessionStats.window_models`), never from parsing here.
+
+### 10.8 Simplified Chinese TUI (owner request 2026-11-08)
+
+- **Locale.** The card follows the process locale: `LC_ALL`, `LC_MESSAGES`,
+  `LANG`, `LANGUAGE`, then the OS preferred language (`sys-locale`). A `zh`
+  language shows the Simplified Chinese card; every other language keeps the
+  existing English card. `LANG=zh_CN.UTF-8` forces Chinese for acceptance and
+  for English-primary Macs; `LANG=en_US.UTF-8` forces English.
+- **Vocabulary.** The card's own words stay English: `CODING WEEK` /
+  `CODING MONTH` / `CODING SO FAR`, `tokens`, `AGENTS`. Everything else is
+  translated the way Chinese developer tools write it, not word for word:
+  会话数, 日均 tokens, 峰值并发, 模型, 活跃时段, 最忙, 周一–周日, 其他, 未知.
+  Loading (正在扫描历史记录 / 正在读取 N / M 个会话), the empty state, the
+  key hints (保存图片 / 重播 / 退出), the save note (已保存到 …), save errors
+  and the small-terminal hint follow the same language.
+- **One grid.** The terminal and the 1200×630 PNG remain the same card in the
+  same language; a Chinese terminal run exports a Chinese PNG. Double-width
+  characters occupy a lead cell and a continuation (`CONT`) cell that every
+  renderer skips.
+- **PNG glyphs.** Spleen has no CJK. A small subset of the OFL-1.1 Fusion
+  Pixel 12px Mono zh_Hans (2× scaled to 24×24 inside the 32×28 double cell)
+  is embedded as `assets/fusion-pixel-12px-subset.json`; the generator is
+  `scripts/build-cjk-subset.py`, and the license sits beside the data.
+- **Verification (2026-11-08).** Real iTerm runs in Chinese and English
+  (card, loading, key hints, save note), the small-terminal hint, the Chinese
+  and English PNGs, the empty period, `cargo test` and clippy.
