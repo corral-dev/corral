@@ -385,4 +385,7 @@ remains a macOS/Linux entry point that runs the same engine.
   `scripts/build-cjk-subset.py`, and the license sits beside the data.
 - **Verification (2026-11-08).** Real iTerm runs in Chinese and English
   (card, loading, key hints, save note), the small-terminal hint, the Chinese
-  and English PNGs, the empty period, `cargo test` and clippy.
+  and English PNGs, the empty period, `cargo test` and clippy. On the Windows
+  11 zh-CN test VM (both `caozc` and `agenttest`), an unforced run detects
+  zh-CN and renders the Chinese card; `LANG=en_US.UTF-8` forces English; both
+  PNGs were inspected on the Mac.
