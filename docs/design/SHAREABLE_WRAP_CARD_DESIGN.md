@@ -73,7 +73,7 @@ fakes data or delays exit.
 
 ### 5.1 Grid
 
-One fixed cell grid of 72 columns × 19 rows (fits an 80×24 terminal) is the
+One fixed cell grid of 72 columns × 19 rows (21 rows since §10.7; fits an 80×24 terminal) is the
 single source for the terminal frame and the exported image. Card background
 is a forced warm black regardless of terminal theme, so screenshots look the
 same everywhere. Palette: text `#EDE6DE`, dim `#8A817A`, dragon red
@@ -144,7 +144,8 @@ embedding one:
 ### 5.4 Image export
 
 `s` or `--png PATH` writes the final frame at 1200×630: the 72×19 grid
-rendered at 16×32 pixels per cell, centered. No new dependency: an embedded
+rendered at 16×32 pixels per cell, centered (since §10.7: 72×21 at 16×28,
+the Spleen cell's blank top rows dropped). No new dependency: an embedded
 glyph subset of the BSD-2-Clause [Spleen](https://github.com/fcambus/spleen)
 16×32 bitmap font (license retained beside the data) and a standard-library
 `zlib` PNG encoder. Rejected alternatives: Pillow (Homebrew's Pillow pulls
@@ -325,6 +326,12 @@ remains a macOS/Linux entry point that runs the same engine.
   `agentflex` formula for Corral's tap remains a follow-up.
 - Public repository: https://github.com/corral-dev/agentflex (MIT), README in
   English and Chinese with a demo rendered from fictional data.
+- Released 0.2.0 on 2026-11-08 (model leaderboard, dark terminal stage); release
+  procedure in AgentFlex `AGENTS.md`. Open release follow-ups: publication runs
+  only through GitHub Actions (no local publish path independent of CI, as the
+  open-source guide requires), and the workflows' actions (`actions/checkout@v4`,
+  `setup-node@v4`, artifact actions) target Node 20, which GitHub now forces onto
+  Node 24 with a deprecation warning.
 
 ### 10.7 Model leaderboard (owner decision 2026-11-08)
 
