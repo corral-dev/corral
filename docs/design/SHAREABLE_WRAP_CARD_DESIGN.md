@@ -325,3 +325,31 @@ remains a macOS/Linux entry point that runs the same engine.
   `agentflex` formula for Corral's tap remains a follow-up.
 - Public repository: https://github.com/corral-dev/agentflex (MIT), README in
   English and Chinese with a demo rendered from fictional data.
+
+### 10.7 Model leaderboard (owner decision 2026-11-08)
+
+- **Both rows stay.** The card shows the agent share bar (sessions per agent)
+  and a model share bar below it; the owner considers both worth showing off.
+- **Ranked by tokens.** A model's share is its part of the hero token total,
+  attributed per usage record by the native record's model and time, so the
+  model shares add up to the hero number. Cache reads dominate the total and
+  some gateways report no cache, so long-context models rank higher; the
+  owner accepted this for consistency with the hero.
+- **No reasoning effort.** Claude and Codex record effort per turn, but Pi
+  only records changes and OpenCode records none unless a variant is picked
+  (most of the owner's sessions), so effort is omitted rather than shown as
+  mostly unknown.
+- **Display.** Top three models plus one grey "other" segment, warm palette
+  following the hero gradient (agent colors stay on the agent bar). Names are
+  shortened for display only: provider prefix (`x/`), bracket suffix (`[1m]`),
+  date suffix and a leading `claude-` are dropped, a trailing `-N-M` version
+  reads `-N.M`, and identical display names merge; records without a model
+  count as `unknown`. Longest names are truncated with `…` until the legend
+  fits.
+- **Grid.** The card grows from 19 to 21 rows (still fits 80×24 with the key
+  hint): agents rows 10–11, models rows 12–13, heatmap rows 15–18, axis 19.
+  The PNG keeps 1200×630 by drawing 16×28 cells: the top four rows of the
+  32-row Spleen cell are dropped (blank for every glyph on the card; the few
+  glyphs inked there, such as `/` and brackets, shift down to fit).
+- **Engine.** Per-model window tokens come from `sesskit-stats`
+  (`SessionStats.window_models`), never from parsing here.
