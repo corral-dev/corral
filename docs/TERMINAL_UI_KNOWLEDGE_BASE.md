@@ -383,6 +383,12 @@ screen row (cell columns mapped through wide characters) and accepts absolute,
 does for an explicitly pathed deleted file. Shared detection lives in
 `corral/path_links.py`; the Mac client's equivalent is in the
 [Apple UI KB](../../apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md#mac-message-copy-and-path-links-owner-request-2026-11-08).
+Verification (2026-11-08, `8e832f4`): Pilot clicks on a real `EmbedPane`
+prove a Ctrl+click on `src/app.py:12` resolves against the pane directory and
+reveals it without forwarding to the agent, while a plain click and a modified
+click off a path still forward; unit tests cover wide characters, suffixes,
+prose rejection and `open -R`. Which modifier a given outer terminal reports
+was not exercised in a physical terminal.
 
 ## §1.6 鼠标指针形状
 
