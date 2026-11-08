@@ -7,17 +7,21 @@ repairs or reclaims anything.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from corral.control import (
+    build_agent_text,
     caller_identity,
     control_capability,
     fresh_plan,
+    resolve_sender,
     resolve_target,
     self_target,
     target_payload,
@@ -123,8 +127,11 @@ def public_run(store: RunStore, record: dict, *, compact: bool = False) -> dict:
         "questions": record.get("questions") or [], "error": record.get("error"),
         "requested_model": record.get("requested_model"), "observed_model": record.get("observed_model"),
         "attribution": record.get("attribution"), "turn_id": record.get("turn_id"),
+        "from_agent": record.get("from_agent"), "last_from_agent": record.get("last_from_agent"),
+        "report_back": record.get("report_back"),
         "model_check": record.get("model_check"), "finality": record.get("finality"),
         "queue_reason": record.get("queue_reason") if record.get("execution") == "queued" else None,
+        "queued_behind": record.get("queued_behind") if record.get("execution") == "queued" else None,
         "created_at": record.get("created_at"), "updated_at": record.get("updated_at"),
         "supervisor": {
             "alive": _supervisor_alive(store, run_id) if record.get("execution") not in SETTLED else False,
@@ -164,7 +171,7 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
         planned = existing or {"run_id": None, "version": None, **initial}
         return _ok({"status": "existing" if existing else "planned", "dry_run": True,
                     "run": {k: planned.get(k) for k in ("run_id", "version", "mode", "runtime", "session_ref", "cwd",
-                                                         "delivery", "execution", "requested_model")},
+                                                         "delivery", "execution", "requested_model", "from_agent")},
                     "target": target, "launch": spec.get("launch_preview")})
     record, created = store.create(actor, key, spec, initial)
     confirmed = True
@@ -179,21 +186,33 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
     return _ok(data)
 
 
-def cmd_submit(args, registry) -> dict:
+def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
     prompt = _read_prompt(args)
     key = _key(args)
+    from_agent = resolve_sender(getattr(args, "from_agent", None), registry)
+    no_footer = bool(getattr(args, "no_reply_footer", False))
+    report_back = bool(getattr(args, "report_back", False)) and from_agent is not None
+    send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer, report_back=report_back)
     store = RunStore()
     caller = caller_identity()
     existing = store.find(key)
     if existing is not None:
         saved = store.get(existing["run_id"], private=True)
-        spec = {**saved["spec"], "session_ref": args.target, "prompt": prompt,
+        spec = {**saved["spec"], "session_ref": args.target, "prompt": send_text,
                 "on_busy": args.on_busy, "queue_timeout": max(0, args.queue_timeout), "caller": caller,
                 "task_ref": getattr(args, "task_ref", None)}
+        if from_agent is not None:
+            spec["from_agent"] = from_agent
+        else:
+            spec.pop("from_agent", None)
+        if report_back:
+            spec["report_back"] = True
+        else:
+            spec.pop("report_back", None)
         # Reconcile immutable input before consulting a target that may now be
         # hosted, missing or executing. A retry is not a fresh authorization.
         return _admit(store, caller["actor"], key, spec, saved, args, None)
-    session = resolve_target(registry, args.target)
+    session = session or resolve_target(registry, args.target)
     target = target_payload(session)
     caller = caller_identity()
     mode, reason = control_capability(session)
@@ -208,7 +227,7 @@ def cmd_submit(args, registry) -> dict:
         raise ControlError("project_missing", f"The session's project directory is gone: {target['cwd']}",
                            EXIT_NOT_FOUND)
     store = RunStore()
-    prompt_digest = digest(prompt)
+    prompt_digest = digest(send_text)
     if store.find(key) is None and not args.allow_concurrent:
         twins = [r for r in store.for_target(target["session_ref"]) if r.get("prompt_digest") == prompt_digest]
         if twins:
@@ -228,14 +247,20 @@ def cmd_submit(args, registry) -> dict:
                            f"--prompt-file <brief> --idempotency-key {key}"],
         )
     spec = {"mode": "submit", "runtime": target["runtime"], "session_ref": target["session_ref"],
-            "cwd": target["cwd"], "history_path": target["history_path"], "prompt": prompt,
+            "cwd": target["cwd"], "history_path": target["history_path"], "prompt": send_text,
             "on_busy": args.on_busy, "queue_timeout": max(0, args.queue_timeout), "caller": caller,
             "task_ref": getattr(args, "task_ref", None)}
+    if from_agent is not None:
+        spec["from_agent"] = from_agent
+    if report_back:
+        spec["report_back"] = True
     initial = {"mode": "submit", "prompt_digest": prompt_digest, "runtime": target["runtime"],
                "session_ref": target["session_ref"],
                "cwd": target["cwd"], "history_path": target["history_path"], "delivery": "accepted",
                "execution": "queued", "acceptance": "unverified", "requested_model": None,
                "task_ref": spec["task_ref"], "target_control": mode}
+    if from_agent is not None:
+        initial["from_agent"] = from_agent
     return _admit(store, caller["actor"], key, spec, initial, args, target)
 
 
@@ -256,8 +281,10 @@ def _guard_create_directory(cwd: str) -> None:
 def cmd_create(args, registry) -> dict:
     from corral import embed
 
-    prompt = _read_prompt(args)
     key = _key(args)
+    from_agent = resolve_sender(getattr(args, "from_agent", None), registry)
+    prompt = build_agent_text(_read_prompt(args), from_agent=from_agent,
+                              no_footer=bool(getattr(args, "no_reply_footer", False)))
     if args.runtime not in ACTIVE_RUNTIME_IDS:
         raise ControlError("usage_error", f"Unsupported runtime: {args.runtime}", EXIT_USAGE,
                            hint="Supported runtimes: " + ", ".join(sorted(ACTIVE_RUNTIME_IDS)))
@@ -299,9 +326,67 @@ def cmd_create(args, registry) -> dict:
     initial = {"mode": "create", "runtime": runtime.id, "session_ref": None, "cwd": cwd, "delivery": "accepted",
                "execution": "queued", "acceptance": "unverified", "requested_model": model,
                "model_evidence": "pending" if model else "runtime_default", "task_ref": spec["task_ref"]}
+    if from_agent is not None:
+        spec["from_agent"] = initial["from_agent"] = from_agent
     target = {"session_ref": None, "runtime": runtime.id, "cwd": cwd, "control": "create",
               "control_reason": "Corral launches a new hosted session for this run."}
     return _admit(store, caller["actor"], key, spec, initial, args, target)
+
+
+def cmd_send(args, registry) -> dict:
+    """One-step agent-to-agent message: resolve, read the version and submit once."""
+    message = getattr(args, "message", None)
+    if message and getattr(args, "prompt_file", None):
+        raise ControlError("usage_error", "Pass the message inline or with --prompt-file, not both.", EXIT_USAGE)
+    session = resolve_target(registry, args.target)
+    target = target_payload(session)
+    sender = resolve_sender(getattr(args, "from_agent", None), registry)
+    if sender is not None and sender == target["session_ref"]:
+        raise ControlError("self_target", "An agent cannot message its own session.", EXIT_CONFLICT)
+    if sender is not None:
+        _check_send_rate(sender, target["session_ref"])
+    submit = argparse.Namespace(
+        target=target["session_ref"], prompt=message, prompt_file=getattr(args, "prompt_file", None),
+        idempotency_key=getattr(args, "idempotency_key", None) or f"send-{uuid.uuid4().hex}",
+        if_version=target["version"], on_busy=args.on_busy, queue_timeout=args.queue_timeout,
+        allow_concurrent=False, task_ref=None, dry_run=False, from_agent=sender or "none",
+        no_reply_footer=bool(getattr(args, "no_reply_footer", False)),
+        report_back=not bool(getattr(args, "no_report_back", False)), compact=getattr(args, "compact", False))
+    result = cmd_submit(submit, registry, session=session)
+    data = result.get("data") or {}
+    run = data.get("run") or {}
+    if run.get("run_id"):
+        data["delivery_note"] = (
+            f"The receiver's final answer will arrive in {sender} as a new message when its turn ends."
+            if sender is not None and not getattr(args, "no_report_back", False)
+            else "Observe the receiver's turn with run wait / run result."
+        )
+    return result
+
+
+#: Burst guard for agent-to-agent messages (loops between two agents stop on
+#: their own, as in Claude Code's cross-session messaging): at most this many
+#: messages from one sender to one session per window.
+SEND_BURST_LIMIT = 12
+SEND_BURST_WINDOW = 600.0
+
+
+def _check_send_rate(sender: str, target: str) -> None:
+    store = RunStore()
+    if not store.exists():
+        return
+    cutoff = time.time() - SEND_BURST_WINDOW
+    recent = [r for r in store.recent(500, None)
+              if r.get("session_ref") == target and r.get("from_agent") == sender
+              and float(r.get("created_at") or 0) >= cutoff]
+    if len(recent) >= SEND_BURST_LIMIT:
+        raise ControlError(
+            "rate_limited",
+            f"{sender} already sent {len(recent)} messages to {target} in the last "
+            f"{int(SEND_BURST_WINDOW // 60)} minutes.",
+            EXIT_CONFLICT,
+            hint="Batch the rest into one message, or wait for the receiver to answer.",
+        )
 
 
 def _enqueue(args, body: dict) -> dict:
@@ -311,6 +396,12 @@ def _enqueue(args, body: dict) -> dict:
         raise ControlError("confirmation_required", "Pass --if-version from a fresh run status.", EXIT_USAGE,
                            next_commands=[f"{_bin()} run status {args.run_id}"])
     message, created = store.enqueue(args.run_id, caller_identity()["actor"], _key(args), body, args.if_version)
+    from_agent = body.get("from_agent") if isinstance(body, dict) else None
+    if from_agent is not None and record.get("last_from_agent") != from_agent:
+        try:
+            store.update(args.run_id, {"last_from_agent": from_agent})
+        except ControlError:
+            pass
     if record["execution"] not in SETTLED and not _supervisor_alive(store, args.run_id):
         raise ControlError("supervisor_lost", "The message is queued but no supervisor owns this run.",
                            EXIT_CONFLICT, details={"message": message},
@@ -330,7 +421,13 @@ def cmd_message(args, registry) -> dict:
         raise ControlError("model_mismatch", "The session runs a different model than requested; steering is blocked.",
                            EXIT_CONFLICT, details={"requested_model": record.get("requested_model"),
                                                    "observed_model": record.get("observed_model")})
-    return _enqueue(args, {"action": "steer", "prompt": prompt})
+    from_agent = resolve_sender(getattr(args, "from_agent", None), registry)
+    no_footer = bool(getattr(args, "no_reply_footer", False))
+    send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer)
+    body: dict = {"action": "steer", "prompt": send_text}
+    if from_agent is not None:
+        body["from_agent"] = from_agent
+    return _enqueue(args, body)
 
 
 def cmd_answer(args, registry) -> dict:
@@ -393,6 +490,7 @@ def cmd_events(args, registry) -> dict:
     page = store.events(args.run_id, max(0, args.after), max(1, min(args.limit, 500)))
     record = store.get(args.run_id)
     return _ok({"run_id": args.run_id, "execution": record["execution"], "settled": record["execution"] in SETTLED,
+                "from_agent": record.get("from_agent"), "last_from_agent": record.get("last_from_agent"),
                 **page})
 
 
@@ -466,7 +564,7 @@ def cmd_list(args, registry) -> dict:
 HANDLERS = {
     "run submit": cmd_submit, "run create": cmd_create, "run status": cmd_status, "run events": cmd_events,
     "run wait": cmd_wait, "run result": cmd_result, "run message": cmd_message, "run answer": cmd_answer,
-    "run interrupt": cmd_interrupt, "run list": cmd_list, "run recover": cmd_recover,
+    "run interrupt": cmd_interrupt, "run list": cmd_list, "run recover": cmd_recover, "send": cmd_send,
 }
 
 

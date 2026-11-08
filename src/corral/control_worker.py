@@ -256,12 +256,19 @@ def model_check(requested: str | None, observed: list[str]) -> str | None:
     return "mismatch"
 
 
+def _blocking_run(store: RunStore, run_id: str, target: str) -> dict | None:
+    """Oldest unsettled run on this session when it is not us; None when free."""
+    if target.startswith("run:"):
+        return None
+    pending = store.for_target(target)
+    if not pending or pending[0]["run_id"] == run_id:
+        return None
+    return pending[0]
+
+
 def _earlier_runs(store: RunStore, run_id: str, target: str) -> bool:
     """Runs on one session dispatch in submit order: wait while an older one is unsettled."""
-    if target.startswith("run:"):
-        return False
-    pending = store.for_target(target)
-    return bool(pending) and pending[0]["run_id"] != run_id
+    return _blocking_run(store, run_id, target) is not None
 
 
 def _settle_crash(store: RunStore, run_id: str, exc: BaseException) -> None:
@@ -872,7 +879,97 @@ class Supervisor:
         return rc
 
 
+#: Caller identity a supervisor inherits from whoever submitted the run.
+_INHERITED_IDENTITY = (
+    "CORRAL_RUNTIME", "CORRAL_SESSION_ID", "PICKUP_RUNTIME", "PICKUP_SESSION_ID", "SC_RUNTIME", "SC_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID",
+)
+
+#: Longest final answer carried back to the sender; the rest stays in run result.
+REPORT_BACK_MAX_CHARS = 6000
+
+
+def report_back_text(record: dict) -> str:
+    """The notice delivered to the sender when the receiver's turn settles."""
+    receiver = record.get("session_ref") or "the receiving agent"
+    run_id = record.get("run_id")
+    execution = record.get("execution")
+    result = record.get("result") or {}
+    answer = str(result.get("final_response") or "").strip()
+    if execution == "completed" and answer:
+        if len(answer) > REPORT_BACK_MAX_CHARS:
+            answer = answer[:REPORT_BACK_MAX_CHARS].rstrip() + f"\n… (truncated; corral run result {run_id})"
+        return f"[Corral] {receiver} answered your message (run {run_id}):\n\n{answer}"
+    error = record.get("error") or {}
+    reason = error.get("message") or error.get("code") or "no final answer was recorded"
+    return f"[Corral] Your message to {receiver} ended as {execution} (run {run_id}): {reason}"
+
+
+def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
+    """Deliver a settled message run's outcome to its sending agent, once.
+
+    Agent-to-agent `send` asks for this by default (as Claude Code's agent
+    teams notify the lead with a teammate's final answer). The notice is an
+    ordinary attributed send from the receiver with no footer and no report
+    back of its own, so it can never start a loop. Failures are recorded on
+    the run and never change its outcome.
+    """
+    try:
+        record = store.get(run_id, private=True)
+    except ControlError:
+        return None
+    spec = record.get("spec") or {}
+    sender = spec.get("from_agent")
+    if not sender or not spec.get("report_back") or record.get("execution") not in SETTLED:
+        return None
+    if record.get("report_back"):
+        return record["report_back"]
+    with file_lock(store, "report:" + run_id) as owned:
+        if not owned:
+            return None
+        record = store.get(run_id, private=True)
+        if record.get("report_back"):
+            return record["report_back"]
+        import argparse
+
+        from corral import control_cli
+        from corral.runtime.registry import default_registry
+
+        receiver = record.get("session_ref") or spec.get("session_ref")
+        # This supervisor inherited the *sender's* environment (its pane
+        # identity included); the notice is the receiver speaking, so drop the
+        # inherited identity or the sender's own session looks like a self-send.
+        for name in _INHERITED_IDENTITY:
+            os.environ.pop(name, None)
+        os.environ["CORRAL_ACTOR"] = receiver or "corral-report-back"
+        args = argparse.Namespace(
+            target=sender, message=report_back_text(record), prompt_file=None,
+            from_agent=receiver or "none", no_reply_footer=True, no_report_back=True,
+            on_busy="queue", queue_timeout=3600, idempotency_key=f"report-{run_id}", compact=True)
+        try:
+            data = control_cli.cmd_send(args, registry or default_registry())["data"]
+            outcome = {"state": "sent", "run_id": data["run"]["run_id"]}
+        except ControlError as exc:
+            outcome = {"state": "failed", "code": exc.code, "message": exc.message}
+        except Exception as exc:  # noqa: BLE001 - the delivered run's outcome stays intact
+            outcome = {"state": "failed", "code": "internal_error", "message": str(exc)}
+        try:
+            store.update(run_id, {"report_back": outcome}, allow_settled=True)
+        except ControlError:
+            pass
+        return outcome
+
+
 def main(run_id: str) -> int:
+    rc = _supervise(run_id)
+    try:
+        report_back(RunStore(), run_id)
+    except Exception:  # noqa: BLE001 - reporting never changes the supervisor's exit
+        pass
+    return rc
+
+
+def _supervise(run_id: str) -> int:
     import corral
 
     # Import everything up front: a package upgrade during a long run must not
@@ -909,13 +1006,31 @@ def main(run_id: str) -> int:
                     return 0
                 if not _earlier_runs(store, run_id, target):
                     break
+                blocker = _blocking_run(store, run_id, target)
                 store.heartbeat(run_id)
                 current = store.get(run_id)
                 if current["execution"] in SETTLED:
                     return 0
+                if (
+                    blocker is not None
+                    and blocker.get("execution") == "waiting_input"
+                    and current.get("delivery") == "accepted"
+                ):
+                    # Mirrors the shared runner's admission gate (target_waiting):
+                    # a question blocks new input, so fail fast instead of
+                    # parking behind it until --queue-timeout. Nothing was sent.
+                    raise ControlError(
+                        "target_waiting_input",
+                        f"The session waits on an earlier question "
+                        f"(blocking run {blocker['run_id']}); answer it first.",
+                    )
                 if expired(spec, current):
                     raise ControlError("queue_expired", "An earlier run kept the session past --queue-timeout.")
-                store.update(run_id, {"queue_reason": "earlier_run_on_session"})
+                store.update(
+                    run_id,
+                    {"queue_reason": "earlier_run_on_session"}
+                    | ({"queued_behind": blocker["run_id"]} if blocker is not None else {}),
+                )
                 time.sleep(_BUSY_POLL)
         except Exception as exc:  # noqa: BLE001 - every exit leaves an honest terminal state
             _settle_crash(store, run_id, exc)

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sesskit.models import (  # noqa: F401 — re-export
@@ -33,6 +34,160 @@ class SessionInfo(_SessKitSessionInfo, total=False):
     attention_kind: str
     attention_token: str | None
     attention_updated_at: float
+
+
+#: Sender-attribution values produced by :func:`infer_session_origin`.
+#: ``agent`` means the session was initiated by another agent (a native
+#: subagent thread, or a Corral-relayed brief authored by a calling agent),
+#: not by a human at the keyboard. ``system`` means Corral automation noise
+#: (e.g. background title-generation prompts). ``assistant`` is not a
+#: session-level value; it only appears per message (see corral.transcript).
+SESSION_ORIGINS = ("human", "agent", "system", "unknown")
+
+
+def _relation_kind_target(relation: object) -> tuple[str | None, str | None]:
+    """Read ``(kind, target)`` off a SessKit SessionRelation or a plain dict."""
+    if isinstance(relation, dict):
+        kind = relation.get("kind")
+        target = relation.get("target")
+    else:
+        kind = getattr(relation, "kind", None)
+        target = getattr(relation, "target", None)
+    kind = kind if isinstance(kind, str) and kind else None
+    target = target if isinstance(target, str) and target else None
+    return kind, target
+
+
+def _first_user_text(messages: object) -> str | None:
+    """First non-empty user-role text from raw conversation messages, if given."""
+    if not messages:
+        return None
+    for message in messages:  # type: ignore[union-attr]
+        if isinstance(message, dict):
+            role, text = message.get("role"), message.get("text")
+        else:
+            role, text = getattr(message, "role", None), getattr(message, "text", None)
+        if role == "user" and isinstance(text, str) and text.strip():
+            return text
+    return None
+
+
+def infer_session_origin(
+    session: SessionInfo | dict,
+    messages: object = None,
+    relations: object = None,
+) -> dict:
+    """Infer who initiated a session: a human, another agent, or automation.
+
+    Pure Corral-side product attribution over SessKit normalized evidence; it
+    never re-parses native history. ``messages`` is the raw conversation
+    (``ConversationMessage`` objects or plain dicts) and ``relations`` is the
+    output of ``sesskit.relations.session_relations`` (or plain
+    ``{"kind": ..., "target": ...}`` dicts); both are optional so the cheap
+    ``list`` path can call this on scan excerpts alone while ``show`` can pass
+    the full conversation for the stronger raw-wrapper check.
+
+    Note list-path excerpts are already handoff-peeled by the host extension,
+    so an excerpt-only hit reports ``medium`` confidence; pass ``messages``
+    for the ``high`` raw-wrapper check. ``agent_id`` is always None in W1: no
+    actor records exist yet. W2 control runs will supply the submitting actor.
+    Returned dict is JSON-serializable: ``initiated_by``, ``agent_id``,
+    ``confidence`` (``high``/``medium``/``low``) and ``evidence``.
+    """
+    # Lazy imports: corral.titles imports this module, so a top-level import
+    # would be circular; both targets are stdlib-only at module load.
+    from corral.runtime.host_extension import handoff_task, split_handoff_text
+    from corral.titles import is_title_generation_prompt
+
+    evidence: list[str] = []
+    first_user = session.get("first_user_msg") or ""  # type: ignore[union-attr]
+    raw_first = _first_user_text(messages)
+    try:
+        from corral.control import parse_agent_header
+
+        header_sender = parse_agent_header(raw_first) or parse_agent_header(first_user)
+    except Exception:
+        header_sender = None
+    if header_sender is not None:
+        return {
+            "initiated_by": "agent",
+            "agent_id": header_sender,
+            "confidence": "high",
+            "evidence": ["corral.agent_header"],
+        }
+    run_text = raw_first if raw_first is not None else first_user
+    run_mark = re.search(r"\[Corral run=(\S+) message=\S+\]", run_text or "")
+    if run_mark is not None:
+        return {
+            "initiated_by": "agent",
+            "agent_id": None,
+            "confidence": "medium",
+            "evidence": [f"corral.run_marker={run_mark.group(1)}"],
+        }
+    if is_title_generation_prompt(first_user) or (
+        raw_first is not None and is_title_generation_prompt(raw_first)
+    ):
+        return {
+            "initiated_by": "system",
+            "agent_id": None,
+            "confidence": "high",
+            "evidence": ["corral.title_prompt_marker"],
+        }
+
+    for relation in relations or ():
+        kind, target = _relation_kind_target(relation)  # type: ignore[arg-type]
+        if kind == "subagent":
+            evidence.append("sesskit.relation=subagent" + (f":{target}" if target else ""))
+    thread_source = session.get("thread_source")  # type: ignore[union-attr]
+    if thread_source == "subagent":
+        evidence.append("codex.thread_source=subagent")
+    elif thread_source:
+        evidence.append(f"thread_source={thread_source}")
+    if evidence:
+        return {
+            "initiated_by": "agent",
+            "agent_id": None,
+            "confidence": "high",
+            "evidence": evidence,
+        }
+
+    if raw_first is not None and handoff_task(raw_first) is not None:
+        return {
+            "initiated_by": "agent",
+            "agent_id": None,
+            "confidence": "high",
+            "evidence": ["corral.handoff_wrapper"],
+        }
+    if first_user and handoff_task(first_user) is not None:
+        return {
+            "initiated_by": "agent",
+            "agent_id": None,
+            "confidence": "high",
+            "evidence": ["corral.handoff_wrapper"],
+        }
+    if first_user:
+        inherited, _digest = split_handoff_text(first_user)
+        if inherited:
+            return {
+                "initiated_by": "agent",
+                "agent_id": None,
+                "confidence": "medium",
+                "evidence": ["corral.handoff_wrapper_peeled"],
+            }
+
+    if (first_user or "").strip() or raw_first:
+        return {
+            "initiated_by": "human",
+            "agent_id": None,
+            "confidence": "medium",
+            "evidence": ["default:parser-filtered-user-text"],
+        }
+    return {
+        "initiated_by": "unknown",
+        "agent_id": None,
+        "confidence": "low",
+        "evidence": ["no-user-message"],
+    }
 
 
 def is_shell_session(session: SessionInfo | dict) -> bool:

@@ -8,7 +8,7 @@ import sys
 from corral import __version__
 
 _AGENT_ROOTS = {"list", "search", "show", "export", "share", "context", "plan", "describe", "diagnose"}
-_AGENT_ROOTS |= {"run", "skills"}
+_AGENT_ROOTS |= {"run", "skills", "send", "peers"}
 
 
 def _fast_version() -> None:

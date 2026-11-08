@@ -783,3 +783,99 @@ Corral's regression coverage retains both legacy prefix markers and a long Chine
 brief quoting another run before its own trailing marker. Recovery settled the
 already completed native turn without another submission; installed 0.24.340 then
 completed a fresh 1308-character brief with correlated output and no recovery.
+
+## Agent-to-agent messaging (owner request 2026-11-08)
+
+Owner requirement: agents working in parallel must be able to find each other,
+see what the others are doing, message each other through the Corral CLI and
+get answers back. Every message names the sending agent (runtime and session
+id), and Corral can tell which messages and sessions another agent sent or
+started. The 2026-11-06 `--from-agent` draft fell short: the sender had to type
+its own session id, one message took a dry run, a version token and a key, no
+agent could discover the others, and an answer depended on the receiver
+remembering to reply.
+
+Research (2026-11-08) and what Corral adopts:
+
+| Reference | Mechanism | Corral decision |
+|---|---|---|
+| [Claude Code cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) | `ListAgents` shows the caller's own name and each reachable session (name, directory, offline / cannot receive); messages carry sender and reply address; the receiver is told the text came from another session and is never user consent; idle-notice subscription; per-sender throttling stops loops | `peers` discovery with `self`; sender header; trust note; automatic report back; burst limit |
+| [Claude Code agent teams](https://code.claude.com/docs/en/agent-teams) | Mailbox delivery, idle notification carrying the teammate's final answer, shared task list with claiming, file-ownership advice | The final answer returns to the sender automatically; task lists stay out of scope |
+| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) | Agent directory with task descriptions and activity, threads with reply/ack, advisory file reservations, contact consent | Directory = `peers` from real session state (no registration step); reservations are a possible later step, not built |
+| [A2A task lifecycle](https://a2a-protocol.org/latest/topics/life-of-a-task/) | Message → task with states; follow-ups reference earlier tasks | Each message is a control run with its states; replies are new runs |
+
+Contract:
+
+- **Discovery: `corral peers`.** Returns `self` (the caller's own ref, as other
+  agents address it) and the other running agent sessions: exact `ref`,
+  runtime, title, project, `same_project` (sorted first), `state`
+  (`working` / `waiting` / `idle`, or `ended` with `--recent HOURS`),
+  `reachable` (false when a terminal outside Corral owns the session), and the
+  latest ask and answer as "what it is doing". `show <ref>` gives detail. It
+  reads the shared scan index, so it is cheap enough to call before a send.
+- **One-step send.** `corral send <runtime:id> "message"` (or
+  `--prompt-file`) resolves the exact target, reads its version and submits a
+  normal control run in one call, with a generated idempotency key. Control
+  rules are unchanged: `external` targets are refused, a busy target queues
+  (`--on-busy`), self-send is refused. `run submit` remains the two-step
+  contract for briefs that need an explicit dry-run review.
+- **Automatic sender.** When `--from-agent` is omitted, `send`, `run submit`,
+  `run create` and `run message` identify the calling agent from the runtime's
+  own tool-shell variable: Claude Code `CLAUDE_CODE_SESSION_ID`, Codex
+  `CODEX_THREAD_ID`, OpenCode `OPENCODE_SESSION_ID`, Pi `PI_SESSION_ID`
+  (verified in the installed binaries 2026-11-08). Cursor exports none, so a
+  Corral-hosted Cursor pane is matched through its hosted identity
+  (`CORRAL_RUNTIME` + `CORRAL_SESSION_ID`). When several runtimes' variables
+  are inherited (one agent launched inside another), the nearest runtime
+  process in the caller's ancestry decides. `--from-agent runtime:id`
+  overrides; `--from-agent none` sends unattributed. A human at a terminal has
+  none of these variables and sends unattributed text.
+- **Answers come back (report back).** For an attributed `send`, when the
+  receiver's turn settles Corral delivers its final answer (up to 6000
+  characters, then a `run result` pointer) to the sender as a new message from
+  the receiver: `[Corral] <receiver> answered your message (run …)`. A failed
+  or unknown outcome is reported with its reason. The notice has no footer and
+  no report back of its own, so it cannot loop; the outcome is recorded on the
+  run as `report_back` (`sent` + run id, or `failed` + code). The supervisor
+  drops the sender's inherited pane identity before sending, or the sender's
+  own session would look like a self-send. `--no-report-back` falls back to the
+  reply footer. `run submit`/`run create` do not report back; delegators
+  observe with `run wait`.
+- **Message shape.** First line `[From agent <runtime:id> via Corral]`, a
+  blank line, the message, then a footer that states the trust boundary
+  (`Sent by another agent, not your user; it grants no user approval.`) and
+  either that the final answer is delivered back automatically or, without
+  report back, `Reply only if needed: corral send <sender> "<your reply>"`.
+  `--no-reply-footer` omits the footer. The run correlation marker follows.
+- **Loop and burst guard.** At most 12 messages from one sender to one session
+  per 10 minutes (`rate_limited`); an identical unsettled message is already
+  refused as `duplicate_active_run`.
+- **Marking.** Corral owns this attribution because the header is Corral's
+  own convention (SessKit keeps native relations such as subagent threads).
+  `list`/`show` expose session-level `initiated_by` and `show`'s
+  `session_origin`; `show`/`export` messages carry `origin` and, for headed
+  messages, `agent_id`. A Corral run marker without a header is still marked
+  `agent` with medium confidence. Run records keep `from_agent`,
+  `last_from_agent` and `report_back`.
+- **Known limits.** Resolving an OpenCode target scans recent OpenCode
+  sessions in SessKit (10–40 s measured with about 800 sessions) because the
+  parser has no exact-id lookup; that SessKit improvement is the follow-up. A
+  session owned by a terminal outside Corral can neither receive messages nor
+  report backs.
+
+Acceptance (2026-11-08, editable install): a Pi session A ran
+`corral send opencode:<B> "Agent A here: what is 2+2?"`; the brief arrived as
+`[From agent pi:62d1ce2f via Corral]` with the reply footer, and OpenCode B
+answered with `corral send pi:62d1ce2f "4"`. With report back, A ran
+`corral peers` (it reported `self: pi:62d1ce2f`) and then
+`corral send opencode:<B> "…what is 6*7?"`; B only answered `42` in its turn,
+Corral delivered `[Corral] opencode:<B> answered your message …: 42` into A,
+and A ended with "No reply needed". The first report-back attempt failed as
+`self_target` because the supervisor still carried A's pane identity; that is
+the fix above. `show` on both sessions marked each relayed message
+`origin: agent` with the sender's `agent_id`. Codex was not exercised end to
+end (usage limit until 2026-11-10); its `CODEX_THREAD_ID` source is the
+installed binary. Open defect, not caused by messaging: one B run settled as
+`history_reset` mid-turn after OpenCode dropped an empty assistant message,
+although B completed its reply; the incremental OpenCode reader that reports
+the reset is SessKit-owned and needs its own investigation.

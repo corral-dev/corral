@@ -405,6 +405,7 @@ class EmbedPane(Widget):
         # 单击转发：按下时记下 (屏幕坐标, 按钮码)，松开在同一格才算单击。
         self._click_down: tuple[Offset, int] | None = None
         self._click_forwarded = False
+        self._path_click_down: Offset | None = None
 
         self._poke = threading.Event()  # 输入/滚动/resize 后立即唤醒抓帧线程补抓一帧
         self._stop = threading.Event()
@@ -1819,6 +1820,7 @@ class EmbedPane(Widget):
     def on_mouse_down(self, event: events.MouseDown) -> None:
         # 不 stop：同一次按下还要交给 Textual 做聚焦与拖拽选词。
         self._click_down = None
+        self._path_click_down = event.screen_offset if event.button == 1 and (event.ctrl or event.meta) else None
         self._mark_used()
         if event.button in (1, 2, 3) and self._click_forwardable():
             code = embed.mouse_button_code(
@@ -1832,7 +1834,12 @@ class EmbedPane(Widget):
         press 与 release 在松开时一起发出，经后台队列且不可丢弃。
         """
         down, self._click_down = self._click_down, None
+        path_down, self._path_click_down = self._path_click_down, None
         self._click_forwarded = False
+        if path_down is not None and path_down == event.screen_offset and self._reveal_path_at(event):
+            # Ctrl/Option+click on a path opens Finder; the click never reaches the agent.
+            self._click_forwarded = True
+            return
         if down is None or down[0] != event.screen_offset or not self._click_forwardable():
             return
         name = self.session_name
@@ -1848,6 +1855,20 @@ class EmbedPane(Widget):
         embed.send_mouse_sequence(name, seq, droppable=False)
         self._click_forwarded = True
         self._request_immediate_capture()
+
+    def _reveal_path_at(self, event: events.MouseUp) -> bool:
+        """Reveal the path under a modified click (TUI KB: path clicks open Finder)."""
+        from corral import path_links
+
+        y, x = int(event.y), int(event.x)
+        if not 0 <= y < self.size.height:
+            return False
+        raw = path_links.path_at(self.render_line(y).text, x)
+        if raw is None:
+            return False
+        cwd = embed._pane_cwd(self.session_name) if self.session_name and not self.dead else None
+        target = path_links.resolve(raw, cwd)
+        return target is not None and path_links.reveal(target)
 
     def on_click(self, event: events.Click) -> None:
         if self._click_forwarded:

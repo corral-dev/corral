@@ -367,6 +367,23 @@ sequenceDiagram
     M->>E: 可内嵌时后台托管并聚焦
 ```
 
+### Path clicks open Finder (owner request 2026-11-08)
+
+The owner asked that clicking a path in the Mac client or the TUI open the
+folder it is in. In the right-hand pane (live terminal and static preview),
+**Ctrl+click or Option(Alt)+click** on a path reveals it: a folder opens, a file
+is shown selected in its folder (`open -R`; Linux opens the folder with
+`xdg-open`). A plain click is unchanged, because it focuses the pane, selects
+text or goes to an agent that captures the mouse. Cmd+click is not used: the
+outer terminal (iTerm2, Ghostty, Terminal.app) keeps Cmd+click for its own
+link handling and never reports it to the app. Detection reads the clicked
+screen row (cell columns mapped through wide characters) and accepts absolute,
+`~/`, relative (resolved against the hosted pane's `pane_current_path`) and
+`:line` / `#Lline` forms. A path links only when it exists, or when its folder
+does for an explicitly pathed deleted file. Shared detection lives in
+`corral/path_links.py`; the Mac client's equivalent is in the
+[Apple UI KB](../../apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md#mac-message-copy-and-path-links-owner-request-2026-11-08).
+
 ## §1.6 鼠标指针形状
 
 跨产品的 OSC 22 终端支持矩阵、iTerm2 版本限制与不动用户鼠标的验收方法见 [共享终端 UI 指南](~/.config/agentsync/docs/TERMINAL_UI_GUIDE.md#mouse-pointer-shape-osc-22)；本节只记 corral 的实现与控件规则。

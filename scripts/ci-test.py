@@ -74,6 +74,14 @@ _existing = os.environ.get("PYTHONPATH", "")
 if _SRC not in _existing.split(os.pathsep):
     os.environ["PYTHONPATH"] = _SRC if not _existing else _SRC + os.pathsep + _existing
 
+# Tests often run inside an agent's own shell. Its session identity must not
+# leak into agent-to-agent attribution (corral.control.detect_sender), or a
+# local run and CI would build different message text.
+for _agent_var in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID",
+                   "CORRAL_RUNTIME", "CORRAL_SESSION_ID", "PICKUP_RUNTIME", "PICKUP_SESSION_ID",
+                   "SC_RUNTIME", "SC_SESSION_ID"):
+    os.environ.pop(_agent_var, None)
+
 # 单个作业的硬上限（秒）。取值要明显小于 CI 作业自身的 timeout-minutes，
 # 才能保证「先由我们打出栈」而不是「先被平台静默杀掉」。
 HANG_DUMP_SECONDS = int(os.environ.get("CORRAL_TEST_HANG_SECONDS", "1500"))

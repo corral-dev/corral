@@ -23,7 +23,7 @@ from datetime import datetime
 from corral import liveness, titles
 from corral.cache import cache_dir, get_cache, scan_period
 from corral.legacy_names import getenv
-from corral.models import format_message_time, session_key
+from corral.models import format_message_time, is_shell_session, session_key
 from corral.runtime import LaunchError, default_registry
 from corral.runtime.base import usable_cwd
 from corral.transcript import SCHEMA_ID, count_events, load_events
@@ -55,7 +55,7 @@ DEFAULT_LIST_FIELDS = (
 )
 # search 的精简字段集在 list 基础上额外保留命中方式、命中字段和相关性得分，方便调用方理解排序
 DEFAULT_SEARCH_FIELDS = DEFAULT_LIST_FIELDS + ("matched_via", "matched_fields", "score")
-DEFAULT_SHOW_FIELDS = DEFAULT_LIST_FIELDS + ("messages", "message_count_shown", "message_count_total", "control")
+DEFAULT_SHOW_FIELDS = DEFAULT_LIST_FIELDS + ("messages", "message_count_shown", "message_count_total", "control", "session_origin")  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
 
 _SUMMARY_TRIM_LEN = 120  # last_user/last_agent 摘要的硬截断长度
 
@@ -159,10 +159,10 @@ def _resolve_out_path(out: str) -> str:
 _SESSION_FIELD_NAMES = frozenset({
     "runtime", "id", "short_id", "title", "cwd", "cwd_display", "time", "mtime",
     "size_kb", "status", "status_tag", "history_path", "resumable", "resume_command",
-    "live", "keepalive", "attention", "pid", "last_user", "last_agent",
+    "live", "keepalive", "attention", "pid", "last_user", "last_agent", "initiated_by",
 })
 _SEARCH_EXTRA_FIELDS = frozenset({"score", "matched_via", "matched_fields", "snippet"})
-_SHOW_EXTRA_FIELDS = frozenset({"messages", "message_count_shown", "message_count_total", "control"})
+_SHOW_EXTRA_FIELDS = frozenset({"messages", "message_count_shown", "message_count_total", "control", "session_origin"})
 
 
 def _check_fields(fields: list[str] | None, valid: frozenset, command: str) -> None:
@@ -275,6 +275,25 @@ def _attach_attention(sessions: list[dict]) -> None:
         item["attention_kind"] = kind if kind in {"waiting", "working", "unread", "none"} else "none"
 
 
+def _session_origin_value(session: dict) -> str:
+    """Session-level sender attribution for ``session_payload``.
+
+    Pure Corral-side projection over scan excerpts (no conversation read, no
+    native re-parse). Never breaks listing: any helper failure degrades to
+    ``"unknown"``. Full evidence lives in ``show``'s ``session_origin``.
+    """
+    try:
+        from corral.models import infer_session_origin
+
+        result = infer_session_origin(session)
+        initiated = result.get("initiated_by")
+        if initiated in ("human", "agent", "system", "unknown"):
+            return initiated
+    except Exception:
+        pass
+    return "unknown"
+
+
 def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] | None = None) -> dict:
     """把内部会话结构裁剪为对 Agent 友好的输出：语义化标题、英文状态枚举。"""
     title, _ = titles.resolve_initial_title(session, cache)
@@ -304,6 +323,7 @@ def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] 
         "pid": session.get("pid"),
         "last_user": _trim(session.get("last_user_msg")),
         "last_agent": _trim(session.get("last_agent_msg")),
+        "initiated_by": _session_origin_value(session),
     }
     return _apply_fields(payload, fields)
 
@@ -510,6 +530,88 @@ def cmd_list(args, registry) -> dict:
     return _ok(data)
 
 
+def _peer_state(session: dict) -> str:
+    """working / waiting / idle for a running agent, ended once its process exits."""
+    kind = session.get("attention_kind")
+    if kind in {"working", "waiting"}:
+        return kind
+    return "idle" if session.get("live") else "ended"
+
+
+def _same_project(session: dict, here: str) -> bool:
+    """The session's directory and the caller's are the same tree (either contains the other)."""
+    if not session.get("cwd"):
+        return False
+    cwd = os.path.realpath(str(session["cwd"]))
+    return cwd == here or here.startswith(cwd.rstrip(os.sep) + os.sep) or cwd.startswith(here.rstrip(os.sep) + os.sep)
+
+
+def cmd_peers(args, registry) -> dict:
+    """Other agent sessions this agent can coordinate with, and what each is doing.
+
+    Discovery for agent-to-agent messaging (the counterpart of Claude Code's
+    ListAgents across all five runtimes): running sessions by default, each
+    with its exact reference, project, state, latest ask/answer and whether a
+    message can reach it. The caller's own session is reported as ``self``.
+    """
+    from corral.control import control_capability, detect_sender
+
+    me = detect_sender(registry)
+    here = os.path.realpath(os.getcwd())
+    project = os.path.realpath(os.path.expanduser(args.project)) if getattr(args, "project", None) else None
+    hours = getattr(args, "recent", None)
+    cutoff = time.time() - float(hours) * 3600 if hours else None
+    runtimes = list(registry)
+    cache = titles.load_cache()
+    scanned, failures, source = _list_scan(registry, runtimes, args.limit, fresh=False)
+    flat = [session for bucket in scanned.values() for session in bucket]
+    liveness.annotate(flat)
+    _attach_attention(flat)
+    peers = []
+    for runtime in runtimes:
+        for session in scanned[runtime.id]:
+            ref = session_key(session)
+            if is_shell_session(session) or not session.get("id") or ref == me:
+                continue
+            if not session.get("live") and not (cutoff and (session.get("mtime") or 0) >= cutoff):
+                continue
+            if project and not _under_project(session, project):
+                continue
+            mode, _reason = control_capability(session)
+            title, _ = titles.resolve_initial_title(session, cache)
+            peers.append({
+                "ref": ref,
+                "runtime": runtime.id,
+                "title": title,
+                "project": session.get("cwd_display") or session.get("cwd"),
+                "cwd": session.get("cwd"),
+                "same_project": _same_project(session, here),
+                "state": _peer_state(session),
+                "reachable": mode != "external",
+                "control": mode,
+                "last_user": _trim(session.get("last_user_msg")),
+                "last_agent": _trim(session.get("last_agent_msg")),
+                "mtime": session.get("mtime"),
+            })
+    peers.sort(key=lambda p: (not p["same_project"], p["state"] == "ended", -(p["mtime"] or 0)))
+    top = getattr(args, "top", None)
+    if top:
+        peers = peers[: max(1, top)]
+    data = {
+        "self": me,
+        "count": len(peers),
+        "peers": peers,
+        "next_commands": [
+            f"{_bin()} show <ref> --messages 6",
+            f'{_bin()} send <ref> "<message>"',
+        ],
+    }
+    if failures:
+        data["failed_runtimes"] = failures
+    data.update(source)
+    return _ok(data)
+
+
 def _under_project(session: dict, project: str) -> bool:
     cwd = os.path.realpath(str(session.get("cwd") or "")) if session.get("cwd") else ""
     return bool(cwd) and (cwd == project or cwd.startswith(project.rstrip(os.sep) + os.sep))
@@ -669,19 +771,25 @@ def cmd_show(args, registry) -> dict:
     payload = session_payload(session, cache, runtime)
     messages = _load_conversation(runtime, session)
     total_messages = len(messages)
+    full_messages = messages
     if not args.full:
         n = args.messages if args.messages else 20
         messages = messages[-n:]
 
-    payload["messages"] = [
-        {
-            "role": m.role,
-            "text": m.text,
-            "time": format_message_time(m.timestamp) if m.timestamp else None,
-            "mtime": m.timestamp,
+    from corral.transcript import annotate_conversation
+
+    payload["messages"] = annotate_conversation(messages)
+    try:
+        from corral.models import infer_session_origin
+
+        payload["session_origin"] = infer_session_origin(session, messages=full_messages)
+    except Exception:
+        payload["session_origin"] = {
+            "initiated_by": payload.get("initiated_by", "unknown"),
+            "agent_id": None,
+            "confidence": "low",
+            "evidence": ["origin-unavailable"],
         }
-        for m in messages
-    ]
     payload["message_count_shown"] = len(payload["messages"])
     payload["message_count_total"] = total_messages
     control = _control_target(session)
@@ -778,15 +886,20 @@ def cmd_export(args, registry) -> dict:
     for runtime, session in candidates:
         payload = session_payload(session, cache, runtime)
         messages = _load_conversation(runtime, session)
-        payload["messages"] = [
-            {
-                "role": m.role,
-                "text": m.text,
-                "time": format_message_time(m.timestamp) if m.timestamp else None,
-                "mtime": m.timestamp,
+        from corral.transcript import annotate_conversation
+
+        payload["messages"] = annotate_conversation(messages)
+        try:
+            from corral.models import infer_session_origin
+
+            payload["session_origin"] = infer_session_origin(session, messages=messages)
+        except Exception:
+            payload["session_origin"] = {
+                "initiated_by": payload.get("initiated_by", "unknown"),
+                "agent_id": None,
+                "confidence": "low",
+                "evidence": ["origin-unavailable"],
             }
-            for m in messages
-        ]
         payload["message_count_total"] = len(messages)
         sessions.append(payload)
 
@@ -1130,6 +1243,7 @@ COMMANDS = [
             "pid": "运行中会话的进程号；非运行中为 null，可用于定位/发信号给该进程",
             "last_user": "最后一条真人消息，硬截断精简，一眼看懂最近在聊什么",
             "last_agent": "助手最后一轮回复片段，硬截断精简",
+            "initiated_by": "会话发起方：human（真人）/ agent（另一 Agent 经接力或委派发起）/ system（自动化噪音）/ unknown；list 扫描摘要推断，show 的 session_origin 含证据",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
             "history_path": "历史 JSONL 文件路径",
             "scanned": "本次各运行时实际读到的会话总数（过滤前）；count=0 时先看它：为 0 说明根本没读到，不是“全量干净”",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "matched": "过滤后（扫描深度内、全部过滤条件命中）的会话数；--top 截断前",
@@ -1194,8 +1308,9 @@ COMMANDS = [
         ],
         "fields": {
             "control": "Delegation target: session_ref, control (hosted / resume / external), version for run submit --if-version",  # noqa: E501 - COMMANDS 数据表
-            "...": "与 list 命令的字段相同",
-            "messages": "[{role: user|assistant, text, time, mtime}]，按时间顺序的用户消息和每轮最终答复；time 为人类可读发送时间、mtime 为对应 Unix 时间戳，历史格式解析不出时间时两者均为 null；Monitor/task-notification 等系统注入事件已过滤，不出现在这里",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
+            "...": "与 list 命令的字段相同（含 initiated_by）",
+            "messages": "[{role: user|assistant, text, time, mtime, origin}]，按时间顺序的用户消息和每轮最终答复；time 为人类可读发送时间、mtime 为对应 Unix 时间戳，历史格式解析不出时间时两者均为 null；origin 为 human / agent / system / assistant / unknown，agent 表示该条由另一调用方 Agent 经接力或委派提交；Monitor/task-notification 等系统注入事件已过滤，不出现在这里",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
+            "session_origin": "{initiated_by, agent_id, confidence, evidence}：会话级发起方推断，与 list 的 initiated_by 同源，含判断证据",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
             "message_count_shown": "本次实际返回的消息条数",
             "message_count_total": "该会话可提取的消息总数",
             "output_path": "--out 模式下写入的 JSON 文件绝对路径",
@@ -1293,6 +1408,50 @@ COMMANDS = [
         },
     },
     {
+        "name": "peers",
+        "help": "Discover other agent sessions to coordinate with: exact ref, project, state, latest ask/answer, reachability",  # noqa: E501 - COMMANDS 数据表
+        "args": [
+            {"flags": ["--project"], "kwargs": {"help": "Only sessions under this directory (e.g. . for the current project)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--recent"], "kwargs": {"type": float, "help": "Also include stopped sessions active within this many hours"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--limit"], "kwargs": {"type": int, "default": 60, "help": "Sessions scanned per runtime"}},
+            {"flags": ["--top"], "kwargs": {"type": int, "help": "Return at most this many peers"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {
+            "self": "Your own session ref (runtime:id) as other agents address you; null when not run by an agent",  # noqa: E501 - COMMANDS 数据表
+            "peers[].ref": "Exact runtime:id for send / show",
+            "peers[].state": "working / waiting (needs an answer) / idle (running, between turns) / ended (stopped; only with --recent)",  # noqa: E501 - COMMANDS 数据表
+            "peers[].reachable": "false when a terminal outside Corral owns the session: send is refused (control external)",  # noqa: E501 - COMMANDS 数据表
+            "peers[].same_project": "Session works in your current project (sorted first)",
+            "peers[].last_user / last_agent": "Latest ask it received and its latest answer, trimmed: what it is doing now",  # noqa: E501 - COMMANDS 数据表
+        },
+    },
+    {
+        "name": "send",
+        "help": "Message another agent session in one step: the sender is named and a reply instruction is appended",  # noqa: E501 - COMMANDS 数据表
+        "risk": "write_local",
+        "args": [
+            {"flags": ["target"], "kwargs": {"help": "Complete runtime:id of the receiving session (from search/show or a received message)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["message"], "kwargs": {"nargs": "?", "help": "Message text (use --prompt-file for long or multiline text)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--prompt-file"], "kwargs": {"help": "Read the message from a UTF-8 file, or - for piped stdin"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--no-report-back"], "kwargs": {"action": "store_true", "help": "Do not deliver the receiver's final answer back to the sender; the footer then names the reply command instead"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "queue", "help": "Busy receiver: queue until idle (default), steer into the active turn, or reject"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued message may wait for a busy receiver (0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--idempotency-key"], "kwargs": {"help": "Optional stable key; an identical retry returns the original run instead of sending twice"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {
+            "run": "The control run carrying the message (run_id, delivery, execution, from_agent); observe it with run wait / run result",  # noqa: E501 - COMMANDS 数据表
+            "run.from_agent": "Sender named in the message header (runtime:id); null when the caller is not a detectable agent",  # noqa: E501 - COMMANDS 数据表
+            "target": "Resolved receiver with control mode (hosted / resume); external sessions are refused",
+            "message format": "[From agent <runtime:id> via Corral], blank line, message, then a [Corral] footer: sent by another agent (no user approval) and either 'your final answer is delivered back automatically' or, with --no-report-back, the corral send reply command",  # noqa: E501 - COMMANDS 数据表
+            "delivery_note": "Where the answer will come from: back into the sender as a new message (report back), or run wait / run result",  # noqa: E501 - COMMANDS 数据表
+            "run.report_back": "null until the receiver's turn settles, then {state: sent, run_id} or {state: failed, code, message}",  # noqa: E501 - COMMANDS 数据表
+        },
+    },
+    {
         "name": "run submit",
         "help": "Send a brief to an exact existing session (resumed if stopped) and return a durable run handle",
         "risk": "write_local",
@@ -1306,6 +1465,8 @@ COMMANDS = [
             {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued brief may wait for a busy target before expiring undispatched (0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--allow-concurrent"], "kwargs": {"action": "store_true", "help": "Allow another unsettled run with the same brief on this session"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--task-ref"], "kwargs": {"help": "Optional caller task reference stored with the run"}},
+            {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Validate and show the target/version without writing state or starting anything"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
@@ -1320,6 +1481,8 @@ COMMANDS = [
             "requested_model": "Model passed to run create; null inherits the runtime default",
             "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
             "attribution": "correlated, or mixed when other input shares the bound turn",
+            "from_agent": "Sending agent (runtime:id), detected automatically or from --from-agent; null when unattributed",  # noqa: E501 - COMMANDS 数据表
+            "last_from_agent": "Sending agent of the most recent run message; null when unattributed",
             "model_check": "match / alias_match / mismatch / unobserved after the first turn (run create --model)",
             "finality": "native (runtime recorded completion) or inferred (quiet history/screen and no working signal)",
             "supervisor": "Detached owner process: alive / pid / heartbeat_at",
@@ -1338,6 +1501,8 @@ COMMANDS = [
             {"flags": ["--prompt-file"], "kwargs": {"help": "Read the brief from a UTF-8 file, or - for piped stdin"}},
             {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--task-ref"], "kwargs": {"help": "Optional caller task reference stored with the run"}},
+            {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Validate runtime/cwd/model and show the launch without writing state or starting anything"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
@@ -1427,6 +1592,8 @@ COMMANDS = [
             {"flags": ["--prompt-file"], "kwargs": {"help": "Read the brief from a UTF-8 file, or - for piped stdin"}},
             {"flags": ["--if-version"], "kwargs": {"help": "Run version from a fresh run status"}},
             {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {"message": "message_id / action / state (queued, input_submitted, rejected, unknown)"},
@@ -1568,8 +1735,9 @@ HANDLERS = {
     "plan continue": cmd_plan_continue,
     "describe": cmd_describe,
     "diagnose": cmd_diagnose,
+    "peers": cmd_peers,
 }
-for _name in [spec["name"] for spec in COMMANDS if spec["name"].startswith("run ")]:
+for _name in [spec["name"] for spec in COMMANDS if spec["name"].startswith("run ") or spec["name"] == "send"]:
     HANDLERS[_name] = (lambda name: lambda args, registry: _control_dispatch(name, args, registry))(_name)
 
 

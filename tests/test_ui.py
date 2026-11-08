@@ -7681,6 +7681,34 @@ class EmbedMouseClickTests(unittest.IsolatedAsyncioTestCase):
                 "corral-opencode-x", "\x1b[<0;5;3M\x1b[<0;5;3m", droppable=False)
             self.assertTrue(pane.has_focus, "the same click still focuses the pane")
 
+    async def test_modified_click_on_a_path_reveals_it_instead_of_forwarding(self) -> None:
+        from rich.segment import Segment
+        from textual.strip import Strip
+
+        app, prime = self._app()
+        async with app.run_test(size=(60, 20)) as pilot:
+            pane = app.query_one(EmbedPane)
+            prime(pane)
+            rows = {2: Strip([Segment("Edited src/app.py:12 and README")])}
+            with tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "src").mkdir()
+                (Path(tmp) / "src" / "app.py").write_text("x")
+                with (mock.patch.object(EmbedPane, "render_line",
+                                        side_effect=lambda y: rows.get(y, Strip.blank(60))),
+                      mock.patch("corral.embed._pane_cwd", return_value=tmp),
+                      mock.patch("corral.path_links.reveal", return_value=True) as reveal,
+                      mock.patch("corral.embed.send_mouse_sequence") as send_mock):
+                    await pilot.click(EmbedPane, offset=(10, 2), control=True)
+                    await pilot.pause()
+                    reveal.assert_called_once_with(str(Path(tmp) / "src" / "app.py"))
+                    send_mock.assert_not_called()
+                    # A plain click keeps going to the agent; a modified click off a path does too.
+                    await pilot.click(EmbedPane, offset=(10, 2))
+                    await pilot.click(EmbedPane, offset=(2, 2), control=True)
+                    await pilot.pause()
+                    self.assertEqual(send_mock.call_count, 2)
+                    reveal.assert_called_once()
+
     async def test_drag_stays_a_corral_selection(self) -> None:
         app, prime = self._app()
         async with app.run_test(size=(60, 20)) as pilot:

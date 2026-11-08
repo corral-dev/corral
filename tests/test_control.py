@@ -852,6 +852,52 @@ class SupervisorReviewTests(unittest.TestCase):
         self.assertEqual(hub.interrupted, [])
         self.assertEqual(self.store.get(run_id)["execution"], "interrupted")
 
+    def test_queued_behind_waiting_input_fails_fast(self):
+        path = self._history()
+        Path(path).write_text("")
+        session = self._session(path)
+        blocker_id = self._submit("k-blocker", session)
+        self.store.update(blocker_id, {"delivery": "native_recorded", "execution": "waiting_input"})
+        run_id = self._submit("k-queued", session, run_key="k2")
+        hub = _FakeHub(session)
+        with (
+            mock.patch.object(control_worker, "RunStore", return_value=self.store),
+            mock.patch("corral.remote.sessions.SessionHub", return_value=hub),
+            mock.patch.object(control_worker.time, "sleep") as sleep,
+        ):
+            self.assertEqual(control_worker.main(run_id), 1)
+        sleep.assert_not_called()
+        record = self.store.get(run_id)
+        self.assertEqual(record["execution"], "failed")
+        self.assertEqual(record["delivery"], "rejected")
+        self.assertEqual(record["error"]["code"], "target_waiting_input")
+        self.assertIn(blocker_id, record["error"]["message"])
+        self.assertEqual(hub.sent, [])
+
+    def test_queued_behind_running_records_blocker(self):
+        path = self._history()
+        Path(path).write_text("")
+        session = self._session(path)
+        blocker_id = self._submit("k-blocker", session)
+        self.store.update(blocker_id, {"delivery": "input_submitted", "execution": "running"})
+        run_id = self._submit("k-queued", session, run_key="k2")
+        hub = _FakeHub(session)
+        blocker = {"run_id": blocker_id, "execution": "running"}
+        with (
+            mock.patch.object(control_worker, "RunStore", return_value=self.store),
+            mock.patch("corral.remote.sessions.SessionHub", return_value=hub),
+            mock.patch.object(control_worker, "_earlier_runs", side_effect=[True, False]),
+            mock.patch.object(control_worker, "_blocking_run", side_effect=[blocker, None]),
+            mock.patch.object(control_worker, "run_supervisor", return_value=0),
+            mock.patch.object(control_worker.time, "sleep") as sleep,
+        ):
+            self.assertEqual(control_worker.main(run_id), 0)
+        sleep.assert_called_once()
+        record = self.store.get(run_id, private=True)
+        self.assertEqual(record["queue_reason"], "earlier_run_on_session")
+        self.assertEqual(record["queued_behind"], blocker_id)
+        self.assertEqual(hub.sent, [])
+
     def _old_turn(self, path):
         _write_fixture_rows(
             path,
