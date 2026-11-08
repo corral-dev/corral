@@ -80,6 +80,13 @@ same everywhere. Palette: text `#EDE6DE`, dim `#8A817A`, dragon red
 `#BA1F14` (logo, as in the splash), gold `#D9A441` (light and highlights),
 runtime colors from the theme.
 
+The terminal around the card is a dark stage too (owner feedback 2026-11-08:
+a light terminal theme framed the dark card in white). While the card plays,
+every cell of the alternate screen, including the key-hint row and the
+resize hint, is painted with the export page color `#0C0A09`, so the terminal
+view matches the exported image. The key hint uses the card palette: keys in
+gold, labels dim. The normal screen is restored unchanged on exit.
+
 | Rows | Content |
 |---|---|
 | 0, 18 | Rounded border; the bottom border embeds `github.com/corral-dev/corral` |
