@@ -46,6 +46,9 @@ MAX_HISTORY_LINES = 10_000
 # Base64 plus the JSON envelope must fit the existing 4 MiB wire limit.
 _MAX_EXTENDED_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _COALESCE_SECONDS = 0.012
+# Only small, immediately successive bursts benefit from coalescing. The first
+# output after idle and larger bursts must not pay a fixed sleep.
+_COALESCE_MAX_PENDING_BYTES = 8 * 1024
 _TICK_SECONDS = 1.0
 _MAX_EVENT_BYTES = 256 * 1024
 # A flusher that cannot keep up drops the backlog and resnapshots instead.
@@ -352,11 +355,25 @@ class TerminalStream:
 
     # -- worker --------------------------------------------------------
 
+    def _coalesce_delay(self, last_flush_at: float, now: float) -> float:
+        """Remaining coalescing window for a small successive burst, else zero.
+
+        Waiting is based on the previous publication, not charged to every
+        flush. A first output after idle is already too late to benefit from
+        batching and goes immediately; a large burst bypasses the window too.
+        """
+        with self._buf_lock:
+            pending = self._pending_bytes
+        if pending == 0 or pending >= _COALESCE_MAX_PENDING_BYTES:
+            return 0.0
+        return max(0.0, _COALESCE_SECONDS - (now - last_flush_at))
+
     def _run(self) -> None:
         from corral.schedprio import boost_ui_worker
 
         boost_ui_worker()
         next_tick = 0.0
+        last_flush_at = 0.0
         while not self._stop.is_set():
             self._wake.wait(0.02 if self._navigation_waiting else _TICK_SECONDS)
             self._wake.clear()
@@ -373,8 +390,13 @@ class TerminalStream:
                     self._need_snapshot.clear()
                     self._snapshot()
                 else:
-                    time.sleep(_COALESCE_SECONDS)
+                    delay = self._coalesce_delay(last_flush_at, time.monotonic())
+                    if delay > 0:
+                        # A new arrival wakes this wait early and is included
+                        # in the flush immediately below.
+                        self._wake.wait(delay)
                     self._flush()
+                    last_flush_at = time.monotonic()
             except Exception:
                 continue
 

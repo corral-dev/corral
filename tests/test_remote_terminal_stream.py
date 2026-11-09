@@ -55,6 +55,28 @@ class PureHelperTests(unittest.TestCase):
         self.assertLess(data.index("\x1b[?1049h"), data.index("alt"))
 
 
+class FlushPacingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.stream = ts.TerminalStream("pi:a", "pane-a", lambda payload: None, lambda: "pane-a")
+
+    def _pending(self, count: int) -> None:
+        self.stream._on_data("%1", b"x" * count, 1)
+
+    def test_first_pending_output_after_idle_does_not_wait(self) -> None:
+        self._pending(1)
+        self.assertEqual(self.stream._coalesce_delay(0.0, 100.0), 0.0)
+
+    def test_only_small_successive_output_uses_remaining_window(self) -> None:
+        self._pending(32)
+        self.assertAlmostEqual(self.stream._coalesce_delay(100.0, 100.004), 0.008)
+        self.assertEqual(self.stream._coalesce_delay(100.0, 100.02), 0.0)
+
+    def test_large_or_empty_burst_does_not_wait(self) -> None:
+        self.assertEqual(self.stream._coalesce_delay(100.0, 100.001), 0.0)
+        self._pending(ts._COALESCE_MAX_PENDING_BYTES)
+        self.assertEqual(self.stream._coalesce_delay(100.0, 100.001), 0.0)
+
+
 class _FakeChannel:
     """Ordered responses whose barrier the test controls."""
 

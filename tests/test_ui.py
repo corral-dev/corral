@@ -6639,7 +6639,10 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 with mock.patch.object(app.screen, "_handoff_target_session", return_value=stale):
                     await pilot.press("ctrl+t")
-                    await pilot.pause()
+                    await _wait_until(
+                        lambda: len(app.screen._choices) > 2
+                        and app.screen._choices[2].available
+                    )
                 self.assertTrue(app.screen._choices[2].available)
 
     async def test_restart_session_unavailable_for_unhosted_session(self) -> None:
@@ -8219,8 +8222,8 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(pane._poke.is_set())  # noqa: SLF001
 
-    def test_continuous_control_output_uses_100ms_sampling_except_interaction(self) -> None:
-        """持续 %output 唤醒不能退回 40ms；交互窗口仍保留原有回显节奏。"""
+    def test_continuous_control_output_uses_focused_frame_budget(self) -> None:
+        """持焦格自动输出保持约 60Hz，输入即时窗口用 8ms 回显预算。"""
         import corral.ui.embed_pane as embed_pane_mod
 
         pane = EmbedPane()
@@ -8238,25 +8241,22 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
                 wait = max(0.0, interval - (now - last_capture))
                 now += wait
                 last_capture = now
-                captured.append(round(now, 2))
+                captured.append(now)
             return captured
 
-        self.assertEqual(
-            sample_times(),
-            [0.0, 0.1, 0.2, 0.3],
-            "纯自动输出必须按 100ms 取样，不能连续按旧 40ms 抓帧",
-        )
+        focused = sample_times()
+        for previous, current in zip(focused, focused[1:], strict=False):
+            self.assertAlmostEqual(current - previous, 1 / 60, places=6)
 
         pane._interactive_capture_until = 1.0  # noqa: SLF001
-        self.assertEqual(
-            sample_times(),
-            [0.0, 0.04, 0.08, 0.12],
-            "交互窗口内仍必须走 40ms 最小间隔，保证输入回显即时",
-        )
-        self.assertEqual(embed_pane_mod.AUTO_OUTPUT_CAPTURE_INTERVAL, 0.1)
+        interactive = sample_times()
+        for previous, current in zip(interactive, interactive[1:], strict=False):
+            self.assertAlmostEqual(current - previous, 0.008, places=6)
+        self.assertEqual(embed_pane_mod.AUTO_OUTPUT_CAPTURE_INTERVAL, 1 / 60)
+        self.assertEqual(embed_pane_mod.MIN_CAPTURE_INTERVAL, 0.008)
 
     def test_unfocused_live_pane_uses_background_capture_interval(self) -> None:
-        """分屏里没持焦的格子按更慢节奏抓，焦点格仍走 100ms 自动输出。"""
+        """分屏里没持焦的格子按更慢节奏抓，焦点格保持约 60Hz 自动输出。"""
         import corral.ui.embed_pane as embed_pane_mod
 
         pane = EmbedPane()
@@ -8295,7 +8295,7 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
             embed_pane_mod.UNFOCUSED_WINDOW_CAPTURE_INTERVAL,
         )
         pane.set_window_focused(True)
-        # 聚焦会打开 250ms 即时窗口（立刻恢复全速），先按 MIN 抓 …
+        # 聚焦会打开 250ms 即时窗口（立刻恢复交互回显预算），先按 MIN 抓 …
         self.assertEqual(
             pane._minimum_capture_interval(channel, time.monotonic()),  # noqa: SLF001
             embed_pane_mod.MIN_CAPTURE_INTERVAL,
