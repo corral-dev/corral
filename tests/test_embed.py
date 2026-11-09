@@ -539,6 +539,35 @@ class SessionIoTests(unittest.TestCase):
         self.assertNotIn("set -g window-size latest", config)
         self.assertRegex(config, r'set -g default-terminal "[^"]+"')
 
+    def test_tmux_config_enables_extended_keys_without_format(self):
+        from corral import keepalive
+
+        config = keepalive._tmux_config()
+        # `on` exists since tmux 3.2 (our minimum): safe in the startup file.
+        # `extended-keys-format` needs 3.5+: startup-unknown kills 3.4 servers,
+        # so keepalive._ensure_extended_keys applies it after the server is up.
+        self.assertRegex(config, r"(?m)^set -g extended-keys on$")
+        self.assertNotRegex(config, r"(?m)^set.*extended-keys-format")
+
+    def test_host_session_heals_extended_keys(self):
+        plan = LaunchPlan(argv=("claude",), cwd=None)
+        embed._manual_window_size_sockets.clear()
+        embed.keepalive._extended_keys_sockets.clear()
+        with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok), \
+                mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
+                mock.patch.object(embed.keepalive, "_ensure_extended_keys") as healed, \
+                mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
+            name = embed.host_session(plan, "claude", "0123456789abcdef", 120, 40)
+        healed.assert_called_once_with(name)
+
+    def test_resize_heals_extended_keys(self):
+        embed.keepalive._extended_keys_sockets.clear()
+        with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok), \
+                mock.patch.object(embed.keepalive, "_ensure_extended_keys") as healed:
+            embed.resize("corral-claude-01234567", 120, 40)
+        healed.assert_called_once_with("corral-claude-01234567")
+
     def test_resolve_default_terminal_prefers_known_entry(self):
         from corral import keepalive
 

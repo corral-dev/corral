@@ -184,6 +184,7 @@ def host_session(
         raise EmbedError(f"无法创建内嵌会话 {name}：{exc}") from exc
     note_alive(name)
     _ensure_manual_window_size(name)
+    keepalive._ensure_extended_keys(name)
     if osc_report and supports_theme_report():
         open_channel(name)  # 让 report_theme 依赖的"当前有客户端连接"前提尽早成立
         channel = active_channel(name)
@@ -768,6 +769,7 @@ def resize(name: str, width: int, height: int) -> None:
     if not should_resize_host(width, height):
         return
     _ensure_manual_window_size(name)
+    keepalive._ensure_extended_keys(name)
     ch = _active_channel(name)
     if ch is not None and ch.command(
             "resizew", "-t", name, "-x", str(width), "-y", str(height)):
@@ -1831,6 +1833,7 @@ def open_channel(name: str, on_output=None, on_data=None) -> ControlChannel | No
         if ch is None:
             try:
                 _ensure_manual_window_size(name)
+                keepalive._ensure_extended_keys(name)
                 ch = ControlChannel(name, on_output, on_data)
                 _channels[name] = ch
             except OSError:

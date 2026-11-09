@@ -28,6 +28,7 @@ from corral.legacy_names import (
     env_is_disabled,
     getenv,
     hosted_env_pairs,
+    socket_for_session,
     tmux_argv_for_session,
     tmux_base_argv,
 )
@@ -148,6 +149,15 @@ setw -g aggressive-resize off
 set -sg escape-time 0
 set -g history-limit 10000
 
+# Extended keys so hosted apps (Pi etc.) can tell Shift+Enter / Ctrl+Enter
+# apart from plain Enter. `on` exists since tmux 3.2 (our minimum) and is
+# safe in this startup file; `extended-keys-format csi-u` needs tmux 3.5+
+# and must NOT appear here (unknown startup options kill the server on 3.4,
+# same class of failure as window-size manual above). The format is applied
+# after the server is up, version-gated, via _ensure_extended_keys() below.
+# Pi also accepts the older xterm modifyOtherKeys format on 3.2-3.4.
+set -g extended-keys on
+
 # Detach without prefix (prefix+d still works): Ctrl-\\\\ does not deliver
 # SIGQUIT while tmux owns the terminal.
 bind-key -n C-\\\\ detach-client
@@ -178,6 +188,72 @@ def _ensure_config_file() -> str:
 
 
 ensure_config_file = _ensure_config_file
+
+
+# Servers started before the extended-keys line landed in _tmux_config() still
+# run without it; a running server never re-reads its startup file. Heal those
+# (and apply the version-gated csi-u format) after the server is up.
+_extended_keys_sockets: set[str] = set()
+
+
+def _ensure_extended_keys(name: str) -> None:
+    """Turn on tmux extended keys on the keepalive server (best effort).
+
+    Pi warns (``tmux extended-keys is off``) and collapses Shift+Enter into
+    plain Enter without this. ``extended-keys on`` only forwards extended
+    sequences to programs that request them, so apps that never ask behave
+    exactly as before.
+
+    Never put the format in the startup file: ``extended-keys-format`` needs
+    tmux 3.5+ and an unknown startup option kills the whole server on Ubuntu's
+    tmux 3.4 — same class of failure as ``window-size manual``. Applied here
+    after the server is up, where an unknown option is just a failed command:
+
+    - version >= (3, 5): ``extended-keys on`` + ``extended-keys-format csi-u``
+      (Pi's recommended format).
+    - version (3, 2)-(3, 4): ``extended-keys on`` only; Pi falls back to the
+      xterm modifyOtherKeys format those versions speak.
+    - older / unknown build: below minimum does nothing; unparseable tries
+      both (a failed post-start set never harms the server).
+
+    Cached per socket like ``embed._ensure_manual_window_size``: only success
+    is remembered, so a server that is not up yet is retried by later calls.
+    Safe to call when no server runs — a bare ``set-option`` never starts one.
+    """
+    if not name:
+        return
+    socket = socket_for_session(name)
+    if socket in _extended_keys_sockets:
+        return
+    try:
+        from corral import embed
+
+        version = embed._tmux_version()
+    except Exception:  # noqa: BLE001 - version probe must never break a launch
+        version = None
+    if version is not None and version < (3, 2):
+        _extended_keys_sockets.add(socket)
+        return
+    try:
+        proc = subprocess.run(
+            [*tmux_argv(name), "set-option", "-g", "extended-keys", "on"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=_SUBPROCESS_TIMEOUT, check=False,
+            env=tmux_env(),
+        )
+        if proc.returncode != 0:
+            return
+        if version is None or version >= (3, 5):
+            subprocess.run(
+                [*tmux_argv(name), "set-option", "-g",
+                 "extended-keys-format", "csi-u"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=_SUBPROCESS_TIMEOUT, check=False,
+                env=tmux_env(),
+            )
+        _extended_keys_sockets.add(socket)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def ensure_server() -> None:
@@ -258,6 +334,10 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
     plan, identity_env = hosted_identity(plan, runtime_id, ident)
     name = _session_name(runtime_id, ident)
     ensure_server()
+    # Attach path execs tmux with no Python left running, so heal the server's
+    # extended-keys before building the plan (no-op when no server runs yet;
+    # that server then starts from _tmux_config, which already has `on`).
+    _ensure_extended_keys(name)
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]
     if plan.cwd:
         argv += ["-c", plan.cwd]

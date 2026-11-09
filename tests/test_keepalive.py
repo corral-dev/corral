@@ -553,5 +553,93 @@ class KillTests(unittest.TestCase):
             self.assertFalse(keepalive.kill("sc-claude-abcd1234"))
 
 
+class ExtendedKeysTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from corral import embed
+
+        keepalive._extended_keys_sockets.clear()
+        embed._tmux_version.cache_clear()
+        self.addCleanup(keepalive._extended_keys_sockets.clear)
+        self.addCleanup(embed._tmux_version.cache_clear)
+
+    @staticmethod
+    def _ok(argv, **kwargs):
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    def test_config_enables_extended_keys_without_format(self) -> None:
+        config = keepalive._tmux_config()
+        self.assertRegex(config, r"(?m)^set -g extended-keys on$")
+        # csi-u 需要 tmux 3.5+：写进启动文件会在 CI 的 3.4 上直接杀死 server。
+        self.assertNotRegex(config, r"(?m)^set.*extended-keys-format")
+
+    def test_modern_tmux_sets_on_and_csi_u(self) -> None:
+        from corral import embed
+
+        with mock.patch.object(embed, "_tmux_version", return_value=(3, 8)), \
+             mock.patch.object(keepalive.subprocess, "run",
+                               side_effect=self._ok) as run:
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+        argv_list = [call.args[0] for call in run.call_args_list]
+        base = ["tmux", "-L", "corral-keepalive"]
+        self.assertIn([*base, "set-option", "-g", "extended-keys", "on"], argv_list)
+        self.assertIn([*base, "set-option", "-g",
+                       "extended-keys-format", "csi-u"], argv_list)
+
+    def test_old_tmux_sets_only_on(self) -> None:
+        from corral import embed
+
+        with mock.patch.object(embed, "_tmux_version", return_value=(3, 4)), \
+             mock.patch.object(keepalive.subprocess, "run",
+                               side_effect=self._ok) as run:
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+        argv_list = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(argv_list), 1)
+        self.assertEqual(argv_list[0][:3], ["tmux", "-L", "corral-keepalive"])
+        self.assertEqual(argv_list[0][3:], ["set-option", "-g", "extended-keys", "on"])
+
+    def test_ancient_tmux_does_nothing(self) -> None:
+        from corral import embed
+
+        with mock.patch.object(embed, "_tmux_version", return_value=(3, 1)), \
+             mock.patch.object(keepalive.subprocess, "run") as run:
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+        run.assert_not_called()
+
+    def test_unparseable_version_sets_both_best_effort(self) -> None:
+        from corral import embed
+
+        with mock.patch.object(embed, "_tmux_version", return_value=None), \
+             mock.patch.object(keepalive.subprocess, "run",
+                               side_effect=self._ok) as run:
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+        self.assertEqual(run.call_count, 2)
+
+    def test_failure_is_not_cached(self) -> None:
+        from corral import embed
+
+        failed = subprocess.CompletedProcess(args=[], returncode=1)
+        ok = subprocess.CompletedProcess(args=[], returncode=0)
+        with mock.patch.object(embed, "_tmux_version", return_value=(3, 8)), \
+             mock.patch.object(keepalive.subprocess, "run",
+                               side_effect=[failed, ok, ok]) as run:
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+            self.assertEqual(run.call_count, 1, "失败不得记住 socket")
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+            self.assertEqual(run.call_count, 3, "成功后一次补齐 on + csi-u")
+            keepalive._ensure_extended_keys("corral-pi-abcd1234")
+            self.assertEqual(run.call_count, 3, "成功后才缓存")
+
+    def test_wrap_plan_heals_server_before_attach(self) -> None:
+        plan = LaunchPlan(("pi", "--approve"), "/tmp/proj")
+        with mock.patch.object(keepalive, "_ensure_extended_keys") as healed, \
+             mock.patch.object(keepalive, "ensure_server", return_value=None):
+            from corral import pi_identity
+
+            with mock.patch.object(pi_identity, "ensure_extension_installed",
+                                   return_value={"status": "ok"}):
+                keepalive.wrap_plan(plan, "pi", "abcd1234")
+        healed.assert_called_once_with("corral-pi-abcd1234")
+
+
 if __name__ == "__main__":
     unittest.main()
