@@ -1,5 +1,5 @@
 // Execute the shipped TypeScript asset with only Pi's host API substituted.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import childProcess from "node:child_process";
 import { join } from "node:path";
@@ -56,9 +56,17 @@ const ctx = {
   shutdown: () => { shutdown = true; },
 };
 await handlers.get("session_start")({ reason: "startup" }, ctx);
+for (const name of spec.events ?? []) {
+  const handler = handlers.get(name);
+  if (handler) await handler({}, ctx);
+}
 let result;
 if (spec.target) {
   result = await handlers.get("session_before_switch")({ reason: "resume", targetSessionFile: spec.target }, ctx);
 }
 const input = await handlers.get("input")({}, ctx);
-console.log(JSON.stringify({ result, notifications, shutdown, input, pid: process.pid }));
+const claimPath = join(
+  spec.agentDir, "corral-session-identity", "claims", "v1", "contender.json",
+);
+const claim = existsSync(claimPath) ? JSON.parse(readFileSync(claimPath, "utf8")) : null;
+console.log(JSON.stringify({ result, notifications, shutdown, input, claim, pid: process.pid }));

@@ -109,6 +109,21 @@ class AttentionStoreTests(unittest.TestCase):
         )
         self.assertEqual(state.kind, "unread")
 
+    def test_pi_structured_question_uses_shared_waiting_semantics(self):
+        self.store.reconcile([_session("test", "baseline")], {})
+        state = self.store.record_event(
+            "pi",
+            "one",
+            AttentionEvidence(
+                phase="waiting",
+                activity_token="question-1",
+                question_token="native-call-1",
+                observed_at=2,
+                source="history",
+            ),
+        )
+        self.assertEqual(state.kind, "waiting")
+
     def test_first_reconcile_baselines_old_activity_but_later_session_is_unread(self):
         states = self.store.reconcile(
             [_session("claude", "old")],

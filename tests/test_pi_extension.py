@@ -200,6 +200,13 @@ class PiExtensionOwnershipTests(unittest.TestCase):
         link.symlink_to(self.target)
         self.assertEqual(self.run_extension(target=str(link))["result"], {"cancel": True})
 
+    def test_ui_prompt_does_not_create_waiting_phase(self) -> None:
+        result = self.run_extension(
+            target=str(self.current), events=["ui_prompt_start", "ui_prompt_end"],
+        )
+        self.assertEqual(result["claim"]["agentPhase"], "idle")
+        self.assertEqual(result["claim"]["agentPhaseEvent"], "startup")
+
 
 if __name__ == "__main__":
     unittest.main()

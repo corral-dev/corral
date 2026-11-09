@@ -473,7 +473,7 @@ class KimiAttentionSignalTests(unittest.TestCase):
 
 
 class PiAttentionSignalTests(unittest.TestCase):
-    def test_prompt_question_answer_and_completion(self) -> None:
+    def test_question_shaped_extension_tool_is_not_waiting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pi.jsonl"
             prompt = {
@@ -488,9 +488,9 @@ class PiAttentionSignalTests(unittest.TestCase):
                 },
             }
             _write_jsonl(path, [prompt, question])
-            waiting = inspect_session(_session("pi", path))
-            self.assertEqual(waiting.phase, "waiting")
-            self.assertIsNotNone(waiting.question_token)
+            evidence = inspect_session(_session("pi", path))
+            self.assertEqual(evidence.phase, "working")
+            self.assertIsNone(evidence.question_token)
 
             answer = {
                 "type": "message", "id": "r1", "timestamp": "2026-08-14T10:00:02Z",
@@ -603,7 +603,7 @@ class PiAttentionSignalTests(unittest.TestCase):
             self.assertEqual(evidence.phase, "working")
             self.assertEqual(evidence.source, "observer")
 
-    def test_live_claim_waiting_from_ui_prompt(self) -> None:
+    def test_legacy_ui_prompt_waiting_claim_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pi.jsonl"
             _write_jsonl(
@@ -624,9 +624,9 @@ class PiAttentionSignalTests(unittest.TestCase):
                     agent_phase_at="2026-09-13T10:00:02Z",
                 )
             )
-            self.assertEqual(evidence.phase, "waiting")
-            self.assertEqual(evidence.source, "observer")
-            self.assertIsNotNone(evidence.question_token)
+            self.assertEqual(evidence.phase, "idle")
+            self.assertEqual(evidence.source, "history")
+            self.assertIsNone(evidence.question_token)
 
     def test_newer_history_idle_beats_stale_claim_working(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

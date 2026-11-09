@@ -2,8 +2,8 @@
  * Corral 会话身份桥（corral-session-identity）
  *
  * 职责：把「当前 Pi TUI 进程正在展示哪条会话」写成本机 claim 文件，供
- * Corral 精确绑定分屏；并上报本轮 agent 相位（working / waiting / idle），
- * 供侧栏绿点/黄点在历史尚未落盘时跟上 TUI 的 Working 状态。
+ * Corral 精确绑定分屏；并上报本轮 agent 相位（working / idle），
+ * 供侧栏绿点在历史尚未落盘时跟上 TUI 的 Working 状态。
  * 不注册模型/工具/命令，不读取对话正文，不联网。只在 `ctx.mode === "tui"`
  * 时写入——SDK/RPC/JSON/print 与 subagent 都不参与。
  *
@@ -33,12 +33,12 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
 const PROTOCOL_VERSION = 1;
-const EXTENSION_VERSION = "1.2.1";
+const EXTENSION_VERSION = "1.2.2";
 const IDENTITY_DIRNAME = "corral-session-identity";
 /** 心跳间隔；Corral 读取侧按 4 个周期（60s）判定 claim 过期。 */
 const HEARTBEAT_MS = 15_000;
 
-type AgentPhase = "idle" | "working" | "waiting";
+type AgentPhase = "idle" | "working";
 
 interface ClaimIdentity {
 	sessionId: string;
@@ -75,7 +75,7 @@ export default function (pi: ExtensionAPI): void {
 	let ownershipHeld = false;
 	let blockedByOwner = false;
 	// Pi 只在整轮助手输出完成后才把 assistant 写入 jsonl；Working 期间历史常停在
-	// 用户消息。相位只来自扩展生命周期事件，不读正文，供 Corral 画绿/黄点。
+	// 用户消息。相位只来自扩展生命周期事件，不读正文，供 Corral 画绿点。
 	let agentPhase: AgentPhase = "idle";
 	let agentPhaseEvent = "startup";
 	let agentPhaseAt = new Date().toISOString();
@@ -505,21 +505,6 @@ export default function (pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		lastCtx = ctx;
 		setAgentPhase("idle", "agent_settled");
-	});
-
-	// 扩展弹出的结构化 UI 提问：黄点优先于绿点。
-	pi.on("ui_prompt_start", async (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-		lastCtx = ctx;
-		setAgentPhase("waiting", "ui_prompt_start");
-	});
-
-	pi.on("ui_prompt_end", async (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-		lastCtx = ctx;
-		const stillRunning =
-			typeof ctx.isIdle === "function" ? !ctx.isIdle() : agentPhase === "working";
-		setAgentPhase(stillRunning ? "working" : "idle", "ui_prompt_end");
 	});
 
 	pi.on("session_before_switch", async (event, ctx) => {

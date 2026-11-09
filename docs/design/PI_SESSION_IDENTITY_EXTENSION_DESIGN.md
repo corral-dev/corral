@@ -313,7 +313,9 @@ pip/pipx 卸载不会可靠执行用户目录清理钩子，因此不能假装�
 }
 ```
 
-可选字段（extension `1.1.0+`）：`agentPhase` / `agentPhaseEvent` / `agentPhaseAt` 由 `agent_start`、`agent_settled`、`ui_prompt_start` / `ui_prompt_end` 写入。Pi 在整轮助手落盘前 TUI 已显示 Working；Corral 用这些字段补绿/黄点，**仍禁止**只用进程存活冒充执行中。心跳必须原样带上当前相位，不得清空。旧 reader 忽略未知字段。
+可选字段（extension `1.1.0+`）：`agentPhase` / `agentPhaseEvent` / `agentPhaseAt` 用于在整轮助手落盘前上报 TUI Working；Corral 只用 `agent_start` 补绿点、用 `agent_settled` 回到 idle，**仍禁止**只用进程存活冒充执行中。心跳必须原样带上当前相位，不得清空。旧 reader 忽略未知字段。
+
+**2026-11-09 机主纠正（extension `1.2.2+`）**：黄点在所有运行时统一只表示「等待回答」，不得泛化成「等待用户操作」。Pi 当前没有原生提问工具，因此扩展不再订阅 `ui_prompt_start` / `ui_prompt_end`，writer 不再由这些事件发出 `waiting`；claim schema 为兼容旧扩展仍允许 `waiting`，当前 reader 忽略这类遗留相位，也不得从 `ui_prompt_*` 或同名扩展工具生成 `question_token` / `waiting`。这不改变 claim 的身份绑定、所有权锁、working 绿点或心跳语义；未来若 Pi 提供真正的原生结构化提问，仍按统一黄点语义接入，而不是给 Pi 设置永久禁黄规则。
 
 ### 5.2 示例
 
