@@ -6634,6 +6634,10 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(store, "refresh", return_value=False),
             mock.patch.object(store, "refresh_state", return_value=False),
+            # 人造托管没有真实 tmux pane：不 mock 时抓帧线程 3 次 miss 后
+            # is_alive=False 会把 pane 判死，_reveal_ended_preview 清掉 hosted，
+            # 重启项就不可用。隔离门禁的私有 socket 失败更快，所以必现。
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(140, 35)) as pilot:
                 await pilot.pause()
