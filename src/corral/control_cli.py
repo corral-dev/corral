@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from corral.control import (
+    NO_SENDER,
     build_agent_text,
     caller_identity,
     control_capability,
@@ -192,7 +193,9 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
     from_agent = resolve_sender(getattr(args, "from_agent", None), registry)
     no_footer = bool(getattr(args, "no_reply_footer", False))
     report_back = bool(getattr(args, "report_back", False)) and from_agent is not None
-    send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer, report_back=report_back)
+    explicit_none = str(getattr(args, "from_agent", "") or "").strip().lower() == NO_SENDER
+    send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer, report_back=report_back,
+                                 unattributed=explicit_none)
     store = RunStore()
     caller = caller_identity()
     existing = store.find(key)
@@ -283,8 +286,10 @@ def cmd_create(args, registry) -> dict:
 
     key = _key(args)
     from_agent = resolve_sender(getattr(args, "from_agent", None), registry)
-    prompt = build_agent_text(_read_prompt(args), from_agent=from_agent,
-                              no_footer=bool(getattr(args, "no_reply_footer", False)))
+    # The creation brief is the owner's task, not a peer message: wrapping it
+    # made a fresh session treat its first input as mail from another agent
+    # and answer the creator. Attribution stays in the run spec.
+    prompt = _read_prompt(args)
     if args.runtime not in ACTIVE_RUNTIME_IDS:
         raise ControlError("usage_error", f"Unsupported runtime: {args.runtime}", EXIT_USAGE,
                            hint="Supported runtimes: " + ", ".join(sorted(ACTIVE_RUNTIME_IDS)))

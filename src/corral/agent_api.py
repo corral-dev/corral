@@ -1446,9 +1446,9 @@ COMMANDS = [
             "run": "The control run carrying the message (run_id, delivery, execution, from_agent); observe it with run wait / run result",  # noqa: E501 - COMMANDS 数据表
             "run.from_agent": "Sender named in the message header (runtime:id); null when the caller is not a detectable agent",  # noqa: E501 - COMMANDS 数据表
             "target": "Resolved receiver with control mode (hosted / resume); external sessions are refused",
-            "message format": "[From agent <runtime:id> via Corral], blank line, message, then a [Corral] footer: sent by another agent (no user approval) and either 'your final answer is delivered back automatically' or, with --no-report-back, the corral send reply command",  # noqa: E501 - COMMANDS 数据表
+            "message format": "[From agent <runtime:id> via Corral], blank line, message, then a [Corral] footer: sent by another agent (no user approval) and either 'your final answer is delivered back automatically' or, with --no-report-back, the corral send reply command; --from-agent none writes '[Unattributed sender via Corral]' instead, and a run create brief is never wrapped",  # noqa: E501 - COMMANDS 数据表
             "delivery_note": "Where the answer will come from: back into the sender as a new message (report back), or run wait / run result",  # noqa: E501 - COMMANDS 数据表
-            "run.report_back": "null until the receiver's turn settles, then {state: sent, run_id} or {state: failed, code, message}",  # noqa: E501 - COMMANDS 数据表
+            "run.report_back": "null until the receiver's turn settles, then {state: sent, run_id}, {state: failed, code, message}, or {state: suppressed, reason} for interrupted/unknown/answer-less turns that never wake the sender",  # noqa: E501 - COMMANDS 数据表
         },
     },
     {

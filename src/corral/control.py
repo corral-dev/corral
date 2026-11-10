@@ -36,7 +36,10 @@ __all__ = [
     "MARKER_NAMESPACE",
     "MAX_PROMPT_CHARS",
     "NO_SENDER",
+    "UNATTRIBUTED_HEADER",
+    "UNATTRIBUTED_PREFIX",
     "agent_footer",
+    "is_unattributed_header",
     "build_agent_text",
     "build_result",
     "caller_identity",
@@ -151,6 +154,25 @@ AGENT_HEADER_TEMPLATE = "[From agent {sender} via Corral]"
 #: re-parsing native history.
 AGENT_HEADER_PREFIX = "[From agent "
 AGENT_HEADER_SUFFIX = " via Corral]"
+
+#: Header for an explicitly unattributed agent send (``--from-agent none``).
+#: A peer message must never be indistinguishable from a user turn: the
+#: header names the trust boundary even when the sender refuses to identify
+#: itself. ``parse_agent_header`` still returns None (no ref to reply to).
+UNATTRIBUTED_HEADER = "[Unattributed sender via Corral]"
+UNATTRIBUTED_PREFIX = "[Unattributed sender via Corral]"
+
+
+def is_unattributed_header(text: str | None) -> bool:
+    """True when the first non-blank line is Corral's unattributed header."""
+    if not isinstance(text, str) or not text:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        return stripped.startswith(UNATTRIBUTED_PREFIX)
+    return False
 
 
 def parse_agent_header(text: str | None) -> str | None:
@@ -357,22 +379,26 @@ def agent_footer(sender: str | None, *, report_back: bool = False) -> str:
 
 
 def build_agent_text(prompt: str, *, from_agent: str | None, no_footer: bool = False,
-                     report_back: bool = False) -> str:
+                     report_back: bool = False, unattributed: bool = False) -> str:
     """Prepend the attribution header and append the reply footer.
 
-    No sender means no transform (existing callers observe byte-identical
-    prompts). With a sender, the header always applies; the footer applies
-    unless ``no_footer`` opts out. The result is re-validated against the
-    shared prompt limits so an attribution wrapper can never silently push a
-    near-limit brief over the cap.
+    No sender and no ``unattributed`` means no transform (existing callers
+    observe byte-identical prompts). With a sender, the header always applies;
+    the footer applies unless ``no_footer`` opts out. ``unattributed`` marks an
+    explicit ``--from-agent none`` send so the receiver still sees a peer
+    envelope instead of text that looks like its own user. The result is
+    re-validated against the shared prompt limits so an attribution wrapper can
+    never silently push a near-limit brief over the cap.
     """
-    if not from_agent:
-        return prompt
-    header = AGENT_HEADER_TEMPLATE.format(sender=from_agent)
-    text = f"{header}\n\n{prompt}"
-    if not no_footer:
-        text = f"{text}\n\n{agent_footer(from_agent, report_back=report_back)}"
-    return _shared_validate_prompt(text)
+    if from_agent:
+        header = AGENT_HEADER_TEMPLATE.format(sender=from_agent)
+        text = f"{header}\n\n{prompt}"
+        if not no_footer:
+            text = f"{text}\n\n{agent_footer(from_agent, report_back=report_back)}"
+        return _shared_validate_prompt(text)
+    if unattributed:
+        return _shared_validate_prompt(f"{UNATTRIBUTED_HEADER}\n\n{prompt}")
+    return prompt
 
 
 # -- targets -------------------------------------------------------------------

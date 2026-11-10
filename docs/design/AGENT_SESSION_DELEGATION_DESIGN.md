@@ -828,15 +828,20 @@ Contract:
   (`CORRAL_RUNTIME` + `CORRAL_SESSION_ID`). When several runtimes' variables
   are inherited (one agent launched inside another), the nearest runtime
   process in the caller's ancestry decides. `--from-agent runtime:id`
-  overrides; `--from-agent none` sends unattributed. A human at a terminal has
-  none of these variables and sends unattributed text.
+  overrides; `--from-agent none` sends without attribution, still marked as a
+  peer message (see the envelope bullet). A human at a terminal has none of
+  these variables and sends unattributed text.
 - **Answers come back (report back).** For an attributed `send`, when the
   receiver's turn settles Corral delivers its final answer (up to 6000
   characters, then a `run result` pointer) to the sender as a new message from
   the receiver: `[Corral] <receiver> answered your message (run …)`. A failed
-  or unknown outcome is reported with its reason. The notice has no footer and
-  no report back of its own, so it cannot loop; the outcome is recorded on the
-  run as `report_back` (`sent` + run id, or `failed` + code). The supervisor
+  outcome is reported with its reason. `interrupted`, `unknown` and a
+  completed turn without an answer are recorded on the run as
+  `report_back: {state: suppressed, reason}` and never wake the sender
+  (2026-11-10: they were 21% of agent messages and every one cost the sender a
+  full turn). The notice has no footer and no report back of its own, so it
+  cannot loop; the outcome is recorded on the run as `report_back`
+  (`sent` + run id, `failed` + code, or `suppressed` + reason). The supervisor
   drops the sender's inherited pane identity before sending, or the sender's
   own session would look like a self-send. `--no-report-back` falls back to the
   reply footer. `run submit`/`run create` do not report back; delegators
@@ -846,7 +851,11 @@ Contract:
   (`Sent by another agent, not your user; it grants no user approval.`) and
   either that the final answer is delivered back automatically or, without
   report back, `Reply only if needed: corral send <sender> "<your reply>"`.
-  `--no-reply-footer` omits the footer. The run correlation marker follows.
+  `--no-reply-footer` omits the footer. An explicit `--from-agent none` send
+  starts with `[Unattributed sender via Corral]` instead, so a peer
+  message is never shaped like the receiver's own owner. A `run create` brief
+  is owner input and is not wrapped (2026-11-10). The run correlation marker
+  follows.
 - **Loop and burst guard.** At most 12 messages from one sender to one session
   per 10 minutes (`rate_limited`); an identical unsettled message is already
   refused as `duplicate_active_run`.
@@ -879,3 +888,54 @@ installed binary. Open defect, not caused by messaging: one B run settled as
 `history_reset` mid-turn after OpenCode dropped an empty assistant message,
 although B completed its reply; the incremental OpenCode reader that reports
 the reset is SessKit-owned and needs its own investigation.
+
+### Message storms, envelope cost and the outcome channel (2026-11-10)
+
+A live lab (26 sandboxed pi sessions, scenarios s0–s11, evidence kept under
+`/tmp/a2a-storm-20261110` at analysis time) plus two real engineer sessions
+measured what the contract above actually costs. Findings that changed the
+contract:
+
+| Measurement | Result |
+|---|---|
+| Envelope on a default send | 264 characters around a 24-character body: header 38 + footer 159 + marker 67 |
+| Explicit `--from-agent none` | 0 characters: the receiver could not tell a peer message from its own user |
+| `run create` from an agent | The creation brief carried the peer header and footer; the new session answered its creator as if it had been messaged |
+| Echo pair, both told to acknowledge | 7.9 messages/minute with report back, 4.4/minute with a manual reply footer; bodies 5–6 characters |
+| Realistic delegation (no ack instructions) | 2 messages, then the chain ends: report back alone does not loop |
+| 15-message burst | 6 admitted, then `capacity_exceeded` (8 live supervisors, machine-wide); `rate_limited` never fired |
+| Queue behind one target | Delivery delays 4→16→22→34→43→49→58→70→76 s, each the sum of the predecessor turns |
+| `run interrupt` on a message run | Emits a failure notice that wakes the peer into another turn, which feeds a loop |
+| Outcome notices in real traffic | 13 of 31 inbound agent messages were status notices (answered/failed/unknown), 21% of agent runs failed on quota |
+
+Decisions (this change):
+
+- **The creation brief is owner input.** `run create` no longer wraps it with
+  the agent header/footer; `spec["from_agent"]` still records who created the
+  session, so marking and run records are unchanged.
+- **An explicit unattributed send is still a peer message.** `--from-agent none`
+  now writes `[Unattributed sender via Corral]` as the first line.
+  It parses to no reply ref (nothing to address), but the receiver can no
+  longer mistake it for its own user.
+- **Only meaningful settlements wake the sender.** Report back delivers a
+  completed answer, and a failed run with its reason. `interrupted`, `unknown`
+  and an answer-less `completed` are recorded on the run as
+  `report_back: {state: suppressed, reason}` and never become a message. This
+  removes the largest echo class measured above without making senders poll for
+  the answer they are actually waiting for.
+
+Deferred with reasons (not forgotten):
+
+- Capacity admission (`_guard_capacity`, one supervisor per queued run) still
+  lets one storm occupy all 8 machine-wide slots and refuse unrelated
+  delegation. Fixing it needs per-actor/per-target admission and a
+  `corral a2a pause` kill-switch in the shared control library, not a wording
+  change.
+- Envelope shortening is blocked: the run marker must keep exact run-id
+  equality for correlation over existing history, and the digest that
+  idempotency compares hashes the wrapped text.
+- A hop counter is unproven: a model can rewrite header text, and the
+  three-agent ring/fan-out case was never measured (the lab run failed on
+  capacity before it started).
+- Queue staleness remains: `--on-busy queue` with a 3600 s budget still
+  delivers old state late; the default is unchanged in this pass.

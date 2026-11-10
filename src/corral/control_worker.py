@@ -888,6 +888,26 @@ _INHERITED_IDENTITY = (
 #: Longest final answer carried back to the sender; the rest stays in run result.
 REPORT_BACK_MAX_CHARS = 6000
 
+#: Settled outcomes that are never turned into a message to the sender.
+#: ``interrupted`` is normally the owner's own stop, ``unknown`` means the
+#: turn could not be attributed, and an answer-less ``completed`` carries no
+#: information — waking the sender for any of them is pure echo (the lab
+#: measured 21% of agent messages as this class, and each one costs a full
+#: context turn on the sender). They stay visible on the run record.
+REPORT_BACK_SUPPRESSED = {"interrupted", "unknown"}
+
+
+def report_back_suppression(record: dict) -> str | None:
+    """Why this settled run must not wake its sender, or None when it should."""
+    execution = record.get("execution")
+    if execution in REPORT_BACK_SUPPRESSED:
+        return execution
+    if execution == "completed":
+        answer = str(((record.get("result") or {}).get("final_response")) or "").strip()
+        if not answer:
+            return "empty_answer"
+    return None
+
 
 def report_back_text(record: dict) -> str:
     """The notice delivered to the sender when the receiver's turn settles."""
@@ -904,14 +924,15 @@ def report_back_text(record: dict) -> str:
     reason = error.get("message") or error.get("code") or "no final answer was recorded"
     return f"[Corral] Your message to {receiver} ended as {execution} (run {run_id}): {reason}"
 
-
 def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
     """Deliver a settled message run's outcome to its sending agent, once.
 
     Agent-to-agent `send` asks for this by default (as Claude Code's agent
     teams notify the lead with a teammate's final answer). The notice is an
     ordinary attributed send from the receiver with no footer and no report
-    back of its own, so it can never start a loop. Failures are recorded on
+    back of its own, so it can never start a loop. Only a completed answer and
+    a failed run reach the sender; interrupted, unknown and answer-less turns
+    are recorded as ``suppressed`` and never wake it. Failures are recorded on
     the run and never change its outcome.
     """
     try:
@@ -930,6 +951,14 @@ def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
         record = store.get(run_id, private=True)
         if record.get("report_back"):
             return record["report_back"]
+        suppressed = report_back_suppression(record)
+        if suppressed:
+            outcome = {"state": "suppressed", "reason": suppressed}
+            try:
+                store.update(run_id, {"report_back": outcome}, allow_settled=True)
+            except ControlError:
+                pass
+            return outcome
         import argparse
 
         from corral import control_cli

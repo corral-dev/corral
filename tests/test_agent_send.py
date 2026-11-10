@@ -101,6 +101,11 @@ class BuildAgentTextTests(unittest.TestCase):
             "Your final answer to this message is delivered back to pi:p1 automatically."))
         self.assertNotIn("corral send", text)
 
+    def test_unattributed_flag_marks_the_envelope_without_a_sender(self):
+        self.assertEqual(control.build_agent_text("hi", from_agent=None), "hi")
+        self.assertEqual(control.build_agent_text("hi", from_agent=None, unattributed=True),
+                         "[Unattributed sender via Corral]\n\nhi")
+
     def test_opt_out_keeps_header_drops_footer(self):
         text = control.build_agent_text("do it", from_agent="claude:abc", no_footer=True)
         self.assertEqual(text, "[From agent claude:abc via Corral]\n\ndo it")
@@ -225,7 +230,8 @@ class SubmitSendTests(unittest.TestCase):
         data = control_cli.cmd_submit(_submit_args(if_version=self._version(), from_agent="none"), None)["data"]
         self.assertIsNone(data["run"]["from_agent"])
         saved = RunStore().get(data["run"]["run_id"], private=True)
-        self.assertEqual(saved["spec"]["prompt"], "fix the bug")
+        self.assertEqual(saved["spec"]["prompt"], "[Unattributed sender via Corral]\n\nfix the bug")
+        self.assertTrue(control.is_unattributed_header(saved["spec"]["prompt"]))
 
     def test_send_submits_in_one_step_with_generated_key(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "me-1"
@@ -261,12 +267,14 @@ class SubmitSendTests(unittest.TestCase):
         self.assertTrue(saved["spec"]["prompt"].endswith('corral send claude:me-1 "<your reply>"'))
         self.assertNotIn("report_back", saved["spec"])
 
-    def test_unattributed_send_has_no_report_back(self):
+    def test_unattributed_send_is_marked_and_has_no_report_back(self):
         data = control_cli.cmd_send(self._send_args(), None)["data"]
         saved = RunStore().get(data["run"]["run_id"], private=True)
-        self.assertEqual(saved["spec"]["prompt"], "hi")
+        self.assertEqual(saved["spec"]["prompt"], "[Unattributed sender via Corral]\n\nhi")
         self.assertNotIn("report_back", saved["spec"])
         self.assertIsNone(data["run"]["from_agent"])
+        self.assertIsNone(control.parse_agent_header(saved["spec"]["prompt"]))
+        self.assertTrue(control.is_unattributed_header(saved["spec"]["prompt"]))
 
     def test_send_to_own_session_is_refused(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "s-1"
@@ -526,12 +534,12 @@ class ReportBackTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def _settled_send(self, execution="completed", answer="Done: 4"):
+    def _settled_send(self, execution="completed", answer="Done: 4", key="k1"):
         from corral import control_worker
 
         args = SimpleNamespace(target="claude:s-1", message="what is 2+2?", prompt_file=None,
                                from_agent="pi:p1", no_reply_footer=False, no_report_back=False,
-                               on_busy="queue", queue_timeout=3600, idempotency_key="k1", compact=False)
+                               on_busy="queue", queue_timeout=3600, idempotency_key=key, compact=False)
         run_id = control_cli.cmd_send(args, None)["data"]["run"]["run_id"]
         store = RunStore()
         store.update(run_id, {"execution": execution, "delivery": "native_recorded",
@@ -574,6 +582,18 @@ class ReportBackTests(unittest.TestCase):
         self.assertEqual(outcome["state"], "failed")
         self.assertEqual(outcome["code"], "external_session")
 
+    def test_interrupted_unknown_and_empty_outcomes_never_wake_the_sender(self):
+        for index, (execution, answer, reason) in enumerate((("interrupted", "", "interrupted"),
+                                                            ("unknown", "", "unknown"),
+                                                            ("completed", "", "empty_answer"))):
+            control_worker, store, run_id = self._settled_send(execution=execution, answer=answer,
+                                                               key=f"k-{index}")
+            with mock.patch.object(control_cli, "cmd_send") as send:
+                outcome = control_worker.report_back(store, run_id, registry="reg")
+            send.assert_not_called()
+            self.assertEqual(outcome, {"state": "suppressed", "reason": reason})
+            self.assertEqual(store.get(run_id)["report_back"], {"state": "suppressed", "reason": reason})
+
     def test_unsettled_or_unrequested_runs_are_not_reported(self):
         from corral import control_worker
 
@@ -595,6 +615,60 @@ class ReportBackTests(unittest.TestCase):
                                                 "result": {"final_response": "x" * 9000}})
         self.assertIn("corral run result run_1", text)
         self.assertLess(len(text), 6300)
+
+
+class CreateBriefEnvelopeTests(unittest.TestCase):
+    """A creation brief is owner input; only peer messages carry the envelope."""
+
+    def setUp(self):
+        _clean_agent_env(self)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmp.name) / "proj"
+        self.project.mkdir()
+        patcher = mock.patch.object(control_store, "control_home", return_value=Path(self.tmp.name) / "control")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for target, value in (("_spawn_supervisor", True), ("_supervisor_alive", True), ("_guard_capacity", None)):
+            patcher = mock.patch.object(control_cli, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        plan = SimpleNamespace(argv=["pi"], cwd=str(self.project))
+        patcher = mock.patch.object(control_cli, "fresh_plan", return_value=plan)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch("corral.embed.available", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        class _Runtime:
+            id = "pi"
+            display_name = "Pi"
+
+            def is_available(self):
+                return True
+
+        class _Registry:
+            def get(self, runtime_id):
+                return _Runtime()
+
+        self.registry = _Registry()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _args(self, **extra):
+        base = dict(runtime="pi", cwd=str(self.project), model=None, prompt="You are the peer.", prompt_file=None,
+                    from_agent="pi:creator", no_reply_footer=False, idempotency_key="create-1",
+                    dry_run=False, task_ref=None, compact=False)
+        base.update(extra)
+        return SimpleNamespace(**base)
+
+    def test_creation_brief_is_stored_verbatim_and_keeps_attribution(self):
+        data = control_cli.cmd_create(self._args(), self.registry)["data"]
+        saved = RunStore().get(data["run"]["run_id"], private=True)
+        self.assertEqual(saved["spec"]["prompt"], "You are the peer.")
+        self.assertEqual(saved["spec"]["from_agent"], "pi:creator")
+        self.assertEqual(data["run"]["from_agent"], "pi:creator")
 
 
 class PeersTests(unittest.TestCase):
