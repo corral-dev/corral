@@ -16,6 +16,8 @@ import time
 import uuid
 from pathlib import Path
 
+from agent_session_control.supervisor import file_lock
+
 from corral.control import (
     NO_SENDER,
     build_agent_text,
@@ -45,6 +47,11 @@ from corral.runtime.registry import ACTIVE_RUNTIME_IDS
 _SUPERVISOR_CONFIRM = 4.0
 _WAIT_POLL = 0.5
 _MAX_WAIT = 600
+# A2A quotas count live, unsettled runs. A target's queued runs share one
+# supervisor owner, so these bounds stop a loop before it can occupy every
+# machine-wide execution slot or generate an unbounded model-turn backlog.
+MAX_A2A_ACTOR_RUNS = 4
+MAX_A2A_TARGET_RUNS = 4
 
 
 def _bin() -> str:
@@ -87,7 +94,17 @@ def _key(args) -> str:
 def _supervisor_alive(store: RunStore, run_id: str) -> bool:
     from corral.control_worker import lock_held
 
-    return lock_held(store, "run:" + run_id)
+    if lock_held(store, "run:" + run_id):
+        return True
+    try:
+        record = store.get(run_id, private=True)
+    except ControlError:
+        return False
+    spec = record.get("spec") or {}
+    target = spec.get("session_ref") if spec.get("mode") == "submit" else None
+    # Additional runs on one target converge on its queue owner. They do not
+    # need their own process or heartbeat to be supervised.
+    return bool(target and lock_held(store, "target-supervisor:" + target))
 
 
 def _spawn_supervisor(store: RunStore, run_id: str) -> bool:
@@ -96,15 +113,18 @@ def _spawn_supervisor(store: RunStore, run_id: str) -> bool:
     logs.mkdir(parents=True, exist_ok=True, mode=0o700)
     env = {k: v for k, v in os.environ.items()
            if k not in {"CORRAL_SESSION_ID", "SC_SESSION_ID", "CORRAL_RUNTIME", "SC_RUNTIME"}}
+    record = store.get(run_id, private=True)
+    argv = [sys.executable, "-m", "corral.control_worker", run_id]
+    if (record.get("spec") or {}).get("mode") == "submit":
+        argv.append("--target-queue")
     with open(logs / f"{run_id}.log", "ab") as log:
         subprocess.Popen(
-            [sys.executable, "-m", "corral.control_worker", run_id],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             cwd=str(store.root), env=env, start_new_session=True, close_fds=True,
         )
     deadline = time.monotonic() + _SUPERVISOR_CONFIRM
     while time.monotonic() < deadline:
-        if store.get(run_id).get("supervisor"):
+        if _supervisor_alive(store, run_id):
             return True
         time.sleep(0.1)
     return False
@@ -152,19 +172,77 @@ def public_run(store: RunStore, record: dict, *, compact: bool = False) -> dict:
 # -- writes ----------------------------------------------------------------------
 
 
-def _guard_capacity(store: RunStore) -> None:
-    live = [r for r in store.unsettled() if _supervisor_alive(store, r["run_id"])]
-    if len(live) >= MAX_ACTIVE_RUNS:
-        raise ControlError("capacity_exceeded",
-                           f"{len(live)} delegated runs are already active (max {MAX_ACTIVE_RUNS}).", EXIT_CONFLICT,
-                           hint="Wait for a run to settle or interrupt one.",
-                           next_commands=[f"{_bin()} run list --top 20"])
+def _is_a2a(record: dict) -> bool:
+    # ``from_agent`` on a create run records who launched the session; the
+    # creation brief itself is owner input, not peer mail (2026-11-10).
+    return bool(record.get("a2a") or (record.get("mode") == "submit" and record.get("from_agent")))
+
+
+def _owner_key(record: dict) -> str:
+    if record.get("mode") == "submit" and record.get("session_ref"):
+        return "target:" + str(record["session_ref"])
+    return "run:" + str(record["run_id"])
+
+
+def _occupancy(records: list[dict]) -> list[dict]:
+    now = time.time()
+    grouped: dict[str, dict] = {}
+    for record in records:
+        key = _owner_key(record)
+        item = grouped.setdefault(key, {
+            "owner": key,
+            "target": record.get("session_ref"),
+            "senders": set(),
+            "runs": 0,
+            "oldest_s": 0,
+        })
+        item["runs"] += 1
+        sender = record.get("from_agent")
+        if sender:
+            item["senders"].add(sender)
+        item["oldest_s"] = max(item["oldest_s"], max(0, int(now - float(record.get("created_at") or now))))
+    return [{**item, "senders": sorted(item["senders"])} for item in grouped.values()]
+
+
+def _capacity_error(quota: str, message: str, records: list[dict]) -> ControlError:
+    return ControlError(
+        "capacity_exceeded", message, EXIT_CONFLICT,
+        hint="Wait for the existing A2A work to settle, or pause the peer channel before reviewing it.",
+        details={"quota": quota, "occupancy": _occupancy(records)},
+        next_commands=[f"{_bin()} run list --top 20", f"{_bin()} a2a status"],
+    )
+
+
+def _guard_capacity(store: RunStore, spec: dict | None = None) -> None:
+    spec = spec or {}
+    live = [record for record in store.unsettled() if _supervisor_alive(store, record["run_id"])]
+    owners = {_owner_key(record) for record in live}
+    new_owner = "target:" + str(spec.get("session_ref")) if spec.get("mode") == "submit" else None
+    if len(owners) >= MAX_ACTIVE_RUNS and new_owner not in owners:
+        raise _capacity_error(
+            "machine", f"{len(owners)} delegated execution owners are already active (max {MAX_ACTIVE_RUNS}).", live,
+        )
+    if not _is_a2a(spec):
+        return
+    sender = spec.get("from_agent") or "unattributed"
+    sender_live = [record for record in live if _is_a2a(record)
+                   and (record.get("from_agent") or "unattributed") == sender]
+    if len(sender_live) >= MAX_A2A_ACTOR_RUNS:
+        raise _capacity_error(
+            "sender", f"{sender} already has {len(sender_live)} live A2A runs (max {MAX_A2A_ACTOR_RUNS}).",
+            sender_live,
+        )
+    target = spec.get("session_ref")
+    target_live = [record for record in live if _is_a2a(record) and record.get("session_ref") == target]
+    if target and len(target_live) >= MAX_A2A_TARGET_RUNS:
+        raise _capacity_error(
+            "target", f"{target} already has {len(target_live)} live A2A runs (max {MAX_A2A_TARGET_RUNS}).",
+            target_live,
+        )
 
 
 def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, args, target: dict | None) -> dict:
     existing = store.find(key)
-    if existing is None and not getattr(args, "dry_run", False):
-        _guard_capacity(store)
     if getattr(args, "dry_run", False):
         if existing is not None and existing.pop("_digest") != digest(spec):
             raise ControlError("idempotency_conflict", "This idempotency key already identifies a different request.",
@@ -174,9 +252,27 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
                     "run": {k: planned.get(k) for k in ("run_id", "version", "mode", "runtime", "session_ref", "cwd",
                                                          "delivery", "execution", "requested_model", "from_agent")},
                     "target": target, "launch": spec.get("launch_preview")})
-    record, created = store.create(actor, key, spec, initial)
+    needs_spawn = False
+    if existing is None:
+        # Capacity and intent creation are one cross-process admission step;
+        # concurrent senders cannot both pass the same last free slot.
+        with file_lock(str(store.root), "control-admission", blocking=True):
+            _guard_capacity(store, spec)
+            if spec.get("mode") == "submit" and spec.get("session_ref"):
+                # The target owner makes its final empty-queue check under the
+                # same handoff lock. A new record therefore either joins the
+                # current owner or reliably starts the next one — never slips
+                # between an owner's last read and its lock release.
+                with file_lock(str(store.root), "target-admission:" + spec["session_ref"], blocking=True):
+                    record, created = store.create(actor, key, spec, initial)
+                    needs_spawn = created and not _supervisor_alive(store, record["run_id"])
+            else:
+                record, created = store.create(actor, key, spec, initial)
+                needs_spawn = created
+    else:
+        record, created = store.create(actor, key, spec, initial)
     confirmed = True
-    if record["execution"] not in SETTLED and not _supervisor_alive(store, record["run_id"]):
+    if record["execution"] not in SETTLED and (needs_spawn or not _supervisor_alive(store, record["run_id"])):
         confirmed = _spawn_supervisor(store, record["run_id"])
     view = public_run(store, store.get(record["run_id"]))
     data = {"status": "created" if created else "existing", "dry_run": False, "run": view, "target": target,
@@ -194,9 +290,14 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
     no_footer = bool(getattr(args, "no_reply_footer", False))
     report_back = bool(getattr(args, "report_back", False)) and from_agent is not None
     explicit_none = str(getattr(args, "from_agent", "") or "").strip().lower() == NO_SENDER
+    a2a = from_agent is not None or explicit_none
+    store = RunStore()
+    if a2a and store.a2a_paused():
+        raise ControlError("a2a_paused", "Agent-to-agent messaging is paused; resume it before sending.",
+                           EXIT_CONFLICT, hint=f"Resume with {_bin()} a2a resume; no message was created.",
+                           next_commands=[f"{_bin()} a2a status", f"{_bin()} a2a resume"])
     send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer, report_back=report_back,
                                  unattributed=explicit_none)
-    store = RunStore()
     caller = caller_identity()
     existing = store.find(key)
     if existing is not None:
@@ -255,6 +356,8 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
             "task_ref": getattr(args, "task_ref", None)}
     if from_agent is not None:
         spec["from_agent"] = from_agent
+    if a2a:
+        spec["a2a"] = True
     if report_back:
         spec["report_back"] = True
     initial = {"mode": "submit", "prompt_digest": prompt_digest, "runtime": target["runtime"],
@@ -264,6 +367,8 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
                "task_ref": spec["task_ref"], "target_control": mode}
     if from_agent is not None:
         initial["from_agent"] = from_agent
+    if a2a:
+        initial["a2a"] = True
     return _admit(store, caller["actor"], key, spec, initial, args, target)
 
 
@@ -566,7 +671,66 @@ def cmd_list(args, registry) -> dict:
     return _ok({"runs": runs, "returned": len(runs), "actor_filter": actor, "target_filter": args.target})
 
 
+def _a2a_status_data(store: RunStore) -> dict:
+    live = [record for record in store.unsettled()
+            if _is_a2a(record) and _supervisor_alive(store, record["run_id"])]
+    return {
+        **store.a2a_pause_state(),
+        "active_runs": len(live),
+        "execution_owners": len({_owner_key(record) for record in live}),
+        "occupancy": _occupancy(live),
+        "limits": {
+            "per_sender": MAX_A2A_ACTOR_RUNS,
+            "per_target": MAX_A2A_TARGET_RUNS,
+            "machine_owners": MAX_ACTIVE_RUNS,
+        },
+    }
+
+
+def cmd_a2a_status(args, registry) -> dict:
+    return _ok(_a2a_status_data(RunStore()))
+
+
+def cmd_a2a_pause(args, registry) -> dict:
+    store = RunStore()
+    store.set_a2a_paused(True, actor=caller_identity()["actor"])
+    return _ok({**_a2a_status_data(store),
+                "note": "New peer sends are refused; queued input and report-back stay deferred until resume."})
+
+
+def cmd_a2a_resume(args, registry) -> dict:
+    from corral import control_worker
+
+    store = RunStore()
+    store.set_a2a_paused(False, actor=caller_identity()["actor"])
+    recovered = []
+    warnings = []
+    for record in store.unsettled():
+        if not _is_a2a(record) or _supervisor_alive(store, record["run_id"]):
+            continue
+        if _spawn_supervisor(store, record["run_id"]):
+            recovered.append(record["run_id"])
+        else:
+            warnings.append(f"Supervisor not confirmed for {record['run_id']}.")
+    reported = []
+    for candidate in store.recent(1000, None):
+        record = store.get(candidate["run_id"], private=True)
+        spec = record.get("spec") or {}
+        if not spec.get("a2a") or not spec.get("report_back") or record.get("execution") not in SETTLED:
+            continue
+        if record.get("report_back"):
+            continue
+        outcome = control_worker.report_back(store, record["run_id"], registry=registry)
+        if outcome:
+            reported.append({"run_id": record["run_id"], **outcome})
+    data = {**_a2a_status_data(store), "recovered": recovered, "reported": reported}
+    if warnings:
+        data["warnings"] = warnings
+    return _ok(data)
+
+
 HANDLERS = {
+    "a2a status": cmd_a2a_status, "a2a pause": cmd_a2a_pause, "a2a resume": cmd_a2a_resume,
     "run submit": cmd_submit, "run create": cmd_create, "run status": cmd_status, "run events": cmd_events,
     "run wait": cmd_wait, "run result": cmd_result, "run message": cmd_message, "run answer": cmd_answer,
     "run interrupt": cmd_interrupt, "run list": cmd_list, "run recover": cmd_recover, "send": cmd_send,

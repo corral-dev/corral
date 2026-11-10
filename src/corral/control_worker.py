@@ -1,6 +1,6 @@
 """Delegated per-run supervision over Corral's hosted terminals.
 
-One process per run. The execution engine is the shared
+One active queue owner per target (and one process per fresh create). The execution engine is the shared
 :func:`agent_session_control.supervisor.run_supervisor`
 (:class:`SupervisorRunner`); Corral supplies explicit host hooks built by
 :func:`corral_hooks` from its own terminal/observer/identity machinery:
@@ -56,6 +56,10 @@ _BIND_REFRESH = 3.0
 # backstop. Tests shrink the budget through CORRAL_HISTORY_WAIT_TIMEOUT.
 _HISTORY_WAIT_TIMEOUT = 150.0
 _RUNNER_HISTORY_WAIT_MARGIN = _BIND_REFRESH
+
+
+def _a2a_spec(spec: dict) -> bool:
+    return bool(spec.get("a2a") or (spec.get("mode") == "submit" and spec.get("from_agent")))
 
 
 def _history_wait_timeout() -> float:
@@ -502,6 +506,12 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
     def prepare(session_ref: str, deadline: float):
         from corral.remote.sessions import ActionError
 
+        if _a2a_spec(spec):
+            # Pause is a delivery gate, not a failed turn: an in-flight target
+            # lock may have been acquired already, but no peer input is typed
+            # until the owner resumes the channel.
+            while store.a2a_paused():
+                time.sleep(0.2)
         key = state["binding"].get("session_ref") or session_ref
         try:
             baseline = hub.prepare_text_delivery(key, deadline)
@@ -943,6 +953,10 @@ def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
     sender = spec.get("from_agent")
     if not sender or not spec.get("report_back") or record.get("execution") not in SETTLED:
         return None
+    if _a2a_spec(spec) and store.a2a_paused():
+        # Do not persist an outcome: resume will reconsider this deferred
+        # report instead of turning a temporary kill-switch into a failure.
+        return {"state": "deferred", "reason": "a2a_paused"}
     if record.get("report_back"):
         return record["report_back"]
     with file_lock(store, "report:" + run_id) as owned:
@@ -989,13 +1003,49 @@ def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
         return outcome
 
 
-def main(run_id: str) -> int:
+def _run_and_report(run_id: str) -> int:
     rc = _supervise(run_id)
     try:
         report_back(RunStore(), run_id)
     except Exception:  # noqa: BLE001 - reporting never changes the supervisor's exit
         pass
     return rc
+
+
+def _next_target_run(store: RunStore, target: str) -> dict | None:
+    """Oldest currently unowned run on this target, in durable submit order."""
+    for record in store.for_target(target):
+        if not lock_held(store, "run:" + record["run_id"]):
+            return store.get(record["run_id"], private=True)
+    return None
+
+
+def main(run_id: str, *, target_queue: bool = False) -> int:
+    if not target_queue:
+        return _run_and_report(run_id)
+    store = RunStore()
+    record = store.get(run_id, private=True)
+    target = (record.get("spec") or {}).get("session_ref")
+    if not target:
+        return _run_and_report(run_id)
+    # Every submit may spawn a contender, but only one target queue owner
+    # drains work. Losers return immediately; the winner sees their durable
+    # records. A final submit racing shutdown either joins this loop or starts
+    # the next owner, so accepted work is never replayed or abandoned.
+    with file_lock(store, "target-supervisor:" + target) as owned:
+        if not owned:
+            return 0
+        while True:
+            # New intent is inserted under this same handoff lock. Checking
+            # here closes the last-read versus lock-release orphan race.
+            with file_lock(store, "target-admission:" + target, blocking=True):
+                current = _next_target_run(store, target)
+                if current is None:
+                    return 0
+                spec = current.get("spec") or {}
+                if _a2a_spec(spec) and store.a2a_paused():
+                    return 0
+            _run_and_report(current["run_id"])
 
 
 def _supervise(run_id: str) -> int:
@@ -1019,6 +1069,8 @@ def _supervise(run_id: str) -> int:
             return 0
         store.update(run_id, {"supervisor_version": corral.__version__})
         spec = record["spec"]
+        if _a2a_spec(spec) and store.a2a_paused():
+            return 0
         target = spec.get("session_ref") or ("run:" + run_id)
         hub = SessionHub()
         hooks, state = corral_hooks(store, run_id, hub)
@@ -1071,6 +1123,9 @@ def _supervise(run_id: str) -> int:
     # the lock executes exactly once (target lock plus settled re-checks), and
     # the loser returns 0 under the pre-existing singleton semantic. There is
     # exactly one execution loop: the shared runner's.
+    if _a2a_spec(spec) and store.a2a_paused():
+        state["locks"].close()
+        return 0
     try:
         rc = run_supervisor(store, run_id, hooks, marker_namespace="Corral", history_wait=_runner_history_wait())
         finalize_run(store, run_id, state)
@@ -1086,7 +1141,9 @@ def _supervise(run_id: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or not sys.argv[1].startswith("run_"):
+    if len(sys.argv) not in (2, 3) or not sys.argv[1].startswith("run_"):
+        raise SystemExit(2)
+    if len(sys.argv) == 3 and sys.argv[2] != "--target-queue":
         raise SystemExit(2)
     os.environ.setdefault("CORRAL_CONTROL_SUPERVISOR", "1")
-    raise SystemExit(main(sys.argv[1]))
+    raise SystemExit(main(sys.argv[1], target_queue=len(sys.argv) == 3))

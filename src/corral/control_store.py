@@ -125,6 +125,34 @@ class RunStore(_SharedRunStore):
     def __init__(self, root: Path | str | None = None):
         super().__init__(store_root(root), namespace=STORE_NAMESPACE, supervisor=SUPERVISOR)
 
+    def a2a_pause_state(self) -> dict:
+        """Read the A2A kill-switch without creating or migrating storage.
+
+        The existing audit log is already the durable, append-only record of
+        owner actions. Its latest A2A event is the current switch state; no
+        product-specific table or duplicated shared schema is needed.
+        """
+        empty = {"paused": False, "updated_at": None}
+        if not self.exists():
+            return empty
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT action,timestamp FROM audit WHERE target='a2a' "
+                "AND action IN ('a2a.pause','a2a.resume') ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return empty
+        return {"paused": row["action"] == "a2a.pause", "updated_at": row["timestamp"]}
+
+    def a2a_paused(self) -> bool:
+        return bool(self.a2a_pause_state().get("paused"))
+
+    def set_a2a_paused(self, paused: bool, *, actor: str) -> dict:
+        """Append the switch event and its actor/action/timestamp atomically."""
+        with self.connection(write=True) as conn:
+            self._audit(conn, actor, "a2a.pause" if paused else "a2a.resume", "a2a")
+        return self.a2a_pause_state()
+
     @contextmanager
     def connection(self, *, write: bool = False):
         if write:

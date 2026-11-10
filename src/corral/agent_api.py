@@ -1452,6 +1452,30 @@ COMMANDS = [
         },
     },
     {
+        "name": "a2a status",
+        "help": "Show the A2A kill-switch, live sender/target occupancy and capacity limits",
+        "risk": "read",
+        "args": [{"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}}],
+        "fields": {"paused": "True while peer sends and deferred delivery are stopped",
+                   "occupancy": "Live execution owners, targets, senders, queued run counts and oldest age"},
+    },
+    {
+        "name": "a2a pause",
+        "help": "Stop new peer sends and defer queued A2A input/report-back without failing accepted work",
+        "risk": "write",
+        "args": [{"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}}],
+        "fields": {"paused": "True after the switch commits", "note": "What remains deferred until resume"},
+    },
+    {
+        "name": "a2a resume",
+        "help": "Resume A2A messaging, recover unsettled queues and reconsider deferred report-back",
+        "risk": "write",
+        "args": [{"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}}],
+        "fields": {"paused": "False after the switch commits",
+                   "recovered": "Run ids whose supervisor was restarted",
+                   "reported": "Deferred report-back outcomes reconsidered after resume"},
+    },
+    {
         "name": "run submit",
         "help": "Send a brief to an exact existing session (resumed if stopped) and return a durable run handle",
         "risk": "write_local",
@@ -1737,7 +1761,8 @@ HANDLERS = {
     "diagnose": cmd_diagnose,
     "peers": cmd_peers,
 }
-for _name in [spec["name"] for spec in COMMANDS if spec["name"].startswith("run ") or spec["name"] == "send"]:
+for _name in [spec["name"] for spec in COMMANDS
+              if spec["name"].startswith("run ") or spec["name"].startswith("a2a ") or spec["name"] == "send"]:
     HANDLERS[_name] = (lambda name: lambda args, registry: _control_dispatch(name, args, registry))(_name)
 
 

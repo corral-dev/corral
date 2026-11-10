@@ -924,13 +924,49 @@ Decisions (this change):
   removes the largest echo class measured above without making senders poll for
   the answer they are actually waiting for.
 
+### Admission, target queues and the A2A kill-switch (2026-11-11)
+
+The owner asked to continue the storm fix after also correcting the Mac
+client's catalog search. Capacity and pause are Corral product policy, so this
+change stays in `control_cli` / `control_worker` over the shared store and
+locks; AgentSessionControl needs no second policy engine or release.
+
+- At most four live, unsettled A2A runs per sender and four per target. The
+  machine-wide eight-owner ceiling remains, but queued runs on one target
+  share one owner instead of consuming one slot each. Capacity errors include
+  the sender/target occupancy and oldest age so another actor's ordinary
+  create remains available during a storm.
+- One target-queue supervisor drains that session's runs in submission order.
+  Additional submits converge on its `target-supervisor:` lock; they do not
+  each become another long-lived supervisor. Per-run locks still prove actual
+  execution ownership, and queue timeout/finality semantics stay unchanged.
+- `corral a2a pause` rejects new peer sends before a run is created. Paused
+  work does not dispatch terminal input or report back; an already delivered
+  turn may settle, but its outcome stays deferred. `corral a2a resume` restores
+  supervision and deferred outcomes. Ordinary owner `run submit` / `run create`
+  is not an A2A message and is not blocked by this switch.
+- Pause state and its actor/action/timestamp audit commit in the same SQLite
+  transaction. Dead supervisors do not occupy quota; existing `run recover`
+  remains the explicit recovery path for stale unsettled records. The switch
+  is derived from the latest existing audit event, not a duplicated
+  product-owned schema. A target-admission handoff lock also closes the
+  last-empty-check/new-submit race that could otherwise orphan accepted work.
+
+Verification: the complete CLI gate runs 3181 tests with zero failures (3
+skipped). The disposable `/tmp/a2a-storm-continuation-20261111-live2` lab
+passes all 30 real-runtime checks: four sends are admitted and the fifth is
+refused with named occupancy; `a2a status` shows four runs but one target
+owner; an unrelated fresh session completes; pause rejects a new send;
+resume drains all four accepted messages to `completed`; and a deferred
+answer is delivered to its lab sender after resume. No model connection
+failures occurred in the final lab. An earlier isolated OpenCode launch
+failed with `ECONNREFUSED` and is not counted as runtime evidence; the
+Pi/OpenCode report-back interoperability evidence from `d347165` remains
+separate. Envelope shortening, queue-default staleness, hop/fan-out and the
+observability additions above are not claimed as fixed by this change.
+
 Deferred with reasons (not forgotten):
 
-- Capacity admission (`_guard_capacity`, one supervisor per queued run) still
-  lets one storm occupy all 8 machine-wide slots and refuse unrelated
-  delegation. Fixing it needs per-actor/per-target admission and a
-  `corral a2a pause` kill-switch in the shared control library, not a wording
-  change.
 - Envelope shortening is blocked: the run marker must keep exact run-id
   equality for correlation over existing history, and the digest that
   idempotency compares hashes the wrapped text.
