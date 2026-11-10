@@ -6639,9 +6639,13 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 with mock.patch.object(app.screen, "_handoff_target_session", return_value=stale):
                     await pilot.press("ctrl+t")
+                    # Gate runs six shards plus other lanes on one Mac; the modal
+                    # can take longer than the default 5s to mount. Poll longer
+                    # here instead of failing the release on CI load.
                     await _wait_until(
                         lambda: len(app.screen._choices) > 2
-                        and app.screen._choices[2].available
+                        and app.screen._choices[2].available,
+                        tries=1500,
                     )
                 self.assertTrue(app.screen._choices[2].available)
 
