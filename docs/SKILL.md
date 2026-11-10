@@ -365,7 +365,9 @@ answers and failures wake the sender once; interrupted, unknown and answer-less
 turns stay on the run without waking it. At most four live A2A runs per sender
 and four per target are admitted (`capacity_exceeded`, with occupancy); one
 target queue drains its messages in order instead of starting a supervisor per
-message. The older 12-per-10-minute burst guard still applies (`rate_limited`).
+message. `send` defaults to `--on-busy reject`; explicit `--on-busy queue`
+defaults to 120 seconds and expiry stays on the run without waking the sender.
+The older 12-per-10-minute burst guard still applies (`rate_limited`).
 `corral a2a status` shows the switch and occupancy. `corral a2a pause` refuses
 new peer sends and defers queued input and report-back without failing accepted
 work; `corral a2a resume` recovers the queues and deferred outcomes. Ordinary

@@ -916,6 +916,8 @@ def report_back_suppression(record: dict) -> str | None:
         answer = str(((record.get("result") or {}).get("final_response")) or "").strip()
         if not answer:
             return "empty_answer"
+    if execution == "failed" and (record.get("error") or {}).get("code") == "queue_expired":
+        return "queue_expired"
     return None
 
 
@@ -988,7 +990,7 @@ def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
         args = argparse.Namespace(
             target=sender, message=report_back_text(record), prompt_file=None,
             from_agent=receiver or "none", no_reply_footer=True, no_report_back=True,
-            on_busy="queue", queue_timeout=3600, idempotency_key=f"report-{run_id}", compact=True)
+            on_busy="queue", queue_timeout=120, idempotency_key=f"report-{run_id}", compact=True)
         try:
             data = control_cli.cmd_send(args, registry or default_registry())["data"]
             outcome = {"state": "sent", "run_id": data["run"]["run_id"]}

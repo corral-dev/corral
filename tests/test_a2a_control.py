@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from corral import control_cli, control_store, control_worker
+from corral import agent_api, control_cli, control_store, control_worker
 from corral.control_store import ControlError, RunStore
 
 
@@ -41,6 +41,27 @@ class A2AControlTests(unittest.TestCase):
             spec["report_back"] = True
         record, _ = self.store.create("test", key, spec, initial)
         return self.store.get(record["run_id"], private=True)
+
+    def test_send_defaults_reject_and_explicit_queue_is_bounded(self):
+        args = agent_api.build_parser().parse_args(["send", "claude:target", "hello"])
+        self.assertEqual(args.on_busy, "reject")
+        self.assertEqual(args.queue_timeout, 120)
+        submit_args = agent_api.build_parser().parse_args([
+            "run", "submit", "claude:target", "--prompt", "owner task", "--idempotency-key", "owner-1",
+        ])
+        self.assertEqual(submit_args.on_busy, "queue")
+        self.assertEqual(submit_args.queue_timeout, 3600)
+
+    def test_queue_expiry_stays_on_the_run_without_waking_the_sender(self):
+        run = self._run("expired", report_back=True)
+        self.store.update(run["run_id"], {
+            "execution": "failed", "delivery": "rejected",
+            "error": {"code": "queue_expired", "message": "stale after 120s"},
+        })
+        with mock.patch.object(control_cli, "cmd_send") as send:
+            outcome = control_worker.report_back(self.store, run["run_id"], registry=None)
+        self.assertEqual(outcome, {"state": "suppressed", "reason": "queue_expired"})
+        send.assert_not_called()
 
     def test_create_attribution_is_not_peer_mail(self):
         self.assertFalse(control_cli._is_a2a({"mode": "create", "from_agent": "pi:creator"}))

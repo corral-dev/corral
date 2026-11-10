@@ -1437,8 +1437,8 @@ COMMANDS = [
             {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--no-report-back"], "kwargs": {"action": "store_true", "help": "Do not deliver the receiver's final answer back to the sender; the footer then names the reply command instead"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "queue", "help": "Busy receiver: queue until idle (default), steer into the active turn, or reject"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued message may wait for a busy receiver (0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "reject", "help": "Busy receiver: reject (default), queue explicitly, or steer into the active turn"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 120, "help": "Seconds a queued message may wait for a busy receiver (default 120; 0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--idempotency-key"], "kwargs": {"help": "Optional stable key; an identical retry returns the original run instead of sending twice"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],

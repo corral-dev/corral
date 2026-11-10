@@ -952,8 +952,9 @@ locks; AgentSessionControl needs no second policy engine or release.
   product-owned schema. A target-admission handoff lock also closes the
   last-empty-check/new-submit race that could otherwise orphan accepted work.
 
-Verification: the complete CLI gate runs 3181 tests with zero failures (3
-skipped). The disposable `/tmp/a2a-storm-continuation-20261111-live2` lab
+Verification: the complete CLI gate runs 3183 tests with zero failures (3
+skipped). Parser coverage proves the new `send` defaults and the queue-expiry
+regression proves no report-back message is emitted. The disposable `/tmp/a2a-storm-continuation-20261111-live2` lab
 passes all 30 real-runtime checks: four sends are admitted and the fifth is
 refused with named occupancy; `a2a status` shows four runs but one target
 owner; an unrelated fresh session completes; pause rejects a new send;
@@ -962,8 +963,18 @@ answer is delivered to its lab sender after resume. No model connection
 failures occurred in the final lab. An earlier isolated OpenCode launch
 failed with `ECONNREFUSED` and is not counted as runtime evidence; the
 Pi/OpenCode report-back interoperability evidence from `d347165` remains
-separate. Envelope shortening, queue-default staleness, hop/fan-out and the
-observability additions above are not claimed as fixed by this change.
+separate. Envelope shortening, hop/fan-out and the observability additions
+above are not claimed as fixed by this change.
+
+### Queue defaults and expiry (S4, 2026-11-11)
+
+The original one-hour default let stale state arrive long after it was useful
+and could wake another full turn. `corral send` now defaults to
+`--on-busy reject`. An explicit `--on-busy queue` has a 120-second default
+budget; callers can still choose another timeout deliberately. Queue expiry
+never dispatches input and is recorded as `report_back: {state: suppressed,
+reason: queue_expired}` instead of waking the sender. Completed answers and
+other genuine failures retain their existing report-back behavior.
 
 Deferred with reasons (not forgotten):
 
@@ -973,5 +984,5 @@ Deferred with reasons (not forgotten):
 - A hop counter is unproven: a model can rewrite header text, and the
   three-agent ring/fan-out case was never measured (the lab run failed on
   capacity before it started).
-- Queue staleness remains: `--on-busy queue` with a 3600 s budget still
-  delivers old state late; the default is unchanged in this pass.
+- Hop/fan-out evidence and the additional chain/token observability views
+  remain open; this change does not add a new UI surface.
