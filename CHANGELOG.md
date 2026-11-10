@@ -6,6 +6,22 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Agent-to-agent messaging: `corral peers` lists other running agents (same project first, with state and reachability), and `corral send <runtime:id> "msg"` delivers a one-step attributed message whose final answer is reported back to the sender; agent-sent messages are marked in show/export.
+- TUI: Ctrl/Option-click a path in the right pane to reveal it in Finder (folders open, files selected); relative paths resolve against the hosted pane's directory.
+- Focused terminal is more responsive: the focused pane renders at display cadence with faster input echo, and remote terminal output publishes immediately after idle and for large bursts.
+- Pi waiting attention is reported correctly, and hosted sessions gain tmux extended-key (CSI-u) support on newer tmux.
+
+### 简体中文
+
+- 助手互发消息：`corral peers` 列出其他运行中的助手（同项目优先，带状态与可达性），`corral send <运行时:id> "消息"` 一步送达带署名消息，对方最终答复会自动回传给发送方；show/export 会标出助手发送的消息。
+- TUI：右栏按住 Ctrl/Option 点路径可在 Finder 中定位（文件夹打开，文件选中）；相对路径按所在托管格目录解析。
+- 聚焦终端更跟手：聚焦格按显示节奏渲染、输入回显更快，远端终端输出在空闲后首包与大包直接下发不再固定等待。
+- Pi 等待回答的关注提示已修正；新版 tmux 下托管会话支持扩展按键（CSI-u）。
+
 ## 0.24.361
 
 ### English
