@@ -109,6 +109,7 @@ class PushNotifier:
         # Throttle: throttle_key -> (ts, round_key). Same-round repeats within
         # 120s are suppressed; a new completion (new round) escapes the old window.
         self._last_sent: dict[str, tuple[float, str]] = {}
+        self._chatter_last: dict[str, float] = {}
         # Sent set: (session_key, completion_id, kind, device_id) -> timestamp.
         # Persisted; no resend after restart. Legacy keys without a device suffix
         # are honored read-only (no upgrade resend storm).
@@ -162,6 +163,28 @@ class PushNotifier:
             previous != sesskit_titles.STATUS_ABORTED or previous == current
         ):
             self._emit(session, kind=abort_kind(session))
+
+    def on_agent_chatter(self, alert: dict) -> None:
+        """Rate-limited A2A hot-spot alert over the existing completion channel."""
+        sender = str(alert.get("sender") or "unattributed")
+        target = str(alert.get("target") or "unbound")
+        pair = f"{sender} ↔ {target}"
+        now = time.time()
+        if now - self._chatter_last.get(pair, 0.0) < 600:
+            return
+        self._chatter_last[pair] = now
+        tokens = int(alert.get("cache_read_tokens") or 0)
+        token_text = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+        window_start = int(now // 600 * 600)
+        self._emit({
+            "key": f"a2a:{pair}",
+            "title": "Agent chatter",
+            "runtime": "corral",
+            "cwd_display": "",
+            "completion_id": f"chatter:{pair}:{window_start}",
+            "status": "completed",
+            "last_agent": f"{pair} · {int(alert.get('messages') or 0)} msgs / 3 min · ~{token_text} cache-read tokens",
+        }, kind=_KIND_COMPLETED)
 
     @staticmethod
     def _round_key(session: dict, kind: str) -> str:

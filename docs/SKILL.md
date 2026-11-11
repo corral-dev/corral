@@ -351,8 +351,8 @@ your own ref as `self`, then each peer's exact `ref`, project
 its latest ask/answer, i.e. what it is doing (`show <ref>` for more).
 `corral send <runtime:id> "message"` (or `--prompt-file`) delivers a message in
 one call, with no dry run, version token or key. Corral names you as the
-sender automatically, so the receiver sees `[From agent <you> via Corral]`, the
-message and a footer saying it came from another agent, not its user. When the
+sender automatically, so the receiver sees `[from <you> · peer, not user]`
+(the historical W2 header remains parsed), followed by the message. When the
 receiver's turn ends, its final answer arrives back in your session as a new
 message (`[Corral] <ref> answered your message …`); you do not poll.
 `--no-report-back` asks for an explicit reply instead (the footer then names
@@ -371,8 +371,14 @@ The older 12-per-10-minute burst guard still applies (`rate_limited`).
 `corral a2a status` shows the switch and occupancy. `corral a2a pause` refuses
 new peer sends and defers queued input and report-back without failing accepted
 work; `corral a2a resume` recovers the queues and deferred outcomes. Ordinary
-owner `run submit` / `run create` is not blocked by this A2A switch.
-`list`/`show` report `initiated_by` (and `show`'s `session_origin`), and every
+owner `run submit` / `run create` is not blocked by this A2A switch. Replies
+consume a parent run's grant once and default to a four-hop chain budget
+(`chain_budget_exhausted`); use `--reply-to <run_id>` for an explicit parent or
+`--new-chain` for a consolidated independent brief. `run list` exposes
+`chain_id` / `parent_run_id` / `hop`, `a2a status` shows active chains, and
+`a2a ledger [--hours N]` projects pair/hour messages, turns, queue seconds and
+token usage from the existing run records. `list`/`show` report `initiated_by`
+(and `show`'s `session_origin`), and every
 `show`/`export` message carries `origin` plus `agent_id` for messages another
 agent sent.
 

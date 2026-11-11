@@ -786,6 +786,8 @@ class SessionHub:
         # must persist before notifying (settle window).
         self._pending_abort: dict[str, tuple[float, str]] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
+        self._chatter_hook = None  # A2A pair hot spots; PushNotifier owns device dedup.
+        self._chatter_last: dict[tuple[str, str], float] = {}
         # Refresh loop -> state loop handoff; the state loop alone publishes.
         self._state_wake = threading.Event()
         self._scan_results_lock = threading.Lock()
@@ -855,6 +857,23 @@ class SessionHub:
         """注册 SessKit status_tag 变化回调（已完成 / 已中断 → 系统通知）。"""
         self._status_hook = hook
 
+    def set_chatter_hook(self, hook) -> None:
+        self._chatter_hook = hook
+
+    def _check_chatter(self) -> None:
+        if self._chatter_hook is None:
+            return
+        from corral.control_cli import a2a_chatter_alerts
+        from corral.control_store import RunStore
+
+        now = time.time()
+        for alert in a2a_chatter_alerts(RunStore()):
+            pair = (alert["sender"], alert["target"])
+            if now - self._chatter_last.get(pair, 0.0) < 600:
+                continue
+            self._chatter_last[pair] = now
+            self._chatter_hook(alert)
+
     # -- 后台循环 ---------------------------------------------------------
 
     def _search_index(self):
@@ -910,6 +929,7 @@ class SessionHub:
         watcher = self._history_watcher
         last_scan = time.monotonic()  # start() just loaded
         last_title_poll = last_scan
+        last_chatter = last_scan
         arrival_seen = self._watcher_arrivals(watcher)
         arrival_until = 0.0
         index_stamp = _scan_index_stamp()
@@ -959,6 +979,9 @@ class SessionHub:
                     self._reclaim_inactive_hosts()
                     title_keys.update(self.store.poll_title_updates())
                     last_title_poll = time.monotonic()
+                if now - last_chatter >= 60:
+                    self._check_chatter()
+                    last_chatter = now
                 if changed or title_keys:
                     with self._scan_results_lock:
                         self._scan_changed = self._scan_changed or changed

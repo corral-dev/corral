@@ -990,12 +990,16 @@ def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
         args = argparse.Namespace(
             target=sender, message=report_back_text(record), prompt_file=None,
             from_agent=receiver or "none", no_reply_footer=True, no_report_back=True,
+            reply_to=run_id, new_chain=False,
             on_busy="queue", queue_timeout=120, idempotency_key=f"report-{run_id}", compact=True)
         try:
             data = control_cli.cmd_send(args, registry or default_registry())["data"]
             outcome = {"state": "sent", "run_id": data["run"]["run_id"]}
         except ControlError as exc:
-            outcome = {"state": "failed", "code": exc.code, "message": exc.message}
+            if exc.code in {"chain_budget_exhausted", "reply_already_consumed", "invalid_reply_parent"}:
+                outcome = {"state": "suppressed", "reason": exc.code}
+            else:
+                outcome = {"state": "failed", "code": exc.code, "message": exc.message}
         except Exception as exc:  # noqa: BLE001 - the delivered run's outcome stays intact
             outcome = {"state": "failed", "code": "internal_error", "message": str(exc)}
         try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,14 +25,15 @@ class A2AControlTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run(self, key: str, *, sender="pi:storm", target="claude:target", a2a=True, report_back=False):
+    def _run(self, key: str, *, sender="pi:storm", target="claude:target", a2a=True, report_back=False,
+             delivered=False, hop=None):
         spec = {
             "mode": "submit", "runtime": "claude", "session_ref": target,
             "prompt": key, "on_busy": "queue", "queue_timeout": 120,
         }
         initial = {
             "mode": "submit", "runtime": "claude", "session_ref": target,
-            "delivery": "accepted", "execution": "queued", "created_at": 100.0,
+            "delivery": "accepted", "execution": "queued", "created_at": time.time(),
         }
         if sender:
             spec["from_agent"] = initial["from_agent"] = sender
@@ -40,7 +42,71 @@ class A2AControlTests(unittest.TestCase):
         if report_back:
             spec["report_back"] = True
         record, _ = self.store.create("test", key, spec, initial)
+        if hop is not None:
+            self.store.update(record["run_id"], {"hop": hop, "chain_id": key})
+        if delivered:
+            self.store.update(record["run_id"], {
+                "delivery": "native_recorded", "execution": "completed",
+                "result": {"started_at": time.time() + 5, "usage": {
+                    "input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 100, "cache_write_tokens": 4,
+                }},
+            })
         return self.store.get(record["run_id"], private=True)
+
+    def test_reply_consumes_one_grant_and_enforces_the_hop_budget(self):
+        parent = self._run("parent", delivered=True)
+        found = control_cli._find_reply_parent(self.store, "claude:target", "pi:storm")
+        self.assertEqual(found["run_id"], parent["run_id"])
+        spec = {"mode": "submit", "session_ref": "pi:storm", "from_agent": "claude:target",
+                "parent_run_id": parent["run_id"], "a2a": True}
+        initial = {"mode": "submit", "session_ref": "pi:storm"}
+        control_cli._apply_lineage(self.store, "child", spec, initial)
+        self.assertEqual(spec["chain_id"], parent["run_id"])
+        self.assertEqual(spec["hop"], 2)
+        self.assertTrue(self.store.get(parent["run_id"])["reply_consumed"])
+        with self.assertRaises(ControlError) as caught:
+            control_cli._apply_lineage(self.store, "child-2", dict(spec), dict(initial))
+        self.assertEqual(caught.exception.code, "reply_already_consumed")
+
+        exhausted = self._run("exhausted", delivered=True, hop=control_cli.MAX_A2A_HOPS)
+        with self.assertRaises(ControlError) as caught:
+            control_cli._apply_lineage(self.store, "child-3", {
+                "mode": "submit", "session_ref": "pi:storm", "from_agent": "claude:target",
+                "parent_run_id": exhausted["run_id"], "a2a": True,
+            }, {})
+        self.assertEqual(caught.exception.code, "chain_budget_exhausted")
+
+    def test_chain_budget_suppresses_report_back_instead_of_echoing(self):
+        run = self._run("report-budget", report_back=True)
+        self.store.update(run["run_id"], {
+            "execution": "completed", "delivery": "native_recorded",
+            "result": {"final_response": "done"},
+        })
+        error = ControlError("chain_budget_exhausted", "budget", 5)
+        with mock.patch.object(control_cli, "cmd_send", side_effect=error):
+            outcome = control_worker.report_back(self.store, run["run_id"], registry=None)
+        self.assertEqual(outcome, {"state": "suppressed", "reason": "chain_budget_exhausted"})
+
+    def test_chatter_alert_counts_pair_messages_and_cache_tokens(self):
+        for index in range(5):
+            self._run(f"hot-{index}", delivered=True)
+        alerts = control_cli.a2a_chatter_alerts(self.store)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["messages"], 5)
+        self.assertEqual(alerts[0]["cache_read_tokens"], 500)
+
+    def test_ledger_reuses_run_usage_and_queue_evidence(self):
+        self._run("usage", delivered=True)
+        data = control_cli.cmd_a2a_ledger(SimpleNamespace(hours=24), None)["data"]
+        self.assertEqual(data["returned"], 1)
+        row = data["pairs"][0]
+        self.assertEqual(row["messages"], 1)
+        self.assertEqual(row["turns"], 1)
+        self.assertAlmostEqual(row["queue_seconds"], 5.0, delta=0.1)
+        self.assertEqual(row["input_tokens"], 10)
+        self.assertEqual(row["output_tokens"], 2)
+        self.assertEqual(row["cache_read_tokens"], 100)
+        self.assertEqual(row["cache_write_tokens"], 4)
 
     def test_send_defaults_reject_and_explicit_queue_is_bounded(self):
         args = agent_api.build_parser().parse_args(["send", "claude:target", "hello"])

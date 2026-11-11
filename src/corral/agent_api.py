@@ -1440,13 +1440,15 @@ COMMANDS = [
             {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "reject", "help": "Busy receiver: reject (default), queue explicitly, or steer into the active turn"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 120, "help": "Seconds a queued message may wait for a busy receiver (default 120; 0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--idempotency-key"], "kwargs": {"help": "Optional stable key; an identical retry returns the original run instead of sending twice"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--reply-to"], "kwargs": {"help": "Consume one parent run's reply grant and link this message into its chain"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--new-chain"], "kwargs": {"action": "store_true", "help": "Start a new chain instead of consuming a matching reply grant"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {
             "run": "The control run carrying the message (run_id, delivery, execution, from_agent); observe it with run wait / run result",  # noqa: E501 - COMMANDS 数据表
             "run.from_agent": "Sender named in the message header (runtime:id); null when the caller is not a detectable agent",  # noqa: E501 - COMMANDS 数据表
             "target": "Resolved receiver with control mode (hosted / resume); external sessions are refused",
-            "message format": "[From agent <runtime:id> via Corral], blank line, message, then a [Corral] footer: sent by another agent (no user approval) and either 'your final answer is delivered back automatically' or, with --no-report-back, the corral send reply command; --from-agent none writes '[Unattributed sender via Corral]' instead, and a run create brief is never wrapped",  # noqa: E501 - COMMANDS 数据表
+            "message format": "[from <runtime:id> · peer, not user], blank line, message; report-back adds no reply instruction, while --no-report-back keeps a short corral send footer; historical W2 headers remain parsed; --from-agent none writes '[from unknown · peer, not user]', and a run create brief is never wrapped",  # noqa: E501 - COMMANDS 数据表
             "delivery_note": "Where the answer will come from: back into the sender as a new message (report back), or run wait / run result",  # noqa: E501 - COMMANDS 数据表
             "run.report_back": "null until the receiver's turn settles, then {state: sent, run_id}, {state: failed, code, message}, or {state: suppressed, reason} for interrupted/unknown/answer-less turns that never wake the sender",  # noqa: E501 - COMMANDS 数据表
         },
@@ -1457,7 +1459,18 @@ COMMANDS = [
         "risk": "read",
         "args": [{"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}}],
         "fields": {"paused": "True while peer sends and deferred delivery are stopped",
-                   "occupancy": "Live execution owners, targets, senders, queued run counts and oldest age"},
+                   "occupancy": "Live execution owners, targets, senders, queued run counts and oldest age",
+                   "chains": "Active chain ids, current hop budget, participants and run counts"},
+    },
+    {
+        "name": "a2a ledger",
+        "help": "Aggregate existing A2A run records by sender, target and hour",
+        "risk": "read",
+        "args": [
+            {"flags": ["--hours"], "kwargs": {"type": int, "default": 24, "help": "Look back 1-720 hours (default 24)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"pairs": "Messages, completed turns, queue seconds and input/output/cache token totals per pair/hour"},  # noqa: E501 - COMMANDS 数据表
     },
     {
         "name": "a2a pause",
@@ -1488,6 +1501,8 @@ COMMANDS = [
             {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "queue", "help": "Busy target: queue until idle (default), steer into the active turn, or reject"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued brief may wait for a busy target before expiring undispatched (0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--allow-concurrent"], "kwargs": {"action": "store_true", "help": "Allow another unsettled run with the same brief on this session"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--reply-to"], "kwargs": {"help": "Consume one parent run's reply grant and link this submission into its chain"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--new-chain"], "kwargs": {"action": "store_true", "help": "Start a new chain instead of consuming a matching reply grant"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--task-ref"], "kwargs": {"help": "Optional caller task reference stored with the run"}},
             {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
@@ -1506,6 +1521,7 @@ COMMANDS = [
             "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
             "attribution": "correlated, or mixed when other input shares the bound turn",
             "from_agent": "Sending agent (runtime:id), detected automatically or from --from-agent; null when unattributed",  # noqa: E501 - COMMANDS 数据表
+            "chain_id / parent_run_id / hop": "Transport-owned reply chain and depth (four-hop budget)",
             "last_from_agent": "Sending agent of the most recent run message; null when unattributed",
             "model_check": "match / alias_match / mismatch / unobserved after the first turn (run create --model)",
             "finality": "native (runtime recorded completion) or inferred (quiet history/screen and no working signal)",

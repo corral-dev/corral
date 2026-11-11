@@ -101,6 +101,21 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             push_id, {"ok": False, "code": code, "status": 0, "reason": "", "apns_id": ""}
         )
 
+    def test_agent_chatter_uses_pair_cooldown_and_existing_encryption(self) -> None:
+        alert = {"sender": "pi:a", "target": "pi:b", "messages": 5, "cache_read_tokens": 160_000}
+        self.notifier.on_agent_chatter(alert)
+        self.notifier.on_agent_chatter(alert)
+        self.assertEqual(len(self.sent), 1)
+        payload = self._open(self.sent[0][2])
+        self.assertEqual(payload["title"], "Agent chatter")
+        self.assertEqual(payload["kind"], "completed")
+        self.assertIn("pi:a ↔ pi:b", payload["body"])
+        self.assertIn("5 msgs / 3 min", payload["body"])
+        self.assertIn("160.0k", payload["body"])
+        with mock.patch("corral.remote.push.time.time", return_value=time.time() + 601):
+            self.notifier.on_agent_chatter(alert)
+        self.assertEqual(len(self.sent), 2)
+
     def test_pending_to_done_sends_completed(self) -> None:
         session = {
             "key": "pi:s1",

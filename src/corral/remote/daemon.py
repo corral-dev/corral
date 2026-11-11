@@ -54,6 +54,7 @@ class RemoteDaemon:
             self.push.set_sender(self.relay.send_push)
         self.hub.set_attention_hook(self.push.on_attention_change)
         self.hub.set_status_hook(self.push.on_status_change)
+        self.hub.set_chatter_hook(self.push.on_agent_chatter)
 
     async def run(self) -> None:
         stop = asyncio.Event()

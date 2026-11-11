@@ -52,6 +52,7 @@ _MAX_WAIT = 600
 # machine-wide execution slot or generate an unbounded model-turn backlog.
 MAX_A2A_ACTOR_RUNS = 4
 MAX_A2A_TARGET_RUNS = 4
+MAX_A2A_HOPS = 4
 
 
 def _bin() -> str:
@@ -149,6 +150,8 @@ def public_run(store: RunStore, record: dict, *, compact: bool = False) -> dict:
         "requested_model": record.get("requested_model"), "observed_model": record.get("observed_model"),
         "attribution": record.get("attribution"), "turn_id": record.get("turn_id"),
         "from_agent": record.get("from_agent"), "last_from_agent": record.get("last_from_agent"),
+        "chain_id": record.get("chain_id"), "parent_run_id": record.get("parent_run_id"),
+        "hop": record.get("hop"), "reply_consumed": record.get("reply_consumed", False),
         "report_back": record.get("report_back"),
         "model_check": record.get("model_check"), "finality": record.get("finality"),
         "queue_reason": record.get("queue_reason") if record.get("execution") == "queued" else None,
@@ -176,6 +179,85 @@ def _is_a2a(record: dict) -> bool:
     # ``from_agent`` on a create run records who launched the session; the
     # creation brief itself is owner input, not peer mail (2026-11-10).
     return bool(record.get("a2a") or (record.get("mode") == "submit" and record.get("from_agent")))
+
+
+def _find_reply_parent(store: RunStore, sender: str, target: str) -> dict | None:
+    """Newest unanswered delivered message from target to this sender."""
+    if not store.exists():
+        return None
+    for record in store.recent(500, None):
+        if record.get("mode") != "submit" or not _is_a2a(record):
+            continue
+        if record.get("session_ref") != sender or record.get("from_agent") != target:
+            continue
+        if record.get("reply_consumed"):
+            continue
+        if record.get("delivery") not in {"input_submitted", "native_recorded"}:
+            continue
+        if record.get("execution") in {"failed", "interrupted", "unknown"}:
+            continue
+        return record
+    return None
+
+
+def _reply_lineage(store: RunStore, spec: dict) -> tuple[dict, int] | None:
+    parent_id = spec.get("parent_run_id")
+    if not parent_id:
+        return None
+    inferred = bool(spec.get("_inferred_parent"))
+    try:
+        parent = store.get(parent_id)
+    except ControlError:
+        if inferred:
+            return None
+        raise ControlError("invalid_reply_parent", f"Unknown parent run: {parent_id}", EXIT_USAGE) from None
+    valid = (
+        parent.get("mode") == "submit"
+        and parent.get("session_ref") == spec.get("from_agent")
+        and parent.get("from_agent") == spec.get("session_ref")
+        and parent.get("delivery") in {"input_submitted", "native_recorded"}
+        and parent.get("execution") not in {"failed", "interrupted", "unknown"}
+    )
+    if not valid:
+        if inferred:
+            return None
+        raise ControlError(
+            "invalid_reply_parent",
+            "The parent run is not a delivered peer message from this target to the current sender.",
+            EXIT_CONFLICT,
+        )
+    if parent.get("reply_consumed"):
+        if inferred:
+            return None
+        raise ControlError("reply_already_consumed", f"The reply grant for {parent_id} was already used.",
+                           EXIT_CONFLICT)
+    hop = int(parent.get("hop") or 1) + 1
+    if hop > MAX_A2A_HOPS:
+        raise ControlError(
+            "chain_budget_exhausted",
+            f"This A2A chain already reached {MAX_A2A_HOPS} hops; start a new chain with a consolidated brief.",
+            EXIT_CONFLICT,
+            details={"parent_run_id": parent_id, "chain_id": parent.get("chain_id") or parent_id, "hop": hop},
+        )
+    return parent, hop
+
+
+def _apply_lineage(store: RunStore, key: str, spec: dict, initial: dict) -> None:
+    lineage = _reply_lineage(store, spec)
+    spec.pop("_inferred_parent", None)
+    if lineage is None:
+        spec["chain_id"] = spec.get("chain_id") or key
+        spec["hop"] = int(spec.get("hop") or 1)
+    else:
+        parent, hop = lineage
+        spec["parent_run_id"] = parent["run_id"]
+        spec["chain_id"] = parent.get("chain_id") or parent["run_id"]
+        spec["hop"] = hop
+        # A grant is consumed once, under control-admission. A concurrent
+        # reply sees reply_already_consumed (or starts a new inferred chain).
+        store.update(parent["run_id"], {"reply_consumed": True}, allow_settled=True)
+    for field in ("chain_id", "parent_run_id", "hop"):
+        initial[field] = spec.get(field)
 
 
 def _owner_key(record: dict) -> str:
@@ -257,6 +339,8 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
         # Capacity and intent creation are one cross-process admission step;
         # concurrent senders cannot both pass the same last free slot.
         with file_lock(str(store.root), "control-admission", blocking=True):
+            if _is_a2a(spec):
+                _apply_lineage(store, key, spec, initial)
             _guard_capacity(store, spec)
             if spec.get("mode") == "submit" and spec.get("session_ref"):
                 # The target owner makes its final empty-queue check under the
@@ -331,7 +415,10 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
         raise ControlError("project_missing", f"The session's project directory is gone: {target['cwd']}",
                            EXIT_NOT_FOUND)
     store = RunStore()
-    prompt_digest = digest(send_text)
+    # Duplicate-active detection compares the actual body, not which
+    # attribution/footer envelope the caller selected. Idempotency still
+    # hashes the complete immutable spec below.
+    prompt_digest = digest(prompt)
     if store.find(key) is None and not args.allow_concurrent:
         twins = [r for r in store.for_target(target["session_ref"]) if r.get("prompt_digest") == prompt_digest]
         if twins:
@@ -354,6 +441,15 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
             "cwd": target["cwd"], "history_path": target["history_path"], "prompt": send_text,
             "on_busy": args.on_busy, "queue_timeout": max(0, args.queue_timeout), "caller": caller,
             "task_ref": getattr(args, "task_ref", None)}
+    if a2a:
+        explicit_parent = str(getattr(args, "reply_to", "") or "").strip()
+        if explicit_parent:
+            spec["parent_run_id"] = explicit_parent
+        elif not getattr(args, "new_chain", False) and from_agent is not None:
+            parent = _find_reply_parent(store, from_agent, target["session_ref"])
+            if parent is not None:
+                spec["parent_run_id"] = parent["run_id"]
+                spec["_inferred_parent"] = True
     if from_agent is not None:
         spec["from_agent"] = from_agent
     if a2a:
@@ -671,6 +767,23 @@ def cmd_list(args, registry) -> dict:
     return _ok({"runs": runs, "returned": len(runs), "actor_filter": actor, "target_filter": args.target})
 
 
+def _chains(records: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for record in records:
+        chain_id = str(record.get("chain_id") or record["run_id"])
+        item = grouped.setdefault(chain_id, {"chain_id": chain_id, "hop": 1, "runs": 0,
+                                            "senders": set(), "targets": set()})
+        item["runs"] += 1
+        item["hop"] = max(item["hop"], int(record.get("hop") or 1))
+        if record.get("from_agent"):
+            item["senders"].add(record["from_agent"])
+        if record.get("session_ref"):
+            item["targets"].add(record["session_ref"])
+    return [{**item, "senders": sorted(item["senders"]), "targets": sorted(item["targets"]),
+             "budget_exhausted": item["hop"] >= MAX_A2A_HOPS}
+            for item in grouped.values()]
+
+
 def _a2a_status_data(store: RunStore) -> dict:
     live = [record for record in store.unsettled()
             if _is_a2a(record) and _supervisor_alive(store, record["run_id"])]
@@ -679,6 +792,7 @@ def _a2a_status_data(store: RunStore) -> dict:
         "active_runs": len(live),
         "execution_owners": len({_owner_key(record) for record in live}),
         "occupancy": _occupancy(live),
+        "chains": _chains(live),
         "limits": {
             "per_sender": MAX_A2A_ACTOR_RUNS,
             "per_target": MAX_A2A_TARGET_RUNS,
@@ -689,6 +803,70 @@ def _a2a_status_data(store: RunStore) -> dict:
 
 def cmd_a2a_status(args, registry) -> dict:
     return _ok(_a2a_status_data(RunStore()))
+
+
+def a2a_chatter_alerts(store: RunStore, *, window_seconds: int = 180, minimum: int = 5) -> list[dict]:
+    """Current short-window pair hot spots for the daemon's throttled alert."""
+    if not store.exists():
+        return []
+    cutoff = time.time() - window_seconds
+    groups: dict[tuple[str, str], dict] = {}
+    for record in store.recent(500, None):
+        if not _is_a2a(record) or float(record.get("created_at") or 0) < cutoff:
+            continue
+        sender = str(record.get("from_agent") or "unattributed")
+        target = str(record.get("session_ref") or "unbound")
+        item = groups.setdefault((sender, target), {
+            "sender": sender, "target": target, "messages": 0, "cache_read_tokens": 0,
+        })
+        item["messages"] += 1
+        usage = (record.get("result") or {}).get("usage") or {}
+        item["cache_read_tokens"] += int(usage.get("cache_read_tokens") or 0)
+    return [dict(item, window_seconds=window_seconds)
+            for item in groups.values() if item["messages"] >= minimum]
+
+
+def cmd_a2a_ledger(args, registry) -> dict:
+    hours = int(getattr(args, "hours", 24))
+    if hours < 1 or hours > 24 * 30:
+        raise ControlError("usage_error", "--hours must be between 1 and 720.", EXIT_USAGE)
+    cutoff = time.time() - hours * 3600
+    groups: dict[tuple[str, str, str], dict] = {}
+    store = RunStore()
+    if not store.exists():
+        return _ok({"hours": hours, "pairs": [], "returned": 0, "source": "existing run records"})
+    for record in store.recent(10_000, None):
+        if not _is_a2a(record) or float(record.get("created_at") or 0) < cutoff:
+            continue
+        created = float(record.get("created_at") or 0)
+        sender = str(record.get("from_agent") or "unattributed")
+        target = str(record.get("session_ref") or "unbound")
+        hour = time.strftime("%Y-%m-%dT%H:00:00%z", time.localtime(created))
+        key = (sender, target, hour)
+        item = groups.setdefault(key, {
+            "sender": sender, "target": target, "hour": hour,
+            "messages": 0, "turns": 0, "queue_seconds": 0.0,
+            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0,
+        })
+        item["messages"] += 1
+        result = record.get("result") or {}
+        if record.get("execution") == "completed":
+            item["turns"] += 1
+        usage = result.get("usage") or {}
+        for field in item:
+            if field.endswith("_tokens"):
+                item[field] += int(usage.get(field) or 0)
+        started = result.get("started_at")
+        if started:
+            item["queue_seconds"] += max(0.0, float(started) - created)
+        elif record.get("execution") not in SETTLED:
+            item["queue_seconds"] += max(0.0, time.time() - created)
+        else:
+            item["queue_seconds"] += max(0.0, float(record.get("updated_at") or created) - created)
+    rows = sorted(groups.values(), key=lambda item: (item["hour"], item["sender"], item["target"]), reverse=True)
+    for row in rows:
+        row["queue_seconds"] = round(row["queue_seconds"], 3)
+    return _ok({"hours": hours, "pairs": rows, "returned": len(rows), "source": "existing run records"})
 
 
 def cmd_a2a_pause(args, registry) -> dict:
@@ -730,7 +908,8 @@ def cmd_a2a_resume(args, registry) -> dict:
 
 
 HANDLERS = {
-    "a2a status": cmd_a2a_status, "a2a pause": cmd_a2a_pause, "a2a resume": cmd_a2a_resume,
+    "a2a status": cmd_a2a_status, "a2a ledger": cmd_a2a_ledger,
+    "a2a pause": cmd_a2a_pause, "a2a resume": cmd_a2a_resume,
     "run submit": cmd_submit, "run create": cmd_create, "run status": cmd_status, "run events": cmd_events,
     "run wait": cmd_wait, "run result": cmd_result, "run message": cmd_message, "run answer": cmd_answer,
     "run interrupt": cmd_interrupt, "run list": cmd_list, "run recover": cmd_recover, "send": cmd_send,

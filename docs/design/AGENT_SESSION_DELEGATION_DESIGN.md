@@ -976,13 +976,44 @@ never dispatches input and is recorded as `report_back: {state: suppressed,
 reason: queue_expired}` instead of waking the sender. Completed answers and
 other genuine failures retain their existing report-back behavior.
 
-Deferred with reasons (not forgotten):
+### Compact envelope and transport-owned chains (2026-11-11)
 
-- Envelope shortening is blocked: the run marker must keep exact run-id
-  equality for correlation over existing history, and the digest that
-  idempotency compares hashes the wrapped text.
-- A hop counter is unproven: a model can rewrite header text, and the
-  three-agent ring/fan-out case was never measured (the lab run failed on
-  capacity before it started).
-- Hop/fan-out evidence and the additional chain/token observability views
-  remain open; this change does not add a new UI surface.
+The owner required the remaining items completed rather than deferred. The
+long correlation marker remains byte-compatible, and both old and new headers
+are parsed for origin/attribution. New sends use `[from <ref> · peer, not user]`;
+report-back needs no automatic-reply instruction. Explicit replies retain a
+short command footer. Duplicate-active detection hashes the unwrapped body;
+idempotency still hashes the immutable wrapped spec.
+
+A2A replies form a transport-owned chain, not a model-editable header counter.
+Each run may name its parent; a reply consumes that parent's reply grant once,
+carries `chain_id` / `hop`, and defaults to a new chain when no matching grant
+exists. `--reply-to <run_id>` selects a grant explicitly and `--new-chain`
+opts out. Four hops is the hard budget (`chain_budget_exhausted`). Report-back
+links to the original run automatically, so the same rule covers manual and
+automatic replies without trusting prompt text.
+
+### Chain and cost observability (2026-11-11)
+
+`run list` exposes `chain_id`, `parent_run_id` and `hop`; `a2a status` exposes
+active chains and their depth. `corral a2a ledger [--hours N]` aggregates the
+existing run store by sender/target/hour: messages, completed turns, queue
+seconds, and input/output/cache-read/cache-write tokens. This is an on-demand
+projection of existing evidence, not a second ledger or a new UI surface.
+The daemon also reuses the existing encrypted completion-push channel for a
+`chatter` alert when one pair exchanges at least five messages in three
+minutes, cooled down per pair for ten minutes. It carries the pair, count and
+cache-read tokens; receipt/dedup/device preferences stay with `PushNotifier`.
+
+Remaining boundary: these mechanisms bound turns and make loops visible, but
+they do not make a peer's work semantically correct. Repository tests and real
+acceptance remain independent evidence.
+
+Verification: the complete CLI gate runs 3188 tests with zero failures (3
+skipped), including legacy/new header parsing, reply-grant consumption, budget
+suppression, ledger aggregation and encrypted push throttling. The real
+`/tmp/a2a-chain-live-20261111` lab passes all 17 checks: two agents stop at
+four hops and the fifth is refused, a third agent's fan-out chain stays
+independent, the compact header and long marker coexist, and no automatic
+reply instruction remains. `a2a status` and `a2a ledger` expose the live
+chains and pair/token costs from actual records.
