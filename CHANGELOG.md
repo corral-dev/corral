@@ -6,6 +6,18 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Agent-to-agent messaging is bounded against loops and stale echoes: creation briefs stay owner input, explicit unattributed sends remain marked as peer messages, interrupted/unknown/empty outcomes no longer wake the sender, and queue expiry stays on the run. Each sender/target is limited to four live A2A runs, with one ordered queue owner per target and named occupancy on capacity errors.
+- Added `corral a2a status`, `corral a2a pause` and `corral a2a resume` to inspect and stop peer traffic without failing accepted work or ordinary owner submissions. `corral send` now rejects a busy receiver by default; explicit queuing has a 120-second default budget.
+
+### 简体中文
+
+- 助手互发消息现在有明确边界，避免循环与陈旧回声：新建任务简报仍是机主输入，显式未署名发送也保留同伴消息标记；中断、未知、空答案和排队过期不再唤醒发送方。每个发送方/目标最多容纳 4 个未结束 A2A run，同一目标只有一个按序执行的队列 owner，容量错误会列出占用者。
+- 新增 `corral a2a status`、`corral a2a pause`、`corral a2a resume`，可查看并暂停助手间流量，不会把已接受工作判失败，也不影响机主普通任务。`corral send` 默认在接收方忙时拒绝，显式排队默认最多等待 120 秒。
+
 ## 0.24.362
 
 ### English
