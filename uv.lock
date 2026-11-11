@@ -133,7 +133,7 @@ wheels = [
 
 [[package]]
 name = "corral"
-version = "0.24.362"
+version = "0.24.363"
 source = { editable = "." }
 dependencies = [
     { name = "agent-session-control" },
