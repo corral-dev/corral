@@ -6,6 +6,18 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Compact A2A envelopes preserve the correlation marker and historical attribution while removing the automatic-reply invitation. Replies now consume a parent grant once and stop at four hops (`chain_budget_exhausted`), including automatic report-back; use `--reply-to` or `--new-chain` for explicit control.
+- Added chain/cost visibility: `run list` exposes parent/hop identity, `corral a2a status` shows active chains, and `corral a2a ledger` aggregates pair/hour queue time and token usage. The daemon can send a rate-limited encrypted Agent chatter alert when one pair becomes unusually active.
+
+### 简体中文
+
+- A2A 信封更精简，保留关联 marker 与历史消息归因，不再附带诱导自动回复的说明。每次回复只消费一次父消息授权，最多 4 跳（`chain_budget_exhausted`），自动回执也受同一约束；可用 `--reply-to` 或 `--new-chain` 显式控制。
+- 新增链路与成本观测：`run list` 展示父消息和 hop，`corral a2a status` 展示活跃链，`corral a2a ledger` 按发送方/目标/小时汇总排队耗时与 token。单对助手消息异常密集时，开发机可通过现有加密推送通道发送带冷却的 Agent chatter 提醒。
+
 ## 0.24.363
 
 ### English
