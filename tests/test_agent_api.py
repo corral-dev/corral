@@ -672,13 +672,19 @@ class SubprocessIntegrationTests(unittest.TestCase):
     """通过真实子进程验证 `python -m corral` 的旧接口回归和非 TTY 自动降级；较慢，单独分组。"""
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [sys.executable, "-m", "corral", *args],
-            cwd=str(Path(__file__).resolve().parent.parent),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        with tempfile.TemporaryDirectory() as home:
+            environment = dict(os.environ, HOME=home, CORRAL_CACHE="0", CORRAL_ISOLATE_MANAGED_HOSTS="1")
+            for name, relative in {
+                "CLAUDE_CONFIG_DIR": ".claude", "CODEX_HOME": ".codex",
+                "PI_CODING_AGENT_DIR": ".pi/agent", "XDG_DATA_HOME": ".local/share",
+                "XDG_CONFIG_HOME": ".config", "XDG_CACHE_HOME": ".cache",
+            }.items():
+                environment[name] = str(Path(home) / relative)
+            return subprocess.run(
+                [sys.executable, "-m", "corral", *args],
+                cwd=str(Path(__file__).resolve().parent.parent),
+                env=environment, capture_output=True, text=True, timeout=30,
+            )
 
     def test_legacy_json_flag_still_produces_flat_array(self) -> None:
         proc = self._run(["--json", "--limit", "1"])

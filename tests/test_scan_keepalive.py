@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import threading
 import unittest
 from pathlib import Path
@@ -70,12 +73,64 @@ class ScanKeepAliveTests(unittest.TestCase):
         helper = self.helper()
         helper.last_heartbeat -= scan_worker.HEARTBEAT_MIN_INTERVAL_SECONDS
         with mock.patch.object(scan_worker, "provider_drift", return_value=True), \
+                mock.patch.object(scan_worker.os, "_exit") as exit_worker, \
                 mock.patch.object(scan_worker, "_write_heartbeat") as heartbeat, \
                 mock.patch.object(scan_worker, "_republish") as republish:
             helper._tick()
         self.assertTrue(helper.stop.is_set())
+        exit_worker.assert_called_once_with(0)
         heartbeat.assert_not_called()
         republish.assert_not_called()
+
+    def test_blocked_first_parse_exits_after_real_parent_loss_and_releases_lock(self) -> None:
+        child = textwrap.dedent('''
+            import os, sys, threading
+            from pathlib import Path
+            from unittest import mock
+            from corral import scan_worker
+            root = Path(sys.argv[1])
+            with mock.patch("corral.cache.cache_dir", return_value=root), \\
+                 mock.patch.object(scan_worker, "provider_drift", return_value=False):
+                lock = scan_worker._acquire_singleton_lock()
+                if lock is None:
+                    raise RuntimeError("fixture lock unavailable")
+                scan_worker.HEARTBEAT_MIN_INTERVAL_SECONDS = 0.05
+                with scan_worker._ScanKeepAlive(
+                    None, limit=200, keep_ids={}, published_wall=0,
+                    parent_pid=os.getppid(),
+                ):
+                    (root / "ready").touch()
+                    threading.Event().wait(15)
+                    raise RuntimeError("orphaned blocked parser survived")
+        ''')
+        supervisor = textwrap.dedent('''
+            import subprocess, sys, time
+            from pathlib import Path
+            child = subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2]])
+            deadline = time.monotonic() + 5
+            while not (Path(sys.argv[2]) / "ready").exists():
+                if child.poll() is not None or time.monotonic() > deadline:
+                    child.kill()
+                    child.wait()
+                    raise RuntimeError("blocked parser did not start")
+                time.sleep(0.01)
+            sys.stdin.read(1)
+        ''')
+        # The worker inherits the pipe: communicate cannot finish until both
+        # the supervisor and its blocked child have exited.
+        with subprocess.Popen(
+            [sys.executable, "-c", supervisor, child, str(self.path)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        ) as parent:
+            stdout, stderr = parent.communicate("x", timeout=10)
+        self.assertEqual(parent.returncode, 0, (stdout, stderr))
+        self.assertEqual(stderr, "")
+        self.assertTrue((self.path / "ready").exists())
+        successor_lock = scan_worker._acquire_singleton_lock()
+        self.assertIsNotNone(successor_lock, "orphan retained singleton flock")
+        if successor_lock is not None:
+            successor_lock.close()
 
     def test_keepalive_stops_and_joins_on_exception(self) -> None:
         helper = self.helper()

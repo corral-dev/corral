@@ -27,6 +27,9 @@ class _Response:
 class GatewayTitleGeneratorTests(unittest.TestCase):
     def setUp(self) -> None:
         titlegen.clear_model_cache()
+        local_available = mock.patch.object(titlegen.LocalTitleGenerator, "is_available", return_value=False)
+        local_available.start()
+        self.addCleanup(local_available.stop)
         self.config = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
         json.dump(
             {

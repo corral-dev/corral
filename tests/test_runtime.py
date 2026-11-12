@@ -125,7 +125,8 @@ class RuntimeTests(unittest.TestCase):
             "fallback_title": "修复会话接力",
         }
 
-    def test_native_resume_keeps_runtime_specific_command(self) -> None:
+    @mock.patch("corral.runtime.claude.os.geteuid", return_value=1000)
+    def test_native_resume_keeps_runtime_specific_command(self, _geteuid) -> None:
         registry = default_registry()
         session = self._session("claude", "/tmp/not-needed.jsonl", "/tmp/not-exists")
 
@@ -739,7 +740,8 @@ class RuntimeTests(unittest.TestCase):
         plan2 = reg.build_passthrough_plan("cursor", ["--force", "hi"])
         self.assertEqual(plan2.argv.count("--force"), 1)
 
-    def test_claude_new_session_plan_has_no_handoff_prompt(self) -> None:
+    @mock.patch("corral.runtime.claude.os.geteuid", return_value=1000)
+    def test_claude_new_session_plan_has_no_handoff_prompt(self, _geteuid) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = default_registry().build_new_session_plan(NewSessionRequest("claude", td))
 
@@ -940,7 +942,8 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(scanned[runtime.id], [])
 
-    def test_passthrough_plan_prepends_auto_approve_args(self) -> None:
+    @mock.patch("corral.runtime.claude.os.geteuid", return_value=1000)
+    def test_passthrough_plan_prepends_auto_approve_args(self, _geteuid) -> None:
         plan = default_registry().build_passthrough_plan("claude", ["把测试修到全绿"])
 
         self.assertEqual(

@@ -1,5 +1,37 @@
 # corral 性能知识库
 
+## Scan-worker lifetime during a blocked parse (2026-11-12)
+
+A worker is intentionally long-lived; elapsed lifetime alone does not establish
+CPU saturation. Current shared-index hits and native samples predominantly
+waiting do not reproduce the reported morning worker. A separate cold scan of
+the live corpus took 76.1 s wall / 15.2 s process CPU under concurrent load;
+two warm passes took 0.43 / 0.14 s wall. Do not generalize these timings to a
+controlled benchmark or attribute another process's rendering CPU to scanning.
+
+The keepalive thread previously detected parent loss/provider drift but stopped
+only itself. A blocked parse could retain the worker and singleton lock after
+its owner exited. The independent lifecycle check must exit the worker process
+in this case, including before its first complete snapshot. This process owns
+only derived scan state; OS exit releases its singleton lock. Keep normal scan,
+state and terminal intervals unchanged. Verify with an actual blocked subprocess,
+parent loss and lock acquisition by a successor, not only a mocked loop boundary.
+
+`published_meta()` was decoding the entire 1.2 MiB shared index on every worker
+poll and keepalive tick just to obtain its timestamp/depth. Reuse only the two
+validated scalar values while path, cohort, index version, device/inode, size
+and nanosecond mtime/ctime match. Replacements, in-place changes, corruption and
+read failures must invalidate reuse. Never retain decoded session payloads or
+apply a time-based TTL that hides a newer publication. This optimization changes
+metadata-read cost, not snapshot freshness or the consumer TTL.
+
+On a 1,281,384-byte local index, 150 same-file reads measured median process CPU
+7.27 ms decoding each time versus 0.020 ms reusing validated metadata (about
+99.7% less CPU for this operation). This is a component benchmark, not an overall
+worker reduction. File identity semantics and process-exit behavior follow the
+[Python OS API](https://docs.python.org/3/library/os.html); the exit deliberately
+does not run cleanup handlers, since a blocked parser cannot be joined safely.
+
 ## CPU optimization acceptance (owner approval, 2026-10-25)
 
 Optimize repeated work without increasing normal state-refresh intervals, slowing input echo, dropping final terminal state, changing terminal stream ordering, or resizing a hosted pane on behalf of a hidden viewer. The previous 50 ms host-stream pacing experiment caused the owner's Mac terminal to nearly stop refreshing and was reverted; do not repeat it as a CPU remedy.

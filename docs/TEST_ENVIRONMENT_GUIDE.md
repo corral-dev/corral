@@ -7,6 +7,23 @@ replacement test framework.
 
 ## Durable requirements
 
+Cross-host fixtures must declare their effective user and executable availability.
+Ordinary-user Claude plan assertions mock the UID instead of inheriting a root
+CI account. Gateway-only tests disable local title generators explicitly;
+fallback-generator behavior has separate coverage. A same-inode, restored-mtime
+claim rewrite waits for an observable filesystem ctime change before asserting
+cache invalidation, retaining the original metadata and content assertions.
+Linux root execution reproduced all seven failing assertions on the unchanged
+baseline during the 2026-11-12 CPU work; these fixture repairs do not change
+product permission or title-routing policy.
+
+Subprocess format/exit-code tests use a temporary HOME and explicit empty
+runtime/XDG directories, never the developer's real history corpus. Synthetic
+rendered strips supply a Rich `Style` so Textual's monochrome filter can process
+them. A hosted-HUD fixture that asserts a live screen must supply its first grid
+and disable its nonexistent host's capture loop; a session name alone still
+represents the legitimate pre-frame conversation fallback.
+
 - Before opening the UI, use a disposable fixture root for Corral cache/state,
   session data and artifacts, and set managed-host discovery to isolation mode.
   Never enumerate, attach to, stop, or otherwise modify the user's real hosted

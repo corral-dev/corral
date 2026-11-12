@@ -572,6 +572,11 @@ class _ScanKeepAlive:
         if now - self.last_heartbeat >= HEARTBEAT_MIN_INTERVAL_SECONDS:
             if (self.parent_pid and _parent_dead(self.parent_pid)) or provider_drift():
                 self.stop.set()
+                # The parser may be blocked indefinitely. Stopping this thread
+                # alone leaves that parser and its singleton lock orphaned.
+                # All worker writes are derived state; process exit releases
+                # flock and lets SQLite roll back an interrupted transaction.
+                os._exit(0)
                 return
             _write_heartbeat()
             self.last_heartbeat = now

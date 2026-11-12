@@ -14,6 +14,56 @@ from corral import scan_index
 
 
 class ScanIndexTests(unittest.TestCase):
+    def test_publication_metadata_reuses_only_unchanged_file(self) -> None:
+        scan_index.publish({"claude": [self._session("claude", "a", 1)]}, limit=200)
+        original = scan_index.json.load
+        with mock.patch.object(scan_index.json, "load", wraps=original) as decode:
+            first = scan_index.published_meta()
+            self.assertIsNotNone(first)
+            self.assertEqual(scan_index.published_meta(), first)
+            self.assertEqual(decode.call_count, 1)
+
+            path = scan_index.index_path()
+            body = json.loads(path.read_text())
+            body["published_at"] += 1
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text(json.dumps(body))
+            replacement.replace(path)
+            self.assertEqual(scan_index.published_meta(), (first[0] + 1, 200))
+            self.assertEqual(decode.call_count, 2)
+
+            # Same inode, byte length and restored mtime; ctime must invalidate.
+            stamp = path.stat()
+            body["limit"] = 300
+            time.sleep(0.01)
+            path.write_text(json.dumps(body))
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertEqual(path.stat().st_size, stamp.st_size)
+            self.assertEqual(scan_index.published_meta(), (first[0] + 1, 300))
+
+            path.write_text("broken")
+            self.assertIsNone(scan_index.published_meta())
+            path.unlink()
+            self.assertIsNone(scan_index.published_meta())
+
+    def test_publication_race_never_caches_metadata_for_different_bytes(self) -> None:
+        scan_index.publish({"claude": []}, limit=200)
+        original = scan_index.json.load
+
+        def replace_after_read(handle):
+            body = original(handle)
+            path = scan_index.index_path()
+            changed = dict(body, published_at=body["published_at"] + 1)
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text(json.dumps(changed))
+            replacement.replace(path)
+            return body
+
+        with mock.patch.object(scan_index.json, "load", side_effect=replace_after_read):
+            self.assertIsNone(scan_index.published_meta())
+        current = json.loads(scan_index.index_path().read_text())
+        self.assertEqual(scan_index.published_meta(), (current["published_at"], 200))
+
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)

@@ -7694,18 +7694,20 @@ class EmbedMouseClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_modified_click_on_a_path_reveals_it_instead_of_forwarding(self) -> None:
         from rich.segment import Segment
+        from rich.style import Style
         from textual.strip import Strip
 
         app, prime = self._app()
         async with app.run_test(size=(60, 20)) as pilot:
             pane = app.query_one(EmbedPane)
             prime(pane)
-            rows = {2: Strip([Segment("Edited src/app.py:12 and README")])}
+            style = Style(color="default", bgcolor="default")
+            rows = {2: Strip([Segment("Edited src/app.py:12 and README".ljust(60), style)])}
             with tempfile.TemporaryDirectory() as tmp:
                 (Path(tmp) / "src").mkdir()
                 (Path(tmp) / "src" / "app.py").write_text("x")
                 with (mock.patch.object(EmbedPane, "render_line",
-                                        side_effect=lambda y: rows.get(y, Strip.blank(60))),
+                                        side_effect=lambda y: rows.get(y, Strip.blank(60, style))),
                       mock.patch("corral.embed._pane_cwd", return_value=tmp),
                       mock.patch("corral.path_links.reveal", return_value=True) as reveal,
                       mock.patch("corral.embed.send_mouse_sequence") as send_mock):
@@ -11519,6 +11521,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         return store, app
 
+    @mock.patch.object(EmbedPane, "_capture_loop", lambda self: None)
     async def test_hosted_hud_offers_return_to_latest(self) -> None:
         """Owner report 2026-10-26: a live hosted pane showed no latest row.
 
@@ -11539,13 +11542,14 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
                 focus_key=key,
             )
             await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
+            pane = area._cells()[0].embed_pane()  # noqa: SLF001
+            pane._grid = [[]]  # noqa: SLF001 — fixture has received its first live frame
             app.screen._sync_hud()  # noqa: SLF001
             hud = area._cells()[0].session_hud()  # noqa: SLF001
             self.assertIsInstance(hud, SessionHud)
             await _wait_until(lambda: hud.display and hud.region.height > 0)
             self.assertTrue(hud.expanded)
             # The reported pane is a live terminal, not a static preview.
-            pane = area._cells()[0].embed_pane()  # noqa: SLF001
             self.assertFalse(pane._uses_detail_window())
             self.assertIn(t("hud.jump_latest"), hud.render().plain)
             self.assertIn(t("hud.collapse_hint"), hud.render().plain)

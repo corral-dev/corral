@@ -49,6 +49,8 @@ FOREIGN_INDEX_MAX_AGE_SECONDS = 7 * 24 * 3600.0
 # scan_all callers are sequential per process for a given registry.
 _PUBLISH_LOCK = threading.Lock()
 _LAST_PUBLISH: dict[str, object] = {"at": 0.0, "limit": 0, "keys": None}
+_META_LOCK = threading.Lock()
+_META_CACHE: tuple[tuple, tuple[float, int]] | None = None
 # Most recent consume miss (reason + publisher facts, counts only — never
 # session ids). Misses can occur every few seconds per process, so the events
 # log only gets a periodic reminder per reason; the in-memory record always
@@ -131,21 +133,37 @@ def published_meta() -> tuple[float, int] | None:
     Lets publishers tell their own keep-alive republishes apart from fresher
     foreign ones without paying for a full consume. Never raises.
     """
-    try:
-        with open(index_path(), encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
-        return None
-    if payload.get("provider_cohort") != provider_cohort():
-        # Older provider contract (or a cohort-less legacy publish): never
-        # establish a baseline from it.
-        return None
-    try:
-        return float(payload.get("published_at") or 0), int(payload.get("limit") or 0)
-    except (TypeError, ValueError):
-        return None
+    global _META_CACHE
+    with _META_LOCK:
+        try:
+            path = index_path()
+            cohort = provider_cohort()
+            before = _meta_signature(path, cohort)
+            if _META_CACHE is not None and _META_CACHE[0] == before:
+                return _META_CACHE[1]
+            _META_CACHE = None
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if _meta_signature(path, cohort) != before:
+                return None  # raced publication/torn read: retry on the next poll
+            if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
+                return None
+            if payload.get("provider_cohort") != cohort:
+                return None
+            result = float(payload.get("published_at") or 0), int(payload.get("limit") or 0)
+            _META_CACHE = before, result
+            return result
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            _META_CACHE = None
+            return None
+
+
+def _meta_signature(path, cohort: str) -> tuple:
+    stamp = path.stat()
+    return (
+        str(path), cohort, INDEX_VERSION, stamp.st_dev, stamp.st_ino,
+        stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns,
+    )
 
 
 def try_consume(

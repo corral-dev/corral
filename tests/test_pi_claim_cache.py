@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -118,9 +119,14 @@ class ClaimMemoTests(unittest.TestCase):
             original = path.stat()
             self.assertEqual(pi_identity.read_claims(td)[0]["sessionId"], "sess-old")
 
-            path.write_text(new_raw, encoding="utf-8")
-            os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
-            rewritten = path.stat()
+            deadline = time.monotonic() + 1
+            while True:
+                path.write_text(new_raw, encoding="utf-8")
+                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+                rewritten = path.stat()
+                if rewritten.st_ctime_ns != original.st_ctime_ns or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.001)
             self.assertEqual(rewritten.st_ino, original.st_ino)
             self.assertEqual(rewritten.st_size, original.st_size)
             self.assertEqual(rewritten.st_mtime_ns, original.st_mtime_ns)
