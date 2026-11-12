@@ -32,6 +32,44 @@ worker reduction. File identity semantics and process-exit behavior follow the
 [Python OS API](https://docs.python.org/3/library/os.html); the exit deliberately
 does not run cleanup handlers, since a blocked parser cannot be joined safely.
 
+### Installed acceptance and full-gate limits (2026-11-12)
+
+Source `d249ffc` is pushed and the installed editable CLI remains 0.24.364 with
+SessKit 0.2.24. The actual pipx Python 3.14.8 passes all 76 scan-index/worker
+tests and dependency validation. The new worker owns the current heartbeat and
+serves a covering depth-200 index; an installed depth-50 scan returned 203 rows
+from that index in 12.3 ms. Thirty-second unsampled worker observations measured
+2.39% and 3.46% of one core under changing concurrent load. These establish the
+delivered worker's activity, not a controlled overall CPU reduction or the
+unrecorded morning worker's behavior. No terminal/normal state intervals changed.
+
+The Linux Python 3.12 full gate ran all 3191 tests with zero first-pass failures
+and 19 explicit platform/runtime/tool-availability skips. macOS Python 3.12 also
+ran all 3191 tests (three optional skips), but its final retry retained four
+assertions: `SupervisorReviewTests.test_missing_history_settles_unknown_with_exact_evidence`,
+both `pane` subtests of
+`HistoryBoundObservationTests.test_unbound_run_settles_recoverable_unknown_when_pane_is_not_dead`,
+and `PromptProjectionCacheTests.test_warm_projection_beats_a_full_walk`.
+
+All four reproduce using the unchanged `6bdfaa8` source and the same interpreter
+and dependencies. The control assertions expect `native_history_missing` but get
+`native_binding_missing`; their product implementation and upstream pin are
+unchanged here. The projection's absolute median bound is 5 ms; the baseline
+measured 5.44 ms under load. Keep those assertions and report the Mac gate as
+failed, not green. Residual limits: these control-state paths lack current full
+acceptance, and the prompt projection's absolute latency target is not established
+on this busy Mac. Follow up the control error contract in its shared owner and
+measure/isolate the latency fixture before changing either behavior or its bound.
+The initially failing UI tests passed the maintained final retry.
+
+Neither full run emitted Python ResourceWarning, RuntimeWarning or
+DeprecationWarning. Asyncio slow-task diagnostics occurred under concurrent load;
+the intentional crash-hook traceback and corrupt-cache diagnostics belong to
+passing failure-path fixtures. Logs, baseline reproductions, source hashes and
+the installed receipt are retained privately at
+`~/.config/corral/development/cpu-20261112/`. Temporary Linux validation ran outside
+the live checkout; no hosted user sessions were stopped.
+
 ## CPU optimization acceptance (owner approval, 2026-10-25)
 
 Optimize repeated work without increasing normal state-refresh intervals, slowing input echo, dropping final terminal state, changing terminal stream ordering, or resizing a hosted pane on behalf of a hidden viewer. The previous 50 ms host-stream pacing experiment caused the owner's Mac terminal to nearly stop refreshing and was reverted; do not repeat it as a CPU remedy.
