@@ -326,6 +326,15 @@ def hosted_identity(
             argv=(sys.executable, "-m", "corral.codex_proxy", "--", *plan.argv),
             cwd=plan.cwd,
         )
+    if runtime_id == "opencode":
+        # 空白新建 / 接力新建没有原生 id：launch 时预定完整 ses_ id 并经
+        # -s 注入，SessKit 随后走已有的 cmdline -s 精确通道绑定，不再靠
+        # started<=created+2s 时间猜。原生恢复已带 -s、子命令透传一律不动
+        #（见 opencode_identity.should_bind_plan）。
+        from corral import opencode_identity
+
+        plan, opencode_env = opencode_identity.bind_hosted_ident(plan, ident)
+        return plan, opencode_env
     return plan, []
 
 

@@ -299,7 +299,7 @@ def _codex_resumed_thread_id(pane_pid: int) -> str | None:
     return None
 
 
-def annotate(sessions) -> None:
+def annotate(sessions, provisional_names: set[str] | None = None) -> None:
     """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。
 
     同一时刻一个进程只属于一个 pane：已经对上某个 pane 的 pid 不再参与后续
@@ -311,9 +311,20 @@ def annotate(sessions) -> None:
     扫描没标出 pid 时仍要按 tmux 名贴回去。Pi 的 jsonl 写完即关、claim 过期
     后 `_apply_live_flags` 经常拿不到 pid；旧逻辑这里直接 return，侧栏就把还
     在跑的托管会话画成 Enter restart，回车却走 ``new-session -A`` 接回原进程。
+
+    `provisional_names` 是本进程刚建 pane 的托管名集合（年轻占位卡）：这些
+    pane 只接受 pid 精确相等，祖先链不再往上贴——agent 尚未注册 pid 时祖先链
+    只有误伤、没有收益（短命 `arch`/Rosetta 探测子进程曾把整卡贴错 pane）。
+    为 None 时年轻豁免关闭（调用方不感知占位态，如 agent 只读查询），但
+    OpenCode 预钉 pane 的祖先链跳过依然生效（见下）。
+
+    OpenCode 祖先链只对“有 claim 的预钉 pane”跳过：SessKit 已凭预钉 ``-s``
+    精确绑定，DB 行未落盘时会话根本不在候选里，祖先链只会把短命子进程误绑
+    上来。预钉前老 pane（无 claim）保留祖先链兼容，否则子进程模型里永不贴名。
     """
     if not sessions:
         return
+    young = set(provisional_names or ())
     candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
     tmux_sessions = _list_tmux_sessions("#{session_name}|#{pane_pid}|#{pane_current_command}")
     if not tmux_sessions:
@@ -321,16 +332,47 @@ def annotate(sessions) -> None:
 
     assigned_pids: set[int] = set()
     assigned_names: set[str] = set()
+    _claim_exists_memo: dict[str, bool] = {}
+
+    def _pane_has_opencode_claim(name: str) -> bool:
+        """该 pane 名是否有预钉 claim（单轮 annotate 内按名 memo）。"""
+        if name in _claim_exists_memo:
+            return _claim_exists_memo[name]
+        exists = False
+        parsed = _parse_managed_session_name(name)
+        if parsed is not None and parsed[0] == "opencode":
+            try:
+                from corral import opencode_identity
+
+                exists = opencode_identity.ses_id_for_ident(parsed[1]) is not None
+            except ImportError:  # pragma: no cover - 包结构异常时按老 pane 兼容
+                exists = False
+        _claim_exists_memo[name] = exists
+        return exists
 
     def _claim(name: str, pane_pid: int, *, exact_only: bool) -> None:
         if name in assigned_names:
             return
-        matches = [
-            (pid, session)
-            for pid, session in candidates.items()
-            if pid not in assigned_pids
-            and (pid == pane_pid or (not exact_only and _is_descendant(pid, pane_pid, ppid_map)))
-        ]
+        matches: list[tuple[int, dict]] = []
+        for pid, session in candidates.items():
+            if pid in assigned_pids:
+                continue
+            if pid == pane_pid:
+                # 精确命中永远生效（含年轻 pane 与 OpenCode）。
+                matches.append((pid, session))
+                continue
+            if exact_only or name in young:
+                # 年轻占位 pane 不走祖先链：agent 尚未注册 pid 时只有误伤、
+                # 没有收益（短命 arch/Rosetta 探测子进程曾把整卡贴错 pane）。
+                continue
+            if str((session or {}).get("source") or "") == "opencode":
+                # 有 claim 的预钉 pane 只走精确（SessKit -s 已绑定，DB 未落盘
+                # 时会话不在候选里，祖先链只会误绑短命子进程）；无 claim 老 pane
+                # 保留祖先链兼容。
+                if _pane_has_opencode_claim(name):
+                    continue
+            if _is_descendant(pid, pane_pid, ppid_map):
+                matches.append((pid, session))
         if not matches:
             return
         pid, session = matches[0]
@@ -383,6 +425,28 @@ def _annotate_unmatched_by_session_name(
         if parsed is None:
             continue
         runtime, _ident = parsed
+        if runtime == "opencode":
+            # OpenCode 短 tmux ident（8 位随机）与 ses_… 无对应关系，不得按名
+            # 前缀匹配（与 SessKit _session_for_host_ident 的 16 字符门限对齐；
+            # 今天恒为 False 的比较一旦放宽就会变成前缀碰撞误绑）。精确通道
+            # 只有两条：SessKit 的 cmdline -s（pid 路已处理）与这里的 claim。
+            try:
+                from corral import opencode_identity
+            except ImportError:  # pragma: no cover - 包结构异常时退回不贴名
+                continue
+            expected = opencode_identity.ses_id_for_ident(_ident)
+            if not expected:
+                continue
+            matches = [
+                session for session in unnamed
+                if str(session.get("source") or "") == "opencode"
+                and str(session.get("id") or "") == expected
+            ]
+            if len(matches) == 1:
+                matches[0]["keepalive_name"] = name
+                assigned_names.add(name)
+                unnamed.remove(matches[0])
+            continue
         if runtime == "codex":
             # 旧版直连 pane 没有 claim；仅完整 resume UUID 能证明归属。
             # 八位 tmux ident 不能单独绑定历史，避免串到相邻会话。

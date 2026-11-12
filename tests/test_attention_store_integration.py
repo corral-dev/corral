@@ -242,7 +242,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
         )
         self.assertEqual(provisional["attention_kind"], "working")
 
-        def annotate(sessions: list[dict]) -> None:
+        def annotate(sessions: list[dict], provisional_names=None) -> None:
             sessions[0]["keepalive_name"] = name
 
         self.keepalive.side_effect = annotate

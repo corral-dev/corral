@@ -34,6 +34,7 @@ HOST_ENV_KEYS: tuple[str, ...] = (
     "CORRAL_SESSION_ID",
     "PICKUP_SESSION_ID",
     "SC_SESSION_ID",
+    "CORRAL_OPENCODE_SESSION_ID",
     "CORRAL_RUNTIME",
     "PICKUP_RUNTIME",
     "SC_RUNTIME",
@@ -46,6 +47,11 @@ _HOST_SESSION_ID_KEYS: tuple[str, ...] = (
     "PICKUP_SESSION_ID",
     "SC_SESSION_ID",
 )
+
+#: OpenCode 预钉完整会话 id 的专用 env 键（短 tmux ident 仍走上面的
+#: CORRAL_SESSION_ID）：完整 ``ses_`` id 才能精确绑定，8 位临时标识
+#: 不得前缀猜测（与 SessKit ``_session_for_host_ident`` 的 16 字符门限对齐）。
+OPENCODE_SESSION_ID_KEYS: tuple[str, ...] = ("CORRAL_OPENCODE_SESSION_ID",)
 
 HOSTED_DIR_PREFIX = "corral-"
 LEGACY_HOSTED_DIR_PREFIXES: tuple[str, ...] = ("pickup-",)
@@ -86,6 +92,16 @@ def session_id_from_env(env: dict[str, str] | None) -> str:
     """Corral's hosted-session ident from a process-environment snapshot."""
     if not env:
         return ""
+    # OpenCode 预钉的完整 ses_ id 优先：短 tmux ident（CORRAL_SESSION_ID）
+    # 只是 pane 名，与 ses_… 无对应关系，绝不能拿去前缀匹配。
+    # 跨运行时继承 benign（已核对 SessKit 各 parser）：claude/codex 根本不调
+    # 本回调；cursor（<32 无 dash 直接 miss）、kimi（<16 才拦，ses_ 与
+    # session_ 前缀不交）、pi（非本表 id 只进 bound_pids 防 cwd 回落）对 ses_
+    # 的处理与之前的短 ident 等价，都是 miss，不会误绑他表。
+    for key in OPENCODE_SESSION_ID_KEYS:
+        value = env.get(key)
+        if value:
+            return str(value)
     for key in _HOST_SESSION_ID_KEYS:
         value = env.get(key)
         if value:
@@ -326,6 +342,7 @@ __all__ = [
     "EPHEMERAL_PREFIXES",
     "HOST_ENV_KEYS",
     "LEGACY_SCHEMA_IDS",
+    "OPENCODE_SESSION_ID_KEYS",
     "TITLE_NOISE_PREFIXES",
     "TITLE_PROMPT_MARKER",
     "clip_for_digest",

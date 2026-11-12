@@ -606,12 +606,17 @@ class SessionStore:
             sessions = [session for bucket in self.sessions.values() for session in bucket]
             for provisional in self._provisional.values():
                 sessions.append(provisional)
+            young_names = {
+                str(self.hosted.get(key) or "")
+                for key in self._provisional
+                if self.hosted.get(key)
+            }
         if not sessions:
             with liveness.tmux_list_wave():
                 self._adopt_foreign_hosted([])
             return
         with liveness.tmux_list_wave():
-            liveness.annotate(sessions)
+            liveness.annotate(sessions, provisional_names=young_names)
             self._adopt_foreign_hosted(sessions)
         _freshen_from_disk(sessions)
         with self.lock:
@@ -973,8 +978,15 @@ class SessionStore:
         # 每个适配器负责按时间倒序返回，无需在界面层二次排序
         scanned = self._drop_tombstoned_sessions(scanned)
         annotated = [session for bucket in scanned.values() for session in bucket]
+        with self.lock:
+            young_names = {
+                str(self.hosted.get(key) or "")
+                for key in self._provisional
+                if self.hosted.get(key)
+            }
         with liveness.tmux_list_wave():
-            liveness.annotate(annotated)
+            # 年轻占位 pane 只接受 pid 精确命中（见 liveness.annotate）。
+            liveness.annotate(annotated, provisional_names=young_names)
             # Remote (and any other process) hosts panes without sharing this store.
             # Adopt unmatched managed panes as provisional interactive cards so the
             # desktop sidebar does not wait for history / lag through a preview phase.
@@ -1163,10 +1175,16 @@ class SessionStore:
         for key, provisional in list(self._provisional.items()):
             name = self.hosted.get(key) or provisional.get("keepalive_name")
             if name and name in claimed_keepalive:
-                # 真实会话已挂上同一托管名：占位卡退役，避免双卡。
                 real_session = claimed_keepalive[str(name)]
-                self._retire_provisional(key, provisional, real_session, name, attention_migrations)
-                continue
+                if self._is_mismatched_opencode_claim(provisional, real_session):
+                    # opencode claim 指向另一条 DB 行（annotate 误绑了旧会话）：
+                    # 不按名退役，落到下面的 claim 精确分支转正正确行，
+                    # 误绑行留给后续 _dedupe/annotate 纠正。
+                    pass
+                else:
+                    # 真实会话已挂上同一托管名：占位卡退役，避免双卡。
+                    self._retire_provisional(key, provisional, real_session, name, attention_migrations)
+                    continue
             if not name:
                 self._provisional.pop(key, None)
                 self.hosted.pop(key, None)
@@ -1223,6 +1241,27 @@ class SessionStore:
             self.hosted.pop(key, None)
 
     @staticmethod
+    def _is_mismatched_opencode_claim(provisional: dict, real_session: dict) -> bool:
+        """opencode 且有 claim 时，按名命中的会话必须与 claim 一致。
+
+        annotate 误绑（pid 复用/``candidates`` 碰撞/``assigned`` 顺序）会把旧
+        会话贴上新 pane 名；此时按名退役会把正确 DB 行晾成孤儿、错误行转正。
+        claim 存在且 id 不符 → True（调用方跳过按名退役，走 claim 精确分支）。
+        无 claim（老 pane / 禁缓存）→ False，保持旧行为：禁缓存下 claim 通道
+        关闭，annotate 的 opencode 命中只剩 SessKit ``-s`` pid 精确绑定，可信。
+        """
+        if str(provisional.get("source") or "") != "opencode":
+            return False
+        try:
+            from corral import opencode_identity
+        except ImportError:
+            return False
+        expected = opencode_identity.ses_id_for_ident(str(provisional.get("id") or ""))
+        if not expected:
+            return False
+        return str(real_session.get("id") or "") != expected
+
+    @staticmethod
     def _pane_is_dead(name: str, live: dict[str, tuple[str, bool]] | None) -> bool:
         """Consult the pre-probed snapshot; unknown names preserve the card."""
         if live is not None:
@@ -1261,6 +1300,37 @@ class SessionStore:
             # Codex UUIDs are independent of pane id and cwd. Wait for an
             # exact claim rather than converting a nearby history card.
             return None
+        if runtime_id == "opencode":
+            # 预钉 claim 精确通道：短 ident → 完整 ses_ id，找到即认领；
+            # DB 行尚未落盘（正常 pending）或 claim 缺失（老 pane）时绝不
+            # 退回 mtime 猜测——单候选兜底曾把同 cwd 被 touch 的旧卡吃掉。
+            try:
+                from corral import opencode_identity
+            except ImportError:
+                return None
+            expected = opencode_identity.ses_id_for_ident(
+                str(provisional.get("id") or "")
+            )
+            if not expected:
+                if not cache_enabled():
+                    # 禁缓存时无法区分“新 pane pending”（DB 未落盘）与老 pane：
+                    # 绝不退回 mtime 猜测。-s/env 主通道（SessKit cmdline -s 精确
+                    # 绑定）不受 CORRAL_CACHE 影响，mtime 兜底纯属多余。
+                    return None
+                # 老 pane（预钉上线前创建，无 claim）才走下面的 mtime 兼容逻辑。
+                pass
+            else:
+                for session in self.sessions.get(runtime_id) or []:
+                    if session.get("provisional"):
+                        continue
+                    if str(session.get("id") or "") != expected:
+                        continue
+                    if session_key(session) in self.hosted:
+                        return None
+                    if session.get("keepalive_name"):
+                        return None
+                    return session
+                return None
         cwd = normalize_cwd(provisional.get("cwd"))
         known = set(self._order)
         bucket = self.sessions.get(runtime_id) or []
@@ -1938,6 +2008,19 @@ class SessionStore:
         """Drop a derived empty card, never native history. Caller holds self.lock."""
         self._provisional.pop(key, None)
         self.hosted.pop(key, None)
+        try:
+            from corral import opencode_identity
+        except ImportError:
+            pass
+        else:
+            # discard 内部已吞 OSError；其它异常不应掩盖退役主流程，
+            # 这里只处理 import 缺失（包结构异常），让真 bug 继续抛。
+            runtime_id, _, ident = key.partition(":")
+            if runtime_id == "opencode" and ident:
+                try:
+                    opencode_identity.discard(ident)
+                except OSError:
+                    pass
         runtime = str(session.get("source") or "")
         self.sessions[runtime] = [
             item for item in self.sessions.get(runtime, [])
