@@ -18,12 +18,11 @@ state and terminal intervals unchanged. Verify with an actual blocked subprocess
 parent loss and lock acquisition by a successor, not only a mocked loop boundary.
 
 `published_meta()` was decoding the entire 1.2 MiB shared index on every worker
-poll and keepalive tick just to obtain its timestamp/depth. Reuse only the two
-validated scalar values while path, cohort, index version, device/inode, size
-and nanosecond mtime/ctime match. Replacements, in-place changes, corruption and
-read failures must invalidate reuse. Never retain decoded session payloads or
-apply a time-based TTL that hides a newer publication. This optimization changes
-metadata-read cost, not snapshot freshness or the consumer TTL.
+poll and keepalive tick just to obtain its timestamp/depth. It now reuses only
+those validated scalar values under the [shared snapshot-metadata rule](~/.config/agentsync/docs/MAC_PERFORMANCE_GOVERNANCE_GUIDE.md#reading-metadata-from-derived-snapshots-2026-11-12),
+keyed by the index path, cohort, index version and native file stamp. Session
+payloads are not retained by this metadata cache. Snapshot freshness, coverage
+and consumer TTL remain unchanged.
 
 On a 1,281,384-byte local index, 150 same-file reads measured median process CPU
 7.27 ms decoding each time versus 0.020 ms reusing validated metadata (about
@@ -62,6 +61,13 @@ on this busy Mac. Follow up the control error contract in its shared owner and
 measure/isolate the latency fixture before changing either behavior or its bound.
 The initially failing UI tests passed the maintained final retry.
 
+Environment follow-up: the Mac run took 3047.5 seconds versus 396 seconds on
+Linux, with repeated slow-task diagnostics. The hosts and concurrent loads differ,
+so those durations do not establish a single cause. Separate interactive-fixture
+scheduling and load-sensitive latency preconditions from batch compilation in the
+maintained test runner before another full-run investigation; this finding does
+not change the global background-work policy or authorize weakened assertions.
+
 Neither full run emitted Python ResourceWarning, RuntimeWarning or
 DeprecationWarning. Asyncio slow-task diagnostics occurred under concurrent load;
 the intentional crash-hook traceback and corrupt-cache diagnostics belong to
@@ -80,7 +86,7 @@ The TUI also blocked for 62.6 s and 8.5 s when Textual's bounded output queue fi
 
 ### SessKit 0.2.20 hot-session refresh handoff (delivered 2026-10-25)
 
-`refresh_session` now shares the warm list memo instead of always rebuilding: Pi reuses a bounded verified JSONL prefix (64 MiB of source bytes / 64 files, keyed by inode, size, mtime/ctime, a frozen head checksum and the last committed line), and OpenCode v2 reads the per-session row plus message aggregate before the memo lookup. The published 0.2.20 artifact introduced this; the current pin is 0.2.21, which adds the streaming JSONL rebuild without changing the refresh contract. Bump VERSION, both URLs and both digests in `scripts/sesskit_dep.py` together, then `uv lock` and `dev_env.py prepare`. Isolated measurements on the local corpus with a real append/insert per iteration: Pi 13.2 MB refresh 22.5 -> 0.35 ms CPU (263 MB -> 0.09 MB read), OpenCode mean 53.7 -> 9.7 ms with untouched sessions 53.2 -> 1.2 ms.
+`refresh_session` now shares the warm list memo instead of always rebuilding: Pi reuses a bounded verified JSONL prefix (64 MiB of source bytes / 64 files, keyed by inode, size, mtime/ctime, a frozen head checksum and the last committed line), and OpenCode v2 reads the per-session row plus message aggregate before the memo lookup. The published 0.2.20 artifact introduced this; the 0.2.21 follow-up added the streaming JSONL rebuild without changing the refresh contract. Bump VERSION, both URLs and both digests in `scripts/sesskit_dep.py` together, then `uv lock` and `dev_env.py prepare`. Isolated measurements on the local corpus with a real append/insert per iteration: Pi 13.2 MB refresh 22.5 -> 0.35 ms CPU (263 MB -> 0.09 MB read), OpenCode mean 53.7 -> 9.7 ms with untouched sessions 53.2 -> 1.2 ms.
 
 **A provider upgrade invalidates the shared scan index on purpose** (`provider_cohort()` includes the SessKit version). The TUI, remote service and scan worker must all restart onto the same provider build. A mixed pair silently loses `shared_index`, and each old process falls back to repeated full scans: right after the 0.2.20 install the still-running 0.2.19 TUI emitted a 0.7–1.1 s `scan_all` every ~13 s (`cache_hit: false, shared_index: false`). After restarting it on 0.2.20 the same machine measured 16–38 ms scans with `cache_hit: true, shared_index: true`; 60 s unsampled deltas were 47.1% -> 10.6% of one core for the TUI and 13.7% -> 10.9% for the remote service. Do not treat a slow post-upgrade scan as a regression until every consumer has restarted.
 
