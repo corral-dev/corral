@@ -191,6 +191,17 @@ before/after reductions or evidence about the unrecorded morning incident.
 No Apple-client binary or UI behavior changed in this follow-up; physical phone
 interaction and a universal 5 ms latency guarantee under load are not claimed.
 
+Delivery: source `32d3a0f` is committed and pushed to both product remotes. The
+active editable CLI still reports 0.24.364 and loads these exact committed module
+bytes; its Python 3.14.10 dependency check passes. The remote service was restarted
+without stopping hosted agents, its listener and relay are healthy, and the
+paired Mac reconnected. A real, unchanged Codex history returned the same 14
+prompt rows through the installed handler before/after a fresh hub: 128.2 ms cold
+versus 3.881 ms from persistent cache. Only counts, timings and hashes are retained;
+no history or prompt content was changed. This verifies the installed host handler,
+not a physical phone action or network-end-to-end latency. Public versions and
+release assets were not changed.
+
 ## CPU optimization acceptance (owner approval, 2026-10-25)
 
 Optimize repeated work without increasing normal state-refresh intervals, slowing input echo, dropping final terminal state, changing terminal stream ordering, or resizing a hosted pane on behalf of a hidden viewer. The previous 50 ms host-stream pacing experiment caused the owner's Mac terminal to nearly stop refreshing and was reverted; do not repeat it as a CPU remedy.

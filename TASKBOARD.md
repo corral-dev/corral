@@ -4,7 +4,6 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| CPU follow-up integration (Pi 96da440d; Codex handoff) | Delivering verified scope | Two product modules, three test modules; PERFORMANCE_KNOWLEDGE_BASE.md and TEST_ENVIRONMENT_GUIDE.md; local editable service | 2026-11-12 | 2026-11-13 16:48 | All three OpenCode workers accepted/closed. Mac 3256 passed after 16 maintained retries; Linux 3256 first-pass green. Installed Python 3.14: 93 control/cache + 76 scan checks pass. Commit/push and service restart next; unrelated dirty files preserved. |
 | Mac Pi TUI choppy + Pi host measure (owner+Pi run_7266abc5) | 部分验证：Debug 拉起渲染通过，终端 Metal 未触发；Pi 失败 provider 连接错误 | apple/macOS/Terminal/* (TerminalEmulatorView.swift 未提交); cli remote (Pi 只测) | 2026-11-05 | 2026-11-05 | Mac 0.3.164 发版成功（release 20261105-173428，全阶段绿，GitHub tag 已发）；本地机场池 19 成员 GitHub/Google 全挂、仅 Cloudflare 通，daemon 因带宽达标不触发保底而空转，已手动 proxy-agent down（7897 保留，AI 走美国自建/Tokyo 正常），发版流量走路由器透明代理；TUN 恢复待机场可用后再 up；Pi run_7266abc5 failed Connection error |
 | Release 20261103-135030 (release.py) | 失败: cli.install; resume | release.py pinned clones, release files and publication | 2026-11-03 14:05 | 2026-11-03 14:05 | Workspace ~/.config/corral/development/releases/20261103-135030 |
 | Release 20261102-205239 (release.py) | 失败: mac.export, mac.public, mac.analyze, mac.prepare, mac.install, mac.publish; resume | release.py pinned clones, release files and publication | 2026-11-02 20:55 | 2026-11-02 20:55 | Workspace ~/.config/corral/development/releases/20261102-205239 |
