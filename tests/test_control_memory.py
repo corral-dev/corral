@@ -177,7 +177,10 @@ class HistoryBoundObservationTests(unittest.TestCase):
 
     def test_unbound_run_settles_recoverable_unknown_when_pane_is_not_dead(self):
         # "alive" and "unknown" pane liveness both read as not dead; the
-        # supervisor must infer neither death nor progress from that.
+        # supervisor must infer neither death nor progress from that. A run
+        # that never binds an exact native session settles with the shared
+        # runner's ``native_binding_missing`` (distinct from a bound session
+        # whose history is missing/unreadable).
         for liveness in ("alive", "unknown"):
             with self.subTest(pane=liveness):
                 store = self.make_store()
@@ -194,12 +197,211 @@ class HistoryBoundObservationTests(unittest.TestCase):
                 record = store.get(run_id)
                 self.assertEqual(record["execution"], "unknown")
                 self.assertEqual(record["delivery"], "input_submitted")  # no replay, no fake rejection
-                self.assertEqual(record["error"]["code"], "native_history_missing")
-                self.assertIn("not judged dead", record["error"]["message"])
+                self.assertEqual(record["error"]["code"], "native_binding_missing")
+                self.assertIn("not resent", record["error"]["message"])
+                self.assertIn("stays recoverable", record["error"]["message"])
                 self.assertGreaterEqual(elapsed, 4)
                 self.assertLess(elapsed, 4 + 3 + 10)
                 self.assertEqual(len(hub.sent), 1)  # dispatched exactly once, never resent
                 self.assert_audited(store, run_id)
+
+    def test_bound_history_without_record_settles_history_missing(self):
+        # Genuinely bound counterpart: the native session is bound (history
+        # path present and readable) but the run's marker never appears, so
+        # the shared observation gate settles with ``native_history_missing``.
+        # Delivery is preserved and the brief is never resent.
+        for liveness in ("alive", "unknown"):
+            with self.subTest(pane=liveness):
+                store = self.make_store()
+                path = str(Path(self.tmp.name) / f"h-bound-{liveness}.jsonl")
+                self._old_turn(path)
+                session = self._session(path)
+                hub = _FakeHub(session, runtime=_StubRuntime([session]))
+                run_id = self._submit(store, f"k-bound-{liveness}", session)
+                cap, pane, txn = self._mocks(pane=liveness)
+                with cap, pane, txn:
+                    start = time.monotonic()
+                    self.assertEqual(self._run_shared(store, run_id, hub, budget=4), 0)
+                    elapsed = time.monotonic() - start
+                record = store.get(run_id)
+                self.assertEqual(record["execution"], "unknown")
+                self.assertEqual(record["delivery"], "input_submitted")
+                self.assertEqual(record["error"]["code"], "native_history_missing")
+                self.assertIn("not resent", record["error"]["message"])
+                self.assertIn("stays recoverable", record["error"]["message"])
+                self.assertGreaterEqual(elapsed, 4)
+                self.assertLess(elapsed, 4 + 3 + 10)
+                self.assertEqual(len(hub.sent), 1)
+                self.assert_audited(store, run_id)
+
+    def test_bound_then_lost_settles_engine_history_missing_with_fake_clock(self):
+        # Bound at admit/dispatch, then the native session loses its path
+        # before observation can record: the shared observation gate must own
+        # the timeout with engine-exact ``native_history_missing``
+        # (unknown/recoverable, no resend). A fake monotonic/sleep pair
+        # advances the 4s/7s budgets without real waits, while the real
+        # run_supervisor + Corral hooks + SessKit reads still run.
+        from agent_session_control.supervisor import run_supervisor
+
+        class _FakeClock:
+            def __init__(self, start: float):
+                self.now = start
+                self.lock = threading.Lock()
+
+            def monotonic(self):
+                with self.lock:
+                    return self.now
+
+            def sleep(self, secs: float):
+                with self.lock:
+                    self.now += float(secs)
+
+        store = self.make_store()
+        path = str(Path(self.tmp.name) / "h-lost-fake.jsonl")
+        self._old_turn(path)
+        session = self._session(path)
+        hub = _FakeHub(session, runtime=_StubRuntime([session]))
+        run_id = self._submit(store, "k-lost-fake", session)
+        real_find = hub.store.find_session
+
+        def _losing_find(key):
+            # Stay bound through admit/dispatch (no send yet) so the run
+            # starts bound; after the brief is sent the path is gone and the
+            # exact rebind keeps failing.
+            if not hub.sent:
+                return real_find(key)
+            return {"source": "claude", "id": "fix-mem", "cwd": self.project, "provisional": True}
+
+        cap, pane, txn = self._mocks()
+        start_real = time.monotonic()
+        clock = _FakeClock(start_real)
+        with cap, pane, txn, mock.patch.object(hub.store, "find_session", side_effect=_losing_find):
+            with mock.patch.dict(os.environ, {"CORRAL_HISTORY_WAIT_TIMEOUT": "4"}):
+                with mock.patch.object(
+                    time, "monotonic", side_effect=clock.monotonic
+                ), mock.patch.object(time, "sleep", side_effect=clock.sleep):
+                    hooks, state = control_worker.corral_hooks(store, run_id, hub)
+                    try:
+                        rc = run_supervisor(store, run_id, hooks, marker_namespace="Corral", history_wait=7)
+                    finally:
+                        try:
+                            state["locks"].close()
+                        except Exception:  # noqa: BLE001 - teardown must not fail assertions
+                            pass
+        self.assertEqual(rc, 0)
+        record = store.get(run_id)
+        self.assertEqual(record["execution"], "unknown")
+        self.assertEqual(record["delivery"], "input_submitted")
+        self.assertEqual(
+            record["error"],
+            {
+                "code": "native_history_missing",
+                "message": (
+                    "no native history appeared in time; "
+                    "the brief was not resent and the run stays recoverable"
+                ),
+            },
+        )
+        self.assertEqual(len(hub.sent), 1)
+        self.assert_audited(store, run_id)
+        self.assertGreaterEqual(clock.now - start_real, 7)
+
+    def test_rebind_before_deadline_avoids_binding_missing_with_fake_clock(self):
+        # Create starts provisional; the native session materializes on the
+        # second refresh, before the engine's binding budget. The run must
+        # bind and complete (never ``native_binding_missing``). Fake clock
+        # advances budgets without real waits; the real runner/hooks/SessKit
+        # path still runs and the reply is persisted through the stub hub.
+        from agent_session_control.supervisor import run_supervisor
+
+        class _FakeClock:
+            def __init__(self, start: float):
+                self.now = start
+                self.lock = threading.Lock()
+
+            def monotonic(self):
+                with self.lock:
+                    return self.now
+
+            def sleep(self, secs: float):
+                with self.lock:
+                    self.now += float(secs)
+
+        store = self.make_store()
+        path = str(Path(self.tmp.name) / "h-rebind-fake.jsonl")
+        self._old_turn(path)
+        hub = _FakeHub(runtime=_StubRuntime(), planned_key="claude:fix-rebind")
+        spec = {
+            "mode": "create",
+            "runtime": "claude",
+            "cwd": self.project,
+            "model": None,
+            "prompt": "fix it",
+            "on_busy": "steer",
+            "queue_timeout": 0,
+            "caller": {"actor": "t"},
+            "task_ref": None,
+        }
+        initial = {
+            "mode": "create",
+            "runtime": "claude",
+            "session_ref": None,
+            "cwd": self.project,
+            "delivery": "accepted",
+            "execution": "queued",
+            "acceptance": "unverified",
+            "requested_model": None,
+        }
+        run, _ = store.create("t", "k-rebind-fake", spec, initial)
+        run_id = run["run_id"]
+        bound_session = {
+            "source": "claude",
+            "id": "fix-rebind",
+            "cwd": self.project,
+            "path": path,
+            "live": True,
+            "keepalive_name": "corral-claude-rebind",
+        }
+        refreshes: list = []
+        real_refresh = hub.store.refresh
+
+        def _materialize():
+            refreshes.append(True)
+            if len(refreshes) >= 2:
+                hub.store.by_key["claude:fix-rebind"] = bound_session
+            return real_refresh()
+
+        def _persist_both(text):
+            _append_fixture_row(path, {"type": "user", "cwd": self.project, "message": {"content": text}})
+            _append_fixture_row(
+                path, {"type": "assistant", "message": {"content": [{"type": "text", "text": "rebind done"}]}}
+            )
+
+        hub.append_on_send = _persist_both
+        cap, pane, txn = self._mocks()
+        trust = mock.patch("corral.control_worker._plain", return_value="composer ready")
+        start_real = time.monotonic()
+        clock = _FakeClock(start_real)
+        with cap, pane, txn, trust, mock.patch.object(hub.store, "refresh", side_effect=_materialize):
+            with mock.patch.dict(os.environ, {"CORRAL_HISTORY_WAIT_TIMEOUT": "4"}):
+                with mock.patch.object(
+                    time, "monotonic", side_effect=clock.monotonic
+                ), mock.patch.object(time, "sleep", side_effect=clock.sleep):
+                    hooks, state = control_worker.corral_hooks(store, run_id, hub)
+                    try:
+                        rc = run_supervisor(store, run_id, hooks, marker_namespace="Corral", history_wait=7)
+                    finally:
+                        try:
+                            state["locks"].close()
+                        except Exception:  # noqa: BLE001 - teardown must not fail assertions
+                            pass
+        self.assertEqual(rc, 0)
+        record = store.get(run_id)
+        self.assertEqual(record["execution"], "completed")
+        self.assertIsNone(record.get("error"))
+        self.assertEqual(record["result"]["final_response"], "rebind done")
+        self.assertEqual(len(hub.sent), 1)
+        self.assertGreaterEqual(len(refreshes), 2)
 
     def test_binding_before_the_deadline_restarts_the_wait(self):
         store = self.make_store()
@@ -386,6 +588,9 @@ class HistoryBoundObservationTests(unittest.TestCase):
         self.assertEqual(len(hub.sent), 1)
 
     def test_recover_observes_without_resending_or_creating(self):
+        # Recovering a never-bound unknown run restarts observation only; the
+        # shared await-binding gate settles it again with
+        # ``native_binding_missing`` without resending or recreating.
         store = self.make_store()
         session = self._session(None)
         hub = _FakeHub(session, runtime=_StubRuntime([session]))
@@ -404,7 +609,8 @@ class HistoryBoundObservationTests(unittest.TestCase):
         record = store.get(run_id)
         self.assertEqual(record["execution"], "unknown")
         self.assertEqual(record["delivery"], "input_submitted")
-        self.assertEqual(record["error"]["code"], "native_history_missing")
+        self.assertEqual(record["error"]["code"], "native_binding_missing")
+        self.assertIn("not resent", record["error"]["message"])
         self.assertGreaterEqual(elapsed, 4)
         self.assertEqual(hub.prepared, [])
         self.assertEqual(hub.required, [])

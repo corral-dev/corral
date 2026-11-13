@@ -76,6 +76,28 @@ represents the legitimate pre-frame conversation fallback.
   machine-specific interpreter or reintroduce bare `python3` in a tmux
   launch line.
 
+## Archive-based Linux verification
+
+A prepared venv interpreter does not automatically place its executables on the
+child-process `PATH`. Run the maintained entry through `dev_env.py run`, or put
+that archive's `.venv/bin` first explicitly before `ci-test.py`; otherwise the
+Ruff subprocess can fail with `FileNotFoundError: ruff` despite a ready venv.
+For a source archive without `.git`, set `CORRAL_CI_STAMP` to a private file in
+that temporary verification directory before the complete run. A green suite
+followed by failure to locate `.git` is not a successful gate exit.
+
+Use a plain declared fixture shell (`SHELL=/bin/sh`) for remote full runs. In the
+2026-11-13 Linux run, an inherited interactive shell left the OSC 11 probe's
+`python3 -c` line in `-- MULTILINE --` mode, so the program never started and both
+the first attempt and isolated retry timed out. With the same source, interpreter
+and dependencies plus the explicit shell, all 3256 tests passed first try. This
+is a fixture execution precondition, not evidence of a theme-response regression;
+do not change the user's login shell or any live tmux server. Before repeating a
+failed gate, inspect its captured terminal and correct only the test launch
+context. Follow-up: the existing runner preflight should report effective
+shell/PATH/stamp roots for archive runs; no runner implementation change is
+justified by these preparation failures alone.
+
 ## Resize-hold fixture ownership
 A synthetic session name and a prefilled live grid are unit-test inputs, not a
 running tmux host. Stop, wake and join the pane's capture worker before injecting

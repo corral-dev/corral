@@ -22,6 +22,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.request import pathname2url
 
 from corral.cache import cache_dir, enabled, file_signature, history_signature
 from corral.remote.richmsg import RichMessage
@@ -68,6 +69,14 @@ def _same_content(
     return stored[1:] == current[1:]
 
 
+def _rollback(conn: sqlite3.Connection) -> None:
+    """Best-effort rollback so a failed write keeps no txn or lock behind."""
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        pass
+
+
 class TranscriptCache:
     """按历史文件签名保存规范化消息；签名变化即失效。"""
 
@@ -90,20 +99,35 @@ class TranscriptCache:
             try:
                 yield conn
             except sqlite3.Error:
-                try:
-                    conn.rollback()
-                except sqlite3.Error:
-                    pass
+                _rollback(conn)
             return
+        opened_here = False
         try:
             if create:
                 self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 os.chmod(self.path.parent, 0o700)
             elif not self.path.exists():
+                # Fast path only: the mode=rw open below stays race-safe if
+                # the file disappears after this check (open raises, no create).
                 yield None
                 return
             if conn is None:
-                conn = sqlite3.connect(self.path, timeout=0.08)
+                if create:
+                    conn = sqlite3.connect(self.path, timeout=0.08)
+                else:
+                    # Reads must not create the main DB file; mode=rw opens
+                    # an existing file and raises instead of creating a
+                    # missing one. WAL sidecars on an existing DB remain
+                    # SQLite's own native behavior, not cache creation.
+                    conn = sqlite3.connect(
+                        "file:" + pathname2url(str(self.path)) + "?mode=rw",
+                        timeout=0.08,
+                        uri=True,
+                    )
+                # Own the new handle from the instant connect returns, before
+                # any PRAGMA/schema work that can fail: the handler below must
+                # close it even though it is not cached in thread-local yet.
+                opened_here = True
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA busy_timeout=80")
@@ -115,15 +139,20 @@ class TranscriptCache:
                     except OSError:
                         pass
         except (OSError, sqlite3.Error):
+            if opened_here:
+                _rollback(conn)
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+                if getattr(self._local, "connection", None) is conn:
+                    self._local.connection = None
             yield None
             return
         try:
             yield conn
         except sqlite3.Error:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            _rollback(conn)
 
     @staticmethod
     def _init_schema(conn: sqlite3.Connection) -> None:
@@ -162,6 +191,42 @@ class TranscriptCache:
         )
         conn.commit()
 
+    @staticmethod
+    def _write_row(conn: sqlite3.Connection, statement: str, params: tuple) -> bool:
+        """Single INSERT-or-replace with narrow schema repair.
+
+        Only a confirmed missing table (``OperationalError: no such table``)
+        runs schema creation and one retry. Lock/busy, readonly, I/O and
+        corrupt-DB failures roll back and report ``False`` instead. Every
+        failed path rolls back first, so the cached handle never retains an
+        open write transaction or its lock. A ``False`` write is a silent
+        cache miss per the module contract, never a caller-visible error.
+        """
+        try:
+            conn.execute(statement, params)
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                _rollback(conn)
+                return False
+        except sqlite3.Error:
+            _rollback(conn)
+            return False
+        _rollback(conn)
+        try:
+            TranscriptCache._init_schema(conn)
+        except (OSError, sqlite3.Error):
+            _rollback(conn)
+            return False
+        try:
+            conn.execute(statement, params)
+            conn.commit()
+            return True
+        except sqlite3.Error:
+            _rollback(conn)
+            return False
+
     def get(
         self,
         runtime: str,
@@ -171,15 +236,21 @@ class TranscriptCache:
         signature = history_signature(path)
         if signature is None:
             return None
-        with self._connect() as conn:
+        # Read path: no mkdir/chmod/schema, and mode=rw cannot create the
+        # main DB file. WAL sidecars on an existing DB are SQLite's own
+        # native behavior, not cache creation.
+        with self._connect(create=False) as conn:
             if conn is None:
                 return None
-            row = conn.execute(
-                "SELECT dev, ino, size, mtime_ns, parser_version, generation, "
-                "reader_state, payload FROM transcript "
-                "WHERE runtime=? AND session_key=?",
-                (runtime, session_key),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT dev, ino, size, mtime_ns, parser_version, generation, "
+                    "reader_state, payload FROM transcript "
+                    "WHERE runtime=? AND session_key=?",
+                    (runtime, session_key),
+                ).fetchone()
+            except sqlite3.Error:
+                return None
             if row is None or row[4] != PARSER_VERSION:
                 return None
             if int(row[1]) != signature[1]:
@@ -234,27 +305,27 @@ class TranscriptCache:
         with self._write_lock, self._connect() as conn:
             if conn is None:
                 return
-            conn.execute(
+            statement = (
                 "INSERT OR REPLACE INTO transcript("
                 "runtime, session_key, path, dev, ino, size, mtime_ns, "
                 "parser_version, generation, reader_state, payload, accessed_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    runtime,
-                    session_key,
-                    path,
-                    signature[0],
-                    signature[1],
-                    signature[2],
-                    signature[3],
-                    PARSER_VERSION,
-                    int(generation or 1),
-                    state,
-                    payload,
-                    time.time(),
-                ),
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
             )
-            conn.commit()
+            params = (
+                runtime,
+                session_key,
+                path,
+                signature[0],
+                signature[1],
+                signature[2],
+                signature[3],
+                PARSER_VERSION,
+                int(generation or 1),
+                state,
+                payload,
+                time.time(),
+            )
+            self._write_row(conn, statement, params)
 
     # -- Your prompts projection -----------------------------------------
     #
@@ -284,14 +355,19 @@ class TranscriptCache:
         current = file_signature(path)
         if current is None:
             return None
-        with self._connect() as conn:
+        # Read path: same no-build-storage contract as get(); a missing table
+        # is a miss the next put repairs.
+        with self._connect(create=False) as conn:
             if conn is None:
                 return None
-            row = conn.execute(
-                "SELECT ino, size, generation, upto_seq, complete, payload "
-                "FROM session_prompts WHERE runtime=? AND session_key=?",
-                (runtime, session_key),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT ino, size, generation, upto_seq, complete, payload "
+                    "FROM session_prompts WHERE runtime=? AND session_key=?",
+                    (runtime, session_key),
+                ).fetchone()
+            except sqlite3.Error:
+                return None
             if row is None:
                 return None
             ino, size, stored_generation, upto_seq, complete, raw = row
@@ -334,25 +410,25 @@ class TranscriptCache:
         with self._write_lock, self._connect() as conn:
             if conn is None:
                 return
-            conn.execute(
+            statement = (
                 "INSERT OR REPLACE INTO session_prompts("
                 "runtime, session_key, path, ino, size, generation, upto_seq, "
                 "complete, payload, accessed_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    runtime,
-                    session_key,
-                    path,
-                    current[1],
-                    current[2],
-                    int(generation or 0),
-                    int(upto_seq or 0),
-                    1,
-                    payload,
-                    time.time(),
-                ),
+                ") VALUES(?,?,?,?,?,?,?,?,?,?)"
             )
-            conn.commit()
+            params = (
+                runtime,
+                session_key,
+                path,
+                current[1],
+                current[2],
+                int(generation or 0),
+                int(upto_seq or 0),
+                1,
+                payload,
+                time.time(),
+            )
+            self._write_row(conn, statement, params)
 
     def close(self) -> None:
         conn = getattr(self._local, "connection", None)

@@ -76,6 +76,121 @@ the installed receipt are retained privately at
 `~/.config/corral/development/cpu-20261112/`. Temporary Linux validation ran outside
 the live checkout; no hosted user sessions were stopped.
 
+### Residual-gate repair requirements (2026-11-12)
+
+The owner authorized OpenCode workers to finish the remaining non-UI work.
+Keep exact-native-binding failure distinct from a bound session whose history is
+unavailable, and resolve the existing assertions against the pinned shared
+control engine's verified contract. Preserve unknown/recoverable settlement,
+no-resend behavior and evidence assertions; do not add a Corral executor to
+override shared semantics.
+
+The prompt projection must keep complete, fresh rows and existing invalidation
+and concurrency boundaries. Retain both the relative speedup and 5 ms warm-path
+assertions while profiling any overhead; a slower host is not permission to
+raise the bound or replace correctness with a timing skip. Test-runner changes
+must retain complete test-ID coverage, isolation, diagnostic output, retry and
+timeout behavior, and the existing source/environment stamp. Run independent
+focused checks during implementation, then run the integrated full gate once
+the worker changes are stable; do not launch competing full suites.
+
+Review refinements: a lost binding after observation starts must also have one
+deterministic timeout owner, retaining recoverability and no-resend evidence.
+Transcript-cache reads should avoid directory/schema setup and must not create
+a database if the file disappears between checking and opening it. Any failed
+cache write or schema repair must roll back its transaction before returning a
+cache miss, so a failed derived-cache write cannot retain a lock. Keep persistent
+regression coverage for missing/schema-less/corrupt files, read-to-write recovery
+and transaction failure alongside the existing freshness/concurrency assertions.
+A connection opened during failed PRAGMA/schema initialization must be closed
+before returning a miss, even before it is published to thread-local storage.
+Deletion-race tests must remove the file between the existence check and open;
+transaction tests must cover commit and schema-retry failures after a write starts,
+not only a lock refusal before a transaction exists.
+
+### Follow-up repair and integrated acceptance (2026-11-13)
+
+The original CPU fixes above remain installed; this follow-up resolves the
+control-contract and derived-cache issues found during their verification.
+The pinned shared runner (AgentSessionControl 0.1.0) is now the sole timeout
+owner for never-bound `native_binding_missing` and bound-but-unrecorded/lost
+`native_history_missing`. Corral still owns unreadable-history
+`native_history_unavailable`, verified terminal death, ownership conflict and
+history reset. Both missing categories preserve `unknown`, recoverability,
+`input_submitted`, one send and audit evidence. Fake-clock regressions exercise
+the real shared supervisor and Corral hooks, including rebind before deadline.
+No executor, dependency pin or normal refresh interval changed.
+
+Transcript reads skip repeated mkdir/chmod/schema work and use an existing-file
+SQLite URI open. Missing/schema-less/corrupt files degrade to misses; only a
+confirmed missing table gets one schema repair/retry. Failed writes/commits
+roll back, and failed initialization closes the newly owned connection before
+it can leak. Thirteen persistent boundary tests cover the actual deletion race,
+post-INSERT commit/repair/retry failures, independent writer-lock acquisition and
+later recovery. WAL sidecars remain permitted for an existing database. The
+reusable connection/transaction rules live in the [Python standard](~/Codes/_standards/python.md#sqlite-derived-cache-failure-ownership).
+
+Three original OpenCode workers were accepted against their actual diffs and
+coordinator reruns. The cache worker needed three attempts (two true-defect
+steers: rollback/read-boundary gaps, then failed-PRAGMA connection ownership;
+no brief-clarity retries). The control and runner workers needed two attempts
+each. Runner packing/serialization was not defective: its 112-test private batch
+passed in 8.19 s, but that single sample is not a controlled explanation of the
+old Mac slowdown. Runner implementation, coverage, timeouts, retries and stamps
+remain unchanged.
+
+Current complete gates (Ruff plus exactly-once test-ID audit):
+
+- macOS arm64 / checkout Python 3.12.12: 3256 tests, three optional skips, 16
+  first-pass failures; all 16 passed the maintained single retry, exit 0 and
+  matching source/environment stamp. This is not a first-pass-green result.
+  The 5 ms prompt target failed under the parallel load (14.09 ms median) and
+  passed the isolated retry and focused checks without changing either bound.
+  Fourteen other failures were existing UI fixtures; one was the relay-writer
+  fixture's wait for its synthetic sink. Those paths were not modified here.
+- Linux x86_64 / Python 3.12.13: the final correctly prepared archive run passed
+  all 3256 tests first try, 19 explicit platform/tool/history-availability skips,
+  exit 0 and a private source/environment stamp. Earlier attempts had separate
+  PATH/stamp/shell preparation failures; see the [archive verification recipe](TEST_ENVIRONMENT_GUIDE.md#archive-based-linux-verification).
+- Actual installed editable Python 3.14.10: 93 control/cache/concurrency tests
+  and 76 scan-index/worker tests pass with no Python warnings. Coordinator
+  checkout checks also passed 111 control/runner-helper tests and 25 cache tests.
+  Compileall and changed-file Ruff pass. These are separate from full gates.
+
+Neither complete gate emitted ResourceWarning, RuntimeWarning or
+DeprecationWarning. Retained asyncio debug slow-callback records total 6566 on
+Mac and 761 in the final Linux run; they must not be described as warning-free
+interactive performance. Individual source/range/count records and assessments
+are retained with the private diagnostics receipt. Their origin and limits are:
+
+- Textual message pumps/timers/app workers and existing UI fixture coroutines:
+  measured during parallel headless fixtures, not an installed input-latency
+  measurement; callbacks reach 9.715 s on Mac. No changed cache/control function
+  appears as a slow coroutine. Retain the diagnostics; residual risk is visible
+  scheduling delay under contention. Follow-up is a single real-window profile
+  if the corresponding user path is slow, not suppressed logging or weaker tests.
+- Asyncio event/future/thread-dispatch/shutdown callbacks and the stall-watchdog
+  acknowledgement: framework scheduling around those fixtures, not proof of a
+  new deadlock. Their tasks completed; retain per-source timings and investigate
+  live correlation before changing the event-loop policy.
+- Existing relay recovery/transport coroutines, synthetic relay-writer tests,
+  search rebuilding and reclaim-worker fixtures: no touched implementation;
+  completion/order/budget assertions passed in the maintained retry/full gate.
+  Residual risk is latency under load, not established data loss or broken
+  ordering. Follow-up is a bounded isolated path profile if reproducible with
+  user traffic; do not extend production intervals or fixture deadlines.
+
+Private full logs, invalid attempts, source hashes, diagnostic assessments and
+acceptance receipts live under
+`~/.config/corral/development/cpu-followup-20261112/integration/`.
+A fresh 30 s unsampled observation found the installed Mac Resource Monitor at
+5.50% and the scan worker at 5.10% of one core, with no children during that
+window. Both monitor executable hashes still match its signed CPU-fix receipt.
+These are current field observations under different load, not controlled
+before/after reductions or evidence about the unrecorded morning incident.
+No Apple-client binary or UI behavior changed in this follow-up; physical phone
+interaction and a universal 5 ms latency guarantee under load are not claimed.
+
 ## CPU optimization acceptance (owner approval, 2026-10-25)
 
 Optimize repeated work without increasing normal state-refresh intervals, slowing input echo, dropping final terminal state, changing terminal stream ordering, or resizing a hosted pane on behalf of a hidden viewer. The previous 50 ms host-stream pacing experiment caused the owner's Mac terminal to nearly stop refreshing and was reverted; do not repeat it as a CPU remedy.

@@ -51,9 +51,11 @@ from corral.control_store import SETTLED, ControlError, RunStore
 _BUSY_POLL = 3.0
 _BIND_REFRESH = 3.0
 # Corral-exact no-usable-history budget (default 150s). The shared runner
-# receives a strictly larger budget (below) so the host hook below always
-# settles first with Corral's exact evidence; the runner budget remains as a
-# backstop. Tests shrink the budget through CORRAL_HISTORY_WAIT_TIMEOUT.
+# receives a strictly larger budget (below) so the engine owns both the
+# never-bound (native_binding_missing) and the bound-but-missing
+# (native_history_missing) timeouts with exact evidence; Corral only settles
+# unreadable history (native_history_unavailable), death/ownership and reset.
+# Tests shrink the budget through CORRAL_HISTORY_WAIT_TIMEOUT.
 _HISTORY_WAIT_TIMEOUT = 150.0
 _RUNNER_HISTORY_WAIT_MARGIN = _BIND_REFRESH
 
@@ -431,7 +433,6 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             "reader": None,
             "events": {},
             "base": None,
-            "missing_since": None,
             "unavailable_since": None,
             "last_bind": 0.0,
             "last_follow": time.monotonic(),
@@ -602,7 +603,6 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             "reader": None,
             "events": {},
             "base": None,
-            "missing_since": None,
             "unavailable_since": None,
             "last_bind": 0.0,
             "last_follow": time.monotonic(),
@@ -631,21 +631,17 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
                     return ({"recorded": False}, False, "ready")
                 if bound:
                     session = _lookup_session()
-                    obs["missing_since"] = None
             if not session.get("path") or session.get("provisional"):
                 if _pane_dead(state, store, run_id):
                     _settle_unknown(
                         store, run_id, "terminal_exited", "The hosted terminal exited before native history appeared."
                     )
                     return ({"recorded": False}, False, "ready")
-                if obs["missing_since"] is None:
-                    obs["missing_since"] = now
-                if now - obs["missing_since"] >= _history_wait_timeout():
-                    error = _history_wait_error("native_history_missing")
-                    _settle_unknown(store, run_id, error["code"], error["message"])
-                    return ({"recorded": False}, False, "ready")
+                # Bound-then-lost has one deterministic owner: the shared
+                # observation gate settles native_history_missing. Corral only
+                # retries the exact rebind here and otherwise reports
+                # unavailable so the engine's budget/message stays exact.
                 return ({"recorded": False}, False, "unavailable")
-            obs["missing_since"] = None
         try:
             reader = _ensure_reader(session)
             poll = reader.poll()
@@ -735,15 +731,16 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
 
         Called by the runner's await-binding gate while the run has no native
         history. Returns the updated binding once bound, else None. Bounded
-        unknown/death/ownership outcomes settle here with Corral's exact
-        evidence (the runner sees the settled state and stops without
-        overwriting it); transient absence simply retries on the next gate
-        pass. Never guesses from recency, cwd or PID; never parses native
-        history (SessKit owns that).
+        death/ownership outcomes settle here with Corral's exact evidence
+        (the runner sees the settled state and stops without overwriting
+        it); transient absence simply retries on the next gate pass. The
+        never-bound timeout itself belongs to the shared runner
+        (``native_binding_missing``); Corral does not settle it here so the
+        exact-native-binding failure stays distinct from a bound session
+        whose history is missing/unreadable. Never guesses from recency,
+        cwd or PID; never parses native history (SessKit owns that).
         """
         state["binding"] = dict(binding)
-        obs = state["obs"]
-        now = time.monotonic()
         if _pane_dead(state, store, run_id):
             _settle_unknown(
                 store, run_id, "terminal_exited", "The hosted terminal exited before native history appeared."
@@ -756,14 +753,7 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             )
             return None
         if bound:
-            obs["missing_since"] = None
             return dict(state["binding"])
-        if obs["missing_since"] is None:
-            obs["missing_since"] = now
-        if now - obs["missing_since"] >= _history_wait_timeout():
-            error = _history_wait_error("native_history_missing")
-            _settle_unknown(store, run_id, error["code"], error["message"])
-            return None
         return None
 
     def is_alive(session_ref: str) -> str:

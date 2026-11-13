@@ -741,6 +741,11 @@ class SupervisorReviewTests(unittest.TestCase):
         self.assertEqual(hub.sent, [])
 
     def test_missing_history_settles_unknown_with_exact_evidence(self):
+        # Never-bound create: no exact native session appears, so the shared
+        # runner's await-binding gate owns the timeout with
+        # ``native_binding_missing`` (distinct from a bound session whose
+        # history is missing/unreadable). Delivery is preserved and the brief
+        # is sent exactly once, never resent.
         hub = _FakeHub(runtime=_StubCodexRuntime())
         spec = {
             "mode": "create",
@@ -772,7 +777,55 @@ class SupervisorReviewTests(unittest.TestCase):
             self.assertEqual(self._run_shared(run_id, hub), 0)
             record = self.store.get(run_id)
             self.assertEqual(record["execution"], "unknown")
-            self.assertEqual(record["error"], control_worker._history_wait_error("native_history_missing"))
+            self.assertEqual(record["delivery"], "input_submitted")
+            self.assertEqual(
+                record["error"],
+                {
+                    "code": "native_binding_missing",
+                    "message": (
+                        "no exact native session could be bound in time; "
+                        "the brief was not resent and the run stays recoverable"
+                    ),
+                },
+            )
+        self.assertEqual(len(hub.sent), 1)
+
+    def test_bound_history_without_record_settles_history_missing(self):
+        # Genuinely bound counterpart: the native session is bound (history
+        # path present and readable) but the run's marker never appears, so
+        # the shared observation gate owns the timeout with
+        # ``native_history_missing``. Delivery is preserved, nothing resent.
+        path = self._history()
+        _write_fixture_rows(
+            path,
+            [
+                {"type": "user", "cwd": self.project, "message": {"content": "old question"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "old answer"}]}},
+            ],
+        )
+        session = self._session(path)
+        hub = _FakeHub(session)
+        run_id = self._submit("k-bound-missing", session)
+        with (
+            mock.patch.dict(os.environ, {"CORRAL_HISTORY_WAIT_TIMEOUT": "4"}),
+            mock.patch("corral.embed.capture", return_value=""),
+            mock.patch("corral.embed.pane_liveness", return_value="alive"),
+            mock.patch("corral.embed.input_transaction", return_value=nullcontext()),
+        ):
+            self.assertEqual(self._run_shared(run_id, hub, history_wait=7), 0)
+            record = self.store.get(run_id)
+            self.assertEqual(record["execution"], "unknown")
+            self.assertEqual(record["delivery"], "input_submitted")
+            self.assertEqual(
+                record["error"],
+                {
+                    "code": "native_history_missing",
+                    "message": (
+                        "no native history appeared in time; "
+                        "the brief was not resent and the run stays recoverable"
+                    ),
+                },
+            )
         self.assertEqual(len(hub.sent), 1)
 
     def test_target_lock_contention_reports_target_locked(self):
