@@ -97,6 +97,9 @@ target-version = "py310"
 # pycodestyle 全量、import 排序、语法现代化与常见陷阱。
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 # 测试夹具要求 import 前先设环境变量 / 隔离目录（如 CORRAL_CACHE_DIR、
 # sidebar 状态目录），模块级 import 不放在顶部是刻意为之，不是疏忽。

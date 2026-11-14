@@ -185,7 +185,7 @@ def _python_env(repo: Path) -> dict[str, str]:
     env.pop("PYTHONPATH", None)
     env.pop("VIRTUAL_ENV", None)
     env["PYTHONNOUSERSITE"] = "1"
-    env["PYTHONPATH"] = str(repo / "src")
+    env["PYTHONPATH"] = os.pathsep.join([str(repo / "src"), str(repo / "tests")])
     env["VIRTUAL_ENV"] = str(_venv_dir(repo))
     env["PATH"] = str(_venv_dir(repo) / ("Scripts" if os.name == "nt" else "bin")) + os.pathsep + env.get("PATH", "")
     return env

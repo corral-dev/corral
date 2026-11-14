@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -108,7 +109,10 @@ class DevEnvironmentTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(result["ok"], True)
         self.assertEqual(Path(captured["argv"][0]), dev_env._venv_python(repo).resolve())
-        self.assertEqual(Path(captured["env"]["PYTHONPATH"]), (repo / "src").resolve())
+        self.assertEqual(
+            [Path(entry) for entry in captured["env"]["PYTHONPATH"].split(os.pathsep)],
+            [(repo / "src").resolve(), (repo / "tests").resolve()],
+        )
         self.assertEqual(captured["env"]["CORRAL_ISOLATE_MANAGED_HOSTS"], "1")
 
     def _corral_checkout(self, root: Path) -> Path:
@@ -239,7 +243,10 @@ class DevEnvironmentTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertTrue(result["meta"]["dry_run"])
         self.assertEqual(result["data"]["cwd"], repo.name)
-        self.assertEqual(result["data"]["pythonpath"], str((repo / "src").resolve()))
+        self.assertEqual(
+            result["data"]["pythonpath"],
+            os.pathsep.join([str((repo / "src").resolve()), str((repo / "tests").resolve())]),
+        )
         self.assertEqual(before, after)
 
     def test_json_envelope_has_stable_top_level_fields(self) -> None:

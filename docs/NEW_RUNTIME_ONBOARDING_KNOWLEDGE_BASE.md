@@ -4,6 +4,7 @@
 
 | § | 标题 | 定位 |
 |---|---|---|
+| §0.5 | 接入 6 层标准清单 | 新增或对齐运行时适配器前一次核齐全部入口 |
 | §1 | 业务背景与核心概念 | 首次新增助手运行时时查 |
 | §1.5 | 架构概览 | 理解适配器、注册和启动计划的边界 |
 | §2 | 核心接入流程 | 从实现到真机验收的完整清单 |
@@ -15,6 +16,17 @@
 | §7 | 验证路径 | 单测、编译、真实历史和真机验收 |
 | §8 | 关联文档 | 按跨域问题联读 |
 | §9 | 覆盖度与待补充项 | 了解证据边界 |
+
+## §0.5 接入 6 层标准清单（一次核齐）
+
+新增或升级一个活跃助手运行时前，按顺序核齐以下 6 层入口（Kimi 保持 dormant，不暴露新 UI/CLI 入口）：
+
+1. **SessKit 上游解析与模型**（`~/Codes/SessKit`）：原生历史格式、时间、状态、transcript/activity 投影与增量读；发版后同步抬升 `Corral/cli` 依赖钉并清空/递增派生缓存版本号。
+2. **Corral 运行时注册与适配器**（`src/corral/runtime/`）：`BaseRuntime` 子类、可执行探测与直启/`--resume` 命令、空白新建与接力计划、`build_passthrough_plan`、`composer_region`（`tests/test_runtime_composer.py`）与样式/图标/配色元数据。
+3. **CLI 参数、直启与管理接口**（`cli.py`、`projects.py`、`agent_api.py`、`shim.py`）：子命令校验、环境变量清洗与可观测诊断字段；确认活跃运行时 allowlist 与提示文案同步更新。
+4. **TUI 与 Apple 双端展示**（`ui/` 与 `apple/Shared/`、`apple/iOS/`、`apple/macOS/`）：筛选器、运行时配色/徽章、会话详情预览与输入/提问状态展示（跨端改一处须同轮检查三端）。
+5. **Remote RPC 与增量同步**（`src/corral/remote/`、`REMOTE_KNOWLEDGE_BASE.md`）：远程列表/详情/新建/接力支持、允许列表过滤与传输测试。
+6. **文档与技能同步**（`AGENTS.md`、`docs/`、`skills/corral/SKILL.md` 及全局 `~/.config/agentsync/skills/corral/SKILL.md`）：补齐 CLI 参数、会话 ID 前缀格式与边界说明，避免实操偏离文档。
 
 ## §1 业务背景与核心概念
 
@@ -201,6 +213,13 @@ sequenceDiagram
    ```bash
    python3 -m compileall -q src/corral tests
    python3 -m unittest -v
+   ```
+
+   跑单个聚焦测试文件时（已配置 `dev_env.py` 双路径 `PYTHONPATH` 与 `[tool.pytest.ini_options] pythonpath = ["src", "tests"]`；本仓库 `.venv` 未装 `pytest`，统一用 `unittest`）：
+
+   ```bash
+   .venv/bin/python -m unittest tests/test_runtime.py -v
+   python3 scripts/dev_env.py run --repo . -- python -m unittest tests/test_runtime.py -v
    ```
 
 2. **运行时单测补齐**：在 `test_runtime.py` 仿照 `FakeRuntime` 与现有 Claude/Codex/OpenCode/Kimi/Cursor 用例，断言：
