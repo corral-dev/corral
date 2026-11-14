@@ -549,7 +549,8 @@ def _list_lsof_lock_fds(presence_dirs: list[Path]) -> list[tuple[int, str, str]]
         if not presence_dir.is_dir():
             continue
         try:
-            has_locks = any(entry.name.endswith(".lock") for entry in os.scandir(presence_dir))
+            with os.scandir(presence_dir) as entries:
+                has_locks = any(entry.name.endswith(".lock") for entry in entries)
         except OSError:
             continue
         if not has_locks:
