@@ -14,6 +14,8 @@ The daemon must close its lock descriptor when another process already holds the
 
 Missing-channel failures may retry when a compatible local backend appears, as well as when gateway configuration becomes available. Model/transport failures retain cooldown. Validate actual no-key model output, timeout descendant cleanup, unchanged user history, stable successes, five-runtime source inputs, and host title propagation; test fixtures must isolate all cache writes.
 
+**Reachability is not a model failure (2026-11-14).** A machine whose overlay route changed recorded `failure_reason=transport` for every newly listed session while the configured gateway was healthy on another existing route it already trusted; native history, activity times and fallback titles stayed correct. Check the configured endpoint's real reachability before diagnosing models, quota or the generator chain. Repair by pointing the same gateway configuration at a verified route while keeping the virtual key and model; do not switch provider/model, mint a key or restore CLI generation. Shared route guidance and the consumer follow-up live in the AgentSync [LLM gateway guide](~/.config/agentsync/docs/LLM_GATEWAY_GUIDE.md).
+
 ### Verification and current limits (2026-10-15)
 
 The installed `corral --generate-titles --limit 1` command, with an empty gateway configuration and a disposable title cache, generated an accepted readable title for a real Claude record in 10.2 seconds. The real user title file was not changed. Separate synthetic requests produced valid JSON titles through native Claude and Codex. Five real source samples (Claude, Codex, OpenCode, Cursor, Pi) retained readable titles and bounded task input; source scanning and title transport remain separate.
