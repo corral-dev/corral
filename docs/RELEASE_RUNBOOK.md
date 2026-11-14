@@ -40,6 +40,12 @@ python3 cli/scripts/release.py rehearse --components mac,ios   # non-publishing 
 under `## Unreleased` has the same effect. `Release: hold <reason>` keeps the component out
 of the default scope.
 
+When default `python3` is 3.15+ while `agent-session-control` pins `<3.15`, run `release.py`
+with Python 3.12 and `CORRAL_CLEAN_PYTHON=/opt/homebrew/bin/python3.12` so `cli.env` and
+clean-venv install checks resolve a compatible wheel (details: `DEVELOPMENT_ENVIRONMENT_GUIDE.md`).
+Environment-improvement item: have `release.py` auto-select a supported `<3.15` interpreter for
+`CORRAL_CLEAN_PYTHON` (not implemented).
+
 ## Release notes
 
 `plan` reads `## Unreleased` in `cli/CHANGELOG.md` and `apple/CHANGELOG.md`. Each must hold

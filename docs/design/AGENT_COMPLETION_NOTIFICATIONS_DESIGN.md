@@ -526,3 +526,11 @@ Both owned hosts were verified to retain disabled completion/abort preferences f
   `user_interrupt` stays in the immediate terminal lane, matching prior
   behavior; a runtime that keeps the session aborted while retrying internally
   for longer than the window can still produce one abort notice.
+
+### Antigravity terminal-only completion notifications (owner correction, 2026-11-14)
+
+- **Owner rule:** completion notifications fire strictly on terminal state (the final agent reply when all work stops), never on intermediate turns.
+- **Root causes fixed (`SessKit 0.3.4` + `Corral 0.24.365`):**
+  1. `_reset_turn` in `sesskit.parsers.antigravity` cleared `pending_async` on ordinary `USER_EXPLICIT` follow-up prompts while background tasks/subagents were still running, letting intermediate no-tool replies report `STATUS_DONE` with distinct `completion_id`s and spam notifications mid-task. `_reset_turn(clear_async=...)` now preserves unresolved `pending_async` across ordinary follow-up prompts until `<SYSTEM_MESSAGE>`, `manage_task`/`manage_subagents` cancel/kill, or an aborted `USER_INPUT` settles it.
+  2. `scan_signature()` passed a bare `str` path to `stat_signature(Sequence[str])`, hashing character-by-character paths into a constant empty signature and freezing list caches at `⏳待回复` after completion. Passing the explicit `list[str]` of Antigravity DB/WAL/history/lock/transcript paths plus `live_pid_snapshot("agy")` invalidates immediately on completion.
+- **Verification & delivery:** prefix-by-prefix replay across real multi-hundred-step Antigravity transcripts verified zero mid-turn notifications, zero duplicates, and immediate `⏳待回复` → `✅已完成` invalidation. Shipped in `SessKit 0.3.4`, `AgentSessionControl 0.1.2`, `AgentFlex 0.3.2`, `Corral CLI 0.24.365`, `Mac 0.3.174 (180)`, and `iPhone 1.0.218 (231)`.

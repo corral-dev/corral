@@ -291,6 +291,8 @@ key/value/free_text/request_id）后再做一轮 parity（待答集合新旧对�
 | `src/corral/scan/` | OpenCode SQLite 扫描、签名与预览解析 | `scan/opencode.py` |
 | `src/corral/scan/` | Kimi 元数据与主事件流扫描、预览解析 | `scan/kimi.py` |
 | `src/corral/scan/` | Cursor CLI 元数据扫描、SQLite blob 预览 | `scan/cursor.py` |
+| `src/corral/scan/` | Pi 会话扫描与预览委托（SessKit 别名） | `scan/pi.py` |
+| `src/corral/scan/` | Antigravity 列表、presence 判活与对话委托（SessKit 别名） | `scan/antigravity.py` |
 | `src/corral/scan/` | 跨扫描器纯函数、按 cwd 判活 | `scan/common.py` |
 | `src/corral/` | 关注状态裁决、各运行时证据解析与 Cursor 用户级观察器 | `attention.py`、`attention_signals.py`、`cursor_observer.py` |
 | `src/corral/runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
@@ -316,6 +318,7 @@ key/value/free_text/request_id）后再做一轮 parity（待答集合新旧对�
 | 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 / SessKit | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、桥接 `load_runtime_conversation` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
 | 修改 Cursor 扫描或预览 | Cursor 扫描器 / SessKit | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、桥接 `load_runtime_conversation` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；**列表级 `scan_signature` 禁止含 `store.db-wal`**（SessKit ≥0.1.2；流式写 WAL 不得打穿整表重扫），**对话/正文缓存 `extra_version` 仍必须含 WAL**；同 cwd 多 `agent` 必须按打开的 store.db / 完整 CORRAL_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底。**子代理 chat 仍过滤出列表，但 live 进程绑到子代理时必须改记父会话进行中** |
 | 修改 Pi 扫描或预览 | Pi 扫描器 / SessKit | `scan.pi.scan_sessions()`、`_apply_live_flags()`、桥接 `load_runtime_conversation` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ **从文件最后一条记录**沿 `parentId` 回溯（勿按墙钟 max timestamp 选叶子，时钟漂移会串分支），v1 无 id 则按文件顺序；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）。**live 只消费 claim；改前先核 §2.2.1 与身份设计；禁止在扫描里用最新文件或隔离目录修 pane 属主。** |
+| 修改 Antigravity 扫描、签名或判活 | Antigravity 扫描器 / SessKit / liveness | `scan.antigravity`（`sesskit.parsers.antigravity` 别名）、`runtime.antigravity`、`liveness._antigravity_presence_session_ids` | `stat_signature` 必须传入 `list[str]`（覆盖 `conversation_summaries.db` 及 `-wal`、`history.jsonl`、`presence/*.lock`、`transcript*.jsonl`、会话 `.db` 及 `-wal`）加 `live_pid_snapshot("agy")`，禁止传入裸 `str`（逐字符迭代会冻住 `⏳待回复` 缓存）；扫 `presence/` 目录必须用 `with os.scandir(...)` 上下文管理器防提前短路泄漏 FD。 |
 | 修改 SessKit 加载接线 / 软失败语义 | 运行时桥接 | `runtime.sesskit_bridge.load_runtime_conversation`、`call_scan` | 与 SessKit `load_session_conversation` 对齐；扫描 kwargs 转发；Corral 不得打开 `include_missing_cwd` |
 | 修改统一 transcript / `corral share` | `transcript.py`、`agent_api.py` | `load_events()`、`_parse_*`、`export_share_to_cache()` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。TUI 高级操作「导出会话」走同一套 `load_events`，写到缓存目录 `share/`。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按完整 `toolCallId`（常含换行，禁止按 `\n` 拆）攒着、见到 call 再按 call→result 发出。核对以原始 JSONL/SQLite 为权威，禁止用 `show`/`export` 对照 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`process_environ()`、`process_start_time()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`）；OpenCode / Kimi / Pi 判活禁止再按 cwd 折叠 |
@@ -373,7 +376,7 @@ Claude continued-in session recovery (2026-09-30 incident): Claude Code 2.1.284 
 
 - **AI 易错点**【禁止】在 Corral 恢复列表 / 侧栏扫描打开 SessKit 的 `include_missing_cwd` → 默认必须继续丢掉「项目 cwd 已不存在」的会话（原因：恢复入口只应列出还能进目录开跑的会话；归档检索才用 SessKit CLI `--include-missing-cwd`）。
 - **AI 易错点**【禁止】为「与 SessKit CLI 一致」把桥接改成缺失历史就抛错 → Corral 必须软失败返回空列表（原因：一个损坏文件不能拖垮主界面；CLI 硬失败是产品面差异，见 §1 2026-09-11 注）。
-- **AI 易错点**【禁止】`SessionStore` / 列表合并相关单测在有本机托管窗格时不 mock `list_managed_hosts`（或未设 `CORRAL_ISOLATE_MANAGED_HOSTS=1`）→ 真窗格会灌进空扫描夹具，表现为「夹具会话被挤掉 / 顺序断言莫名失败」（原因：`_adopt_foreign_hosted` 会认领本机保活 socket）。**反向同样成立（2026-09-12 真机）**：`CORRAL_ISOLATE_MANAGED_HOSTS=1`（`ci-test.py` 默认）只挡住「真窗格灌进测试夹具」，**挡不住「测试窗格灌进正在用的 TUI」**。界面测试若把测试托管开在真实保活通道（`selftest.sh` 与部分 `test_ui` 直启本来就会），正在用的 TUI 会把 `corral-claude-s0` / `corral-claude-directli`（`directlist01` 截成 8 位）认领成用户卡片。cwd 是 Corral 命令行源码 `~/Codes/Corral/cli`（侧栏项目名只显示 `cli`），无历史文件、点开没有消息。标题是另一套脏数据：真实 `titles.json` 里单测写过 `claude:s0` → `生成s0`（模板「生成」+ 编号），缓存按助手+编号命中即贴，不问卡里有没有对话。两套残留编号一撞，列表就显示「cli 生成 s0」——不是空会话被拿去生成标题，也不是 Claude 扫描漏过滤。单测必须隔离 `CORRAL_CACHE_DIR`；碰真实保活通道的用例必须收掉自己建的名字，不得让机主 TUI 当作用户会话。
+- **AI 易错点**【禁止】`SessionStore` / 列表合并相关单测在有本机托管窗格时不 mock `list_managed_hosts`（或未设 `CORRAL_ISOLATE_MANAGED_HOSTS=1`）→ 真窗格会灌进空扫描夹具，表现为「夹具会话被挤掉 / 顺序断言莫名失败」（原因：`_adopt_foreign_hosted` 会认领本机保活 socket）。`CORRAL_ISOLATE_MANAGED_HOSTS=1` 同时关闭跨进程/后台共享快照 `scan_index._shared_index_enabled()`，因此脱离 `ci-test.py` 直接运行 `.venv/bin/python -m unittest ...` 时必须显式传入 `CORRAL_ISOLATE_MANAGED_HOSTS=1 PYTHONPATH=src:tests`（仅设临时 `CORRAL_CACHE_DIR` 仍会被未隔离的 `SessionStore` / `TuiLayoutTests` 读写共享 `scan-index-*.json` 拖失败）。**反向同样成立（2026-09-12 真机）**：`CORRAL_ISOLATE_MANAGED_HOSTS=1`（`ci-test.py` 默认）只挡住「真窗格灌进测试夹具」，**挡不住「测试窗格灌进正在用的 TUI」**。界面测试若把测试托管开在真实保活通道（`selftest.sh` 与部分 `test_ui` 直启本来就会），正在用的 TUI 会把 `corral-claude-s0` / `corral-claude-directli`（`directlist01` 截成 8 位）认领成用户卡片。cwd 是 Corral 命令行源码 `~/Codes/Corral/cli`（侧栏项目名只显示 `cli`），无历史文件、点开没有消息。标题是另一套脏数据：真实 `titles.json` 里单测写过 `claude:s0` → `生成s0`（模板「生成」+ 编号），缓存按助手+编号命中即贴，不问卡里有没有对话。两套残留编号一撞，列表就显示「cli 生成 s0」——不是空会话被拿去生成标题，也不是 Claude 扫描漏过滤。单测必须隔离 `CORRAL_CACHE_DIR`；碰真实保活通道的用例必须收掉自己建的名字，不得让机主 TUI 当作用户会话。
 - **AI 易错点**【禁止】用 Claude 的 `stop_reason` 判断 assistant 文本是否应展示 → 必须只要存在非空 text 分片就保留（原因：thinking、文本与工具调用是独立顶层记录，却可能共享 `tool_use` 的 stop reason）。
 - **AI 易错点**【必须】恢复/重启/接力 Claude 会话前先沿 `continued-in` 链解析到最新 id（`ClaudeRuntime` 的 resume/continue/fork 计划统一走 SessKit 解析；见本域 §3  continued-in 条）→ 拿扫描到的旧 id 直接 `--resume` 会丢掉新文件里的全部后续工作（2026-09-30 真机：旧文件 `continued-in` 指向后台新会话，`--resume` 旧 id 后约 10 分钟工作与后台任务丢失）。列表里被 supersede 的旧卡在目标存在时合并到最新卡，不许当独立 live 会话展示；旧文件 fork 之后的新写入仍只在旧文件里可读，不做跨文件合并。
 - **AI 易错点**【禁止】把原始 `type: "user"` 一律视为真人输入 → 必须检查 `origin.kind`；Claude 只接受缺失或 `human`，Kimi 只接受缺失或 `user`（原因：Monitor、task-notification 等系统注入会伪装在用户轮次中）。
@@ -426,24 +429,25 @@ Claude continued-in session recovery (2026-09-30 incident): Claude Code 2.1.284 
 - **AI 易错点**【性能】对会话 cwd 的存在性检查按一次扫描记忆化；Codex 在 macOS 对全部 pid 合并一次 `lsof`（原因：大量会话共享 cwd，逐条 `isdir` 或逐 pid `lsof` 会耗尽首屏预算）。
 - **AI 易错点**【隐性依赖】`SessionStore.load()` 必须异步执行，且 UI 只有在 `loaded` 后才能显示“未找到会话”（原因：同步扫描会拖慢首帧，提前显示空状态会造成错误反馈）。
 - 【隐性依赖】扫描缓存、命中返回和失败回退都必须复制每个会话列表项（原因：界面与保活层会就地注入展示字段；直接复用 dict 会污染下一轮缓存）。
+- **AI 易错点**【必须】在 `cli/` 升级 `sesskit` pin（含本地或 Release 预装轮子）时，按 `uv lock --upgrade-package sesskit`（本地/临时包加 `--find-links <dir>`）后接 `python3 scripts/dev_env.py prepare --repo .` 执行，确保 uv 离线轮子缓存与 `.venv/dev-env-logs/sesskit-install-receipt.json` 同步更新；手工改 `uv.lock` 再直调 `uv pip install` 会令 `dev_env.py check` 报校验失败。
 - 【叫法统一】正文统一称“会话扫描”“会话列表项”“对话预览数据”“完整对话”；代码中分别常见 `scan_sessions`、`SessionInfo`、`ConversationMessage`、`load_conversation`，不得把原始 JSONL/SQLite 记录直接称为完整对话。
 
 ## §7 常见易忽略条件与验证路径
 
 ### 7.1 编译与单元测试
 
-在 `cli/` 目录执行：
+在 `cli/` 目录执行（完整门禁走 `python3 scripts/ci-test.py`；直跑 `unittest` 时须带 `CORRAL_ISOLATE_MANAGED_HOSTS=1 PYTHONPATH=src:tests`）：
 
 ```bash
 python3 -m compileall -q src/corral tests
-python3 -m unittest discover -s tests -p 'test_session_scanning.py' -v
-python3 -m unittest -v test_session_scanning.py
+CORRAL_ISOLATE_MANAGED_HOSTS=1 PYTHONPATH=src:tests .venv/bin/python -m unittest discover -s tests -p 'test_session_scanning.py' -v
+CORRAL_ISOLATE_MANAGED_HOSTS=1 PYTHONPATH=src:tests .venv/bin/python -m unittest -v test_session_scanning.py
 ```
 
 若改动注册表、适配器委托或共享模型，再执行完整回归：
 
 ```bash
-python3 -m unittest -v
+CORRAL_ISOLATE_MANAGED_HOSTS=1 PYTHONPATH=src:tests .venv/bin/python -m unittest -v
 ```
 
 重点覆盖：JSON `null`、系统 `origin.kind` 过滤、Claude `stop_reason` 文本保留、Codex 子代理过滤、OpenCode 只读失败回退、预览 mtime 失效、Cursor blob 解析与启动延迟、**Cursor 子代理活进程改绑父会话进行中**；`DeleteSessionScanTests` 覆盖各助手 `delete_session()`，重点断言删对了、没删多（尤其 OpenCode 共享库不能连带删掉其他会话）。
