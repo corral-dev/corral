@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "corral"
-version = "0.24.364"
+version = "0.24.365"
 description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Cursor Agent CLI, Pi, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
