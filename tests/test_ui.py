@@ -9958,6 +9958,62 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.return_value.target_runtime_id, "codex")
         self.assertEqual(app.return_value.cwd, "/tmp")
 
+    async def test_new_session_modal_lists_antigravity_available_and_excludes_kimi(self) -> None:
+        antigravity = mock.Mock()
+        antigravity.id = "antigravity"
+        antigravity.display_name = "Antigravity"
+        antigravity.is_available.return_value = True
+        antigravity.scan_sessions.return_value = []
+        kimi = mock.Mock()
+        kimi.id = "kimi"
+        kimi.display_name = "Kimi"
+        kimi.is_available.return_value = True
+        kimi.scan_sessions.return_value = []
+        store, _ = _make_store(extra_runtimes=(antigravity, kimi))
+        app = CorralApp(store, embed_ok=False)
+        projects = [{"cwd_key": "/tmp", "label": "tmp", "count": 1, "latest_mtime": 0.0}]
+        with mock.patch.object(store, "projects", return_value=projects):
+            async with app.run_test(size=(110, 30)) as pilot:
+                await pilot.pause()
+                view = app.screen.query_one(SessionListView)
+                self.assertTrue(view.select_session_key("__hint__"))
+                await pilot.press("enter")
+                await pilot.pause(delay=0.2)
+                self.assertIsInstance(app.screen, NewSessionModal)
+                choices = app.screen._runtimes  # noqa: SLF001
+                choice_ids = [c.id for c in choices]
+                self.assertIn("antigravity", choice_ids)
+                self.assertNotIn("kimi", choice_ids)
+                ag_choice = next(c for c in choices if c.id == "antigravity")
+                self.assertTrue(ag_choice.available)
+                await pilot.press("enter")  # filter -> projects
+                await pilot.press("enter")  # projects -> runtimes
+                await pilot.press("down")   # Claude -> Antigravity
+                await pilot.press("enter")
+                await pilot.pause(delay=0.3)
+        self.assertIsInstance(app.return_value, corral.NewSessionRequest)
+        self.assertEqual(app.return_value.target_runtime_id, "antigravity")
+        self.assertEqual(app.return_value.cwd, "/tmp")
+
+    async def test_empty_main_screen_placeholder_excludes_dormant_kimi(self) -> None:
+        antigravity = mock.Mock()
+        antigravity.id = "antigravity"
+        antigravity.display_name = "Antigravity"
+        antigravity.is_available.return_value = True
+        antigravity.scan_sessions.return_value = []
+        kimi = mock.Mock()
+        kimi.id = "kimi"
+        kimi.display_name = "Kimi"
+        kimi.is_available.return_value = True
+        kimi.scan_sessions.return_value = []
+        store, _ = _make_store(sessions=[], extra_runtimes=(antigravity, kimi))
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            placeholder = app.screen.query_one("#project-search", Input).placeholder
+            self.assertIn("Antigravity", placeholder)
+            self.assertNotIn("Kimi", placeholder)
+
     async def test_runtime_picker_modal_bells_on_unavailable_choice(self) -> None:
         cursor = mock.Mock()
         cursor.id = "cursor"

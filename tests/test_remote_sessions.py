@@ -2252,6 +2252,72 @@ class SessionHubPayloadTests(unittest.TestCase):
         send_key.assert_called_once_with("pane-oc-img", "Enter")
         self.assertEqual(events, [])
 
+    def test_antigravity_prompt_chrome_and_blocking_confirm_dialog(self) -> None:
+        rule = "─" * 80
+        idle_box = f"{rule}\n> Accept-edits mode: file edits auto-approved (shift+tab to cycle)\n{rule}"
+        draft_box = f"{rule}\n> draft prompt\n{rule}"
+        self.assertTrue(remote_sessions._pane_accepts_input(idle_box))
+        self.assertTrue(remote_sessions._pane_accepts_input(draft_box))
+        trust = (
+            "Do you trust the files in this folder?\n"
+            "> 1. Yes, I trust this folder\n"
+            "  2. No, exit\n"
+            "↑/↓ Navigate · enter Confirm"
+        )
+        self.assertIsNotNone(remote_sessions._blocked_input_cause(trust))
+
+    def test_prepare_provisional_antigravity_accepts_ruled_composer_box(self) -> None:
+        import time
+
+        rule = "─" * 80
+        session = _session(source="antigravity", sid="ag123456")
+        session["provisional"] = True
+        session["keepalive_name"] = "pane-ag-draft"
+        self.hub.store.sessions = {"antigravity": [session]}
+        plain = f"{rule}\n> hello draft\n{rule}"
+        with (
+            mock.patch.object(self.hub, "_keepalive_name", return_value="pane-ag-draft"),
+            mock.patch.object(self.hub, "_pane_proven_dead", return_value=False),
+            mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="alive"),
+            mock.patch.object(remote_sessions.embed, "capture", return_value=object()),
+            mock.patch.object(remote_sessions, "_plain_pane_text", return_value=plain),
+            mock.patch.object(self.hub, "_ensure_transcript") as ensure,
+        ):
+            ensure.return_value = mock.Mock(path="hist", generation=1, messages=[])
+            result = self.hub.prepare_text_delivery("antigravity:ag123456", time.monotonic() + 30)
+        self.assertEqual(result, ("hist", 1, 0, "pane-ag-draft"))
+
+    def test_control_worker_accept_startup_trust_handles_antigravity_confirm_footer(self) -> None:
+        from corral import control_worker
+
+        dialog = (
+            "Do you trust the files in this folder?\n"
+            "> 1. Yes, I trust this folder\n"
+            "  2. No, exit\n"
+            "↑/↓ Navigate · enter Confirm"
+        )
+        with (
+            mock.patch.object(control_worker, "_plain", side_effect=[dialog, "> Accept-edits mode"]),
+            mock.patch("corral.embed.send_key") as send_key,
+            mock.patch("time.sleep"),
+        ):
+            accepted = control_worker.accept_startup_trust("antigravity", "pane-ag")
+        self.assertTrue(accepted)
+        send_key.assert_called_once_with("pane-ag", "Enter")
+
+    def test_runtimes_includes_antigravity_and_excludes_dormant_kimi(self) -> None:
+        ag = self.hub.registry.get("antigravity")
+        kimi = self.hub.registry.get("kimi")
+        with (
+            mock.patch.object(ag, "is_available", return_value=True),
+            mock.patch.object(kimi, "is_available", return_value=True),
+        ):
+            payload = self.hub.runtimes()
+        by_id = {item["id"]: item for item in payload}
+        self.assertIn("antigravity", by_id)
+        self.assertEqual(by_id["antigravity"]["available"], True)
+        self.assertNotIn("kimi", by_id)
+
 
 def _delta_role_texts(events: list[tuple[str, dict]]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []

@@ -1430,5 +1430,342 @@ class AttentionSignalFallbackTests(unittest.TestCase):
             self.assertGreater(first.observed_at, 0)
 
 
+class AntigravityAttentionTests(unittest.TestCase):
+    def _write_fixture(
+        self,
+        root: Path,
+        cid: str,
+        entries: list[dict],
+        *,
+        db_status: str = "CASCADE_RUN_STATUS_IDLE",
+        not_fully_idle: int = 0,
+        killed: int = 0,
+        last_modified_time: str = "2026-11-14T00:00:10Z",
+        create_db: bool = True,
+    ) -> Path:
+        import sqlite3
+
+        logs_dir = root / "brain" / cid / ".system_generated" / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        path = logs_dir / "transcript_full.jsonl"
+        _write_jsonl(path, entries)
+        if create_db:
+            db_path = root / "conversation_summaries.db"
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS conversation_summaries ("
+                    "conversation_id TEXT PRIMARY KEY, "
+                    "status TEXT, "
+                    "not_fully_idle INTEGER, "
+                    "killed INTEGER, "
+                    "last_modified_time TEXT)"
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO conversation_summaries "
+                    "(conversation_id, status, not_fully_idle, killed, last_modified_time) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (cid, db_status, not_fully_idle, killed, last_modified_time),
+                )
+                conn.commit()
+        return path
+
+    def test_running_db_status_marks_live_session_working_and_dead_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = self._write_fixture(
+                root,
+                "ag-run",
+                [{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-14T00:00:01Z"}],
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+            )
+            live_sess = {"source": "antigravity", "id": "ag-run", "path": str(path), "live": True}
+            dead_sess = {"source": "antigravity", "id": "ag-run", "path": str(path), "live": False}
+            self.assertEqual(inspect_session(live_sess).phase, "working")
+            self.assertEqual(inspect_session(dead_sess).phase, "idle")
+
+    def test_interim_planner_done_with_not_fully_idle_1_stays_working_and_drops_idle_when_0(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            entries = [
+                {"step_index": 1, "type": "GENERIC", "status": "RUNNING", "created_at": "2026-11-14T00:00:05Z"},
+                {
+                    "step_index": 2,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-14T00:00:06Z",
+                },
+            ]
+            path = self._write_fixture(
+                root,
+                "ag-bfc",
+                entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=1,
+            )
+            sess = {"source": "antigravity", "id": "ag-bfc", "path": str(path), "live": True}
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+            self._write_fixture(
+                root,
+                "ag-bfc",
+                entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+            )
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+            # Killed sessions still go idle even if DB carries not_fully_idle=1.
+            self._write_fixture(
+                root,
+                "ag-bfc",
+                entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=1,
+                killed=1,
+            )
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+    def test_background_task_marker_keeps_working_until_settled_and_ignores_daemon_cron(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-14T00:00:01Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "run_command", "args": {"CommandLine": "sleep 5"}}],
+                    "created_at": "2026-11-14T00:00:02Z",
+                },
+                {
+                    "step_index": 2,
+                    "type": "GENERIC",
+                    "status": "RUNNING",
+                    "content": (
+                        "Tool is running as a background task with task id: ag-bg/task-2\n"
+                        "Task Description: build"
+                    ),
+                    "created_at": "2026-11-14T00:00:03Z",
+                },
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-14T00:00:04Z",
+                },
+            ]
+            # DB lagging (last_modified_time older than tail) or absent: still working.
+            path = self._write_fixture(
+                root,
+                "ag-bg",
+                entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+                last_modified_time="2026-11-14T00:00:01Z",
+            )
+            sess = {"source": "antigravity", "id": "ag-bg", "path": str(path), "live": True}
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+            # Once SYSTEM_MESSAGE finishes the task and planner replies, phase drops idle.
+            settled = entries + [
+                {
+                    "step_index": 4,
+                    "type": "SYSTEM_MESSAGE",
+                    "status": "DONE",
+                    "content": (
+                        "<SYSTEM_MESSAGE>\n[Message] sender=ag-bg/task-2\n"
+                        'Task id "ag-bg/task-2" finished with result: ok'
+                    ),
+                    "created_at": "2026-11-14T00:00:05Z",
+                },
+                {
+                    "step_index": 5,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-14T00:00:06Z",
+                },
+            ]
+            self._write_fixture(root, "ag-bg", settled, create_db=False)
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+            # Canceling via manage_task(Action="kill") also clears pending_async.
+            killed_entries = entries + [
+                {
+                    "step_index": 4,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "manage_task", "args": {"Action": "kill", "TaskId": "ag-bg/task-2"}}],
+                    "created_at": "2026-11-14T00:00:05Z",
+                },
+                {"step_index": 5, "type": "GENERIC", "status": "DONE", "created_at": "2026-11-14T00:00:06Z"},
+                {
+                    "step_index": 6,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-14T00:00:07Z",
+                },
+            ]
+            self._write_fixture(root, "ag-bg", killed_entries, create_db=False)
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+            # Daemon schedule(IsDaemon=True) does not keep the session working.
+            daemon_entries = [
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [
+                        {"name": "schedule", "args": {"CronExpression": "*/5 * * * *", "IsDaemon": True}}
+                    ],
+                    "created_at": "2026-11-14T00:00:02Z",
+                },
+                {
+                    "step_index": 2,
+                    "type": "GENERIC",
+                    "status": "RUNNING",
+                    "content": (
+                        "Tool is running as a background task with task id: ag-daemon/task-2\n"
+                        "Task Description: Cron: */5 * * * *"
+                    ),
+                    "created_at": "2026-11-14T00:00:03Z",
+                },
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-14T00:00:04Z",
+                },
+            ]
+            daemon_path = self._write_fixture(root, "ag-daemon", daemon_entries, create_db=False)
+            daemon_sess = {"source": "antigravity", "id": "ag-daemon", "path": str(daemon_path), "live": True}
+            self.assertEqual(inspect_session(daemon_sess).phase, "idle")
+
+    def test_generic_tool_error_keeps_working_while_error_message_is_terminal_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tool_error_entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-14T00:00:01Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "run_command", "args": {"CommandLine": "false"}}],
+                    "created_at": "2026-11-14T00:00:02Z",
+                },
+                {"step_index": 2, "type": "GENERIC", "status": "ERROR", "created_at": "2026-11-14T00:00:03Z"},
+            ]
+            # Without DB (or with RUNNING / lagging DB), mid-turn GENERIC ERROR stays working.
+            path = self._write_fixture(root, "ag-err", tool_error_entries, create_db=False)
+            sess = {"source": "antigravity", "id": "ag-err", "path": str(path), "live": True}
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+            self._write_fixture(
+                root,
+                "ag-err",
+                tool_error_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+            )
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+            # Native terminal ERROR_MESSAGE settles to idle when IDLE and not_fully_idle=0.
+            fatal_entries = tool_error_entries + [
+                {
+                    "step_index": 3,
+                    "type": "ERROR_MESSAGE",
+                    "status": "DONE",
+                    "error": "API error",
+                    "created_at": "2026-11-14T00:00:04Z",
+                }
+            ]
+            self._write_fixture(
+                root,
+                "ag-err",
+                fatal_entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+            )
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+            # Still working if DB explicitly reports RUNNING or not_fully_idle=1.
+            self._write_fixture(
+                root,
+                "ag-err",
+                fatal_entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=1,
+            )
+            self.assertEqual(inspect_session(sess).phase, "working")
+            self._write_fixture(
+                root,
+                "ag-err",
+                fatal_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=0,
+            )
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+    def test_zero_year_db_timestamp_does_not_clobber_observed_at(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-14T00:00:05Z"},
+            ]
+            path = self._write_fixture(
+                root,
+                "ag-zero-ts",
+                entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+                last_modified_time="0001-01-01 00:00:00+00:00",
+            )
+            ev = inspect_session({"source": "antigravity", "id": "ag-zero-ts", "path": str(path), "live": True})
+            self.assertGreater(ev.observed_at, 0)
+            self.assertEqual(ev.phase, "working")
+
+    def test_ask_question_waiting_transitions_through_answer_to_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-14T00:00:01Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "ask_question", "args": {"questions": []}}],
+                    "created_at": "2026-11-14T00:00:02Z",
+                },
+            ]
+            path = self._write_fixture(root, "ag-q", entries, db_status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
+            sess = {"source": "antigravity", "id": "ag-q", "path": str(path), "live": True}
+            waiting = inspect_session(sess)
+            self.assertEqual(waiting.phase, "waiting")
+            self.assertIsNotNone(waiting.question_token)
+
+            # Once answered (GENERIC DONE) and planner replies, waiting clears to idle.
+            entries.extend([
+                {"step_index": 2, "type": "GENERIC", "status": "DONE", "created_at": "2026-11-14T00:00:03Z"},
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-14T00:00:04Z",
+                },
+            ])
+            self._write_fixture(root, "ag-q", entries, db_status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 from collections import OrderedDict
@@ -28,7 +29,9 @@ _JSONL_TAIL_MAX_BYTES = 8 * 1024 * 1024
 _DB_TAIL_ROWS = 192
 _CODEX_ATTENTION_READERS: OrderedDict[str, dict] = OrderedDict()
 _CODEX_ATTENTION_LOCK = threading.RLock()
-_QUESTION_TOOLS = frozenset({"AskUserQuestion", "request_user_input", "question", "AskQuestion"})
+_QUESTION_TOOLS = frozenset(
+    {"AskUserQuestion", "request_user_input", "question", "AskQuestion", "ask_question"}
+)
 
 
 def _evidence(
@@ -1307,6 +1310,237 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
     return _evidence("unknown", activity_token=activity_token, observed_at=observed_at)
 
 
+def _antigravity_db_summary(cid: str, path: str) -> sqlite3.Row | None:
+    """Read `conversation_summaries` row for `cid` read-only if the DB exists."""
+    from corral import liveness
+
+    if not cid or not path:
+        return None
+    root = liveness._antigravity_root_from_path(path)
+    if root is None:
+        return None
+    db_path = root / "conversation_summaries.db"
+    if not db_path.is_file():
+        return None
+    conn = _connect_ro(str(db_path))
+    if conn is None:
+        return None
+    try:
+        return conn.execute(
+            "SELECT status, not_fully_idle, killed, last_modified_time "
+            "FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+            (cid,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+_AG_BG_TASK_RE = re.compile(r"Tool is running as a background task with task id:\s*([^\s\n]+)")
+_AG_SYS_SENDER_RE = re.compile(r"sender=([^\s\n]+)")
+_AG_SYS_TASK_DONE_RE = re.compile(
+    r'Task id "([^"]+)" (?:finished|was canceled|stopped|failed|terminated)'
+)
+
+
+def _is_truthy_arg(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
+
+
+def _tool_call_args(tc: dict[str, Any]) -> dict[str, Any]:
+    for key in ("args", "arguments"):
+        raw = tc.get(key)
+        if isinstance(raw, dict):
+            return raw
+    return {}
+
+
+def _inspect_antigravity(session: dict) -> AttentionEvidence:
+    """Extract Antigravity attention state from transcript JSONL tail + summaries DB."""
+    path = str(session.get("path") or "")
+    cid = str(session.get("id") or "").strip()
+    entries = _read_jsonl_tail(path) if path else []
+    db_row = _antigravity_db_summary(cid, path)
+    if not entries and db_row is None:
+        return _evidence(observed_at=_stable_observed_at(session, path))
+
+    live = session.get("live") is True
+    phase = "unknown"
+    activity_token = None
+    observed_at = _stable_observed_at(session, path)
+    pending_question: str | None = None
+    open_tools = 0
+    daemon_slots: list[bool] = []
+    pending_async: set[str] = set()
+    last_entry: dict | None = None
+
+    for entry in entries:
+        last_entry = entry
+        etype = entry.get("type")
+        status = str(entry.get("status") or "")
+        step = entry.get("step_index")
+        created_at = entry.get("created_at")
+        native = _event_native(entry, "step_index", "created_at")
+        if native is None and step is not None:
+            native = step
+        observed_at = _advance_observed(observed_at, created_at)
+
+        if etype == "USER_INPUT":
+            pending_question = None
+            open_tools = 0
+            daemon_slots.clear()
+            phase = "working"
+            activity_token = _token("antigravity", "user", native) or activity_token
+        elif etype == "PLANNER_RESPONSE":
+            raw_tools = entry.get("tool_calls")
+            tool_calls = raw_tools if isinstance(raw_tools, list) else []
+            has_question = False
+            daemon_slots.clear()
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    daemon_slots.append(False)
+                    continue
+                name = tc.get("name")
+                if name == "ask_question":
+                    has_question = True
+                args = _tool_call_args(tc)
+                daemon_slots.append(_is_truthy_arg(args.get("IsDaemon")))
+                if name == "manage_task" and str(args.get("Action") or "").strip().lower() in {
+                    "kill",
+                    "cancel",
+                }:
+                    tid = str(args.get("TaskId") or "").strip()
+                    if tid:
+                        pending_async.discard(tid)
+            if tool_calls:
+                pending_question = (
+                    _token("antigravity", "question", f"{cid}:{step if step is not None else native}")
+                    if has_question
+                    else None
+                )
+                open_tools = len(tool_calls)
+                phase = "waiting" if has_question else "working"
+                activity_token = _token("antigravity", "planner_tools", native) or activity_token
+            else:
+                pending_question = None
+                open_tools = 0
+                if status == "RUNNING":
+                    phase = "working"
+                    activity_token = (
+                        _token("antigravity", "planner_running", native) or activity_token
+                    )
+                elif pending_async:
+                    # Interim no-tool reply while a non-daemon background task/subagent runs.
+                    phase = "working"
+                    activity_token = (
+                        _token("antigravity", "async_pending", native) or activity_token
+                    )
+                elif status in {"ERROR", "INVALID"}:
+                    phase = "idle"
+                    activity_token = _token("antigravity", "error", native) or activity_token
+                elif status == "DONE":
+                    phase = "idle"
+                    activity_token = _token("antigravity", "done", native) or activity_token
+        elif etype == "GENERIC":
+            is_daemon = daemon_slots.pop(0) if daemon_slots else False
+            if status == "RUNNING":
+                content = str(entry.get("content") or "")
+                match = _AG_BG_TASK_RE.search(content)
+                if (
+                    match is not None
+                    and not is_daemon
+                    and "Task Description: Cron:" not in content
+                ):
+                    pending_async.add(match.group(1))
+                phase = "working"
+                activity_token = (
+                    _token("antigravity", "generic_running", native) or activity_token
+                )
+            elif status in {"DONE", "ERROR", "INVALID"}:
+                if open_tools > 0:
+                    open_tools -= 1
+                if open_tools == 0 and pending_question is not None:
+                    pending_question = None
+                # Mid-turn tool completions or tool errors keep the turn active.
+                phase = "working"
+                activity_token = _token("antigravity", "generic_done", native) or activity_token
+        elif etype == "SYSTEM_MESSAGE":
+            content = str(entry.get("content") or "")
+            sender_match = _AG_SYS_SENDER_RE.search(content)
+            if sender_match is not None:
+                pending_async.discard(sender_match.group(1))
+            for done_match in _AG_SYS_TASK_DONE_RE.finditer(content):
+                pending_async.discard(done_match.group(1))
+        elif etype == "ERROR_MESSAGE":
+            pending_question = None
+            open_tools = 0
+            daemon_slots.clear()
+            phase = "idle"
+            activity_token = _token("antigravity", "error", native) or activity_token
+
+    killed = bool(db_row["killed"]) if db_row is not None else False
+    if pending_question is not None and live and not killed:
+        return _evidence(
+            "waiting",
+            activity_token=activity_token,
+            question_token=pending_question,
+            observed_at=observed_at,
+        )
+
+    if db_row is not None:
+        db_status = str(db_row["status"] or "")
+        not_fully_idle = bool(db_row["not_fully_idle"])
+        db_time = db_row["last_modified_time"]
+        db_ts = _timestamp(db_time) or 0.0
+        if db_ts > observed_at:
+            observed_at = db_ts
+        tail_ts = _timestamp((last_entry or {}).get("created_at")) or 0.0
+        tail_ended = last_entry is not None and (
+            (
+                last_entry.get("type") == "PLANNER_RESPONSE"
+                and not last_entry.get("tool_calls")
+                and last_entry.get("status") in {"DONE", "ERROR", "INVALID"}
+            )
+            or last_entry.get("type") == "ERROR_MESSAGE"
+        )
+        db_lagging = db_ts <= 0 or tail_ts > db_ts
+        if killed:
+            phase = "idle"
+            activity_token = _token("antigravity", "killed", db_time or cid) or activity_token
+        elif db_status == "CASCADE_RUN_STATUS_RUNNING":
+            phase = "working"
+            activity_token = activity_token or _token(
+                "antigravity", "db_running", db_time or cid
+            )
+        elif db_status == "CASCADE_RUN_STATUS_IDLE":
+            if not_fully_idle:
+                phase = "working"
+                activity_token = activity_token or _token(
+                    "antigravity", "db_not_idle", db_time or cid
+                )
+            elif db_lagging and (pending_async or phase in {"working", "waiting"}):
+                if pending_async:
+                    phase = "working"
+            elif tail_ended:
+                phase = "idle"
+            else:
+                phase = "idle"
+                activity_token = activity_token or _token("antigravity", "db_idle", db_time or cid)
+        elif not_fully_idle:
+            phase = "working"
+            activity_token = activity_token or _token(
+                "antigravity", "db_not_idle", db_time or cid
+            )
+
+    phase = _finalize_history_phase(phase, live)
+    return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+
+
 _INSPECTORS = {
     "claude": _inspect_claude,
     "codex": _inspect_codex,
@@ -1314,6 +1548,7 @@ _INSPECTORS = {
     "opencode": _inspect_opencode,
     "cursor": _inspect_cursor,
     "pi": _inspect_pi,
+    "antigravity": _inspect_antigravity,
 }
 
 

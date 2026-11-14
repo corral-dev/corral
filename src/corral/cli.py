@@ -322,16 +322,19 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     runtime_id, user_args = registry.resolve_id(rest[0]) or rest[0], rest[1:]
 
     def _is_subcommand(token: str) -> bool:
-        """`corral <运行时> run …` 这类首个词是子命令的直启属于透传，不是项目快捷启动。
+        """`corral <运行时> <子命令> …` 这类首个词是子命令的直启属于透传，不是项目快捷启动。
 
-        只有 OpenCode 有子命令形态（见 `OpenCodeRuntime.SUBCOMMANDS`）；其余运行时
-        一律按旧语义（首个位置参数是项目名）。
+        只有 OpenCode 与 Antigravity 有子命令形态（见各自适配器的 `SUBCOMMANDS`）；
+        其余运行时一律按旧语义（首个位置参数是项目名）。
         """
-        if runtime_id != "opencode":
-            return False
-        from corral.runtime import opencode as runtime_opencode
+        from corral.runtime.antigravity import AntigravityRuntime
+        from corral.runtime.opencode import OpenCodeRuntime
 
-        return token in runtime_opencode.OpenCodeRuntime.SUBCOMMANDS
+        subcommands = {
+            "opencode": OpenCodeRuntime.SUBCOMMANDS,
+            "antigravity": AntigravityRuntime.SUBCOMMANDS,
+        }.get(runtime_id, frozenset())
+        return token in subcommands
 
     project_query: str | None = None
     if (

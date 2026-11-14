@@ -228,7 +228,7 @@ def _transcript_area(runtime: str, screen: str) -> str:
         # The bottommost chevron is the unsent composer, not a search hit.
         composers = [i for i, line in enumerate(lines) if re.match(r"^\s*›", line)]
         return "\n".join(lines[:composers[-1]]) if composers else ""
-    if runtime in {"pi", "claude"}:
+    if runtime in {"pi", "claude", "antigravity"}:
         separators = [i for i, line in enumerate(lines) if re.match(r"^─{10,}", line)]
         return "\n".join(lines[:separators[-2]]) if len(separators) >= 2 else ""
     return screen

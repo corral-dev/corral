@@ -78,8 +78,8 @@ if _SRC not in _existing.split(os.pathsep):
 # leak into agent-to-agent attribution (corral.control.detect_sender), or a
 # local run and CI would build different message text.
 for _agent_var in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID",
-                   "CORRAL_RUNTIME", "CORRAL_SESSION_ID", "PICKUP_RUNTIME", "PICKUP_SESSION_ID",
-                   "SC_RUNTIME", "SC_SESSION_ID"):
+                   "ANTIGRAVITY_CONVERSATION_ID", "CORRAL_RUNTIME", "CORRAL_SESSION_ID",
+                   "PICKUP_RUNTIME", "PICKUP_SESSION_ID", "SC_RUNTIME", "SC_SESSION_ID"):
     os.environ.pop(_agent_var, None)
 
 # 单个作业的硬上限（秒）。取值要明显小于 CI 作业自身的 timeout-minutes，

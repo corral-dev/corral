@@ -1232,5 +1232,84 @@ class RichmsgTailWindowTests(unittest.TestCase):
             self.assertLess(reader.parsed_line_count, total)
 
 
+class AntigravityRichmsgTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        richmsg._SESSKIT_READER_AVAILABLE.pop("antigravity", None)
+
+    def test_supports_tool_calls_and_summarize_pascal_case(self) -> None:
+        self.assertTrue(richmsg.supports_tool_calls("antigravity"))
+        self.assertIn("antigravity", richmsg._CC_SESSKIT_RUNTIMES)
+        summary_cmd, _ = richmsg.summarize("run_command", "shell", {"CommandLine": "pytest -q"})
+        self.assertEqual(summary_cmd, "pytest -q")
+        summary_file, _ = richmsg.summarize("view_file", "read", {"TargetFile": "/repo/src/app.py"})
+        self.assertEqual(summary_file, "view_file app.py")
+        meta = richmsg._question_meta(
+            "question",
+            {"questions": [{"question": "Pick", "options": ["A", "B"], "is_multi_select": True}]},
+        )
+        self.assertEqual(len(meta), 1)
+        self.assertTrue(meta[0]["multi_select"])
+
+    def test_antigravity_uses_sesskit_open_reader_and_hides_thinking(self) -> None:
+        from types import SimpleNamespace
+
+        events = [
+            SimpleNamespace(
+                type="user_message", id="u0", message_id="m0",
+                ts="2026-11-14T00:00:00Z", text="Fix bug", origin="user",
+            ),
+            SimpleNamespace(type="thinking", id="t1", message_id="m1", ts="2026-11-14T00:00:01Z", text="secret cot"),
+            SimpleNamespace(
+                type="tool_call",
+                id="tc1",
+                call_id="call-1",
+                message_id="m1",
+                ts="2026-11-14T00:00:02Z",
+                name="run_command",
+                kind="shell",
+                raw_input={"CommandLine": "pytest -q"},
+            ),
+            SimpleNamespace(
+                type="tool_result",
+                id="tr1",
+                call_id="call-1",
+                message_id="m1",
+                ts="2026-11-14T00:00:03Z",
+                raw_output="2 passed",
+                result=SimpleNamespace(status="ok", evidence=SimpleNamespace(origin="native")),
+            ),
+            SimpleNamespace(
+                type="assistant_message", id="a1", message_id="m1",
+                ts="2026-11-14T00:00:04Z", text="All fixed.",
+            ),
+        ]
+
+        class FakeWireReader:
+            def poll(self):
+                return SimpleNamespace(state="available", reset=False, generation="g1", cursor="c1", events=events)
+
+            def page(self, *, before=None, limit=200):
+                return SimpleNamespace(events=events, generation="g1", has_more=False, before=None)
+
+        fake_adapter = SimpleNamespace(
+            capabilities=SimpleNamespace(incremental_reading=True),
+            open_reader=lambda session, cursor: FakeWireReader(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            hist = Path(directory) / "transcript_full.jsonl"
+            hist.write_text('{"step_index": 0}\n', encoding="utf-8")
+            with mock.patch("sesskit.get_adapter", return_value=fake_adapter):
+                richmsg._SESSKIT_READER_AVAILABLE.pop("antigravity", None)
+                msgs = richmsg.RichReader(_session("antigravity", hist)).read_all()
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual(msgs[0].role, "user")
+        self.assertEqual(msgs[0].text, "Fix bug")
+        self.assertEqual(msgs[1].role, "assistant")
+        self.assertIn("All fixed.", msgs[1].text)
+        self.assertNotIn("secret cot", msgs[1].text)
+        self.assertEqual(len(msgs[1].tools), 1)
+        self.assertEqual(msgs[1].tools[0].status, "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

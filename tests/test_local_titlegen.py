@@ -137,10 +137,10 @@ class LocalTitleGeneratorTests(unittest.TestCase):
         status = titlegen.subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
         self.assertTrue(not status.stdout.strip() or status.stdout.strip().startswith("Z"), status.stdout)
 
-    def test_local_pipeline_accepts_all_five_source_runtimes_without_gateway(self):
+    def test_local_pipeline_accepts_all_six_source_runtimes_without_gateway(self):
         sessions = [{"source": source, "id": "sample",
                      "first_user_msg": "Fix login errors", "fallback_title": "Fix login errors"}
-                    for source in ("claude", "codex", "opencode", "cursor", "pi")]
+                    for source in ("claude", "codex", "opencode", "cursor", "pi", "antigravity")]
         local = titlegen.LocalTitleGenerator("pi", "pi", (), ())
 
         def answer(prompt, timeout):
@@ -153,7 +153,7 @@ class LocalTitleGeneratorTests(unittest.TestCase):
             mock.patch.object(local, "generate", side_effect=answer),
             mock.patch.object(titles, "CACHE_FILE", str(self.root / "titles.json")),
         ):
-            self.assertEqual(len(titles.refresh_titles(sessions, cache)), 5)
+            self.assertEqual(len(titles.refresh_titles(sessions, cache)), 6)
         for session in sessions:
             self.assertEqual(titles.resolve_initial_title(session, cache), ("Fix login errors", False))
 

@@ -107,12 +107,14 @@ sequenceDiagram
 | `src/corral/runtime/opencode.py` | OpenCode 对照实现；单文件数据库签名优化 | `OpenCodeRuntime` |
 | `src/corral/runtime/kimi.py` | Kimi 对照实现；接力目标的非交互限制 | `KimiRuntime` |
 | `src/corral/runtime/cursor.py` | Cursor 对照实现 | `CursorRuntime` |
+| `src/corral/runtime/antigravity.py` | Antigravity（`agy`）对照实现；规则线内嵌输入区与子命令透传 | `AntigravityRuntime` |
 | `src/corral/scan/claude.py` | Claude JSONL 扫描、噪音过滤和预览 | Claude 扫描器 |
 | `src/corral/scan/codex.py` | Codex rollout JSONL 扫描和子助手过滤 | Codex 扫描器 |
 | `src/corral/scan/opencode.py` | OpenCode SQLite 只读扫描 | OpenCode 扫描器 |
 | `src/corral/scan/kimi.py` | Kimi `state.json` / `wire.jsonl` 扫描 | Kimi 扫描器 |
 | `src/corral/scan/cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
 | `src/corral/scan/pi.py` | Pi JSONL 扫描、活动分支回溯与对话预览 | Pi 扫描器 |
+| `src/corral/scan/antigravity.py` | SessKit `sesskit.parsers.antigravity` 模块别名 | Antigravity 扫描器 |
 | `src/corral/transcript.py` | `corral share` 统一事件流（thinking / 工具调用） | `load_events`、`_parse_<id>` |
 | `src/corral/remote/richmsg.py` | 手机远程富消息；漏登记则详情空白 | `_PARSERS`、`_parse_plain` |
 | `src/corral/remote/transcript_cache.py` | 规范化消息本机缓存 | `PARSER_VERSION` |
@@ -153,6 +155,7 @@ sequenceDiagram
 | OpenCode 历史 | `~/.local/share/opencode/opencode.db` 或配置的数据目录 | SQLite 只读扫描与预览 | 处理 WAL；必须只读连接并保留读失败语义 |
 | Kimi 历史 | `~/.kimi-code/sessions/<工作区>/<会话>/agents/main/wire.jsonl` | 状态与预览 | 只读主助手流水，忽略旁路子助手 |
 | Cursor CLI 历史 | `~/.cursor/chats/<工作区>/<会话>/` | 元数据、提示词和 SQLite 预览 | 只扫 CLI 历史，不扫 IDE 转录目录 |
+| Antigravity CLI 历史 | `~/.gemini/antigravity-cli/`（及 IDE/ACP 根目录） | `brain/<cid>/.system_generated/logs/transcript_full.jsonl`、`conversation_summaries.db`、`presence/<cid>.lock` | `agy` 长驻进程在 `presence/<cid>.lock` 持 `flock`；由 SessKit 扫历史与解析，Corral `liveness` 联合 `lsof`/`ps` 精确绑 PID |
 | 待接入新助手历史 | `<助手私有目录>/<工作区或项目>/<会话文件或数据库>` | 需要在真机先确认 | 先确定读权限、生命周期、子任务标记和写入时机 |
 
 ## §5 本域流程与组件入口索引

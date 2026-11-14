@@ -701,7 +701,10 @@ class RuntimeTests(unittest.TestCase):
                 LaunchRequest(session, "gemini", "验证扩展能力")
             )
 
-        self.assertEqual(registry.ids, ("claude", "codex", "opencode", "kimi", "cursor", "pi", "gemini"))
+        self.assertEqual(
+            registry.ids,
+            ("claude", "codex", "opencode", "kimi", "cursor", "pi", "antigravity", "gemini"),
+        )
         self.assertEqual(plan.argv[0], "gemini")
         self.assertIn("验证扩展能力", plan.argv[-1])
 
@@ -1096,6 +1099,115 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result, generated)
         self.assertEqual(cache["claude:same"]["title"], "Claude 标题")
         self.assertEqual(cache["codex:same"]["title"], "Codex 标题")
+
+
+class AntigravityRuntimeTests(unittest.TestCase):
+    def test_default_registry_includes_antigravity(self) -> None:
+        reg = default_registry()
+        self.assertIn("antigravity", reg.ids)
+        runtime = reg.get("antigravity")
+        self.assertEqual(runtime.display_name, "Antigravity")
+        self.assertEqual(runtime.executable, "agy")
+        self.assertEqual(runtime.auto_approve_args, ("--dangerously-skip-permissions",))
+        self.assertEqual(runtime.interrupt_keys, ("Escape",))
+        self.assertFalse(runtime.control_profile()["mcp_supported"])
+
+    def test_antigravity_launch_plans_use_verified_flags(self) -> None:
+        registry = default_registry()
+        runtime = registry.get("antigravity")
+        with tempfile.TemporaryDirectory() as td:
+            logs_dir = Path(td) / "brain" / "cid-123" / ".system_generated" / "logs"
+            logs_dir.mkdir(parents=True)
+            hist = logs_dir / "transcript_full.jsonl"
+            hist.write_text('{"step_index": 0}\n', encoding="utf-8")
+            project = Path(td) / "proj"
+            project.mkdir()
+
+            session = {
+                "source": "antigravity",
+                "id": "cid-123",
+                "short_id": "cid-123",
+                "cwd": str(project),
+                "path": str(hist),
+            }
+            resume = runtime.build_resume_plan(session)
+            self.assertEqual(
+                resume.argv,
+                ("agy", "--dangerously-skip-permissions", "--conversation", "cid-123"),
+            )
+            self.assertEqual(resume.cwd, str(project))
+
+            cont = runtime.build_continue_plan(session, "finish tests")
+            self.assertEqual(
+                cont.argv,
+                (
+                    "agy",
+                    "--dangerously-skip-permissions",
+                    "-p",
+                    "finish tests",
+                    "--conversation",
+                    "cid-123",
+                    "--output-format",
+                    "json",
+                ),
+            )
+            self.assertEqual(cont.cwd, str(project))
+
+            fresh = runtime.build_new_session_plan(str(project))
+            self.assertEqual(fresh.argv, ("agy", "--dangerously-skip-permissions"))
+            self.assertEqual(fresh.cwd, str(project))
+
+            handoff = runtime.build_new_plan(
+                Handoff(
+                    source_runtime_id="claude",
+                    source_runtime_name="Claude Code",
+                    title="Prev",
+                    history_path=str(hist),
+                    original_cwd=str(project),
+                    history_reading_hint="Read transcript",
+                )
+            )
+            self.assertEqual(
+                handoff.argv[:4],
+                ("agy", "--dangerously-skip-permissions", "--add-dir", str(Path(td) / "brain" / "cid-123")),
+            )
+            self.assertEqual(handoff.argv[4], "-i")
+            self.assertEqual(handoff.cwd, str(project))
+
+    def test_antigravity_passthrough_places_auto_approve_only_where_supported(self) -> None:
+        registry = default_registry()
+        self.assertEqual(
+            registry.build_passthrough_plan("antigravity", []).argv,
+            ("agy", "--dangerously-skip-permissions"),
+        )
+        self.assertEqual(
+            registry.build_passthrough_plan("antigravity", ["--conversation", "cid-1"]).argv,
+            ("agy", "--dangerously-skip-permissions", "--conversation", "cid-1"),
+        )
+        self.assertEqual(
+            registry.build_passthrough_plan(
+                "antigravity", ["--dangerously-skip-permissions", "--conversation", "cid-1"]
+            ).argv,
+            ("agy", "--dangerously-skip-permissions", "--conversation", "cid-1"),
+        )
+        self.assertEqual(
+            registry.build_passthrough_plan("antigravity", ["acp"]).argv,
+            ("agy", "acp", "--dangerously-skip-permissions"),
+        )
+        for subcmd in ("models", "mcp", "help", "plugin", "update", "--version", "-h"):
+            with self.subTest(subcmd=subcmd):
+                plan = registry.build_passthrough_plan("antigravity", [subcmd])
+                self.assertEqual(plan.argv, ("agy", subcmd))
+
+    def test_antigravity_delete_session_delegates_to_sesskit(self) -> None:
+        runtime = default_registry().get("antigravity")
+        with mock.patch("corral.scan.antigravity.delete_session") as mocked:
+            runtime.delete_session({
+                "source": "antigravity",
+                "id": "cid-9",
+                "path": "/tmp/fake/brain/cid-9/transcript_full.jsonl",
+            })
+        mocked.assert_called_once_with("/tmp/fake/brain/cid-9/transcript_full.jsonl")
 
 
 if __name__ == "__main__":

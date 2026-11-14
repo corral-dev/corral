@@ -30,7 +30,7 @@ _TITLE_STALE_SPAWN_SECONDS = 30.0
 # Runtimes whose ``path`` is that session's own history file, so one stat is an
 # exact freshness probe. OpenCode shares one database (its stat feeds the
 # evidence signature instead) and Cursor has its own stat signature.
-_FILE_STAT_RUNTIMES = frozenset({"claude", "codex", "pi"})
+_FILE_STAT_RUNTIMES = frozenset({"claude", "codex", "pi", "antigravity"})
 # Upper bound on sessions one state probe touches; live hosted panes dominate.
 _STATE_PROBE_MAX_SESSIONS = 160
 # A history written this recently may belong to a session whose pid the
@@ -116,6 +116,22 @@ def _opencode_db_signature(session: dict) -> tuple:
     return tuple(signature)
 
 
+def _antigravity_db_signature(session: dict) -> tuple:
+    """Stat of Antigravity's `conversation_summaries.db` and its WAL (no SQL)."""
+    root = liveness._antigravity_root_from_path(session.get("path"))
+    if root is None:
+        return ()
+    db = str(root / "conversation_summaries.db")
+    signature = []
+    for candidate in (db, f"{db}-wal"):
+        try:
+            info = os.stat(candidate)
+        except OSError:
+            info = None
+        signature.append((info.st_size, info.st_mtime_ns) if info is not None else None)
+    return tuple(signature)
+
+
 # Fields the per-session turn probe owns between full scans (status follows
 # native turn ends within the state tick, see REMOTE_KNOWLEDGE_BASE turn-end rule).
 _TURN_STATE_FIELDS = ("status_tag", "completion_id", "last_agent_msg", "last_user_msg")
@@ -130,6 +146,17 @@ _ATTENTION_FIELDS = ("attention_kind", "attention_token", "attention_updated_at"
 def _turn_evidence_stamp(session: dict) -> tuple | None:
     """Cheap stat-only stamp of one session's history; None when not probeable."""
     source = session.get("source")
+    if source == "antigravity":
+        path = str(session.get("path") or "")
+        try:
+            info = os.stat(path) if path else None
+        except OSError:
+            info = None
+        db_sig = _antigravity_db_signature(session)
+        if info is None and db_sig is None:
+            return None
+        file_sig = (info.st_size, info.st_mtime_ns) if info is not None else None
+        return (file_sig, db_sig)
     if source in _FILE_STAT_RUNTIMES:
         path = str(session.get("path") or "")
         try:
@@ -912,6 +939,10 @@ class SessionStore:
                     # One shared database: its per-session size is not a file stat,
                     # so a live session re-reads evidence whenever the DB moves.
                     evidence_signature = base_signature + (_opencode_db_signature(candidate),)
+                elif candidate.get("source") == "antigravity" and candidate.get("live"):
+                    # Live `agy` updates status / not_fully_idle in shared
+                    # conversation_summaries.db even when transcript JSONL pauses.
+                    evidence_signature = base_signature + (_antigravity_db_signature(candidate),)
                 else:
                     evidence_signature = base_signature
                 prepared.append((candidate, evidence_signature))

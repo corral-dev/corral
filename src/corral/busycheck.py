@@ -48,13 +48,13 @@ from typing import Any
 # Agent foreground binaries: the pane's own process (or its direct agent
 # child when tmux wrapped the command in a shell) is never background work.
 _AGENT_COMMS = frozenset({
-    "claude", "codex", "opencode", "pi", "cursor-agent", "agent", "kimi",
+    "claude", "codex", "opencode", "pi", "cursor-agent", "agent", "agy", "kimi",
     "gemini", "node", "bun", "deno", "python", "python3",
 })
 # ...but bare runtimes only count as the agent when their command line says so.
 _AGENT_ARGS = (
     "corral.codex_proxy", "app-server", "/claude", "claude-code",
-    "opencode", "/pi", "cursor-agent", "kimi", "codex",
+    "opencode", "/pi", "cursor-agent", "/agy", "antigravity", "kimi", "codex",
 )
 # Long-lived helpers that stay resident under an idle agent and must not keep
 # it "busy" forever. Narrow on purpose: anything unrecognized counts as busy.

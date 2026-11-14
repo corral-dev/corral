@@ -7,14 +7,14 @@ paths mirror the generated fields verbatim once the coordinator publishes the
 versioned immutable artifact.
 
 Status: the upstream artifact is published as a versioned GitHub Release
-wheel (v0.1.0, x0c/agent-session-control). The pin below is the single
+wheel (v0.1.2, x0c/agent-session-control). The pin below is the single
 source of truth; `pyproject.toml` and the install paths mirror the
 generated fields verbatim. A relative path / PYTHONPATH / editable
 install is development only and never the final consumer dependency.
 
 FINAL-PIN HOOK (for the coordinator, after publication):
   1. Set WHEEL_URL / WHEEL_SHA256 below (keep VERSION in sync).
-  2. Add to pyproject ``dependencies``: ``"agent-session-control>=0.1.0"``,
+  2. Add to pyproject ``dependencies``: ``"agent-session-control>=<VERSION>"``,
      plus ``[tool.uv.sources]`` block from ``uv-source-table``; ``uv lock``.
   3. install.sh / verify_clean_install.py pick the pin up automatically;
      the Homebrew formula generator (scripts/homebrew_formula.py RESOURCES)
@@ -31,16 +31,16 @@ import sys
 import urllib.request
 
 # --- single source of truth -------------------------------------------------
-VERSION = "0.1.0"
+VERSION = "0.1.2"
 PACKAGE = "agent-session-control"
 # No published artifact yet (private source repo only). The coordinator
 # publishes the versioned wheel, then fills URL + sha256 here.
 WHEEL_URL: str | None = (
     "https://github.com/x0c/agent-session-control/releases/download/"
-    "v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"
+    "v0.1.2/agent_session_control-0.1.2-py3-none-any.whl"
 )
 WHEEL_SHA256: str | None = (
-    "622c239093d08b7a56de22ecce7ca612cb6743387b57dbdcaa5507c60ed73f62"
+    "b93fd786b84ddfd67cb2194869e6f093f001f2c0549f2b8d8fe1f14c8fdcee83"
 )
 REQUIRES = f"{PACKAGE}>={VERSION}"
 # Requires-Python of the published wheel (from its metadata; pip reports
@@ -70,7 +70,7 @@ def wheel_requirement() -> str:
     """PEP 508 direct reference with digest for pip. Fails until published."""
     if not published():
         raise RuntimeError(
-            "agent-session-control 0.1.0 has no published artifact yet; "
+            f"agent-session-control {VERSION} has no published artifact yet; "
             "the coordinator publishes the versioned wheel first (see module docstring). "
             "Development may install the local test wheel (see test-wheel-install), but the "
             "final Corral dependency must be a versioned immutable artifact."

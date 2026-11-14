@@ -62,6 +62,16 @@ class ShimTargetTableTests(unittest.TestCase):
         self.assertNotIn("github", opencode.passthrough_words)
         self.assertNotIn("mini", opencode.passthrough_words)
 
+    def test_agy_is_default_shimmed_and_subcommands_pass_through(self):
+        agy = next(target for target in shim.TARGETS if target.command == "agy")
+        self.assertTrue(agy.default_on)
+        self.assertEqual(agy.runtime_id, "antigravity")
+        self.assertEqual(agy.passthrough_words, shim.ANTIGRAVITY_PASSTHROUGH)
+        for token in ("models", "mcp", "acp", "plugin", "update", "--prompt"):
+            self.assertIn(token, agy.passthrough_words)
+        for interactive_flag in ("--conversation", "-i", "--prompt-interactive"):
+            self.assertNotIn(interactive_flag, agy.passthrough_words)
+
     def test_agent_stays_opt_in_when_the_binary_is_not_cursor(self):
         agent = next(t for t in shim.TARGETS if t.command == "agent")
         self.assertFalse(agent.default_on)
@@ -517,6 +527,8 @@ class DirectLaunchAliasTests(unittest.TestCase):
         self.assertEqual(registry.resolve_id("cursor"), "cursor")
         self.assertEqual(registry.resolve_id("agent"), "cursor")
         self.assertEqual(registry.resolve_id("cursor-agent"), "cursor")
+        self.assertEqual(registry.resolve_id("antigravity"), "antigravity")
+        self.assertEqual(registry.resolve_id("agy"), "antigravity")
 
     def test_unknown_token_resolves_to_none(self):
         self.assertIsNone(default_registry().resolve_id("--help"))

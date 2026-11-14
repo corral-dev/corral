@@ -31,6 +31,7 @@ from textual.worker import get_current_worker
 
 from corral import i18n, ui_prefs
 from corral.i18n import t
+from corral.runtime.registry import active_runtimes
 from corral.textutil import fit_cell
 from corral.ui.controllers.attention_reader import AttentionReaderMixin
 from corral.ui.controllers.host_controller import HostControllerMixin
@@ -406,7 +407,7 @@ class MainScreen(
         self.embed_ok = embed_ok
         self.direct = direct
         self.osc_report = osc_report
-        runtime_ids = store.registry.ids
+        runtime_ids = [r.id for r in active_runtimes(store.registry)] or list(store.registry.ids)
         source = next((rid for rid in runtime_ids if store.sessions[rid]), runtime_ids[0])
         self.nav = NavState(source=source)
         self._host_pending = 0
@@ -788,8 +789,9 @@ class MainScreen(
         # 扫完后如果它其实没有会话而别的运行时有，重新选一次，跟 __init__ 里
         # "挑第一个有会话的运行时"这条默认选择逻辑保持一致。
         if not self.store.sessions.get(self.nav.source):
+            active_ids = [r.id for r in active_runtimes(self.store.registry)]
             alt = next(
-                (rid for rid in self.store.registry.ids if self.store.sessions[rid]), None,
+                (rid for rid in active_ids if self.store.sessions[rid]), None,
             )
             if alt is not None:
                 self.nav.source = alt
@@ -1043,7 +1045,7 @@ class MainScreen(
             search.placeholder = t("filter.load_error", error=load_error)
         elif self.store.loaded and count == 0 and not any(self.store.sessions.values()):
             names = i18n.join_names(
-                [runtime.display_name for runtime in self.store.registry]
+                [runtime.display_name for runtime in active_runtimes(self.store.registry)]
             )
             search.placeholder = t("filter.no_sessions", names=names)
         else:

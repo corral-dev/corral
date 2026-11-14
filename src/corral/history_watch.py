@@ -90,15 +90,25 @@ def default_history_roots() -> list[Path]:
     home = Path.home()
     xdg = os.environ.get("XDG_DATA_HOME", "").strip()
     share = Path(xdg).expanduser() if xdg else home / ".local" / "share"
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    config = Path(xdg_config).expanduser() if xdg_config else home / ".config"
     candidates = [
         home / ".claude" / "projects",
         home / ".claude" / "sessions",
         home / ".codex" / "sessions",
         home / ".cursor" / "chats",
+        home / ".gemini" / "antigravity-cli",
+        home / ".gemini" / "antigravity",
+        home / ".gemini" / "antigravity-ide",
+        home / ".gemini" / "antigravity-acp",
         home / ".kimi-code",
         home / ".pi" / "agent",
         share / "opencode",
+        config / "antigravity",
     ]
+    ag_app_data = os.environ.get("ANTIGRAVITY_APP_DATA_DIR", "").strip()
+    if ag_app_data:
+        candidates.append(Path(ag_app_data).expanduser())
     # OPENCODE_DATA_DIR may be a comma-separated override.
     for part in (os.environ.get("OPENCODE_DATA_DIR", "") or "").split(","):
         part = part.strip()

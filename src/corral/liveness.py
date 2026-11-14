@@ -23,6 +23,7 @@ import subprocess
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from corral import keepalive
 from corral.legacy_names import (
@@ -36,6 +37,58 @@ from corral.legacy_names import (
 _CALL_TIMEOUT = 1.5
 _MAX_ANCESTOR_DEPTH = 20
 _CODEX_THREAD_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
+
+_ANTIGRAVITY_ENV_ROOTS = ("ANTIGRAVITY_APP_DATA_DIR", "ANTIGRAVITY_HOME")
+_ANTIGRAVITY_DIR_NAMES = (
+    "antigravity-cli",
+    "antigravity",
+    "antigravity-ide",
+    "antigravity-acp",
+)
+_ANTIGRAVITY_NON_TUI_SUBCOMMANDS = frozenset({
+    "acp",
+    "agent",
+    "agents",
+    "changelog",
+    "help",
+    "install",
+    "mcp",
+    "mic-serve",
+    "models",
+    "plugin",
+    "plugins",
+    "remote-control",
+    "update",
+})
+_ANTIGRAVITY_HEADLESS_FLAGS = frozenset({
+    "-p",
+    "--print",
+    "--prompt",
+    "-h",
+    "--help",
+    "-v",
+    "-V",
+    "--version",
+})
+_ANTIGRAVITY_FLAGS_WITH_VALUE = frozenset({
+    "--add-dir",
+    "--agent",
+    "--conversation",
+    "--effort",
+    "--input-format",
+    "--json-schema",
+    "--log-file",
+    "--mode",
+    "--model",
+    "--output-format",
+    "--print-timeout",
+    "--project",
+    "--remote-agent",
+    "--sandbox",
+    "--settings",
+    "-i",
+    "--prompt-interactive",
+})
 # annotate + adopt_foreign 在同一轮合并里可能各列一次 tmux；用「本轮波次」
 # 字典去重，禁止跨刷新 / 跨单测的 TTL 缓存（否则 mock 的 list-sessions 会串味）。
 _tmux_list_wave: dict[str, list[list[str]]] | None = None
@@ -299,6 +352,312 @@ def _codex_resumed_thread_id(pane_pid: int) -> str | None:
     return None
 
 
+def _antigravity_root_from_path(raw_path: object) -> Path | None:
+    """Derive `<root>` from an Antigravity history, DB, or lock file path."""
+    text = str(raw_path or "").strip()
+    if not text:
+        return None
+    parts = Path(text).parts
+    for marker in ("brain", "conversations", "presence"):
+        for idx in range(len(parts) - 1, 0, -1):
+            if parts[idx] == marker:
+                return Path(*parts[:idx])
+    return None
+
+
+def _standard_antigravity_roots() -> list[Path]:
+    """Candidate Antigravity state roots in preference order (deduplicated)."""
+    home = Path.home()
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME") or (home / ".config"))
+    raw: list[Path] = []
+    for env_key in _ANTIGRAVITY_ENV_ROOTS:
+        val = (os.environ.get(env_key) or "").strip()
+        if val:
+            raw.append(Path(val).expanduser())
+    for dirname in _ANTIGRAVITY_DIR_NAMES:
+        raw.append(home / ".gemini" / dirname)
+    raw.append(xdg / "antigravity")
+    seen: set[str] = set()
+    out: list[Path] = []
+    for candidate in raw:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            out.append(candidate)
+    return out
+
+
+def _antigravity_presence_dirs(sessions=(), roots: list[Path] | tuple[Path, ...] | None = None) -> list[Path]:
+    """Resolve `presence/` directories to inspect without leaking host dirs into fixtures."""
+    if roots is not None:
+        return [Path(root) / "presence" for root in roots]
+    standard = _standard_antigravity_roots()
+    standard_resolved = {os.path.realpath(str(r)) for r in standard}
+    derived: list[Path] = []
+    seen: set[str] = set()
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        root = _antigravity_root_from_path(session.get("path"))
+        if root is not None:
+            key = os.path.realpath(str(root))
+            if key not in seen:
+                seen.add(key)
+                derived.append(root)
+    if derived and not any(os.path.realpath(str(r)) in standard_resolved for r in derived):
+        # Test fixtures under tmp_path use isolated roots; include explicit env roots too.
+        extra = [
+            Path((os.environ.get(k) or "").strip()).expanduser()
+            for k in _ANTIGRAVITY_ENV_ROOTS
+            if (os.environ.get(k) or "").strip()
+        ]
+        combined = derived + [r for r in extra if os.path.realpath(str(r)) not in seen]
+        return [r / "presence" for r in combined]
+    combined = list(derived)
+    for r in standard:
+        key = os.path.realpath(str(r))
+        if key not in seen:
+            seen.add(key)
+            combined.append(r)
+    return [r / "presence" for r in combined]
+
+
+def _parse_antigravity_argv(argv: list[str]) -> tuple[bool, str | None]:
+    """Return ``(is_interactive_tui, explicit_conversation_id)`` for one `agy` argv."""
+    if not argv:
+        return False, None
+    exe = os.path.basename(argv[0].lstrip("-")).lower()
+    if exe not in {"agy", "agy.exe"}:
+        return False, None
+    args = argv[1:]
+    conversation_id: str | None = None
+    first_positional: str | None = None
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token in _ANTIGRAVITY_HEADLESS_FLAGS:
+            return False, None
+        if token.startswith(("--print=", "--prompt=")):
+            return False, None
+        if token == "--conversation":
+            if idx + 1 < len(args) and args[idx + 1]:
+                conversation_id = args[idx + 1]
+                idx += 2
+                continue
+        elif token.startswith("--conversation="):
+            conversation_id = token.split("=", 1)[1] or None
+        elif token in _ANTIGRAVITY_FLAGS_WITH_VALUE:
+            idx += 2
+            continue
+        elif not token.startswith("-") and first_positional is None:
+            first_positional = token
+        idx += 1
+    if first_positional in _ANTIGRAVITY_NON_TUI_SUBCOMMANDS:
+        return False, None
+    return True, conversation_id
+
+
+def _list_antigravity_processes() -> tuple[set[int], dict[str, int]] | None:
+    """Return ``(interactive_agy_pids, conversation_id -> pid_from_argv)`` via `ps`.
+
+    ``None`` means the probe itself failed (timeout/error), which callers must
+    not confuse with "no live agy process".
+    """
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid=,args="],
+            timeout=_CALL_TIMEOUT, stderr=subprocess.DEVNULL,
+        ).decode("utf-8", "replace")
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    live_pids: set[int] = set()
+    argv_cids: dict[str, int] = {}
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 1)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        try:
+            argv = shlex.split(parts[1])
+        except ValueError:
+            argv = parts[1].split()
+        interactive, cid = _parse_antigravity_argv(argv)
+        if not interactive:
+            continue
+        live_pids.add(pid)
+        if cid and cid not in argv_cids:
+            argv_cids[cid] = pid
+    return live_pids, argv_cids
+
+
+def _parse_lsof_lock_fds(output: str) -> list[tuple[int, str, str]]:
+    """Parse ``lsof -F pftan`` lines into ``(pid, access, path)`` for regular ``.lock`` fds."""
+    records: list[tuple[int, str, str]] = []
+    cur_pid: int | None = None
+    fd_open = False
+    fd_type = ""
+    fd_access = ""
+    fd_name = ""
+
+    def _flush() -> None:
+        if cur_pid is not None and fd_open and fd_type == "REG" and fd_name.endswith(".lock"):
+            records.append((cur_pid, fd_access, fd_name))
+
+    for line in output.splitlines():
+        if not line:
+            continue
+        tag, value = line[0], line[1:]
+        if tag == "p":
+            _flush()
+            fd_open = False
+            fd_type = fd_access = fd_name = ""
+            try:
+                cur_pid = int(value)
+            except ValueError:
+                cur_pid = None
+        elif tag == "f":
+            _flush()
+            fd_open = True
+            fd_type = fd_access = fd_name = ""
+        elif tag == "t":
+            fd_type = value
+        elif tag == "a":
+            fd_access = value
+        elif tag == "n":
+            fd_name = value
+    _flush()
+    return records
+
+
+def _list_lsof_lock_fds(presence_dirs: list[Path]) -> list[tuple[int, str, str]] | None:
+    """List open regular ``.lock`` file descriptors across existing ``presence/`` directories.
+
+    ``None`` means an ``lsof`` probe failed (timeout/OS error) for a directory
+    that holds lock files, so the result would be incomplete. A non-zero exit
+    with no output is normal (``lsof`` exits 1 when nothing is open).
+    """
+    if not presence_dirs or shutil.which("lsof") is None:
+        return []
+    records: list[tuple[int, str, str]] = []
+    for presence_dir in presence_dirs:
+        if not presence_dir.is_dir():
+            continue
+        try:
+            has_locks = any(entry.name.endswith(".lock") for entry in os.scandir(presence_dir))
+        except OSError:
+            continue
+        if not has_locks:
+            continue
+        try:
+            proc = subprocess.run(
+                ["lsof", "-F", "pftan", "+D", str(presence_dir)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=_CALL_TIMEOUT,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.stdout:
+            records.extend(_parse_lsof_lock_fds(proc.stdout))
+    return records
+
+
+def _resolve_antigravity_live_pids_checked(
+    sessions=(),
+    roots: list[Path] | tuple[Path, ...] | None = None,
+) -> dict[str, int] | None:
+    """Like :func:`resolve_antigravity_live_pids`, but ``None`` when a probe failed."""
+    processes = _list_antigravity_processes()
+    if processes is None:
+        return None
+    live_pids, argv_cids = processes
+    if not live_pids:
+        return {}
+    presence_dirs = _antigravity_presence_dirs(sessions=sessions, roots=roots)
+    lock_fds = _list_lsof_lock_fds(presence_dirs)
+    if lock_fds is None:
+        return None
+    resolved: dict[str, int] = {}
+    # Prefer read-write/write descriptors (`u` / `w`) before read-only if multiple exist.
+    for preferred in (True, False):
+        for pid, access, lock_path in lock_fds:
+            if pid not in live_pids:
+                continue
+            is_write = access in {"u", "w"}
+            if is_write != preferred:
+                continue
+            cid = Path(lock_path).stem
+            if cid and cid not in resolved:
+                resolved[cid] = pid
+    for cid, pid in argv_cids.items():
+        if cid and cid not in resolved:
+            resolved[cid] = pid
+    return resolved
+
+
+def resolve_antigravity_live_pids(
+    sessions=(),
+    roots: list[Path] | tuple[Path, ...] | None = None,
+) -> dict[str, int]:
+    """Map live interactive `agy` ``conversation_id`` -> ``pid``.
+
+    Combines open `REG` descriptors on ``presence/<cid>.lock`` (via ``lsof``,
+    skipping ``DIR`` watches and dead unlocked lock files) with `ps` argv
+    validation and ``--conversation <cid>`` fallback so multiple bare `agy`
+    processes in the same cwd map 1-to-1 to their exact conversations.
+    Returns ``{}`` when a probe failed; use the checked variant to tell apart.
+    """
+    return _resolve_antigravity_live_pids_checked(sessions, roots=roots) or {}
+
+
+def annotate_antigravity_sessions(
+    sessions,
+    *,
+    roots: list[Path] | tuple[Path, ...] | None = None,
+    force_override: bool = False,
+) -> None:
+    """Populate exact ``live`` / ``pid`` fields on Antigravity session dicts."""
+    ag_sessions = [
+        s for s in sessions
+        if isinstance(s, dict) and str(s.get("source") or "") == "antigravity"
+        and not s.get("provisional")
+    ]
+    if not ag_sessions:
+        return
+    if not force_override:
+        # Inside liveness.annotate(), skip live probing only when no presence dir exists
+        # on disk AND every synthetic test session already supplied a mock pid.
+        dirs = _antigravity_presence_dirs(sessions=ag_sessions, roots=roots)
+        has_presence_dir = any(d.is_dir() for d in dirs)
+        if not has_presence_dir and all(s.get("pid") is not None for s in ag_sessions):
+            return
+    live_map = _resolve_antigravity_live_pids_checked(ag_sessions, roots=roots)
+    if live_map is None:
+        # A failed ps/lsof probe is "unknown", not "nothing is live": keep the
+        # scanner's existing live/pid so clients do not flash sessions as dead.
+        return
+    dirs_present = force_override or any(
+        d.is_dir() for d in _antigravity_presence_dirs(sessions=ag_sessions, roots=roots)
+    )
+    for session in ag_sessions:
+        cid = str(session.get("id") or "")
+        pid = live_map.get(cid)
+        if pid is not None:
+            session["live"] = True
+            session["pid"] = pid
+        elif dirs_present:
+            session["live"] = False
+            session["pid"] = None
+
+
 def annotate(sessions, provisional_names: set[str] | None = None) -> None:
     """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。
 
@@ -324,6 +683,7 @@ def annotate(sessions, provisional_names: set[str] | None = None) -> None:
     """
     if not sessions:
         return
+    annotate_antigravity_sessions(sessions, force_override=False)
     young = set(provisional_names or ())
     candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
     tmux_sessions = _list_tmux_sessions("#{session_name}|#{pane_pid}|#{pane_current_command}")

@@ -17,7 +17,7 @@ from corral import agent_api, control, control_cli, control_store
 from corral.control_store import ControlError, RunStore
 
 _AGENT_ENV = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID",
-              "CORRAL_RUNTIME", "CORRAL_SESSION_ID")
+              "ANTIGRAVITY_CONVERSATION_ID", "CORRAL_RUNTIME", "CORRAL_SESSION_ID")
 
 
 def _clean_agent_env(case: unittest.TestCase) -> None:
@@ -57,7 +57,7 @@ class ParseFromAgentTests(unittest.TestCase):
     def test_valid_runtime_id_is_normalized(self):
         self.assertEqual(control.parse_from_agent("opencode:ses_abc123"), "opencode:ses_abc123")
         self.assertEqual(control.parse_from_agent("  claude:abc  "), "claude:abc")
-        for rid in ("claude", "codex", "opencode", "cursor", "pi"):
+        for rid in ("claude", "codex", "opencode", "cursor", "pi", "antigravity"):
             self.assertEqual(control.parse_from_agent(f"{rid}:x"), f"{rid}:x")
 
     def test_rejects_bad_shape(self):
@@ -116,6 +116,7 @@ class DetectSenderTests(unittest.TestCase):
             ("CODEX_THREAD_ID", "codex:c-1"),
             ("OPENCODE_SESSION_ID", "opencode:c-1"),
             ("PI_SESSION_ID", "pi:c-1"),
+            ("ANTIGRAVITY_CONVERSATION_ID", "antigravity:c-1"),
         ):
             self.assertEqual(control.detect_sender(env={var: "c-1"}), ref, var)
 
@@ -495,7 +496,7 @@ class DescribeSyncTests(unittest.TestCase):
                 if "--runtime" in arg["flags"] and "choices" in arg["kwargs"]:
                     self.assertEqual(
                         sorted(arg["kwargs"]["choices"]),
-                        ["claude", "codex", "cursor", "opencode", "pi"],
+                        ["antigravity", "claude", "codex", "cursor", "opencode", "pi"],
                         name,
                     )
         # --from-agent itself carries no hard-coded model or runtime choices.

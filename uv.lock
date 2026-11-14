@@ -8,16 +8,16 @@ resolution-markers = [
 
 [[package]]
 name = "agent-session-control"
-version = "0.1.0"
-source = { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl" }
+version = "0.1.2"
+source = { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.2/agent_session_control-0.1.2-py3-none-any.whl" }
 wheels = [
-    { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl", hash = "sha256:622c239093d08b7a56de22ecce7ca612cb6743387b57dbdcaa5507c60ed73f62" },
+    { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.2/agent_session_control-0.1.2-py3-none-any.whl", hash = "sha256:b93fd786b84ddfd67cb2194869e6f093f001f2c0549f2b8d8fe1f14c8fdcee83" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
-    { name = "sesskit", marker = "extra == 'history'", specifier = ">=0.2.21" },
+    { name = "sesskit", marker = "extra == 'history'", specifier = ">=0.3.2" },
 ]
 provides-extras = ["acp", "history"]
 
@@ -158,11 +158,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-session-control", url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl" },
+    { name = "agent-session-control", url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.2/agent_session_control-0.1.2-py3-none-any.whl" },
     { name = "cryptography", marker = "extra == 'remote'", specifier = ">=42" },
     { name = "pillow", marker = "extra == 'remote'", specifier = ">=10" },
     { name = "segno", marker = "extra == 'remote'", specifier = ">=1.6" },
-    { name = "sesskit", url = "https://github.com/x0c/sesskit/releases/download/v0.2.24/sesskit-0.2.24-py3-none-any.whl" },
+    { name = "sesskit", url = "https://github.com/x0c/sesskit/releases/download/v0.3.3/sesskit-0.3.3-py3-none-any.whl" },
     { name = "textual", specifier = ">=8.0" },
     { name = "websockets", specifier = ">=13" },
     { name = "zeroconf", marker = "extra == 'remote'", specifier = ">=0.131" },
@@ -458,10 +458,10 @@ wheels = [
 
 [[package]]
 name = "sesskit"
-version = "0.2.24"
-source = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.24/sesskit-0.2.24-py3-none-any.whl" }
+version = "0.3.3"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.3/sesskit-0.3.3-py3-none-any.whl" }
 wheels = [
-    { url = "https://github.com/x0c/sesskit/releases/download/v0.2.24/sesskit-0.2.24-py3-none-any.whl", hash = "sha256:a4c29486961c74322f32880f7642bbec01c74bd82ce5c4256099919882e9453c" },
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.3/sesskit-0.3.3-py3-none-any.whl", hash = "sha256:feca0cef3a2950ef35ccf3f3433f60afda97aa0cccecdda2e72117bd141c52b2" },
 ]
 
 [[package]]

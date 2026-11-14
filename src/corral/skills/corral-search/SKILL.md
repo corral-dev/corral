@@ -1,11 +1,11 @@
 ---
 name: corral-search
-description: Search and read other agents' local conversations and development history across Claude Code, Codex, OpenCode, Cursor and Pi.
+description: Search and read other agents' local conversations and development history across Claude Code, Codex, OpenCode, Cursor, Pi and Antigravity.
 ---
 
 # corral-search: find the session that knows
 
-`corral` reads local agent histories (Claude Code, Codex, OpenCode, Cursor, Pi) and
+`corral` reads local agent histories (Claude Code, Codex, OpenCode, Cursor, Pi, Antigravity) and
 returns JSON envelopes `{"ok", "data", "error", "meta"}` on stdout. Judge success by
 the exit code or `ok`, never by non-empty output. These commands are read-only.
 

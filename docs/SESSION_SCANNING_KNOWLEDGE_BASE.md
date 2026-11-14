@@ -190,7 +190,7 @@ flowchart TD
 1. OpenCode 的签名包含数据库及可选 `-wal` 文件的 mtime，以及排序后的 `(pid, cwd)` 全量进程快照（不再按 cwd 折叠成单 pid）。
 2. 签名不变时复用上一份成功扫描结果，但必须复制每个会话列表项，禁止让界面就地添加的展示字段污染缓存。
 3. OpenCode 读取失败时保留上一份成功结果，不能用空列表覆盖。
-4. Claude/Codex/Cursor/Kimi/Pi 用**逐文件 stat**（路径 + mtime_ns + size）加进程 pid 快照做 `scan_signature`，跳过未变化运行时的完整 `scan_sessions()`。禁止用祖先目录 mtime：既有文件追加不会冒泡。Claude 的 pid 文件集合也进签名，避免进程退出后 live 冻住。
+4. Claude/Codex/Cursor/Kimi/Pi/Antigravity 用**逐文件 stat**（路径 + mtime_ns + size）加进程 pid 快照做 `scan_signature`，跳过未变化运行时的完整 `scan_sessions()`。禁止用祖先目录 mtime：既有文件追加不会冒泡。Claude 的 pid 文件集合、Antigravity 的 `conversation_summaries.db` 及 `presence/<cid>.lock` 也进签名/关注失效维度，避免进程退出或态切换后冻住。
 5. 解析层另有派生缓存：Kimi 按主事件流文件精确签名复用元数据；Cursor 按元数据文件签名，并额外绑定提示历史与正文数据库签名。缓存写意图在全部运行时扫描完成后一次事务提交，避免逐条同步写盘。
 6. 这些缓存是可删除的本地派生数据；损坏、锁竞争或禁用时必须按未命中处理，不能改变扫描结果。完整边界见 `PERFORMANCE_KNOWLEDGE_BASE.md`。
 
@@ -223,6 +223,7 @@ flowchart TD
 | OpenCode v2 | 尾部 assistant `finish=tool-calls`（仅 live）、无 finish 但有文本/工具的落盘中行 | `completed` + `state.metadata.answers` 为空（作答后落盘带 answers；`error` 不算等待）；`pending`/`running` 问卷同理 | 非空 error、`finish=stop`、用户尾、`idle outcome=failed` 翻转 working |
 | Cursor | 未配对非提问 tool-call，或最新非提问工具活动新于可见答复 | AskQuestion 配对不到结果：JSON `tool-call`/`tool-result` 按 `toolCallId` 集合差 + 首字节 `0x12` field-2 protobuf（field 23 题目 + field 57 调用标识；作答前 JSON 往往还没落盘），另有 JSON 窗口前移与 continuation 过滤 | 最新动作为可见答复/结束标记；`afterAgentResponse` 记 idle |
 | Pi | 未收束 toolCall（`stopReason=toolUse` 或有工具调用）、落盘 assistant；`agent_start` claim 补 working | 当前无原生结构化提问证据；不得用 `_QUESTION_TOOLS` 或 `ui_prompt_*` 猜测等待回答 | `stopReason` ∈ {stop, error, aborted, length}；另叠加 claim `agentPhase`（仅 `agent_start`→working、`agent_settled`→idle；旧 `waiting` / `ui_prompt_*` 忽略，见 §6） |
+| Antigravity | `conversation_summaries.db` 为 `CASCADE_RUN_STATUS_RUNNING` 或 `not_fully_idle=1`（且 `killed=0`，含仅无工具中间答复的后台任务）；非 daemon 后台任务标记未由 `SYSTEM_MESSAGE` / `manage_task` 收束；`transcript_full.jsonl` 尾部为 `RUNNING` / `USER_INPUT` / `GENERIC DONE\|ERROR` / 有 `tool_calls` 的 `PLANNER_RESPONSE` | `ask_question` tool_call 配对不到后续 `GENERIC` 完成/错误或被新 `USER_INPUT` 覆盖（且 `killed=0`） | `killed=1`，或 `CASCADE_RUN_STATUS_IDLE` + `not_fully_idle=0`（无未收束活跃信号时）配尾部无工具 `PLANNER_RESPONSE DONE` / `ERROR` / `INVALID` 或原生 `ERROR_MESSAGE` |
 | Kimi | `content.part` 文本、`tool.call`（提问落盘不算执行） | `AskUserQuestion` tool.call 配对不到 tool.result | `turn.cancel`；尾部确为 `step.end` 且读取前后文件签名稳定（mtime 永不单独产生状态） |
 
 非历史输入（永远留在 Corral，见数据面 §4.2.1 归属）：`live` 进程绑定、Pi claim `agentPhase`
@@ -343,6 +344,7 @@ Claude continued-in session recovery (2026-09-30 incident): Claude Code 2.1.284 
 | Kimi Code | `~/.kimi-code/sessions/<workspace>/<session>/` | `state.json` + `agents/main/wire.jsonl` | state + wire 头尾 | 主 `wire.jsonl` | 忽略 `agents/<other>/wire.jsonl`；事件流含大系统行 |
 | Cursor Agent CLI | `~/.cursor/chats/<workspace>/<chatId>/` | `meta.json`、`prompt_history.json`、`store.db` | meta + prompt history | SQLite `blobs` JSON blob | 只扫 CLI 历史，不扫 IDE 的 agent transcripts；预览仍跳过二进制 DAG blob。**关注圆点必须另读 AskQuestion 的 field-2 protobuf**（等用户作答时 JSON tool-call 往往还没落盘） |
 | Cursor 状态观察 | `~/.cursor/hooks.json` | 用户级 JSON 配置 + hook 标准输入事件 | 只读检查并增量维护 corral 管理的条目 | 不读取提示词正文，只取会话标识、事件名和生成标识 | 保留其他工具条目；配置损坏或版本未知时停止写入；hook 失败不能阻断 Cursor |
+| Antigravity | `~/.gemini/antigravity-cli/`（`ANTIGRAVITY_APP_DATA_DIR`）及 IDE/ACP 目录 | `brain/<cid>/.system_generated/logs/transcript_full.jsonl`、`conversations/<cid>.db`、`conversation_summaries.db`、`presence/<cid>.lock` | SessKit 只读摘要库与元数据 | SessKit `open_reader` / `load_activity`（JSONL 增量） | 死会话会遗留未加锁的 `presence/<cid>.lock`；判活必须联合 `lsof` `tREG` 打开句柄与 `ps --conversation <cid>`（排除无头/子命令），删除托管给 `sesskit.parsers.antigravity.delete_session` |
 
 外部数据读取原则：
 

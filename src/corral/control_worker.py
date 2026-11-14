@@ -204,8 +204,14 @@ _PLACEHOLDERS = ("Ask anything", "Add a follow-up", "Plan, search, build anythin
 # Startup workspace-trust dialogs of freshly launched agents: the caller chose
 # this directory for this run, and Corral's product default skips permission
 # prompts. Only the exact affirmative option is ever confirmed.
-_TRUST_OPTIONS = {"claude": "Yes, I trust this folder"}
-_LOGIN_PROMPT = re.compile(r"(?i)\b(?:press any key to log ?in|please log ?in|not logged in|sign in to)\b")
+_TRUST_OPTIONS = {
+    "claude": "Yes, I trust this folder",
+    "antigravity": "Yes, I trust this folder",
+}
+_LOGIN_PROMPT = re.compile(
+    r"(?i)\b(?:press any key to log ?in|please log ?in|not logged in|sign in to|authentication required)\b"
+)
+_CONFIRM_FOOTER = re.compile(r"\benter\s+(?:to\s+)?confirm\b", re.IGNORECASE)
 _STARTUP_WAIT = 45.0
 
 
@@ -227,12 +233,15 @@ def accept_startup_trust(runtime_id: str, name: str) -> bool:
     while option and time.monotonic() < deadline:
         screen = _plain(name)
         if option not in screen:
-            if "enter to confirm" not in screen.lower() and screen.strip():
+            if not _CONFIRM_FOOTER.search(screen) and screen.strip():
                 return False  # no dialog: the composer is up
             time.sleep(0.5)
             continue
         for _ in range(4):
-            selected = [line for line in screen.splitlines() if "❯" in line]
+            selected = [
+                line for line in screen.splitlines()
+                if line.lstrip().startswith(("❯", "›", ">", "●", "▸"))
+            ]
             if selected and option in selected[-1]:
                 embed.send_key(name, "Enter")
                 time.sleep(1.0)

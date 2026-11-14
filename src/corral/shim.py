@@ -97,6 +97,13 @@ CURSOR_PASSTHROUGH = (
     "--list-models",
 )
 
+# Antigravity CLI (`agy`): management/ACP subcommands and `--prompt` headless print mode.
+ANTIGRAVITY_PASSTHROUGH = (
+    "acp", "agent", "agents", "changelog", "help", "install", "mcp",
+    "mic-serve", "models", "plugin", "plugins", "remote-control", "update",
+    "--prompt",
+)
+
 # 与 `runtime/registry.py` 的默认注册表对应（tests/test_shim.py 断言两边不漂移）。
 TARGETS: tuple[ShimTarget, ...] = (
     ShimTarget("claude", "claude", True,
@@ -125,6 +132,7 @@ TARGETS: tuple[ShimTarget, ...] = (
     ShimTarget("cursor-agent", "cursor", True, CURSOR_PASSTHROUGH),
     # 名字太通用，default_on=False；PATH 上认出是 Cursor CLI 时仍会自动选中。
     ShimTarget("agent", "cursor", False, CURSOR_PASSTHROUGH),
+    ShimTarget("agy", "antigravity", True, ANTIGRAVITY_PASSTHROUGH),
 )
 
 # PATH / 脚本正文里出现这些，就认定 `agent` 是 Cursor CLI（含官方安装与包装器）。

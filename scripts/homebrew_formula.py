@@ -53,7 +53,7 @@ sesskit_dep = importlib.import_module("sesskit_dep")
 # bottled installs satisfy `pip check` for the hard pyproject dependency.
 control_dep = importlib.import_module("control_dep")
 
-DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Cursor, and Pi"
+DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Cursor, Pi, and Antigravity"
 
 # 纯 Python 运行时依赖（textual 及其传递依赖）。Homebrew 安装阶段禁止联网，
 # 每个依赖都要一个 resource 块（下载地址 + sha256）。依赖升级时同步改这里

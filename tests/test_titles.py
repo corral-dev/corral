@@ -43,7 +43,7 @@ class TemporaryTitleRankingTests(unittest.TestCase):
 
     def test_clipped_attachment_fallback_yields_to_real_request_for_every_runtime(self) -> None:
         request = "/tmp/captures/screenshot.png 修复会话标题"
-        for runtime in ("claude", "codex", "opencode", "cursor", "pi"):
+        for runtime in ("claude", "codex", "opencode", "cursor", "pi", "antigravity"):
             with self.subTest(runtime=runtime):
                 session = _session(
                     source=runtime,

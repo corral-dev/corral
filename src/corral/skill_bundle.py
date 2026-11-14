@@ -45,12 +45,14 @@ def runtime_roots() -> list[dict]:
     shared = home / ".agents" / "skills"
     xdg = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
     pi_dir = Path(os.environ.get("PI_CODING_AGENT_DIR") or home / ".pi" / "agent")
+    ag_dir = Path(os.environ.get("ANTIGRAVITY_APP_DATA_DIR") or home / ".gemini" / "antigravity-cli")
     roots = {
         "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude") / "skills",
         "codex": shared if shared.is_dir() else Path(os.environ.get("CODEX_HOME") or home / ".codex") / "skills",
         "opencode": xdg / "opencode" / "skills",
         "cursor": home / ".cursor" / "skills",
         "pi": shared if shared.is_dir() else pi_dir / "skills",
+        "antigravity": ag_dir / "skills",
     }
     registry = default_registry()
     out = []

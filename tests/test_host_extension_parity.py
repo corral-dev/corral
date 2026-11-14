@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from sesskit_batch_mocks import batch_environ, batch_start
+
 from corral.runtime.host_extension import (
     TITLE_PROMPT_MARKER,
     peel_handoff_text,
@@ -195,12 +197,18 @@ class PiParityTests(unittest.TestCase):
                 mock.patch.object(scan_pi, "live_processes", return_value=[(31, real_cwd)]),
                 mock.patch.object(scan_pi, "process_command_line", return_value="pi --approve"),
                 mock.patch.object(scan_pi, "open_file_paths", return_value={31: []}),
-                mock.patch.object(scan_pi, "process_start_time", return_value=None),
+                mock.patch.object(scan_pi, "process_start_time", return_value=None), mock.patch.object(
+                    scan_pi, "process_start_times",
+                    side_effect=batch_start(
+                        return_value=None,
+                    ),
+                ),
                 mock.patch.object(
-                    scan_pi,
-                    "process_environ",
-                    side_effect=lambda pid, **kwargs: (
+                    scan_pi, "process_environs",
+                    side_effect=batch_environ(
+                        side_effect=lambda pid, **kwargs: (
                         {pi_identity.INSTANCE_ENV: "inst-a"} if pid == 31 else {}
+                        ),
                     ),
                 ),
                 mock.patch.object(pi_identity, "read_claims", return_value=[claim]),

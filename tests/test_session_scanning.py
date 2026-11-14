@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from sesskit_batch_mocks import batch_environ, batch_start
+
 from corral import i18n
 from corral.i18n import t
 
@@ -1607,12 +1609,16 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
                  side_effect=lambda pid: cmdlines.get(pid, "opencode --auto"),
              ), \
              mock.patch.object(
-                 scan_opencode, "process_environ",
-                 side_effect=lambda pid, **kwargs: environ.get(pid, {}),
+                 scan_opencode, "process_environs",
+                 side_effect=batch_environ(
+                     side_effect=lambda pid, **kwargs: environ.get(pid, {}),
+                 ),
              ), \
              mock.patch.object(
-                 scan_opencode, "process_start_time",
-                 side_effect=lambda pid: starts.get(pid),
+                 scan_opencode, "process_start_times",
+                 side_effect=batch_start(
+                     side_effect=lambda pid: starts.get(pid),
+                 ),
              ):
             return scan_opencode.scan_sessions(limit=limit, host=host)
 
@@ -5816,8 +5822,12 @@ class CursorScanTests(unittest.TestCase):
             calls.append(list(argv))
             if argv[:2] == ["ps", "-p"]:
                 return b"agent --resume abc\n"
+            if argv[:2] == ["ps", "-axo"]:
+                # SessKit >=0.3 reads one shared ``ps -axo pid=,command=`` table.
+                return b"99 agent --resume abc\n"
             raise AssertionError(f"unexpected check_output: {argv}")
 
+        common.clear_ps_cmdline_cache()
         with mock.patch.object(
             common, "_pids_for_process_name", side_effect=[[99], [88]]
         ), mock.patch.object(
@@ -5829,6 +5839,7 @@ class CursorScanTests(unittest.TestCase):
             first = common.process_command_line(99)
             second = common.process_command_line(99)
             common.live_pid_snapshot("agent")
+            common.clear_ps_cmdline_cache()
             third = common.process_command_line(99)
 
         self.assertEqual(first, "agent --resume abc")
@@ -6169,7 +6180,10 @@ class PiScanTests(unittest.TestCase):
             ), mock.patch.object(
                 scan_pi, "open_file_paths", return_value={11: [], 22: []}
             ), mock.patch.object(
-                scan_pi, "process_environ", return_value={}
+                scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    return_value={},
+                ),
             ):
                 sessions = scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}
@@ -6261,8 +6275,10 @@ class PiScanTests(unittest.TestCase):
             ), mock.patch.object(
                 scan_pi, "open_file_paths", return_value={33: []}
             ), mock.patch.object(
-                scan_pi, "process_environ",
-                return_value={"CORRAL_SESSION_ID": "abcd1234"},
+                scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    return_value={"CORRAL_SESSION_ID": "abcd1234"},
+                ),
             ):
                 sessions = scan_pi.scan_sessions(limit=10)
             self.assertEqual(len(sessions), 1)
@@ -6292,11 +6308,18 @@ class PiScanTests(unittest.TestCase):
             scan_pi, "process_command_line",
             side_effect=lambda pid: cmdlines.get(pid, "pi --approve"),
         ), mock.patch.object(
-            scan_pi, "process_environ",
-            side_effect=lambda pid, **kwargs: environ.get(pid, {}),
+            scan_pi, "process_environs",
+            side_effect=batch_environ(
+                side_effect=lambda pid, **kwargs: environ.get(pid, {}),
+            ),
         ), mock.patch.object(
             scan_pi, "process_start_time",
             side_effect=lambda pid: starts.get(pid),
+        ), mock.patch.object(
+            scan_pi, "process_start_times",
+            side_effect=batch_start(
+                side_effect=lambda pid: starts.get(pid),
+            ),
         ), mock.patch.object(
             scan_pi, "open_file_paths",
             return_value=open_paths,

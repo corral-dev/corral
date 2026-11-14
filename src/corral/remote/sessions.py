@@ -39,7 +39,7 @@ from corral.remote.push import abort_kind
 from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
 from corral.runtime import LaunchError
-from corral.runtime.registry import ACTIVE_RUNTIME_IDS
+from corral.runtime.registry import ACTIVE_RUNTIME_IDS, active_runtimes
 from corral.split_layout import default_layout_db
 from corral.store import SessionStore
 
@@ -258,8 +258,10 @@ def _plain_pane_text(raw: str | None) -> str:
 
 
 # A runtime confirmation dialog (Claude workspace trust, resume choices, Codex
-# confirmations) owns the keyboard: pasted text plus Enter would answer it.
-_BLOCKING_DIALOG_RE = re.compile(r"\benter to confirm\b", re.IGNORECASE)
+# confirmations, Antigravity trust "enter Confirm") owns the keyboard: pasted
+# text plus Enter would answer it.
+_BLOCKING_DIALOG_RE = re.compile(r"\benter\s+(?:to\s+)?confirm\b", re.IGNORECASE)
+_ANTIGRAVITY_BOX_PROMPT_RE = re.compile(r"─{10,}\r?\n\s*>\s*(?:[^\r\n]*)?\r?\n─{10,}")
 _DIALOG_FOOTER_LINES = 6
 
 
@@ -289,6 +291,15 @@ def _blocked_input_cause(raw: str | None) -> str | None:
     return None
 
 
+def _antigravity_prompt_visible(plain: str) -> bool:
+    """True when `agy` TUI shows its composer hint or ruled `> ...` input box."""
+    return (
+        "Accept-edits mode:" in plain
+        or "Plan mode:" in plain
+        or bool(_ANTIGRAVITY_BOX_PROMPT_RE.search(plain))
+    )
+
+
 def _pane_accepts_input(plain: str) -> bool:
     """True when the hosted assistant UI shows an input prompt."""
     # EditHere send_turn readiness: accept every runtime's composer chrome.
@@ -297,7 +308,7 @@ def _pane_accepts_input(plain: str) -> bool:
     # an idle OpenCode pane never satisfied the old arrow-only check, so
     # send_turn timed out on it).
     markers = ("→", "->", "›", "❯", "┃", "Ask anything")
-    return any(marker in plain for marker in markers)
+    return any(marker in plain for marker in markers) or _antigravity_prompt_visible(plain)
 
 
 # Large pastes collapse into a placeholder: Claude `[Pasted text #1 +39 lines]`,
@@ -2249,10 +2260,9 @@ class SessionHub:
 
     def runtimes(self) -> list[dict]:
         result = []
-        for runtime_id in self.registry.ids:
-            runtime = self.registry.get(runtime_id)
+        for runtime in active_runtimes(self.registry):
             result.append({
-                "id": runtime_id,
+                "id": runtime.id,
                 "name": runtime.display_name,
                 "available": bool(runtime.is_available()),
             })
@@ -2663,7 +2673,9 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.prompt_unavailable")) from exc
 
         session = self.require_session(key)
-        if str(session.get("source") or "") not in {"claude", "codex", "pi", "opencode", "cursor"}:
+        if str(session.get("source") or "") not in {
+            "claude", "codex", "pi", "opencode", "cursor", "antigravity",
+        }:
             raise ActionError("unavailable", t("remote.err.prompt_unavailable"))
         name = self._hosted_name(key)
         if not name:
@@ -3113,7 +3125,12 @@ class SessionHub:
                 plain = _plain_pane_text(embed.capture(name, 0, 0))
                 if plain != last:
                     last, stable_since = plain, time.monotonic()
-                ready = any(marker in plain for marker in markers) if markers else bool(plain.strip())
+                if runtime == "antigravity":
+                    ready = _antigravity_prompt_visible(plain)
+                elif markers:
+                    ready = any(marker in plain for marker in markers)
+                else:
+                    ready = bool(plain.strip())
                 if ready and time.monotonic() - stable_since >= _RESUME_SETTLE_QUIET:
                     break
                 time.sleep(_TURN_READY_POLL)

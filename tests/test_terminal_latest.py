@@ -39,7 +39,7 @@ class NativeLatestTests(unittest.TestCase):
               mock.patch.object(embed, "navigation_transaction", ownership),
               mock.patch.object(nav, "_tmux", return_value="0"),
               mock.patch.object(embed, "send_key") as send):
-            for runtime in ["codex", "claude", "pi", "opencode", "cursor"]:
+            for runtime in ["codex", "claude", "pi", "opencode", "cursor", "antigravity"]:
                 nav.return_to_latest("fixture", runtime)
             send.assert_not_called()
 

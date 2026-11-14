@@ -18,7 +18,7 @@ from unittest import mock
 
 from sesskit import titles as sesskit_titles
 
-from corral.cache import PerformanceCache, file_signature, provider_cohort
+from corral.cache import _PARSER_VERSION, PerformanceCache, file_signature, provider_cohort
 from corral.remote import crypto
 from corral.remote.config import PairedDevice, RemoteState
 from corral.remote.push import PushNotifier
@@ -71,7 +71,7 @@ class CacheCohortTests(unittest.TestCase):
 
     def test_cohort_carries_provider_version(self) -> None:
         cohort = provider_cohort()
-        self.assertTrue(cohort.startswith(OLD_PARSER_BASE + "+sesskit-"))
+        self.assertTrue(cohort.startswith(_PARSER_VERSION + "+sesskit-"))
         self.assertIn("sesskit-", cohort)
 
     def test_old_provider_row_is_a_miss(self) -> None:

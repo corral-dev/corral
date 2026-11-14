@@ -323,16 +323,27 @@ def summarize(name: str, kind: str, args: dict | str) -> tuple[str, str]:
     detail = _clip(detail, _MAX_DETAIL)
     if not isinstance(args, dict):
         return (f"{name}: {_first_line(args)}" if args else name), detail
-    for key in ("file_path", "path", "filePath", "notebook_path"):
+    for key in (
+        "file_path",
+        "path",
+        "filePath",
+        "notebook_path",
+        "Path",
+        "TargetFile",
+        "AbsolutePath",
+        "DirectoryPath",
+        "SearchPath",
+        "Uri",
+    ):
         if args.get(key):
             return f"{name} {_basename(args[key])}", detail
-    for key in ("cmd", "command", "script"):
+    for key in ("cmd", "command", "script", "CommandLine", "Command"):
         if args.get(key):
             return _command_summary(args[key]), detail
-    for key in ("pattern", "query", "q", "search_term"):
+    for key in ("pattern", "query", "q", "search_term", "Query"):
         if args.get(key):
             return f"{name} {_first_line(args[key], 100)}", detail
-    for key in ("prompt", "instruction", "description", "question"):
+    for key in ("prompt", "instruction", "description", "question", "Prompt", "Summary"):
         if args.get(key):
             return f"{name} {_first_line(args[key], 100)}", detail
     return name, detail
@@ -426,7 +437,10 @@ def _question_meta(kind: str, args: dict) -> list[dict]:
                 "prompt": prompt,
                 "header": header if header != prompt else "",
                 "multi_select": bool(
-                    item.get("multiSelect") or item.get("multi_select") or item.get("multiple")
+                    item.get("multiSelect")
+                    or item.get("multi_select")
+                    or item.get("is_multi_select")
+                    or item.get("multiple")
                 ),
                 "is_secret": bool(item.get("isSecret") or item.get("is_secret")),
                 # Claude's preview picker has no free-text row; typed text is a note on a choice.
@@ -1078,6 +1092,7 @@ _NATIVE_SOURCE_FACTORS = {
     "pi": 1.0,
     "opencode": 1.0,
     "cursor": 0.125,
+    "antigravity": 0.5,
 }
 _NATIVE_SOURCE_FACTOR_DEFAULT = 0.5
 
@@ -1999,11 +2014,13 @@ class _TypedBatch:
 
 
 def _typed_group_key(event: object, runtime: str) -> str:
-    """Grouping key for one native message: SessKit ``message_id`` for Pi,
-    the native ``line:N`` record for Claude/Codex (their events carry no
-    message id, but one native line's events always arrive in one batch)."""
-    if runtime == "pi":
-        return str(getattr(event, "message_id", None) or "")
+    """Grouping key for one native message: SessKit ``message_id`` for Pi and
+    Antigravity (with ``evidence.record`` fallback), or ``line:N`` record for
+    Claude/Codex."""
+    if runtime in {"pi", "antigravity"}:
+        mid = getattr(event, "message_id", None)
+        if mid:
+            return str(mid)
     record = getattr(getattr(event, "evidence", None), "record", None)
     return str(record or "")
 
@@ -2250,7 +2267,7 @@ def _feed_typed_event(
         # turn's async panels. Produces no phone card.
         _settle_async_on_turn_end(reader, event)
         return None, False
-    if etype == "lifecycle" and runtime == "pi":
+    if etype == "lifecycle" and runtime in {"pi", "antigravity"}:
         # SessKit carries the error of a thinking-only failed turn on a
         # typed-only lifecycle event. Like the legacy parser, the error text
         # owns the card only when the turn produced no text and no tools.
@@ -2664,7 +2681,7 @@ def _parse_pi_legacy(reader: RichReader) -> list[RichMessage]:
 
 # --- Claude/Codex via SessKit ---------------------------------------------
 
-_CC_SESSKIT_RUNTIMES = frozenset({"claude", "codex"})
+_CC_SESSKIT_RUNTIMES = frozenset({"claude", "codex", "antigravity"})
 _SESSKIT_READER_AVAILABLE: dict[str, bool] = {}
 _CC_PAGE_LIMIT = 200
 
@@ -2682,7 +2699,9 @@ def _sesskit_reader_available(runtime: str) -> bool:
             from sesskit import get_adapter
 
             adapter = get_adapter(runtime)
-            available = callable(getattr(adapter, "open_reader", None))
+            caps = getattr(adapter, "capabilities", None)
+            has_cap = True if caps is None else bool(getattr(caps, "incremental_reading", True))
+            available = has_cap and callable(getattr(adapter, "open_reader", None))
         except Exception:
             available = False
         _SESSKIT_READER_AVAILABLE[runtime] = available
@@ -3035,7 +3054,15 @@ def _read_co_earlier(reader: RichReader, limit: int, *, before_seq: int) -> list
     return older
 
 
+def _parse_antigravity(reader: RichReader) -> list[RichMessage]:
+    """Antigravity: project SessKit typed activity via open_reader."""
+    if _sesskit_reader_available("antigravity"):
+        return _cc_sync(reader, "antigravity")
+    return []
+
+
 _PARSERS = {
+    "antigravity": _parse_antigravity,
     "codex": _parse_codex,
     "claude": _parse_claude,
     "cursor": _parse_cursor,
@@ -3046,7 +3073,7 @@ _PARSERS = {
 
 
 def supports_tool_calls(runtime_id: str) -> bool:
-    return runtime_id in ("codex", "claude", "cursor", "opencode", "pi")
+    return runtime_id in ("antigravity", "codex", "claude", "cursor", "opencode", "pi")
 
 
 def _tool_args(raw: object) -> dict:

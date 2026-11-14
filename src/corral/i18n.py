@@ -1700,8 +1700,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "本机没有检测到任何可拦截的命令行 Agent",
     },
     "shim.err.no_runtime_hint": {
-        "en": "Install claude / codex / opencode / kimi / cursor-agent / agent first, then try again",
-        "zh": "先装上 claude / codex / opencode / kimi / cursor-agent / agent 任一后再执行",
+        "en": "Install claude / codex / opencode / kimi / cursor-agent / agent / agy first, then try again",
+        "zh": "先装上 claude / codex / opencode / kimi / cursor-agent / agent / agy 任一后再执行",
     },
     "shim.err.permission_write": {
         "en": "Permission denied modifying {path}; the original file was not overwritten",
@@ -1741,11 +1741,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "cli.help.description": {
         "en": (
-            "Browse, resume and hand off Claude Code, Codex, OpenCode, Cursor and Pi sessions.\n"
+            "Browse, resume and hand off Claude Code, Codex, OpenCode, Cursor, Pi and Antigravity sessions.\n"
             "With no command, opens the terminal UI; without a terminal, prints a legacy JSON list."
         ),
         "zh": (
-            "查看、恢复和接力 Claude Code、Codex、OpenCode、Cursor 与 Pi 会话。\n"
+            "查看、恢复和接力 Claude Code、Codex、OpenCode、Cursor、Pi 与 Antigravity 会话。\n"
             "不带命令时打开终端界面；非终端环境输出兼容保留的 JSON 列表。"
         ),
     },
@@ -1772,9 +1772,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  skills               Inspect, install or remove the bundled agent skills\n"
             "\n"
             "Launch assistants:\n"
-            "  claude / codex / opencode / cursor / pi\n"
+            "  claude / codex / opencode / cursor / pi / antigravity\n"
             "    No arguments: launch in the current directory. PROJECT: match a known project.\n"
-            "    Flags are passed to the assistant; Cursor aliases: agent, cursor-agent.\n"
+            "    Flags are passed to the assistant; Cursor aliases: agent, cursor-agent; Antigravity alias: agy.\n"
             "    Put --no-keepalive before the assistant to disable tmux hosting.\n"
             "\n"
             "Remote access:\n"
@@ -1823,9 +1823,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  skills               查看、安装或卸载预置 Agent skill\n"
             "\n"
             "启动助手：\n"
-            "  claude / codex / opencode / cursor / pi\n"
+            "  claude / codex / opencode / cursor / pi / antigravity\n"
             "    不带参数：在当前目录启动。项目名：匹配已知项目后启动。\n"
-            "    选项透传给助手；Cursor 别名：agent、cursor-agent。\n"
+            "    选项透传给助手；Cursor 别名：agent、cursor-agent；Antigravity 别名：agy。\n"
             "    --no-keepalive 放在助手名前可关闭 tmux 托管。\n"
             "\n"
             "远程连接：\n"

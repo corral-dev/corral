@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from corral.cache import scan_period
 from corral.i18n import t
 from corral.models import LaunchPlan, LaunchRequest, NewSessionRequest, SessionInfo
+from corral.runtime.antigravity import AntigravityRuntime
 from corral.runtime.base import BaseRuntime, LaunchError, normalize_fork_title
 from corral.runtime.claude import ClaudeRuntime
 from corral.runtime.codex import CodexRuntime
@@ -230,8 +231,10 @@ class RuntimeRegistry:
         return LaunchPlan(argv=runtime.compose_passthrough_argv(tuple(user_args)), cwd=None)
 
 
-ACTIVE_RUNTIME_IDS: frozenset[str] = frozenset({"claude", "codex", "opencode", "cursor", "pi"})
-"""活跃运行时 allowlist：仅这五个在 Corral 产品界面中可见/可新建。已有 Kimi
+ACTIVE_RUNTIME_IDS: frozenset[str] = frozenset(
+    {"claude", "codex", "opencode", "cursor", "pi", "antigravity"}
+)
+"""活跃运行时 allowlist：仅这六个在 Corral 产品界面中可见/可新建。已有 Kimi
 适配保留于注册表处于 dormant，仅供直接程序化兼容，不在 UI 展示。"""
 
 DORMANT_RUNTIME_IDS: frozenset[str] = frozenset({"kimi"})
@@ -248,7 +251,15 @@ def default_registry() -> RuntimeRegistry:
     后同时更新 ACTIVE_RUNTIME_IDS。
     """
     return RuntimeRegistry(
-        (ClaudeRuntime(), CodexRuntime(), OpenCodeRuntime(), KimiRuntime(), CursorRuntime(), PiRuntime())
+        (
+            ClaudeRuntime(),
+            CodexRuntime(),
+            OpenCodeRuntime(),
+            KimiRuntime(),
+            CursorRuntime(),
+            PiRuntime(),
+            AntigravityRuntime(),
+        )
     )
 
 

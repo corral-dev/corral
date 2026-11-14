@@ -14,6 +14,7 @@ from corral.legacy_names import getenv
 
 # 侧边栏 / 详情里 runtime 名配色：按 id 高区分度着色（不必严格品牌色）。
 RUNTIME_LABEL_STYLES = {
+    "antigravity": "#22D3EE",
     "claude": "#D97757",
     "codex": "#60A5FA",
     "cursor": "#A78BFA",

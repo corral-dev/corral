@@ -514,7 +514,7 @@ def cmd_create(args, registry) -> dict:
     _guard_create_directory(cwd)
     model = (args.model or "").strip() or None
     store = RunStore()
-    if runtime.id in {"opencode", "cursor"} and store.find(key) is None:
+    if runtime.id in {"opencode", "cursor", "antigravity"} and store.find(key) is None:
         unbound = [r for r in store.unsettled()
                    if r.get("mode") == "create" and r.get("runtime") == runtime.id and r.get("cwd") == cwd
                    and not r.get("session_ref")]

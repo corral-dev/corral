@@ -61,6 +61,28 @@ PI_PASTE = "\n".join([
     RULE,
     "corral-sendlab ⎇ master │ 0 turns",
 ])
+ANTIGRAVITY_IDLE = "\n".join([
+    RULE,
+    "> Accept-edits mode: file edits auto-approved (shift+tab to cycle)",
+    RULE,
+])
+ANTIGRAVITY_DRAFT = "\n".join([
+    RULE,
+    "> hello draft text",
+    RULE,
+])
+ANTIGRAVITY_EMPTY = "\n".join([
+    RULE,
+    ">",
+    RULE,
+])
+ANTIGRAVITY_SLASH_POPUP = "\n".join([
+    RULE,
+    "> /",
+    RULE,
+    "> /add-dir ...   Add directory",
+    "↑/↓ Navigate · enter Select · tab Complete",
+])
 
 
 class ComposerRegionTests(unittest.TestCase):
@@ -89,12 +111,21 @@ class ComposerRegionTests(unittest.TestCase):
     def test_pi_box_between_last_rules(self) -> None:
         self.assertEqual(self.region("pi", PI_PASTE), "  [paste #1 +40 lines]")
 
+    def test_antigravity_box_between_last_rules(self) -> None:
+        self.assertEqual(
+            self.region("antigravity", ANTIGRAVITY_IDLE),
+            "> Accept-edits mode: file edits auto-approved (shift+tab to cycle)",
+        )
+        self.assertEqual(self.region("antigravity", ANTIGRAVITY_DRAFT), "> hello draft text")
+        self.assertEqual(self.region("antigravity", ANTIGRAVITY_EMPTY), ">")
+        self.assertEqual(self.region("antigravity", ANTIGRAVITY_SLASH_POPUP), "> /")
+
     def test_cursor_follow_up_placeholder_is_empty_composer(self) -> None:
         self.assertEqual(self.region("cursor", "working → Add a follow-up"), "")
         self.assertEqual(self.region("cursor", "ready → fix it"), "→ fix it")
 
     def test_unrecognized_screen_is_unknown(self) -> None:
-        for runtime in ("claude", "codex", "opencode", "pi", "cursor"):
+        for runtime in ("claude", "codex", "opencode", "pi", "cursor", "antigravity"):
             with self.subTest(runtime=runtime):
                 self.assertIsNone(self.region(runtime, "booting"))
 
@@ -110,6 +141,7 @@ class ComposerHoldsTests(unittest.TestCase):
         self.assertTrue(self.holds("codex", CODEX_POPUP, "Reply ok. Look at @src/app/main.py"))
         wrapped = f"{RULE}\n❯ please look at the long\n  sentence tail\n{RULE}"
         self.assertTrue(self.holds("claude", wrapped, "please look at the long sentence tail"))
+        self.assertTrue(self.holds("antigravity", ANTIGRAVITY_DRAFT, "hello draft text"))
 
     def test_submitted_prompt_in_history_does_not_count(self) -> None:
         self.assertFalse(self.holds("claude", CLAUDE_SUBMITTED, "check @src/app/main.py"))

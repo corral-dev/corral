@@ -24,7 +24,7 @@ from corral.control_store import ControlError, RunStore
 from corral.runtime import default_registry
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
-ACTIVE_IDS = ("claude", "codex", "opencode", "cursor", "pi")
+ACTIVE_IDS = ("claude", "codex", "opencode", "cursor", "pi", "antigravity")
 
 
 class MarkerNamespaceTests(unittest.TestCase):
@@ -170,7 +170,7 @@ class PlanDelegationTests(unittest.TestCase):
         pi = control.library_create_plan(self.runtimes["pi"], self.tmp.name, native_id="host-ident")
         self.assertIn("--session-id", pi["argv"])
         self.assertIn("host-ident", pi["argv"])
-        for rid in ("codex", "cursor", "opencode"):
+        for rid in ("codex", "cursor", "opencode", "antigravity"):
             with self.assertRaises(ControlError) as caught:
                 control.library_create_plan(self.runtimes[rid], self.tmp.name, native_id="abc-123")
             self.assertEqual(caught.exception.code, "session_id_unsupported", rid)

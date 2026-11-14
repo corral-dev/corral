@@ -250,6 +250,7 @@ SENDER_ENV = (
     ("codex", "CODEX_THREAD_ID"),
     ("opencode", "OPENCODE_SESSION_ID"),
     ("pi", "PI_SESSION_ID"),
+    ("antigravity", "ANTIGRAVITY_CONVERSATION_ID"),
 )
 
 
@@ -271,6 +272,8 @@ def _runtime_of_args(args: str) -> str | None:
         return "cursor"
     if head == "pi" or "pi-coding-agent" in joined or script == "pi":
         return "pi"
+    if head in {"agy", "agy.exe"}:
+        return "antigravity"
     return None
 
 

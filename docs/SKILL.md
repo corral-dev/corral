@@ -1,11 +1,11 @@
 ---
 name: corral
-description: Query local Claude Code, Codex CLI, OpenCode, Cursor Agent CLI, and Pi session history through the `corral` CLI — list recent sessions, search by topic, read a session's conversation, export a shareable transcript with tool calls and thinking, or build a handoff context package to continue interrupted work. Read-only, no side effects.
+description: Query local Claude Code, Codex CLI, OpenCode, Cursor Agent CLI, Pi, and Antigravity session history through the `corral` CLI — list recent sessions, search by topic, read a session's conversation, export a shareable transcript with tool calls and thinking, or build a handoff context package to continue interrupted work. Read-only, no side effects.
 ---
 
 # corral：本地编程会话数据接口
 
-`corral` 扫描本机 `~/.claude/projects/`、`~/.codex/sessions/`、`~/.pi/agent/sessions/`、`~/.cursor/chats/` 和 OpenCode 的
+`corral` 扫描本机 `~/.claude/projects/`、`~/.codex/sessions/`、`~/.pi/agent/sessions/`、`~/.cursor/chats/`、`~/.gemini/antigravity-cli/` 和 OpenCode 的
 SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的会话历史，为大模型 Agent
 提供结构化查询命令。**本文中的查询命令只读、无副作用**：不会拉起新会话、不会自动接续任务、不会修改
 任何历史文件。拿到数据之后要做什么（继续任务、汇总给用户、转发给另一个 Agent）由调用方决定。
@@ -45,7 +45,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 
 ## 命令
 
-公开运行时仅 Claude Code、Codex、OpenCode、Cursor 和 Pi；Kimi 兼容实现 dormant，不在公开入口中展示。
+公开运行时仅 Claude Code、Codex、OpenCode、Cursor、Pi 和 Antigravity；Kimi 兼容实现 dormant，不在公开入口中展示。
 
 跑 `corral --help` 查看全部公开命令；`corral <command> --help` 查看具体用法。
 跑 `corral describe` 获取会话数据命令的机器可读参数说明（与实现同源，不会漂移）；
@@ -67,7 +67,7 @@ CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
 ### 会话标识（`<会话>` 参数）
 
 支持完整会话 ID、ID 前缀（如 `8892cd3d`）、或带运行时限定的 `runtime:id`（如 `claude:8892cd3d`、
-`opencode:ses_0ae26219`、`pi:<session-id>`、`cursor:<chat-uuid>`）。
+`opencode:ses_0ae26219`、`pi:<session-id>`、`cursor:<chat-uuid>`、`antigravity:<conversation-id>`）。
 前缀在多个运行时之间重复时会返回退出码 5（`ambiguous`），`error.next_commands` 里给出具体候选
 的 `corral show runtime:id` 命令，照着执行即可消歧。
 

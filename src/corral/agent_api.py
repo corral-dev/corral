@@ -1202,7 +1202,7 @@ COMMANDS = [
         "help": "结构化列出已注册运行时的会话",
         "risk": "read",
         "args": [
-            {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / cursor / pi）"}},
+            {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / cursor / pi / antigravity）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
@@ -1223,7 +1223,7 @@ COMMANDS = [
             },
         ],
         "fields": {
-            "runtime": "运行时标识（claude / codex / opencode / cursor / pi）",
+            "runtime": "运行时标识（claude / codex / opencode / cursor / pi / antigravity）",
             "id": "会话完整 ID",
             "short_id": "会话短 ID（前 8 位）",
             "title": "会话标题（缓存的生成标题或本地兜底标题，不触发新生成）",
@@ -1534,7 +1534,7 @@ COMMANDS = [
         "help": "Create a fresh hosted session on an explicit runtime (optional model), send the first brief, return a run",  # noqa: E501 - COMMANDS 数据表
         "risk": "write_local",
         "args": [
-            {"flags": ["--runtime"], "kwargs": {"required": True, "choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Runtime to launch"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--runtime"], "kwargs": {"required": True, "choices": ["claude", "codex", "opencode", "cursor", "pi", "antigravity"], "help": "Runtime to launch"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--cwd"], "kwargs": {"required": True, "help": "Absolute project directory for the new session"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--model"], "kwargs": {"help": "Model for this launch only; omitted inherits the runtime default. Unsupported runtimes fail instead of ignoring it"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--prompt"], "kwargs": {"help": "Brief text (use --prompt-file for long or multiline briefs)"}},
@@ -1692,7 +1692,7 @@ COMMANDS = [
         "help": "Bundled corral-search/corral-delegate skills per installed runtime (read-only)",
         "risk": "read",
         "args": [
-            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi", "antigravity"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {"targets": "Unique physical skill roots with the runtimes that read them and per-skill state (current / outdated / missing / modified / conflict)"},  # noqa: E501 - COMMANDS 数据表
@@ -1702,7 +1702,7 @@ COMMANDS = [
         "help": "Install or update the bundled skills into each installed runtime's skill root; never overwrites foreign or edited skills",  # noqa: E501 - COMMANDS 数据表
         "risk": "write_local",
         "args": [
-            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi", "antigravity"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Show planned actions without writing"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
@@ -1713,7 +1713,7 @@ COMMANDS = [
         "help": "Remove bundled skills Corral installed and that are unchanged; edited copies are kept",
         "risk": "write_local",
         "args": [
-            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi", "antigravity"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--dry-run"], "kwargs": {"action": "store_true", "help": "Show planned actions without writing"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],

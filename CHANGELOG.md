@@ -6,6 +6,18 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Added full Google Antigravity (`agy`) runtime support across the CLI, TUI, command shim, bundled skills, and mobile remote relay: session scanning, rich transcripts, live hosted panes, prompt navigation, `ask_question` status, and cross-assistant resume/handoff.
+- Updated pinned dependencies (`sesskit 0.3.3` and `agent-session-control 0.1.2`) and Antigravity attention signals so background tasks, mid-turn tool errors, and native `ERROR_MESSAGE` stops emit accurate terminal-only completion notifications without false mid-turn or paused-session alerts.
+
+### 简体中文
+
+- 新增对 Google Antigravity（`agy`）运行时的完整支持，覆盖命令行、终端界面、命令拦截（shim）、内置技能与手机远程接力：包括会话扫描、结构化对话详情、内嵌托管终端、提示词跳转、`ask_question` 等待状态与跨助手接力恢复。
+- 升级内置依赖（`sesskit 0.3.3` 与 `agent-session-control 0.1.2`）并完善 Antigravity 关注状态检测：后台任务、工具调用中间报错及原生 `ERROR_MESSAGE` 终止都能准确判定，仅在轮次真正结束时推送完成通知，消除中间误报。
+
 ## 0.24.364
 
 ### English

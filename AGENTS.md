@@ -2,7 +2,7 @@
 <!-- source: ~/Codes/Corral/AGENTS.md -->
 # Corral
 
-终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Cursor / Pi 会话恢复与接力（另有 Kimi 兼容实现 dormant：保留、不维护、无界面入口）。
+终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Cursor / Pi / Antigravity 会话恢复与接力（另有 Kimi 兼容实现 dormant：保留、不维护、无界面入口）。
 
 通用工程规范：[Python 规范](~/Codes/_standards/python.md)
 
@@ -90,7 +90,7 @@ Read the documents whose described content is relevant before deciding or changi
 
 ## 运行时支持（Corral 产品边界，永久）
 
-- 仅支持五个活跃运行时：Claude Code、Codex、OpenCode、Cursor、Pi；此为显式 allowlist，新增不在 allowlist 内的运行时需未来用户显式决策后才可加入。
+- 仅支持六个活跃运行时：Claude Code、Codex、OpenCode、Cursor、Pi、Antigravity；此为显式 allowlist，新增不在 allowlist 内的运行时需未来用户显式决策后才可加入。
 - 已有 Kimi 兼容实现（适配器/shim/扫描/样式/资源/历史解析/测试夹具）可保留于源码与磁盘，处于 dormant：不再维护、不新增功能、不在任何用户可见入口中出现（新建会话、助手选择器/目录/筛选、接力/恢复/菜单、TUI 与手机侧列表/详情入口均隐藏）。
 - 存量用户历史文件始终保留不删；展示与投影层按活跃 allowlist 过滤，不泄露入口；直接的程序化兼容调用可保留但不经 UI 暴露。
 

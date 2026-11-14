@@ -130,7 +130,7 @@ class ProvisionalOrderTests(unittest.TestCase):
         self.assertIn("claude:empty", fresh._provisional)
 
     def test_provisional_cache_collision_cannot_invent_a_task(self):
-        for runtime in ("claude", "codex", "opencode", "cursor", "pi"):
+        for runtime in ("claude", "codex", "opencode", "cursor", "pi", "antigravity"):
             with self.subTest(runtime=runtime):
                 session = {"source": runtime, "id": "empty", "provisional": True,
                            "fallback_title": f"New {runtime} session"}

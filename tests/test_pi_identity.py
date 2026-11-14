@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from sesskit_batch_mocks import batch_environ, batch_start
+
 from corral import pi_identity
 from corral.models import LaunchPlan
 from corral.runtime.host_extension import corral_host_extension
@@ -300,9 +302,16 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
-                self.scan_pi, "process_environ",
-                side_effect=lambda pid, **kwargs: (
+                self.scan_pi, "process_start_times",
+                side_effect=batch_start(
+                    return_value=None,
+                ),
+            ), mock.patch.object(
+                self.scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-a"} if pid == 31 else {}
+                    ),
                 ),
             ), mock.patch.object(
                 # Claims flow through the host extension provider, which reads
@@ -333,9 +342,16 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
-                self.scan_pi, "process_environ",
-                side_effect=lambda pid, **kwargs: (
+                self.scan_pi, "process_start_times",
+                side_effect=batch_start(
+                    return_value=None,
+                ),
+            ), mock.patch.object(
+                self.scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-b"} if pid == 41 else {}
+                    ),
                 ),
             ), mock.patch.object(
                 pi_identity, "read_claims", return_value=[]
@@ -363,9 +379,16 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
-                self.scan_pi, "process_environ",
-                side_effect=lambda pid, **kwargs: (
+                self.scan_pi, "process_start_times",
+                side_effect=batch_start(
+                    return_value=None,
+                ),
+            ), mock.patch.object(
+                self.scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-c"} if pid == 51 else {}
+                    ),
                 ),
             ), mock.patch.object(
                 pi_identity, "read_claims", return_value=[claim]
@@ -392,7 +415,15 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
-                self.scan_pi, "process_environ", return_value={}
+                self.scan_pi, "process_start_times",
+                side_effect=batch_start(
+                    return_value=None,
+                ),
+            ), mock.patch.object(
+                self.scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    return_value={},
+                ),
             ), mock.patch.object(
                 pi_identity, "read_claims", return_value=[claim]
             ):
@@ -419,9 +450,16 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
-                self.scan_pi, "process_environ",
-                side_effect=lambda pid, **kwargs: (
+                self.scan_pi, "process_start_times",
+                side_effect=batch_start(
+                    return_value=None,
+                ),
+            ), mock.patch.object(
+                self.scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-file"} if pid == 81 else {}
+                    ),
                 ),
             ), mock.patch.object(
                 pi_identity, "read_claims", return_value=[claim]
@@ -449,9 +487,16 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_start_time", return_value=None
             ), mock.patch.object(
-                self.scan_pi, "process_environ",
-                side_effect=lambda pid, **kwargs: (
+                self.scan_pi, "process_start_times",
+                side_effect=batch_start(
+                    return_value=None,
+                ),
+            ), mock.patch.object(
+                self.scan_pi, "process_environs",
+                side_effect=batch_environ(
+                    side_effect=lambda pid, **kwargs: (
                     {pi_identity.INSTANCE_ENV: "inst-d"} if pid == 71 else {}
+                    ),
                 ),
             ), mock.patch.object(
                 pi_identity, "read_claims", return_value=[claim]
