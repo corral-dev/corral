@@ -118,14 +118,21 @@ class SearchCatalogUITests(CatalogFixture, unittest.IsolatedAsyncioTestCase):
             field = app.screen.query_one("#project-search", Input)
             # Clock/layout refreshes may legitimately rebuild the list too;
             # measure the input-owned application, not unrelated UI work.
-            with mock.patch.object(app.screen, "_apply_sidebar_filter",
-                                   wraps=app.screen._apply_sidebar_filter) as apply_filter:
+            original_filter = app.screen._apply_sidebar_filter
+            apply_count = 0
+
+            async def apply_filter():
+                nonlocal apply_count
+                apply_count += 1
+                await original_filter()
+
+            with mock.patch.object(app.screen, "_apply_sidebar_filter", new=apply_filter):
                 for text in ("H", "Hi", "Hist", "History", "History 90"):
                     field.value = text
                 await until(lambda: app.screen.nav.project_query == "History 90"
                             and app.screen._sidebar_filter_timer is None)
                 await pilot.pause()
-                self.assertEqual(apply_filter.await_count, 1)
+                self.assertEqual(apply_count, 1)
             self.assertIn("history-90", [row["id"] for row in view.visible_sessions()])
             self.assertIn("opencode:history-90", view._current_row_identities())
 

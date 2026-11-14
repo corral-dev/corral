@@ -17,6 +17,8 @@ Linux root execution reproduced all seven failing assertions on the unchanged
 baseline during the 2026-11-12 CPU work; these fixture repairs do not change
 product permission or title-routing policy.
 
+For a coroutine passed through Textual's callback inspection, instrument the real method with an explicit `async def` wrapper rather than installing an `AsyncMock` as the callback. The Linux Python 3.10 rapid-filter fixture failed inside `inspect.signature` on the mock's synthetic code fields (`TypeError: 'Mock' object is not subscriptable`), before applying the filter. Keep the real coroutine, input-coalescing count and rendered-result assertions; do not change production callbacks or relax the test to accommodate the fixture.
+
 Subprocess format/exit-code tests use a temporary HOME and explicit empty
 runtime/XDG directories, never the developer's real history corpus. Synthetic
 rendered strips supply a Rich `Style` so Textual's monochrome filter can process
