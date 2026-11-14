@@ -2640,6 +2640,7 @@ class SessionHub:
                 # capture workers fighting over its single control callback.
                 stream = next((other for other, _ in self._terminals.values()
                                if other.name == name), None)
+                created = stream is None
                 if stream is None:
                     stream = stream_class(
                         key,
@@ -2647,9 +2648,12 @@ class SessionHub:
                         emit=lambda payload: self._on_terminal_event(stream, payload),
                         resolve_name=lambda key=key: self._hosted_name(key),
                     )
-                    stream.start()
                 entry = (stream, set())
                 self._terminals[key] = entry
+                # Register the routing key before the worker can emit its first
+                # snapshot; otherwise the opening fan-out has no channel yet.
+                if created:
+                    stream.start()
             stream, viewers = entry
             viewers.add(viewer)
         return self._terminal_size(stream, self._terminal_viewer_key(key, viewer), cols, rows,
