@@ -162,7 +162,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'remote'", specifier = ">=42" },
     { name = "pillow", marker = "extra == 'remote'", specifier = ">=10" },
     { name = "segno", marker = "extra == 'remote'", specifier = ">=1.6" },
-    { name = "sesskit", url = "https://github.com/x0c/sesskit/releases/download/v0.3.4/sesskit-0.3.4-py3-none-any.whl" },
+    { name = "sesskit", url = "https://github.com/x0c/sesskit/releases/download/v0.3.5/sesskit-0.3.5-py3-none-any.whl" },
     { name = "textual", specifier = ">=8.0" },
     { name = "websockets", specifier = ">=13" },
     { name = "zeroconf", marker = "extra == 'remote'", specifier = ">=0.131" },
@@ -458,10 +458,10 @@ wheels = [
 
 [[package]]
 name = "sesskit"
-version = "0.3.4"
-source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.4/sesskit-0.3.4-py3-none-any.whl" }
+version = "0.3.5"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.5/sesskit-0.3.5-py3-none-any.whl" }
 wheels = [
-    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.4/sesskit-0.3.4-py3-none-any.whl", hash = "sha256:8b9a00ce77bb247af30ed79c0899724a0a131e75908fe998a5debeacd26cdff3" },
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.5/sesskit-0.3.5-py3-none-any.whl", hash = "sha256:f84b4cc374f67cc829cc888b476954b0f76d0a5016e9c2f36cc152f3301c13c1" },
 ]
 
 [[package]]

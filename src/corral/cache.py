@@ -25,7 +25,7 @@ DEFAULT_MAX_MB = 256
 # old first_user_msg slices (2026-09-12: handoff digest must be extracted before
 # the 300-char clip; 2026-09-29.3: Claude mid-turn queued_command prompts now
 # count as user messages in conversation/Your prompts; 2026-11-14.1: Antigravity).
-_PARSER_VERSION = "2026-11-14.1"
+_PARSER_VERSION = "2026-11-14.2"
 
 # Installed SessKit build behind this process (memoized; import stays lazy so
 # this module never drags the provider in at package import time).
