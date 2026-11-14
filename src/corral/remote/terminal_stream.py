@@ -47,8 +47,13 @@ MAX_HISTORY_LINES = 10_000
 _MAX_EXTENDED_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _COALESCE_SECONDS = 0.012
 # Only small, immediately successive bursts benefit from coalescing. The first
-# output after idle and larger bursts must not pay a fixed sleep.
-_COALESCE_MAX_PENDING_BYTES = 8 * 1024
+# output after idle and larger bursts must not pay a fixed sleep. A full-screen
+# agent redraw is delivered as ~4-7 KB chunks, so an 8 KB bypass merged two
+# redraws and held the first one for the whole window: replaying a recorded
+# 60-line/s scroll put the p95 publish delay at 20.8 ms, against 0.5 ms when
+# anything past 2 KB goes out at once. Coalescing stays for keystroke echoes
+# and cursor blinks, which are what a fixed window is actually for.
+_COALESCE_MAX_PENDING_BYTES = 2 * 1024
 _TICK_SECONDS = 1.0
 _MAX_EVENT_BYTES = 256 * 1024
 # A flusher that cannot keep up drops the backlog and resnapshots instead.
