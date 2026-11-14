@@ -152,6 +152,12 @@ Delivered via SessKit 0.3.5 and the complete Corral dependency pin/provider coho
 
 One listed Antigravity row has only an empty conversation database (no transcript and no history text). Its generation state stays `insufficient` and the row shows the pending label; that is absent task information, not a failed generation. Do not fabricate a title or read every conversation database on the list path to fill it.
 
+### Stale failure excerpt in the list preview (2026-11-15)
+
+A phone list row reading `Codex error: The usage limit has been reached` for a session that had been working for hours was a SessKit excerpt defect, not a client render bug: an empty-body failure (`stopReason=error` + `errorMessage`, or Codex `task_complete` + error) filled `last_agent_msg` so the error-only turn stayed visible, and it kept owning the excerpt afterwards because the Pi retry only produced tool calls — no newer assistant text existed to replace it. New user prompts, newer assistant entries and (Codex) newer turn activity now supersede the failure excerpt, which then falls back to the last real reply and finally to the latest prompt the clients already prefer. Status tags, terminal-error evidence, events and completion identity are untouched, so an error that really is the last thing that happened still shows and still notifies.
+
+Fix belongs upstream (SessKit `docs/CONTRACT.md`, error/abort section) and reaches both clients through the pinned artifact and provider cohort: SessKit 0.3.6 with the complete Corral dependency pin. Do not special-case error text in `remote/sessions.py`, the TUI or the Apple clients — a second heuristic there would re-diverge from native evidence. Verification is the exact live history: the row for the reported session now shows its latest real reply, `sesskit verify --sample 30` passes 30/30 for codex and pi with parity, and no Pi/Codex row in the installed list still shows a superseded failure. Physical iPhone capture stays outstanding while the device is locked; the shared `SessionPresentation.preview` renders `last_agent` verbatim and needs no package change.
+
 ### 2.3 完整对话按需加载
 
 1. 用户选中会话后，`SessionStore.get_conversation()` 以“运行时 + 会话 ID”定位预览缓存。
