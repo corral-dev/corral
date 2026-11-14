@@ -27,7 +27,7 @@ class TerminalTypingRouteTests(unittest.TestCase):
             for data in (b"x", "中文".encode(), b"\x7f", b"\x1b[D"):
                 with self.subTest(data=data):
                     self.hub.terminal_input("pi:typing", data, "remote:viewer")
-                    activate.assert_called_with("remote:viewer")
+                    activate.assert_called_with("remote:viewer:pi:typing")
                     send.assert_called_with("typing-pane", data, passive=False)
 
     def test_focus_reports_are_not_typing_or_a_new_size_claim(self) -> None:

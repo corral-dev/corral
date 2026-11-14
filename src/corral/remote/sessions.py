@@ -847,7 +847,7 @@ class SessionHub:
         self._state_wake.set()
         self._search_refresh.set()
         with self._lock:
-            terminals = [stream for stream, _ in self._terminals.values()]
+            terminals = list(dict.fromkeys(stream for stream, _ in self._terminals.values()))
             self._terminals.clear()
         for stream in terminals:
             stream.stop()
@@ -2636,23 +2636,42 @@ class SessionHub:
         with self._lock:
             entry = self._terminals.get(key)
             if entry is None:
-                stream = stream_class(
-                    key,
-                    name,
-                    emit=lambda payload, key=key: self._on_event(f"term:{key}", payload),
-                    resolve_name=lambda key=key: self._hosted_name(key),
-                )
+                # Promotion aliases resolve to one pane and must not start two
+                # capture workers fighting over its single control callback.
+                stream = next((other for other, _ in self._terminals.values()
+                               if other.name == name), None)
+                if stream is None:
+                    stream = stream_class(
+                        key,
+                        name,
+                        emit=lambda payload: self._on_terminal_event(stream, payload),
+                        resolve_name=lambda key=key: self._hosted_name(key),
+                    )
+                    stream.start()
                 entry = (stream, set())
                 self._terminals[key] = entry
-                stream.start()
             stream, viewers = entry
             viewers.add(viewer)
-        return self._terminal_size(stream, viewer, cols, rows, vote=vote, active=active, snapshot=True)
+        return self._terminal_size(stream, self._terminal_viewer_key(key, viewer), cols, rows,
+                                   vote=vote, active=active, snapshot=True)
+
+    def _on_terminal_event(self, stream: TerminalStream, payload: dict) -> None:
+        with self._lock:
+            keys = [key for key, (other, _) in self._terminals.items() if other is stream]
+        for key in keys:
+            self._on_event(f"term:{key}", payload)
+
+    @staticmethod
+    def _terminal_viewer_key(key: str, viewer: str) -> str:
+        # One connection can retain both a provisional and canonical terminal.
+        # Their renewals must not overwrite each other's grid in the registry.
+        return f"{viewer}:{key}"
 
     def terminal_resize(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool,
                         active: bool = True) -> dict:
         return self._terminal_size(
-            self._terminal(key), viewer, cols, rows, vote=vote, active=active, snapshot=False,
+            self._terminal(key), self._terminal_viewer_key(key, viewer), cols, rows,
+            vote=vote, active=active, snapshot=False,
         )
 
     def terminal_resync(self, key: str, *, history_lines: int = 1500) -> None:
@@ -2805,7 +2824,7 @@ class SessionHub:
         with self._lock:
             entry = self._terminals.get(key)
         if entry is not None and viewer and not passive:
-            entry[0].activate(viewer)  # typing makes this viewer the pane's size source
+            entry[0].activate(self._terminal_viewer_key(key, viewer))
         name = entry[0].name if entry is not None else self._keepalive_name(key)
         if not embed.send_bytes(name, data, passive=passive):
             raise ActionError("unavailable", t("remote.err.session_not_running"))
@@ -2817,10 +2836,10 @@ class SessionHub:
                 return
             stream, viewers = entry
             viewers.discard(viewer)
-            last = not viewers
-            if last:
+            if not viewers:
                 self._terminals.pop(key, None)
-        stream.withdraw(viewer)
+            last = not any(other is stream for other, _ in self._terminals.values())
+        stream.withdraw(self._terminal_viewer_key(key, viewer))
         if last:
             stream.stop()
 
@@ -2836,7 +2855,7 @@ class SessionHub:
         with self._lock:
             entry = self._terminals.get(key)
         if entry is not None and viewer in entry[1]:
-            entry[0].activate(viewer)
+            entry[0].activate(self._terminal_viewer_key(key, viewer))
 
     @staticmethod
     def _terminal_size(stream: TerminalStream, viewer: str, cols: int, rows: int,

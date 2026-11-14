@@ -455,6 +455,40 @@ class RealTmuxStreamTests(unittest.TestCase):
         self.assertEqual(embed.pane_size(self.SESSION), (132, 40))
         self.stream.withdraw("remote:mac:1")
 
+    def test_aliases_keep_one_live_channel_and_stable_grid_after_partial_detach(self) -> None:
+        from corral.remote.sessions import SessionHub
+
+        events = []
+        hub = SessionHub(scan_limit=1)
+        self.addCleanup(hub.stop)
+        hub._on_event = lambda channel, payload: events.append((channel, payload))
+        with (
+            mock.patch.object(hub, "_keepalive_name", return_value=self.SESSION),
+            mock.patch.object(hub, "_hosted_name", return_value=self.SESSION),
+        ):
+            hub.terminal_attach("antigravity:old", "mac", 85, 30, vote=True, active=False)
+            hub.terminal_attach("antigravity:new", "mac", 77, 30, vote=True, active=True)
+            stream = hub._terminals["antigravity:new"][0]
+            self.assertIs(stream, hub._terminals["antigravity:old"][0])
+            deadline = time.monotonic() + 5
+            while not any(p.get("kind") == "snapshot" and p.get("cols") == 77 for _, p in events):
+                if time.monotonic() >= deadline:
+                    self.fail("the shared stream never delivered the active grid")
+                time.sleep(0.02)
+            for _ in range(8):
+                hub.terminal_resize("antigravity:old", "mac", 85, 30, vote=True, active=False)
+                self.assertEqual(embed.pane_size(self.SESSION), (77, 30))
+            hub.terminal_detach("antigravity:old", "mac")
+            self.assertIs(embed.active_channel(self.SESSION), stream._channel)
+            self.assertTrue(stream.send_input(b"printf 'alias-%s\\n' survives\r"))
+            deadline = time.monotonic() + 5
+            while not any(channel == "term:antigravity:new" and p.get("kind") == "output"
+                          and b"alias-survives" in base64.b64decode(p["data"]) for channel, p in events):
+                if time.monotonic() >= deadline:
+                    self.fail("detaching the old alias stopped the surviving live output")
+                time.sleep(0.02)
+            self.assertEqual(embed.pane_size(self.SESSION), (77, 30))
+
     @unittest.skipUnless(embed.supports_theme_report(), "needs tmux >= 3.5")
     def test_reported_colours_answer_the_agents_background_query(self) -> None:
         self.stream.start()
