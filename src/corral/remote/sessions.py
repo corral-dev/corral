@@ -988,6 +988,7 @@ class SessionHub:
                     last_scan = time.monotonic()
                     self._search_refresh.set()
                     self._reclaim_inactive_hosts()
+                    self._heal_lost_server()
                     # §6.5: a resume Corral had to absorb is retried on the same
                     # tick, so no extra loop or timer exists.
                     self._retry_failed_resumes()
@@ -1115,6 +1116,111 @@ class SessionHub:
                 return
             reclaim.maybe_reclaim(lambda: [dict(s) for s in self.store.all_sessions()])
         except Exception:  # noqa: BLE001 — best effort
+            pass
+
+    def _resolve_pending_restore_session(self, entry: dict) -> dict | None:
+        sid = str(entry.get("session_id") or "")
+        rt = str(entry.get("runtime") or "")
+        hp = str(entry.get("history_path") or "")
+        if sid and rt:
+            found = self.store.find_session(f"{rt}:{sid}")
+            if found is not None:
+                return found
+        if sid:
+            found = self.store.find_session(sid)
+            if found is not None:
+                return found
+        for candidate in self.store.all_sessions():
+            if sid and rt and candidate.get("id") == sid and candidate.get("source") == rt:
+                return candidate
+            if hp and candidate.get("path") == hp:
+                return candidate
+        return None
+
+    def _heal_lost_server(self) -> None:
+        """§7.6: silently detect a crashed keepalive server, restart it, and restore ordered."""
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+
+            from corral import hosted_lifecycle, retirement, tmux_server
+
+            if not self.store.loaded or not embed.available():
+                return
+            if os.environ.get("CORRAL_ISOLATE_MANAGED_HOSTS") == "1":
+                return
+            inv = hosted_lifecycle.read_inventory()
+            sock = str(inv.get("socket") or "")
+            if (
+                inv.get("server_pid") is not None
+                and sock
+                and not tmux_server.server_running(sock, keepalive.tmux_env())
+            ):
+                hosted_lifecycle.refresh_inventory(
+                    sessions=[dict(s) for s in self.store.all_sessions()],
+                    force=True,
+                )
+            candidates = hosted_lifecycle.pending_restores()
+            if not candidates:
+                return
+            keepalive.ensure_server()
+            to_restore: list[tuple[str, str, dict]] = []
+            consumed: list[str] = []
+            for entry in candidates:
+                name = str(entry.get("name") or "")
+                session = self._resolve_pending_restore_session(entry)
+                if session is None:
+                    if name:
+                        consumed.append(name)
+                    continue
+                canonical = session_key(session)
+                live_name = str(session.get("keepalive_name") or "")
+                if (live_name and embed.pane_liveness(live_name) == "alive") or self._adopt_foreign_host(session):
+                    if name:
+                        consumed.append(name)
+                    continue
+                to_restore.append((name, canonical, session))
+            restored_any = False
+            if to_restore:
+                limit = max(1, retirement.RESTORE_IN_FLIGHT_MAX)
+                inflight_lock = threading.Lock()
+                active_count = 0
+
+                def _worker(item: tuple[str, str, dict]) -> tuple[str, bool, bool]:
+                    nonlocal active_count
+                    name, canonical, session = item
+                    if self._stop.is_set():
+                        return name, False, False
+                    with inflight_lock:
+                        in_flight = active_count
+                        active_count += 1
+                    try:
+                        result = retirement.restore_session(
+                            canonical,
+                            lambda key=canonical: self._resume_locked(key),
+                            runtime_id=str(session.get("source") or ""),
+                            session_id=str(session.get("id") or ""),
+                            history_path=str(session.get("path") or ""),
+                            cwd=str(session.get("cwd") or ""),
+                            in_flight=in_flight,
+                        )
+                    finally:
+                        with inflight_lock:
+                            active_count = max(0, active_count - 1)
+                    done = result.state != "rate_limited"
+                    return name, done, result.state == "restored"
+
+                with ThreadPoolExecutor(max_workers=limit) as pool:
+                    for name, done, restored in pool.map(_worker, to_restore):
+                        if done and name:
+                            consumed.append(name)
+                        if restored:
+                            restored_any = True
+            if consumed:
+                hosted_lifecycle.consume_pending_restores(consumed)
+            if restored_any:
+                self.store.refresh_state(list_hosts=True)
+                self._state_wake.set()
+        except Exception:  # noqa: BLE001 — healing must never break the refresh loop
             pass
 
     def _emit_title_events(self, title_keys: set[str]) -> None:

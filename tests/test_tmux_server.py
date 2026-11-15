@@ -52,6 +52,24 @@ class PlistTests(unittest.TestCase):
         )
         self.assertEqual(payload["Label"], f"com.x0c.corral.keepalive.{SOCKET_NAME}")
 
+    def test_plist_raises_file_limits_and_sets_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": tmp}):
+            payload = tmux_server.plist_payload(SOCKET_NAME, "/c.conf", {"PATH": "/usr/bin"}, "/bin/tmux")
+        self.assertEqual(payload["WorkingDirectory"], str(Path(tmp)))
+        self.assertEqual(payload["SoftResourceLimits"], {"NumberOfFiles": 16384})
+        self.assertEqual(payload["HardResourceLimits"], {"NumberOfFiles": 65536})
+
+    def test_prune_server_log_keeps_tail_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "keepalive-server.log"
+            head = b"old-line\n" * 160000
+            tail = b"fatal: recent cause\n"
+            log.write_bytes(head + tail)
+            tmux_server._prune_server_log(log)
+            kept = log.read_bytes()
+        self.assertLessEqual(len(kept), tmux_server._SERVER_LOG_KEEP_BYTES)
+        self.assertTrue(kept.endswith(tail))
+
     def test_seed_commands_carry_full_env_but_skip_terminal_state(self) -> None:
         args = tmux_server.seed_commands({"A": "1", "TMUX": "x", "TERM": "xterm", "B": "two words"})
         self.assertEqual(

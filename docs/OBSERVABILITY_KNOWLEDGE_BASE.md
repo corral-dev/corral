@@ -90,6 +90,7 @@ Codex errors containing `account/read failed during TUI bootstrap` and `workspac
 | `~/.cache/corral/embed-error.log` / `.1` | 后台异常与致命闪退的完整 traceback | 当前和上一段各限约 256KB；`last_error` 优先当前段 |
 | `~/.cache/corral/stacks.log` / `.1` | Manual SIGUSR1 and automatic TUI stall stacks | Bounded current and previous 1MB segments; correlate with event pid and stall id/time |
 | `~/.cache/corral/hosted-lifecycle.log` | 保活服务器与托管会话的生命周期 JSONL 记录 | 保留 7 天：超过 2MiB 时按整天裁剪（先删最旧的日子，仍超限则从最旧行开始裁），**不**进入 `events.log` 的 256KiB 预算；无对话正文 |
+| `~/.cache/corral/keepalive-server.log` | `com.x0c.corral.keepalive.*` launchd 进程的 stdout/stderr | 下次启动超过 1MiB 时截断保留尾部；`keepalive_server_lost` 取证时截取末尾摘要，不开 tmux `-v` 避免刷盘 |
 | `~/.cache/corral/hosted-inventory.json` | 当前托管会话清单与托管服务器的 pid／启动时间／最近一次退出记录 | 回收轮次最多每 60 秒重写一次，托管/停止时立即重写；几条千字节；是“服务器死时上面有谁”的唯一答案 |
 | `~/.cache/corral/screenshots/tui-*.svg` | F12 导出的真实 TUI 截图 | 仅用户主动触发；可能包含真实对话 |
 | `~/.cache/corral/` | 诊断、截图和其它本地缓存根目录 | `corral diagnose` 只报告路径与存在性 |

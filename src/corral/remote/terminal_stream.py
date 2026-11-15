@@ -227,6 +227,10 @@ class TerminalStream:
     no longer hosted), so a native restart rebinds the stream.
     """
 
+    _REOPEN_BACKOFF_INITIAL = 2.0
+    _REOPEN_BACKOFF_MAX = 30.0
+    _CHANNEL_HEALTHY_SECONDS = 5.0
+
     def __init__(self, key: str, name: str, emit: Callable[[dict], None],
                  resolve_name: Callable[[], str]) -> None:
         self.key = key
@@ -246,6 +250,9 @@ class TerminalStream:
         self._votes_lock = threading.Lock()
         self._size: tuple[int, int] = (0, 0)
         self._channel: embed.ControlChannel | None = None
+        self._channel_opened_at = 0.0
+        self._reopen_delay = 0.0
+        self._reopen_at = 0.0
         self._theme: bytes | None = None
         self._theme_pending = False
         self._ended = False
@@ -311,6 +318,7 @@ class TerminalStream:
 
     def activate(self, viewer: str) -> None:
         """The viewer typed or pasted: the pane follows it. No-op without a vote."""
+        self._reopen_at = 0.0
         with self._votes_lock:
             size = self._votes.get(viewer)
             if size is None:
@@ -344,6 +352,7 @@ class TerminalStream:
             embed.release_host_view(self.name, viewer)
 
     def request_snapshot(self, *, history_lines: int = HISTORY_LINES) -> None:
+        self._reopen_at = 0.0
         with self._buf_lock:
             self._history_lines = max(self._history_lines, min(MAX_HISTORY_LINES, history_lines))
         self._need_snapshot.set()
@@ -440,28 +449,50 @@ class TerminalStream:
     def _live_channel(self) -> embed.ControlChannel | None:
         channel = self._channel
         if channel is not None and not channel.dead and embed.active_channel(self.name) is channel:
+            if (
+                self._reopen_delay > 0.0
+                and (time.monotonic() - self._channel_opened_at) >= self._CHANNEL_HEALTHY_SECONDS
+            ):
+                self._reopen_delay = 0.0
             return channel
         name = self._resolve_name()
         if not name:
             self._end()
             return None
-        if name != self.name:
+        renamed = name != self.name
+        if renamed:
             votes = self._vote_snapshot()
             for viewer in votes:
                 embed.release_host_view(self.name, viewer)
             self.name = name
             for viewer, (cols, rows, used_at) in votes.items():
                 embed.desired_host_size(name, viewer, cols, rows, used_at)
-        channel = embed.open_channel(name, on_data=self._on_data)
-        if channel is None:
+            self._reopen_delay = 0.0
+            self._reopen_at = 0.0
+        elif channel is not None:
+            now = time.monotonic()
+            if now < self._reopen_at:
+                return None
+            if (now - self._channel_opened_at) >= self._CHANNEL_HEALTHY_SECONDS:
+                self._reopen_delay = 0.0
+        opened = embed.open_channel(name, on_data=self._on_data)
+        if opened is None:
             self._end()
             return None
-        self._channel = channel
+        now = time.monotonic()
+        if channel is not None and not renamed:
+            self._reopen_delay = min(
+                self._REOPEN_BACKOFF_MAX,
+                max(self._REOPEN_BACKOFF_INITIAL, self._reopen_delay * 2.0),
+            )
+            self._reopen_at = now + self._reopen_delay
+        self._channel_opened_at = now
+        self._channel = opened
         self._ended = False
         self._need_snapshot.set()
         # A new control client (native restart, reopened channel) starts without the report.
         self._theme_pending = self._theme is not None
-        return channel
+        return opened
 
     def _end(self) -> None:
         if self._ended:

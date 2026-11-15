@@ -1836,6 +1836,7 @@ def open_channel(name: str, on_output=None, on_data=None) -> ControlChannel | No
         if ch is not None and (ch.dead or ch.name != name):
             ch.close()
             _channels.pop(name, None)
+            _stream_channels.discard(name)
             ch = None
         if ch is None:
             try:
@@ -1850,6 +1851,8 @@ def open_channel(name: str, on_output=None, on_data=None) -> ControlChannel | No
                 ch.on_output = on_output
             if on_data is not None:
                 ch.on_data = on_data
+        if on_data is not None:
+            _stream_channels.add(name)
         _channel_used[name] = time.monotonic()
         _prune_channels(keep=name)
     # 通道建起来说明会话确实在，登记为存活证据（见 is_alive 的 max_age 说明）。
@@ -1862,7 +1865,9 @@ def open_channel(name: str, on_output=None, on_data=None) -> ControlChannel | No
 # 通道，没有上限的话用户在侧边栏一路翻下去就会攒出几十个 `tmux -C attach` 子进程。
 # 上限必须严格大于分屏格数，否则满屏分屏时新开的格会挤掉在用格的通道。
 _MAX_CHANNELS = 8
+_MAX_STREAM_CHANNELS = 32
 _channel_used: dict[str, float] = {}
+_stream_channels: set[str] = set()
 
 
 def _prune_channels(keep: str | None = None) -> None:
@@ -1874,15 +1879,20 @@ def _prune_channels(keep: str | None = None) -> None:
     不能在这里同步等子进程退出，否则会连带堵住抓帧的 `_active_channel`。
     """
     evicted: list = []
-    while len(_channels) > _MAX_CHANNELS:
-        candidates = [n for n in _channels if n != keep]
-        if not candidates:
-            return
-        oldest = min(candidates, key=lambda n: _channel_used.get(n, 0.0))
-        ch = _channels.pop(oldest, None)
-        _channel_used.pop(oldest, None)
-        if ch is not None:
-            evicted.append(ch)
+    for is_stream, cap in ((False, _MAX_CHANNELS), (True, _MAX_STREAM_CHANNELS)):
+        while True:
+            bucket = [n for n in _channels if (n in _stream_channels) is is_stream]
+            if len(bucket) <= cap:
+                break
+            candidates = [n for n in bucket if n != keep]
+            if not candidates:
+                break
+            oldest = min(candidates, key=lambda n: _channel_used.get(n, 0.0))
+            ch = _channels.pop(oldest, None)
+            _channel_used.pop(oldest, None)
+            _stream_channels.discard(oldest)
+            if ch is not None:
+                evicted.append(ch)
     for ch in evicted:
         ch.close()
 
@@ -1898,9 +1908,11 @@ def close_channel(name: str | None = None) -> None:
             channels = list(_channels.values())
             _channels.clear()
             _channel_used.clear()
+            _stream_channels.clear()
         else:
             ch = _channels.pop(name, None)
             _channel_used.pop(name, None)
+            _stream_channels.discard(name)
             channels = [ch] if ch is not None else []
     for ch in channels:
         ch.close()

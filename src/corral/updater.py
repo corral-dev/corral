@@ -162,12 +162,63 @@ def stable_interpreter() -> str:
     return exe if os.path.exists(exe) else sys.executable
 
 
+_BASELINE_SOURCE: tuple[str, tuple[int, int, int]] | None = None
+
+
+def _source_fingerprint(package_root: str) -> tuple[int, int, int]:
+    """Compute (max_mtime_ns, py_file_count, total_bytes) for an editable tree."""
+    max_mtime = 0
+    count = 0
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(package_root):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__" and not d.startswith(".")]
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            try:
+                st = os.stat(os.path.join(dirpath, filename))
+            except OSError:
+                continue
+            count += 1
+            total_size += st.st_size
+            if st.st_mtime_ns > max_mtime:
+                max_mtime = st.st_mtime_ns
+    return max_mtime, count, total_size
+
+
+def note_loaded_source() -> None:
+    """Record the startup Python source fingerprint when running from an editable checkout."""
+    global _BASELINE_SOURCE
+    pkg = package_file()
+    pkg_dir = os.path.dirname(pkg)
+    root = find_checkout_root(pkg_dir)
+    if not root or not is_loaded_from_checkout(root):
+        return
+    _BASELINE_SOURCE = (pkg_dir, _source_fingerprint(pkg_dir))
+
+
+def _editable_source_changed() -> bool:
+    """Whether an editable checkout's Python sources changed on disk since startup."""
+    global _BASELINE_SOURCE
+    pkg = package_file()
+    pkg_dir = os.path.dirname(pkg)
+    root = find_checkout_root(pkg_dir)
+    if not root or not is_loaded_from_checkout(root):
+        return False
+    current = _source_fingerprint(pkg_dir)
+    if _BASELINE_SOURCE is None or _BASELINE_SOURCE[0] != pkg_dir:
+        _BASELINE_SOURCE = (pkg_dir, current)
+        return False
+    return current != _BASELINE_SOURCE[1]
+
+
 def install_replaced() -> bool:
     """Whether the package this process loaded was replaced or removed on disk.
 
     True when the loaded ``corral/__init__.py`` is gone (Homebrew cleaned up the old
-    Cellar), reports another version (pipx/pip reinstalled in place), or the Homebrew
-    opt link now resolves to a different Cellar version than ``sys.prefix``.
+    Cellar), reports another version (pipx/pip reinstalled in place), the Homebrew
+    opt link now resolves to a different Cellar version than ``sys.prefix``, or an
+    editable source checkout changed on disk since startup.
     """
     import corral
 
@@ -181,7 +232,9 @@ def install_replaced() -> bool:
         return True
     prefix = os.path.abspath(sys.prefix)
     stable = stable_install_path(prefix)
-    return stable != prefix and os.path.realpath(stable) != os.path.realpath(prefix)
+    if stable != prefix and os.path.realpath(stable) != os.path.realpath(prefix):
+        return True
+    return _editable_source_changed()
 
 
 def package_file() -> str:

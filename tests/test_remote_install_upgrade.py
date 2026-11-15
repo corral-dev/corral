@@ -7,8 +7,39 @@ import types
 import unittest
 from unittest import mock
 
+from corral import updater
 from corral.remote import cli as remote_cli
 from corral.remote import daemon
+
+
+class EditableSourceWatchTests(unittest.TestCase):
+    def test_install_replaced_detects_editable_source_change(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cli"
+            pkg = root / "src" / "corral"
+            pkg.mkdir(parents=True)
+            (root / "pyproject.toml").write_text('[project]\nname = "corral"\n', encoding="utf-8")
+            init = pkg / "__init__.py"
+            init.write_text('__version__ = "9.9.9"\n', encoding="utf-8")
+            helper = pkg / "mod.py"
+            helper.write_text("X = 1\n", encoding="utf-8")
+
+            import corral
+
+            saved_baseline = updater._BASELINE_SOURCE
+            self.addCleanup(setattr, updater, "_BASELINE_SOURCE", saved_baseline)
+            with (
+                mock.patch.object(corral, "__version__", "9.9.9"),
+                mock.patch.object(updater, "package_file", return_value=str(init)),
+                mock.patch.object(updater.sys, "prefix", str(Path(tmp) / "venv")),
+            ):
+                updater.note_loaded_source()
+                self.assertFalse(updater.install_replaced())
+                helper.write_text("X = 12345\n", encoding="utf-8")
+                self.assertTrue(updater.install_replaced())
 
 
 def _host(ready: bool) -> types.SimpleNamespace:

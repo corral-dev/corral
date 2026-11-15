@@ -111,6 +111,20 @@ raise SystemExit(0 if ok else 1)
 
 "$CHECK_PY" -m corral skills install
 
+REMOTE_PID="$("$CHECK_PY" -c '
+from corral.remote import config
+pid = config.read_pid()
+print(pid if pid else "")
+' 2>/dev/null || true)"
+if [[ -n "${REMOTE_PID:-}" ]]; then
+  echo "==> 重启运行中的 remote 服务（不影响保活 tmux 会话）..."
+  if [[ "$(uname -s)" == "Darwin" ]] && launchctl kickstart -k "gui/$(id -u)/com.x0c.corral.remote" >/dev/null 2>&1; then
+    echo "  已通过 launchd 重启 com.x0c.corral.remote。"
+  else
+    "$CHECK_PY" -m corral remote on --force --quiet --no-relay || true
+  fi
+fi
+
 if command -v pickup >/dev/null 2>&1 && ! command -v corral >/dev/null 2>&1; then
   echo "警告：PATH 上仍只有旧命令 pickup=$(command -v pickup)，没有 corral。" >&2
 elif command -v pickup >/dev/null 2>&1; then

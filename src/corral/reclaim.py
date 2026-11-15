@@ -1289,6 +1289,10 @@ def _pass_state(now: float) -> tuple[reclaim_pass.PressureState, dict[str, Any]]
 def _run_pass(sessions_provider: Callable[[], Iterable[Mapping[str, Any]]], now: float) -> list[str]:
     hosted = probe_hosted()
     if not hosted:
+        inv = hosted_lifecycle.read_inventory()
+        if inv.get("server_pid") is not None or inv.get("sessions"):
+            sessions = list(sessions_provider() or ())
+            hosted_lifecycle.refresh_inventory(sessions=sessions, sockets=_sockets(), force=True)
         return []
     sessions = list(sessions_provider() or ())
     # §7 lifecycle: refresh the hosted inventory, record sessions whose pane died

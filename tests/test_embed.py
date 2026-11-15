@@ -955,6 +955,31 @@ class ChannelPoolTests(unittest.TestCase):
             embed.open_channel("sess-a")
             self.assertEqual(CC.call_count, 3)
 
+    def test_stream_channels_exempt_from_tui_cap_and_bounded_by_stream_cap(self):
+        stream_count = embed._MAX_CHANNELS + 8  # matches 16 warm desktop viewer streams (> 8)
+        stream_names = [f"stream-{i}" for i in range(stream_count)]
+
+        def cb(*_args):
+            return None
+        with mock.patch.object(embed, "ControlChannel") as CC:
+            CC.side_effect = [self._fake_channel(n) for n in stream_names]
+            for name in stream_names:
+                embed.open_channel(name, on_data=cb)
+        self.assertEqual(len(embed._channels), stream_count)
+        for name in stream_names:
+            self.assertIn(name, embed._channels)
+            embed._channels[name].close.assert_not_called()
+
+        overflow = embed._MAX_STREAM_CHANNELS - stream_count + 2
+        extra_names = [f"extra-{i}" for i in range(overflow)]
+        with mock.patch.object(embed, "ControlChannel") as CC:
+            CC.side_effect = [self._fake_channel(n) for n in extra_names]
+            for name in extra_names:
+                embed.open_channel(name, on_data=cb)
+        self.assertLessEqual(len(embed._channels), embed._MAX_STREAM_CHANNELS)
+        self.assertNotIn(stream_names[0], embed._channels)
+        self.assertIn(extra_names[-1], embed._channels)
+
 
 class ControlModeTests(unittest.TestCase):
     """控制模式转义、SGR 鼠标序列、tmux 版本门控、copy-mode 原语（无通道时走 fork）。"""

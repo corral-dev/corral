@@ -114,9 +114,34 @@ def _observe(socket: str, config_path: str, env: Mapping[str, str], started: boo
             pass
 
 
+_SOFT_FILE_LIMIT = 16384
+_HARD_FILE_LIMIT = 65536
+_SERVER_LOG_MAX_BYTES = 1024 * 1024
+_SERVER_LOG_KEEP_BYTES = 512 * 1024
+
+
+def _prune_server_log(path: Path) -> None:
+    """Keep keepalive-server.log bounded on boot without discarding the recent tail."""
+    try:
+        if path.stat().st_size <= _SERVER_LOG_MAX_BYTES:
+            return
+        data = path.read_bytes()
+    except OSError:
+        return
+    tail = data[-_SERVER_LOG_KEEP_BYTES:]
+    newline = tail.find(b"\n")
+    if newline != -1:
+        tail = tail[newline + 1 :]
+    tmp = path.with_suffix(".tmp")
+    with contextlib.suppress(OSError):
+        tmp.write_bytes(tail)
+        os.replace(tmp, path)
+
+
 def plist_payload(socket: str, config_path: str, env: Mapping[str, str], tmux: str) -> dict:
     job_env = {key: env[key] for key in _PLIST_ENV_KEYS if env.get(key)}
-    log = str(cache_dir() / "keepalive-server.log")
+    cache = cache_dir()
+    log = str(cache / "keepalive-server.log")
     return {
         "Label": label(socket),
         "ProgramArguments": [tmux, "-D", "-L", socket, "-f", config_path],
@@ -124,6 +149,9 @@ def plist_payload(socket: str, config_path: str, env: Mapping[str, str], tmux: s
         "ProcessType": "Interactive",
         "RunAtLoad": True,
         "KeepAlive": False,
+        "WorkingDirectory": str(cache),
+        "SoftResourceLimits": {"NumberOfFiles": _SOFT_FILE_LIMIT},
+        "HardResourceLimits": {"NumberOfFiles": _HARD_FILE_LIMIT},
         "StandardOutPath": log,
         "StandardErrorPath": log,
     }
@@ -133,7 +161,9 @@ def _bootstrap(socket: str, config_path: str, env: Mapping[str, str]) -> bool:
     tmux = shutil.which("tmux", path=env.get("PATH"))
     if tmux is None:
         return False
-    directory = cache_dir() / "launchd"
+    cache = cache_dir()
+    _prune_server_log(cache / "keepalive-server.log")
+    directory = cache / "launchd"
     directory.mkdir(parents=True, exist_ok=True)
     plist = directory / f"{label(socket)}.plist"
     tmp = plist.with_suffix(".tmp")

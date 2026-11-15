@@ -539,5 +539,43 @@ class RealTmuxStreamTests(unittest.TestCase):
         self.assertIsNone(ts.peek_snapshot("corral-test-stream-no-such-pane"))
 
 
+class ReopenBackoffTests(unittest.TestCase):
+    """Repeated dead-channel reopens back off rather than hammering tmux every second."""
+
+    def test_dead_channel_reopen_uses_backoff(self) -> None:
+        clock = [100.0]
+        opened: list[mock.Mock] = []
+
+        def fake_open(_name: str, on_data=None):
+            ch = mock.Mock(name=f"ch-{len(opened)}", dead=True, on_data=on_data)
+            opened.append(ch)
+            return ch
+
+        stream = ts.TerminalStream("pi:abc", "corral-pi-abc", lambda _p: None, lambda: "corral-pi-abc")
+        with (
+            mock.patch.object(ts.time, "monotonic", side_effect=lambda: clock[0]),
+            mock.patch.object(ts.embed, "open_channel", side_effect=fake_open),
+            mock.patch.object(ts.embed, "active_channel", return_value=None),
+        ):
+            self.assertIsNotNone(stream._live_channel())
+            self.assertEqual(len(opened), 1)
+            # First drop right after initial open still reopens and arms 2s backoff.
+            clock[0] = 101.0
+            self.assertIsNotNone(stream._live_channel())
+            self.assertEqual(len(opened), 2)
+            # Subsequent rapid dies inside the 2s window do not respawn subprocesses.
+            clock[0] = 101.5
+            self.assertIsNone(stream._live_channel())
+            self.assertEqual(len(opened), 2)
+            clock[0] = 103.1
+            self.assertIsNotNone(stream._live_channel())
+            self.assertEqual(len(opened), 3)
+            # Explicit user interaction clears the pending backoff immediately.
+            clock[0] = 103.2
+            stream.request_snapshot()
+            self.assertIsNotNone(stream._live_channel())
+            self.assertEqual(len(opened), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

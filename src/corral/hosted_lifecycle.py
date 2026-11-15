@@ -315,6 +315,8 @@ def _refresh_inventory(
             "sessions": entries,
             "recently_stopped": _prune_stopped(dict(inventory.get("recently_stopped") or {})),
         }
+        if not inventory.get("pending_restores"):
+            inventory.pop("pending_restores", None)
         _write_inventory(inventory)
         return inventory
 
@@ -723,6 +725,14 @@ def _reconcile_server(
         )
         reported.add(name)
     surviving = {name: entry for name, entry in sessions.items() if name not in reported}
+    existing_pending = list(inventory.get("pending_restores") or ())
+    new_pending: list[dict[str, Any]] = []
+    if not recorded_exit:
+        for name in reported:
+            entry = dict(sessions.get(name) or {})
+            if entry:
+                new_pending.append({"name": name, **entry})
+    merged_pending = _merge_pending_restores(existing_pending, new_pending)
     updated = {
         **inventory,
         "server_pid": pid,
@@ -731,6 +741,10 @@ def _reconcile_server(
         "sessions": surviving,
         "updated_at": _now_iso(),
     }
+    if merged_pending:
+        updated["pending_restores"] = merged_pending
+    else:
+        updated.pop("pending_restores", None)
     return updated, reported
 
 
@@ -783,7 +797,94 @@ def _survival_evidence(last_heartbeat: Any) -> dict[str, Any]:
     return {
         "memory": _memory_facts(),
         "crash_reports": _crash_report_facts(last_heartbeat),
+        "server_log_tail": _server_log_tail(),
     }
+
+
+def _server_log_tail(max_bytes: int = 4096, max_lines: int = 20) -> str:
+    """Bounded recent tail of launchd keepalive-server.log, empty if absent."""
+    path = cache_dir() / "keepalive-server.log"
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return ""
+        with open(path, "rb") as fh:
+            if size > max_bytes:
+                fh.seek(-max_bytes, os.SEEK_END)
+            raw = fh.read(max_bytes)
+    except OSError:
+        return ""
+    lines = [line for line in raw.decode("utf-8", errors="replace").splitlines() if line.strip()]
+    return "\n".join(lines[-max_lines:])
+
+
+def _pending_restore_key(item: Mapping[str, Any]) -> str:
+    return str(item.get("session_id") or item.get("name") or "")
+
+
+def _merge_pending_restores(
+    existing: Sequence[Mapping[str, Any]],
+    added: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    for entry in (*existing, *added):
+        if not isinstance(entry, Mapping):
+            continue
+        item = dict(entry)
+        key = _pending_restore_key(item)
+        if not key:
+            continue
+        by_key[key] = item
+    return list(by_key.values())
+
+
+def pending_restores() -> list[dict[str, Any]]:
+    """Lost hosted sessions awaiting silent §7.6 restoration, ordered by priority."""
+    from corral import retirement
+
+    items = [dict(item) for item in (read_inventory().get("pending_restores") or ()) if isinstance(item, Mapping)]
+    if not items:
+        return []
+    return list(retirement.ordered_restore_candidates(items))
+
+
+def consume_pending_restores(identifiers: Iterable[str]) -> int:
+    """Drop processed or vanished entries from pending_restores under the inventory lock."""
+    targets = {str(item) for item in identifiers if item}
+    if not targets:
+        return 0
+    try:
+        with _lock() as held:
+            if not held:
+                return 0
+            inventory = read_inventory()
+            existing = list(inventory.get("pending_restores") or ())
+            if not existing:
+                return 0
+            kept: list[dict[str, Any]] = []
+            removed = 0
+            for raw in existing:
+                if not isinstance(raw, Mapping):
+                    continue
+                item = dict(raw)
+                name = str(item.get("name") or "")
+                sid = str(item.get("session_id") or "")
+                if (name and name in targets) or (sid and sid in targets):
+                    removed += 1
+                    continue
+                kept.append(item)
+            if removed == 0:
+                return 0
+            if kept:
+                inventory["pending_restores"] = kept
+            else:
+                inventory.pop("pending_restores", None)
+            inventory["updated_at"] = _now_iso()
+            _write_inventory(inventory)
+            return removed
+    except Exception as exc:  # noqa: BLE001 - heal queue cleanup must never raise
+        _surface("pending_restores", exc)
+        return 0
 
 
 def _memory_facts() -> dict[str, Any]:
