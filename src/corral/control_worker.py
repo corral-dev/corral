@@ -906,8 +906,10 @@ REPORT_BACK_MAX_CHARS = 6000
 REPORT_BACK_SUPPRESSED = {"interrupted", "unknown"}
 
 
-def report_back_suppression(record: dict) -> str | None:
+def report_back_suppression(record: dict, *, store: RunStore | None = None) -> str | None:
     """Why this settled run must not wake its sender, or None when it should."""
+    if record.get("delivery") == "rejected":
+        return str((record.get("error") or {}).get("code") or "rejected")
     execution = record.get("execution")
     if execution in REPORT_BACK_SUPPRESSED:
         return execution
@@ -917,6 +919,27 @@ def report_back_suppression(record: dict) -> str | None:
             return "empty_answer"
     if execution == "failed" and (record.get("error") or {}).get("code") == "queue_expired":
         return "queue_expired"
+    if record.get("reply_consumed"):
+        return "manual_reply_sent"
+    spec = record.get("spec") or {}
+    sender = spec.get("from_agent") or record.get("from_agent")
+    receiver = record.get("session_ref") or spec.get("session_ref")
+    created_at = float(record.get("created_at") or 0)
+    run_id = record.get("run_id")
+    if store is not None and sender and receiver and store.exists():
+        for other in store.recent(50, None):
+            if other.get("run_id") == run_id or other.get("mode") != "submit":
+                continue
+            if other.get("session_ref") != sender or other.get("from_agent") != receiver:
+                continue
+            if other.get("delivery") == "rejected":
+                continue
+            if float(other.get("created_at") or 0) < created_at:
+                continue
+            parent = other.get("parent_run_id")
+            chain = str(other.get("chain_id") or "")
+            if parent == run_id or not chain.startswith("report-"):
+                return "manual_reply_sent"
     return None
 
 
@@ -966,7 +989,7 @@ def report_back(store: RunStore, run_id: str, registry=None) -> dict | None:
         record = store.get(run_id, private=True)
         if record.get("report_back"):
             return record["report_back"]
-        suppressed = report_back_suppression(record)
+        suppressed = report_back_suppression(record, store=store)
         if suppressed:
             outcome = {"state": "suppressed", "reason": suppressed}
             try:
@@ -1088,18 +1111,20 @@ def _supervise(run_id: str) -> int:
             # Serialize independent runs per session in submit order; the
             # shared runner re-verifies under its own target lock.
             while True:
-                if store.get(run_id)["execution"] in SETTLED:
+                current = store.get(run_id)
+                if current["execution"] in SETTLED:
                     return 0
-                if not _earlier_runs(store, run_id, target):
-                    break
+                if current.get("delivery") == "accepted" and expired(spec, current):
+                    raise ControlError("queue_expired", "An earlier run kept the session past --queue-timeout.")
                 blocker = _blocking_run(store, run_id, target)
+                if blocker is None:
+                    break
                 store.heartbeat(run_id)
                 current = store.get(run_id)
                 if current["execution"] in SETTLED:
                     return 0
                 if (
-                    blocker is not None
-                    and blocker.get("execution") == "waiting_input"
+                    blocker.get("execution") == "waiting_input"
                     and current.get("delivery") == "accepted"
                 ):
                     # Mirrors the shared runner's admission gate (target_waiting):
@@ -1110,12 +1135,14 @@ def _supervise(run_id: str) -> int:
                         f"The session waits on an earlier question "
                         f"(blocking run {blocker['run_id']}); answer it first.",
                     )
-                if expired(spec, current):
-                    raise ControlError("queue_expired", "An earlier run kept the session past --queue-timeout.")
+                if spec.get("on_busy") == "reject" and current.get("delivery") == "accepted":
+                    raise ControlError(
+                        "target_busy",
+                        f"The session already has an active or earlier run ({blocker['run_id']}).",
+                    )
                 store.update(
                     run_id,
-                    {"queue_reason": "earlier_run_on_session"}
-                    | ({"queued_behind": blocker["run_id"]} if blocker is not None else {}),
+                    {"queue_reason": "earlier_run_on_session", "queued_behind": blocker["run_id"]},
                 )
                 time.sleep(_BUSY_POLL)
         except Exception as exc:  # noqa: BLE001 - every exit leaves an honest terminal state

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
@@ -215,6 +216,138 @@ class A2AControlTests(unittest.TestCase):
         self.assertEqual(outcome, {"state": "deferred", "reason": "a2a_paused"})
         send.assert_not_called()
         self.assertNotIn("report_back", self.store.get(run["run_id"]))
+
+    def test_agent_caller_cannot_bypass_steer_timeout_or_quota_with_from_agent_none(self):
+        session = {"source": "claude", "id": "target", "cwd": self.tmp.name,
+                   "path": str(Path(self.tmp.name) / "h.jsonl")}
+        version = control_cli.target_payload(session)["version"]
+        clean_env = dict(os.environ)
+        for name in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID",
+                     "ANTIGRAVITY_CONVERSATION_ID", "CORRAL_RUNTIME", "CORRAL_SESSION_ID", "CORRAL_ACTOR"):
+            clean_env.pop(name, None)
+        clean_env["CODEX_THREAD_ID"] = "bypass-1"
+        with mock.patch.dict(os.environ, clean_env, clear=True), mock.patch.object(
+            control_cli, "resolve_target", return_value=session
+        ):
+            with self.assertRaises(ControlError) as steer_err:
+                control_cli.cmd_submit(SimpleNamespace(
+                    target="claude:target", prompt="steered", prompt_file=None, idempotency_key="b-steer",
+                    if_version=version, on_busy="steer", queue_timeout=120, allow_concurrent=False,
+                    task_ref=None, dry_run=False, from_agent="none", no_reply_footer=False, report_back=False,
+                ), None)
+            self.assertEqual(steer_err.exception.code, "steer_not_allowed")
+            with self.assertRaises(ControlError) as zero_err:
+                control_cli.cmd_submit(SimpleNamespace(
+                    target="claude:target", prompt="forever", prompt_file=None, idempotency_key="b-zero",
+                    if_version=version, on_busy="queue", queue_timeout=0, allow_concurrent=False,
+                    task_ref=None, dry_run=False, from_agent="none", no_reply_footer=False, report_back=False,
+                ), None)
+            self.assertEqual(zero_err.exception.code, "usage_error")
+            with self.assertRaises(ControlError) as range_err:
+                control_cli.cmd_send(SimpleNamespace(
+                    target="claude:target", message="too long", prompt_file=None, from_agent=None,
+                    no_reply_footer=False, ask=False, no_report_back=True, on_busy="queue",
+                    queue_timeout=121, idempotency_key="b-range", compact=False,
+                ), None)
+            self.assertEqual(range_err.exception.code, "usage_error")
+
+        with (
+            mock.patch.dict(os.environ, clean_env, clear=True),
+            mock.patch.object(control_cli, "resolve_target", return_value=session),
+            mock.patch.object(control_cli, "_spawn_supervisor", return_value=True),
+            mock.patch.object(control_cli, "_supervisor_alive", return_value=True),
+        ):
+            data = control_cli.cmd_submit(SimpleNamespace(
+                target="claude:target", prompt="bounded", prompt_file=None, idempotency_key="b-cap",
+                if_version=version, on_busy="queue", queue_timeout=3600, allow_concurrent=True,
+                task_ref=None, dry_run=False, from_agent="none", no_reply_footer=False, report_back=False,
+            ), None)["data"]
+            saved = self.store.get(data["run"]["run_id"], private=True)
+            self.assertEqual(saved["spec"]["queue_timeout"], 120)
+            self.assertEqual(saved["actor"], "codex:bypass-1")
+
+            for idx in range(control_cli.MAX_A2A_ACTOR_RUNS - 1):
+                other = {"source": "claude", "id": f"t-{idx}", "cwd": self.tmp.name,
+                         "path": str(Path(self.tmp.name) / f"h-{idx}.jsonl")}
+                with mock.patch.object(control_cli, "resolve_target", return_value=other):
+                    control_cli.cmd_submit(SimpleNamespace(
+                        target=f"claude:t-{idx}", prompt=f"msg-{idx}", prompt_file=None,
+                        idempotency_key=f"b-cap-{idx}", if_version=control_cli.target_payload(other)["version"],
+                        on_busy="queue", queue_timeout=120, allow_concurrent=True, task_ref=None,
+                        dry_run=False, from_agent="none", no_reply_footer=False, report_back=False,
+                    ), None)
+            with self.assertRaises(ControlError) as quota_err:
+                control_cli.cmd_submit(SimpleNamespace(
+                    target="claude:target", prompt="over-quota", prompt_file=None, idempotency_key="b-over",
+                    if_version=version, on_busy="queue", queue_timeout=120, allow_concurrent=True,
+                    task_ref=None, dry_run=False, from_agent="none", no_reply_footer=False, report_back=False,
+                ), None)
+            self.assertEqual(quota_err.exception.code, "capacity_exceeded")
+            self.assertEqual(quota_err.exception.details["quota"], "sender")
+
+    def test_send_with_on_busy_reject_fails_synchronously_when_target_run_active(self):
+        self._run("active", target="claude:target")
+        session = {"source": "claude", "id": "target", "cwd": self.tmp.name,
+                   "path": str(Path(self.tmp.name) / "h.jsonl")}
+        with (
+            mock.patch.object(control_cli, "resolve_target", return_value=session),
+            mock.patch.object(control_cli, "_supervisor_alive", return_value=True),
+        ):
+            with self.assertRaises(ControlError) as caught:
+                control_cli.cmd_send(SimpleNamespace(
+                    target="claude:target", message="ping", prompt_file=None, from_agent="pi:other",
+                    no_reply_footer=False, ask=True, no_report_back=False, on_busy="reject",
+                    queue_timeout=120, idempotency_key="sync-reject", compact=False,
+                ), None)
+        self.assertEqual(caught.exception.code, "target_busy")
+
+    def test_target_queue_expires_before_dispatch_after_blocker_clears(self):
+        run = self._run("stale-queued", report_back=True)
+        with self.store.connection(write=True) as conn:
+            conn.execute(
+                "UPDATE runs SET created_at = created_at - 300, "
+                "data = json_set(data, '$.created_at', json_extract(data, '$.created_at') - 300) "
+                "WHERE id = ?",
+                (run["run_id"],),
+            )
+        with (
+            mock.patch("corral.remote.sessions.SessionHub"),
+            mock.patch.object(control_worker, "corral_hooks", return_value=(mock.MagicMock(), {})),
+            mock.patch.object(control_worker, "run_supervisor") as shared_run,
+            mock.patch.object(control_cli, "cmd_send") as send,
+        ):
+            rc = control_worker._run_and_report(run["run_id"])
+        self.assertEqual(rc, 1)
+        shared_run.assert_not_called()
+        send.assert_not_called()
+        settled = self.store.get(run["run_id"])
+        self.assertEqual(settled["delivery"], "rejected")
+        self.assertEqual(settled["execution"], "failed")
+        self.assertEqual(settled["error"]["code"], "queue_expired")
+        self.assertEqual(settled["report_back"], {"state": "suppressed", "reason": "queue_expired"})
+
+    def test_on_busy_reject_fails_fast_behind_earlier_run(self):
+        self._run("blocker", target="claude:target")
+        spec = {"mode": "submit", "runtime": "claude", "session_ref": "claude:target", "cwd": self.tmp.name,
+                "history_path": str(Path(self.tmp.name) / "h.jsonl"), "prompt": "hi", "on_busy": "reject",
+                "queue_timeout": 120, "from_agent": "pi:other", "a2a": True, "caller": {"actor": "pi:other"}}
+        initial = {"mode": "submit", "runtime": "claude", "session_ref": "claude:target", "cwd": self.tmp.name,
+                   "delivery": "accepted", "execution": "queued", "from_agent": "pi:other", "a2a": True}
+        run, _ = self.store.create("pi:other", "reject-queued", spec, initial)
+        with (
+            mock.patch("corral.remote.sessions.SessionHub"),
+            mock.patch.object(control_worker, "corral_hooks", return_value=(mock.MagicMock(), {})),
+            mock.patch.object(control_worker, "run_supervisor") as shared_run,
+            mock.patch.object(control_worker.time, "sleep") as sleep,
+        ):
+            rc = control_worker._supervise(run["run_id"])
+        self.assertEqual(rc, 1)
+        shared_run.assert_not_called()
+        sleep.assert_not_called()
+        settled = self.store.get(run["run_id"])
+        self.assertEqual(settled["delivery"], "rejected")
+        self.assertEqual(settled["execution"], "failed")
+        self.assertEqual(settled["error"]["code"], "target_busy")
 
     @staticmethod
     def _run_spec(sender, target):

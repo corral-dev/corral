@@ -1017,3 +1017,51 @@ four hops and the fifth is refused, a third agent's fan-out chain stays
 independent, the compact header and long marker coexist, and no automatic
 reply instruction remains. `a2a status` and `a2a ledger` expose the live
 chains and pair/token costs from actual records.
+
+### Peer hardening, bypass closure, and double-reply prevention (2026-11-15)
+
+Post-S4 session forensics across 65 live Pi sessions and `runs.sqlite3` exposed
+five remaining failure modes when chatty or bypass-prone models call `send` or
+`run submit`:
+
+1. **Stale queued deliveries past `queue_timeout`**: `_supervise()` only
+   checked `expired()` while `_earlier_runs()` remained true, and upstream
+   `SupervisorRunner.admit()` checked `if not target_busy(session): return`
+   before `_expired()`, allowing queued messages to dispatch 30+ minutes late
+   once the blocking run settled. `_supervise()` now checks `expired()`
+   unconditionally before checking blockers or entering `run_supervisor()`, and
+   fails fast with `target_busy` when `on_busy="reject"` encounters an active
+   earlier run or live busy lock (matching upstream `0.1.3`).
+2. **Boomerang failure wakes on rejected sends**: `report_back_suppression()`
+   previously suppressed only `queue_expired`, letting `target_busy`,
+   `target_waiting_input`, `composer_not_empty`, and other `delivery="rejected"`
+   outcomes asynchronously wake the sender. Every `delivery="rejected"` run is
+   now suppressed (`reason = error.code or "rejected"`), and `corral send`
+   with `--on-busy reject` also checks live active/queued runs on the target
+   under `control-admission` before accepting a run when busy.
+3. **Opt-in report-back (`--ask` / `--report-back`) and double-reply
+   suppression**: Unsolicited peer `corral send` calls previously requested
+   `report_back=True` by default while `agent_footer()` hid that auto-reply,
+   causing receivers both to call `corral send` manually and to trigger an
+   automatic `report_back` on turn completion. `corral send` now defaults
+   `report_back` to off; pass `--ask` / `--report-back` when an automatic
+   answer is expected (`--no-report-back` remains accepted as explicit opt-out).
+   When `report_back=True`, the envelope explicitly informs the receiver that
+   its final response auto-replies so it should not send a duplicate manual
+   reply, and `report_back_suppression()` suppresses `manual_reply_sent` when
+   the receiver already sent a non-rejected reply back to the sender during the
+   run (`reply_consumed` or matching recent run).
+4. **Closing agent parameter-bypass paths (`--from-agent none`, `steer`,
+   unbounded timeouts)**: When caller detection or `CORRAL_RUNTIME`/`actor`
+   shows an active agent session calling `send` or `run submit` on an existing
+   session (even with `--from-agent none` to mask the sender header), Corral
+   still marks the submission as peer A2A, binds `MAX_A2A_ACTOR_RUNS` and
+   `SEND_BURST_LIMIT` to the true detected actor rather than `"unattributed"`,
+   rejects `--on-busy steer` (`steer_not_allowed`), rejects unbounded
+   `--queue-timeout <= 0`, and caps A2A queue timeout at `120` seconds (while
+   `corral send` rejects `--queue-timeout` outside `1..120`). `run create` and
+   `run message` on an owned run remain unaffected.
+5. **Skill convergence (`corral-delegate`)**: Same-project file-edit coordination
+   and status updates belong in shared workspace stigmergy (`TASKBOARD.md`),
+   never proactive `corral peers` / `corral send` chatter; `corral send` is
+   reserved for blocking questions (`--ask`) that require a peer's answer.

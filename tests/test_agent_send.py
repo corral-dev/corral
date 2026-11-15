@@ -95,7 +95,12 @@ class BuildAgentTextTests(unittest.TestCase):
 
     def test_report_back_has_no_echo_invitation_and_legacy_headers_still_parse(self):
         text = control.build_agent_text("check", from_agent="pi:p1", report_back=True)
-        self.assertEqual(text, "[from pi:p1 · peer, not user]\n\ncheck")
+        self.assertEqual(
+            text,
+            "[from pi:p1 · peer, not user]\n\ncheck\n\n"
+            "[Corral] Your final answer auto-replies to pi:p1; "
+            "finish your turn without sending another reply.",
+        )
         self.assertNotIn("corral send", text)
         self.assertEqual(control.parse_agent_header("[From agent pi:legacy via Corral]\n\nold"), "pi:legacy")
 
@@ -235,7 +240,7 @@ class SubmitSendTests(unittest.TestCase):
     def test_send_submits_in_one_step_with_generated_key(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "me-1"
         args = SimpleNamespace(target="claude:s-1", message="are you done?", prompt_file=None, from_agent=None,
-                               no_reply_footer=False, on_busy="queue", queue_timeout=3600, idempotency_key=None,
+                               no_reply_footer=False, on_busy="queue", queue_timeout=120, idempotency_key=None,
                                compact=False)
         with mock.patch.object(control_cli, "resolve_target", return_value=dict(self.session)) as resolve:
             data = control_cli.cmd_send(args, None)["data"]
@@ -246,20 +251,31 @@ class SubmitSendTests(unittest.TestCase):
         saved = RunStore().get(data["run"]["run_id"], private=True)
         self.assertEqual(
             saved["spec"]["prompt"],
-            "[from claude:me-1 · peer, not user]\n\nare you done?",
+            "[from claude:me-1 · peer, not user]\n\nare you done?\n\n"
+            '[Corral] Reply only if needed: corral send claude:me-1 "<your reply>"',
         )
+        self.assertNotIn("report_back", saved["spec"])
+        self.assertIn("run wait", data["delivery_note"])
+
+    def test_send_with_ask_enables_report_back_and_explicit_auto_reply_notice(self):
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "me-1"
+        data = control_cli.cmd_send(self._send_args(ask=True, message="are you done?"), None)["data"]
+        saved = RunStore().get(data["run"]["run_id"], private=True)
         self.assertTrue(saved["spec"]["report_back"])
+        self.assertIn("Your final answer auto-replies to claude:me-1", saved["spec"]["prompt"])
+        self.assertNotIn("corral send", saved["spec"]["prompt"])
         self.assertIn("claude:me-1", data["delivery_note"])
 
     def _send_args(self, **extra):
         base = dict(target="claude:s-1", message="hi", prompt_file=None, from_agent=None, no_reply_footer=False,
-                    no_report_back=False, on_busy="queue", queue_timeout=3600, idempotency_key=None, compact=False)
+                    ask=False, no_report_back=False, on_busy="queue", queue_timeout=120, idempotency_key=None,
+                    compact=False)
         base.update(extra)
         return SimpleNamespace(**base)
 
     def test_send_without_report_back_names_the_reply_command(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "me-1"
-        data = control_cli.cmd_send(self._send_args(no_report_back=True), None)["data"]
+        data = control_cli.cmd_send(self._send_args(ask=True, no_report_back=True), None)["data"]
         saved = RunStore().get(data["run"]["run_id"], private=True)
         self.assertTrue(saved["spec"]["prompt"].endswith('corral send claude:me-1 "<your reply>"'))
         self.assertNotIn("report_back", saved["spec"])
@@ -290,14 +306,14 @@ class SubmitSendTests(unittest.TestCase):
 
     def test_send_rejects_inline_and_file_together(self):
         args = SimpleNamespace(target="claude:s-1", message="x", prompt_file="brief.md", from_agent=None,
-                               no_reply_footer=False, on_busy="queue", queue_timeout=3600, idempotency_key=None)
+                               no_reply_footer=False, on_busy="queue", queue_timeout=120, idempotency_key=None)
         with self.assertRaises(ControlError) as caught:
             control_cli.cmd_send(args, None)
         self.assertEqual(caught.exception.code, "usage_error")
 
     def test_send_without_text_is_usage_error(self):
         args = SimpleNamespace(target="claude:s-1", message=None, prompt_file=None, from_agent=None,
-                               no_reply_footer=False, on_busy="queue", queue_timeout=3600, idempotency_key=None)
+                               no_reply_footer=False, on_busy="queue", queue_timeout=120, idempotency_key=None)
         with self.assertRaises(ControlError) as caught:
             control_cli.cmd_send(args, None)
         self.assertEqual(caught.exception.code, "usage_error")
@@ -535,8 +551,8 @@ class ReportBackTests(unittest.TestCase):
         from corral import control_worker
 
         args = SimpleNamespace(target="claude:s-1", message="what is 2+2?", prompt_file=None,
-                               from_agent="pi:p1", no_reply_footer=False, no_report_back=False,
-                               on_busy="queue", queue_timeout=3600, idempotency_key=key, compact=False)
+                               from_agent="pi:p1", no_reply_footer=False, ask=True, no_report_back=False,
+                               on_busy="queue", queue_timeout=120, idempotency_key=key, compact=False)
         run_id = control_cli.cmd_send(args, None)["data"]["run"]["run_id"]
         store = RunStore()
         store.update(run_id, {"execution": execution, "delivery": "native_recorded",
@@ -595,7 +611,7 @@ class ReportBackTests(unittest.TestCase):
         from corral import control_worker
 
         args = SimpleNamespace(target="claude:s-1", message="x", prompt_file=None, from_agent="pi:p1",
-                               no_reply_footer=False, no_report_back=True, on_busy="queue", queue_timeout=3600,
+                               no_reply_footer=False, no_report_back=True, on_busy="queue", queue_timeout=120,
                                idempotency_key="k2", compact=False)
         run_id = control_cli.cmd_send(args, None)["data"]["run"]["run_id"]
         store = RunStore()
@@ -604,6 +620,41 @@ class ReportBackTests(unittest.TestCase):
             store.update(run_id, {"execution": "completed"}, allow_settled=True)
             self.assertIsNone(control_worker.report_back(store, run_id))
         send.assert_not_called()
+
+    def test_rejected_delivery_never_wakes_sender(self):
+        from corral import control_worker
+
+        args = SimpleNamespace(target="claude:s-1", message="hi", prompt_file=None,
+                               from_agent="pi:p1", no_reply_footer=False, ask=True, no_report_back=False,
+                               on_busy="queue", queue_timeout=120, idempotency_key="k-rejected", compact=False)
+        run_id = control_cli.cmd_send(args, None)["data"]["run"]["run_id"]
+        store = RunStore()
+        store.update(
+            run_id,
+            {"execution": "failed", "delivery": "rejected",
+             "error": {"code": "target_busy", "message": "the session is executing another turn"}},
+            allow_settled=True,
+        )
+        with mock.patch.object(control_cli, "cmd_send") as send:
+            outcome = control_worker.report_back(store, run_id, registry="reg")
+        send.assert_not_called()
+        self.assertEqual(outcome, {"state": "suppressed", "reason": "target_busy"})
+
+    def test_manual_reply_sent_suppresses_duplicate_report_back(self):
+        control_worker, store, run_id = self._settled_send(key="k-orig")
+        with mock.patch.object(control_cli, "resolve_target",
+                               return_value={"source": "pi", "id": "p1", "cwd": self.session["cwd"],
+                                             "path": self.session["path"]}):
+            reply_args = SimpleNamespace(target="pi:p1", message="here is the answer", prompt_file=None,
+                                         from_agent="claude:s-1", no_reply_footer=False, ask=False,
+                                         no_report_back=True, on_busy="queue", queue_timeout=120,
+                                         idempotency_key="k-manual", compact=False)
+            reply = control_cli.cmd_send(reply_args, None)["data"]["run"]
+        store.update(reply["run_id"], {"delivery": "native_recorded", "execution": "completed"}, allow_settled=True)
+        with mock.patch.object(control_cli, "cmd_send") as send:
+            outcome = control_worker.report_back(store, run_id, registry="reg")
+        send.assert_not_called()
+        self.assertEqual(outcome, {"state": "suppressed", "reason": "manual_reply_sent"})
 
     def test_long_answers_are_truncated_with_a_pointer(self):
         from corral import control_worker

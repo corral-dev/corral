@@ -16,13 +16,14 @@ import time
 import uuid
 from pathlib import Path
 
-from agent_session_control.supervisor import file_lock
+from agent_session_control.supervisor import file_lock, lock_held
 
 from corral.control import (
     NO_SENDER,
     build_agent_text,
     caller_identity,
     control_capability,
+    detect_sender,
     fresh_plan,
     resolve_sender,
     resolve_target,
@@ -53,6 +54,7 @@ _MAX_WAIT = 600
 MAX_A2A_ACTOR_RUNS = 4
 MAX_A2A_TARGET_RUNS = 4
 MAX_A2A_HOPS = 4
+MAX_A2A_QUEUE_TIMEOUT = 120
 
 
 def _bin() -> str:
@@ -266,6 +268,21 @@ def _owner_key(record: dict) -> str:
     return "run:" + str(record["run_id"])
 
 
+def _quota_actor(record: dict) -> str:
+    """Resolve the true sending agent identity for rate limits and A2A quotas."""
+    from_agent = record.get("from_agent")
+    if from_agent:
+        return str(from_agent)
+    caller = record.get("caller") or {}
+    detected = caller.get("detected_sender")
+    if detected:
+        return str(detected)
+    actor = record.get("actor") or caller.get("actor")
+    if actor and str(actor) != "local-user":
+        return str(actor)
+    return "unattributed"
+
+
 def _occupancy(records: list[dict]) -> list[dict]:
     now = time.time()
     grouped: dict[str, dict] = {}
@@ -279,8 +296,8 @@ def _occupancy(records: list[dict]) -> list[dict]:
             "oldest_s": 0,
         })
         item["runs"] += 1
-        sender = record.get("from_agent")
-        if sender:
+        sender = _quota_actor(record)
+        if sender and sender != "unattributed":
             item["senders"].add(sender)
         item["oldest_s"] = max(item["oldest_s"], max(0, int(now - float(record.get("created_at") or now))))
     return [{**item, "senders": sorted(item["senders"])} for item in grouped.values()]
@@ -306,9 +323,8 @@ def _guard_capacity(store: RunStore, spec: dict | None = None) -> None:
         )
     if not _is_a2a(spec):
         return
-    sender = spec.get("from_agent") or "unattributed"
-    sender_live = [record for record in live if _is_a2a(record)
-                   and (record.get("from_agent") or "unattributed") == sender]
+    sender = _quota_actor(spec)
+    sender_live = [record for record in live if _is_a2a(record) and _quota_actor(record) == sender]
     if len(sender_live) >= MAX_A2A_ACTOR_RUNS:
         raise _capacity_error(
             "sender", f"{sender} already has {len(sender_live)} live A2A runs (max {MAX_A2A_ACTOR_RUNS}).",
@@ -339,6 +355,19 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
         # Capacity and intent creation are one cross-process admission step;
         # concurrent senders cannot both pass the same last free slot.
         with file_lock(str(store.root), "control-admission", blocking=True):
+            if spec.get("mode") == "submit" and spec.get("on_busy") == "reject" and spec.get("session_ref"):
+                target_ref = str(spec["session_ref"])
+                active_on_target = [
+                    r for r in store.for_target(target_ref) if _supervisor_alive(store, r["run_id"])
+                ]
+                if active_on_target or lock_held(str(store.root), "target:" + target_ref):
+                    raise ControlError(
+                        "target_busy",
+                        f"{target_ref} already has an active run.",
+                        EXIT_CONFLICT,
+                        hint="Observe the active run instead of sending again, or pass --on-busy queue explicitly.",
+                        next_commands=[f"{_bin()} run list --target {target_ref} --active"],
+                    )
             if _is_a2a(spec):
                 _apply_lineage(store, key, spec, initial)
             _guard_capacity(store, spec)
@@ -371,23 +400,53 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
     prompt = _read_prompt(args)
     key = _key(args)
     from_agent = resolve_sender(getattr(args, "from_agent", None), registry)
+    detected_sender = detect_sender(registry) if from_agent is None else None
+    caller = caller_identity()
+    if detected_sender is not None:
+        caller = {**caller, "detected_sender": detected_sender}
+    caller_actor = caller.get("actor")
+    has_agent_caller = detected_sender is not None or bool(caller_actor and caller_actor != "local-user")
     no_footer = bool(getattr(args, "no_reply_footer", False))
     report_back = bool(getattr(args, "report_back", False)) and from_agent is not None
     explicit_none = str(getattr(args, "from_agent", "") or "").strip().lower() == NO_SENDER
-    a2a = from_agent is not None or explicit_none
+    a2a = from_agent is not None or explicit_none or has_agent_caller
+    quota_actor = (
+        from_agent
+        or detected_sender
+        or (caller_actor if caller_actor and caller_actor != "local-user" else None)
+    )
+    admit_actor = quota_actor or caller["actor"]
     store = RunStore()
     if a2a and store.a2a_paused():
         raise ControlError("a2a_paused", "Agent-to-agent messaging is paused; resume it before sending.",
                            EXIT_CONFLICT, hint=f"Resume with {_bin()} a2a resume; no message was created.",
                            next_commands=[f"{_bin()} a2a status", f"{_bin()} a2a resume"])
+    if a2a:
+        if args.on_busy == "steer":
+            raise ControlError(
+                "steer_not_allowed",
+                "Peer A2A messages cannot use --on-busy steer.",
+                EXIT_USAGE,
+                hint="Use --on-busy reject (default for send) or --on-busy queue.",
+            )
+        if int(args.queue_timeout) <= 0:
+            raise ControlError(
+                "usage_error",
+                f"Peer A2A runs must use a bounded --queue-timeout (1-{MAX_A2A_QUEUE_TIMEOUT}s).",
+                EXIT_USAGE,
+            )
+    effective_timeout = (
+        min(int(args.queue_timeout), MAX_A2A_QUEUE_TIMEOUT)
+        if a2a
+        else max(0, int(args.queue_timeout))
+    )
     send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer, report_back=report_back,
                                  unattributed=explicit_none)
-    caller = caller_identity()
     existing = store.find(key)
     if existing is not None:
         saved = store.get(existing["run_id"], private=True)
         spec = {**saved["spec"], "session_ref": args.target, "prompt": send_text,
-                "on_busy": args.on_busy, "queue_timeout": max(0, args.queue_timeout), "caller": caller,
+                "on_busy": args.on_busy, "queue_timeout": effective_timeout, "caller": caller,
                 "task_ref": getattr(args, "task_ref", None)}
         if from_agent is not None:
             spec["from_agent"] = from_agent
@@ -399,10 +458,9 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
             spec.pop("report_back", None)
         # Reconcile immutable input before consulting a target that may now be
         # hosted, missing or executing. A retry is not a fresh authorization.
-        return _admit(store, caller["actor"], key, spec, saved, args, None)
+        return _admit(store, admit_actor, key, spec, saved, args, None)
     session = session or resolve_target(registry, args.target)
     target = target_payload(session)
-    caller = caller_identity()
     mode, reason = control_capability(session)
     dry = getattr(args, "dry_run", False)
     if mode == "external":
@@ -439,7 +497,7 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
         )
     spec = {"mode": "submit", "runtime": target["runtime"], "session_ref": target["session_ref"],
             "cwd": target["cwd"], "history_path": target["history_path"], "prompt": send_text,
-            "on_busy": args.on_busy, "queue_timeout": max(0, args.queue_timeout), "caller": caller,
+            "on_busy": args.on_busy, "queue_timeout": effective_timeout, "caller": caller,
             "task_ref": getattr(args, "task_ref", None)}
     if a2a:
         explicit_parent = str(getattr(args, "reply_to", "") or "").strip()
@@ -465,7 +523,7 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
         initial["from_agent"] = from_agent
     if a2a:
         initial["a2a"] = True
-    return _admit(store, caller["actor"], key, spec, initial, args, target)
+    return _admit(store, admit_actor, key, spec, initial, args, target)
 
 
 _PROTECTED_DIRS = ("", "Desktop", "Documents")
@@ -544,27 +602,40 @@ def cmd_send(args, registry) -> dict:
     message = getattr(args, "message", None)
     if message and getattr(args, "prompt_file", None):
         raise ControlError("usage_error", "Pass the message inline or with --prompt-file, not both.", EXIT_USAGE)
+    if int(args.queue_timeout) <= 0 or int(args.queue_timeout) > MAX_A2A_QUEUE_TIMEOUT:
+        raise ControlError(
+            "usage_error",
+            f"Peer send --queue-timeout must be between 1 and {MAX_A2A_QUEUE_TIMEOUT} seconds.",
+            EXIT_USAGE,
+        )
     session = resolve_target(registry, args.target)
     target = target_payload(session)
     sender = resolve_sender(getattr(args, "from_agent", None), registry)
+    detected_sender = detect_sender(registry) if sender is None else None
+    caller_actor = caller_identity().get("actor")
+    rate_actor = sender or detected_sender or (caller_actor if caller_actor and caller_actor != "local-user" else None)
     if sender is not None and sender == target["session_ref"]:
         raise ControlError("self_target", "An agent cannot message its own session.", EXIT_CONFLICT)
-    if sender is not None:
-        _check_send_rate(sender, target["session_ref"])
+    if rate_actor is not None:
+        _check_send_rate(rate_actor, target["session_ref"])
+    want_report_back = (
+        (bool(getattr(args, "ask", False)) or bool(getattr(args, "report_back", False)))
+        and not bool(getattr(args, "no_report_back", False))
+    )
     submit = argparse.Namespace(
         target=target["session_ref"], prompt=message, prompt_file=getattr(args, "prompt_file", None),
         idempotency_key=getattr(args, "idempotency_key", None) or f"send-{uuid.uuid4().hex}",
         if_version=target["version"], on_busy=args.on_busy, queue_timeout=args.queue_timeout,
         allow_concurrent=False, task_ref=None, dry_run=False, from_agent=sender or "none",
         no_reply_footer=bool(getattr(args, "no_reply_footer", False)),
-        report_back=not bool(getattr(args, "no_report_back", False)), compact=getattr(args, "compact", False))
+        report_back=want_report_back, compact=getattr(args, "compact", False))
     result = cmd_submit(submit, registry, session=session)
     data = result.get("data") or {}
     run = data.get("run") or {}
     if run.get("run_id"):
         data["delivery_note"] = (
             f"The receiver's final answer will arrive in {sender} as a new message when its turn ends."
-            if sender is not None and not getattr(args, "no_report_back", False)
+            if sender is not None and want_report_back
             else "Observe the receiver's turn with run wait / run result."
         )
     return result
@@ -583,7 +654,7 @@ def _check_send_rate(sender: str, target: str) -> None:
         return
     cutoff = time.time() - SEND_BURST_WINDOW
     recent = [r for r in store.recent(500, None)
-              if r.get("session_ref") == target and r.get("from_agent") == sender
+              if r.get("session_ref") == target and _quota_actor(r) == sender
               and float(r.get("created_at") or 0) >= cutoff]
     if len(recent) >= SEND_BURST_LIMIT:
         raise ControlError(

@@ -1436,9 +1436,10 @@ COMMANDS = [
             {"flags": ["--prompt-file"], "kwargs": {"help": "Read the message from a UTF-8 file, or - for piped stdin"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--from-agent"], "kwargs": {"help": "Sender runtime:id; omitted = the calling agent is detected automatically, none = send unattributed"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--no-reply-footer"], "kwargs": {"action": "store_true", "help": "Omit the default reply instruction (the sender header is still sent)"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--no-report-back"], "kwargs": {"action": "store_true", "help": "Do not deliver the receiver's final answer back to the sender; the footer then names the reply command instead"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "reject", "help": "Busy receiver: reject (default), queue explicitly, or steer into the active turn"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 120, "help": "Seconds a queued message may wait for a busy receiver (default 120; 0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--ask", "--report-back"], "kwargs": {"dest": "report_back", "action": "store_true", "help": "Deliver the receiver's final answer back into your session once its turn ends (off by default)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--no-report-back"], "kwargs": {"action": "store_true", "help": "Keep report-back disabled even if --ask/--report-back is passed (default)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "reject", "help": "Busy receiver: reject (default), or queue explicitly (steer is refused for peer sends)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 120, "help": "Seconds a queued message may wait for a busy receiver (1-120; default 120)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--idempotency-key"], "kwargs": {"help": "Optional stable key; an identical retry returns the original run instead of sending twice"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--reply-to"], "kwargs": {"help": "Consume one parent run's reply grant and link this message into its chain"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--new-chain"], "kwargs": {"action": "store_true", "help": "Start a new chain instead of consuming a matching reply grant"}},  # noqa: E501 - COMMANDS 数据表
@@ -1448,8 +1449,8 @@ COMMANDS = [
             "run": "The control run carrying the message (run_id, delivery, execution, from_agent); observe it with run wait / run result",  # noqa: E501 - COMMANDS 数据表
             "run.from_agent": "Sender named in the message header (runtime:id); null when the caller is not a detectable agent",  # noqa: E501 - COMMANDS 数据表
             "target": "Resolved receiver with control mode (hosted / resume); external sessions are refused",
-            "message format": "[from <runtime:id> · peer, not user], blank line, message; report-back adds no reply instruction, while --no-report-back keeps a short corral send footer; historical W2 headers remain parsed; --from-agent none writes '[from unknown · peer, not user]', and a run create brief is never wrapped",  # noqa: E501 - COMMANDS 数据表
-            "delivery_note": "Where the answer will come from: back into the sender as a new message (report back), or run wait / run result",  # noqa: E501 - COMMANDS 数据表
+            "message format": "[from <runtime:id> · peer, not user], blank line, message; report-back stays off by default (showing a corral send footer), while --ask/--report-back adds an explicit auto-reply notice; historical W2 headers remain parsed; --from-agent none writes '[from unknown · peer, not user]', and a run create brief is never wrapped",  # noqa: E501 - COMMANDS 数据表
+            "delivery_note": "Where the answer will come from: back into the sender as a new message (--ask/--report-back), or run wait / run result",  # noqa: E501 - COMMANDS 数据表
             "run.report_back": "null until the receiver's turn settles, then {state: sent, run_id}, {state: failed, code, message}, or {state: suppressed, reason} for interrupted/unknown/answer-less turns that never wake the sender",  # noqa: E501 - COMMANDS 数据表
         },
     },
