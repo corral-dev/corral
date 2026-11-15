@@ -1,21 +1,14 @@
-# Shareable wrap card design (`corral wrap`)
+# Shareable activity card (`corral wrap` → `corral flex` / agentflex)
 
-Status: superseded by agentflex (§10). The first Python version (`corral
-wrap`, evidence §9) was removed from Corral on 2026-11-04; `corral flex` now
-launches the standalone [agentflex](https://github.com/corral-dev/agentflex)
-binary (installed, else `npx -y agentflex@latest`).
+Status: superseded by agentflex (§10). The first Python `corral wrap` was removed from Corral on 2026-11-04; `corral flex` launches the standalone [agentflex](https://github.com/corral-dev/agentflex) binary (installed, else `npx -y agentflex@latest`). §3–§5 and §8–§9 record the retired prototype's measurements and are historical; §1–§2, §6–§7 and §10 hold the decisions that still bind.
 
 ## 1. Decision and why
 
-A shareable usage card ("wrap") ships as a Corral subcommand. It is not a new
-TUI product and it is not a SessKit feature.
+A shareable usage card ships as a Corral entry point — not a new TUI product, not a SessKit feature:
 
-- Corral is the product people keep using; a shared card should lead new users
-  into it rather than into a single-purpose tool.
-- SessKit keeps its boundary: it interprets native history and exposes
-  normalized data. Presentation belongs to downstream products.
-- The growth rationale and channel plan stay in the private growth guide
-  (`~/.config/agentsync/docs/GITHUB_STAR_GROWTH_GUIDE.md` §3.9, item 4).
+- Corral is the product people keep using; a shared card should lead new users into it rather than into a single-purpose tool.
+- SessKit keeps its boundary: it interprets native history and exposes normalized data; presentation belongs to downstream products.
+- The growth rationale and channel plan stay in the private growth guide (`~/.config/agentsync/docs/GITHUB_STAR_GROWTH_GUIDE.md` §3.9, item 4).
 
 ## 2. Ownership
 
@@ -24,368 +17,109 @@ TUI product and it is not a SessKit feature.
 | SessKit | Session scan, typed activity events (`load_activity`), usage snapshots (`load_usage`), real event timestamps, native error evidence |
 | Corral | Period selection, active-interval policy, aggregation, card layout, colors, branding footer, optional export |
 
-The aggregation reads SessKit's normalized output only; it adds no parser.
-If a needed fact is missing from SessKit's normalized output, add it upstream
-first (SessKit contract and live checks), then consume the published version.
+The aggregation reads SessKit's normalized output only and adds no parser; a missing fact is added upstream first (SessKit contract and live checks), then consumed from the published version.
 
-## 3. Data feasibility (owner's machine, 2026-11-04)
+## 3. Data feasibility (owner's machine, 2026-11-04, retired prototype)
 
-Read-only probe over the last 7 days with SessKit's public API:
+Read-only 7-day probe through SessKit's public API: scan 4,325 sessions in 16 s with 379 active (OpenCode 222, Pi 62, Claude 47, Codex 46); `load_activity` 377 available / 2 unsupported in 3.6 s (38,764 tool calls, 8,271 assistant messages, 1,741 user messages); `load_usage` 364 available / 13 empty / 2 unsupported in 10.5 s. A cold run is ~30 s, so the card reused Corral's scan and derived caches, showed progress while reading, and never presented a partial read as a complete total.
 
-- Scan: 4,325 sessions in 16 s; 379 active in the week (OpenCode 222, Pi 62,
-  Claude 47, Codex 46).
-- `load_activity`: 377 available, 2 unsupported, 3.6 s total; 38,764 tool calls,
-  8,271 assistant messages, 1,741 user messages.
-- `load_usage`: 364 available, 13 empty, 2 unsupported, 10.5 s total.
-- A cold run is about 30 s. The card should reuse Corral's existing scan and
-  derived caches, show progress while reading, and never present a partial
-  read as a complete total.
+## 4. Metric definitions (still the agreed semantics)
 
-## 4. Metric definitions
+All values come from real parsed output; unsupported or unreadable sessions are counted and disclosed, never silently treated as zero.
 
-All values come from real parsed output. Unsupported or unreadable sessions
-are counted and disclosed on the card (for example "2 sessions not readable"),
-never silently treated as zero.
-
-- **Sessions:** sessions with at least one activity event inside the period,
-  taken from Corral's listing. That listing drops sessions whose working
-  directory no longer exists; on 2026-11-04 those were 99 sessions in deleted
-  temporary directories (test harness runs), so they are excluded on purpose.
+- **Sessions:** sessions with at least one activity event inside the period, from Corral's listing — which drops sessions whose working directory no longer exists (99 such sessions on 2026-11-04, test-harness temporary directories, excluded on purpose).
 - **Agent share:** percentage of those sessions per runtime.
 - **Tool calls:** `tool_call` events inside the period.
-- **Tokens:** SessKit usage records carry no timestamp, so in-period tokens
-  use `summarize_usage` with a `UsageSelection` of the message ids whose
-  activity events fall inside the period. A session whose whole history lies
-  inside the period contributes its full summary. Records that cannot be
-  attributed are disclosed as uncovered, never guessed. No monetary amount
-  (owner decision, §7).
-- **Peak parallel sessions:** the maximum number of sessions that were active
-  at the same moment. A session's active intervals are built from its event
-  timestamps, merging consecutive events whose gap is at most 5 minutes
-  (Corral policy constant). Using the first-to-last event span is wrong: idle
-  sessions left open across days inflated the probe's result to 20.
+- **Tokens:** SessKit usage records carry no timestamp, so in-period tokens use `summarize_usage` with a `UsageSelection` of the message ids whose activity events fall inside the period; a session whose whole history lies inside the period contributes its full summary. Unattributable records are disclosed as uncovered, never guessed. No monetary amount (owner decision, §7).
+- **Peak parallel sessions:** the maximum number of sessions active at the same moment, built from event timestamps while merging consecutive events whose gap is at most 5 minutes (Corral policy constant). Using the first-to-last span is wrong: idle sessions left open across days inflated the probe to 20.
 
-## 5. Layout and motion (owner requirement 2026-11-04: animated, eye-catching)
+## 5. Layout and motion (retired prototype; owner requirement 2026-11-04: animated, eye-catching)
 
-The owner requires the terminal card to move: a designed, eye-catching motion
-sequence, not a static printout. Motion reveals the real values; it never
-fakes data or delays exit.
+Motion reveals real values; it never fakes data or delays exit. One fixed 72-column grid (19 rows, 21 since §10.7; fits an 80×24 terminal) fed both the terminal frame and the export: forced warm-black card background regardless of terminal theme, text `#EDE6DE`, dim `#8A817A`, dragon red `#BA1F14` (logo), gold `#D9A441`, runtime colors from the theme. While the card played, the whole alternate screen was painted with the export page color `#0C0A09` (owner feedback 2026-11-08: a light terminal theme framed the dark card in white); the normal screen was restored unchanged on exit.
 
-### 5.1 Grid
+Storyboard phases: loading (dim border, logo decode noise, values climbing from real partial counts, gold light travelling as read progress), border sweep 0.0–0.5 s, logo cell resolution 0.2–0.9 s, count-up 0.6–1.8 s with 0.12 s stagger and 0.15 s gold flash, agent bar 1.2–2.0 s, heatmap diagonal wave 1.6–2.8 s, peak blink/typing 2.6–3.2 s, finale beams 2.9–3.6 s, idle shimmer every 4 s. Keys `s` save, `r` replay, `q`/`Esc` quit; `TEXTUAL_ANIMATIONS=none`, `--no-anim` and non-TTY render the final frame.
 
-One fixed cell grid of 72 columns × 19 rows (21 rows since §10.7; fits an 80×24 terminal) is the
-single source for the terminal frame and the exported image. Card background
-is a forced warm black regardless of terminal theme, so screenshots look the
-same everywhere. Palette: text `#EDE6DE`, dim `#8A817A`, dragon red
-`#BA1F14` (logo, as in the splash), gold `#D9A441` (light and highlights),
-runtime colors from the theme.
+Engine choice: Corral drew the storyboard itself over the cell grid (1.1 ms per frame) borrowing vocabulary from mature effect libraries rather than embedding one — [TerminalTextEffects](https://github.com/ChrisBuilds/terminaltexteffects) cost ~20 ms per frame on a 72×19 card, ran long (Beams 367 frames, Decrypt 1,615) and emitted cursor-addressed ANSI needing re-parsing; [tachyonfx](https://github.com/ratatui/tachyonfx) supplied the vocabulary (coalesce, sweep-in, diagonal pattern, fade) and TTE Beams the finale; the Go/Rust engines surveyed were not embeddable.
 
-The terminal around the card is a dark stage too (owner feedback 2026-11-08:
-a light terminal theme framed the dark card in white). While the card plays,
-every cell of the alternate screen, including the key-hint row and the
-resize hint, is painted with the export page color `#0C0A09`, so the terminal
-view matches the exported image. The key hint uses the card palette: keys in
-gold, labels dim. The normal screen is restored unchanged on exit.
-
-| Rows | Content |
-|---|---|
-| 0, 18 | Rounded border; the bottom border embeds `github.com/corral-dev/corral` |
-| 2–4 | `corral` block logo (splash font) left; `WRAP`, date range and period right |
-| 6–8 | Four stat columns: label, large value, dim detail (sessions / tool calls / tokens / peak parallel) |
-| 10–11 | Agent share stacked bar and legend |
-| 13–17 | Activity heatmap: 7 days × 24 hours in half-block cells (two days per row), hour axis below |
-
-A terminal smaller than the card shows a one-line resize hint instead of a
-clipped card.
-
-### 5.2 Storyboard
-
-Time 0 is when the data is complete. Frames target 30 fps inside the card
-widget only (the full-screen snapshot limit of the dragon overlay does not
-apply to a 72×19 widget).
-
-| Phase | Time | Motion |
-|---|---|---|
-| Loading | real duration | Dim border; logo cells flicker as decoding noise; stat values climb live from real partial counts; a gold light travels along the bottom border as read progress |
-| Border | 0.0–0.5 s | A gold head runs clockwise around the border, leaving it lit |
-| Logo | 0.2–0.9 s | Each logo cell resolves from `░▒▓` noise to its final glyph at a random moment, flashing white once |
-| Numbers | 0.6–1.8 s | Values count up with ease-out, 0.12 s stagger; each lands with a 0.15 s gold flash |
-| Agents | 1.2–2.0 s | Bar grows left to right with a bright leading edge; legend items fade in one by one |
-| Heatmap | 1.6–2.8 s | Cells pop in a diagonal wave (hour + 2 × day), one bright frame then settle |
-| Peak | 2.6–3.2 s | The peak-hour cell blinks gold; the peak detail types in |
-| Beams | 2.9–3.6 s | Two gold light beams sweep across card rows and light the characters they pass (finale inspired by TTE Beams) |
-| Idle | after | A diagonal shimmer crosses the logo every 4 s; the timer sleeps between shimmers |
-
-Keys: `s` save image, `r` replay, `q` / `Esc` quit. Reduced motion
-(`TEXTUAL_ANIMATIONS=none`), `--no-anim` and non-TTY output render the final
-frame directly.
-
-### 5.3 Motion engine selection (researched 2026-11-04)
-
-Corral draws the storyboard with its own frame function over the cell grid,
-borrowing effect vocabulary from mature terminal effect libraries instead of
-embedding one:
-
-- [TerminalTextEffects](https://github.com/ChrisBuilds/terminaltexteffects)
-  (Python, MIT, zero dependencies, about 40 effects) was evaluated on the real
-  colored card in an isolated environment. It preserves foreground and
-  background colors, but costs about 20 ms per frame on a 72×19 card, runs long
-  (Beams 367 frames, Decrypt 1,615 frames), emits cursor-addressed ANSI strings
-  that would need re-parsing into Textual segments, and cannot express
-  data-driven motion (count-up, bar growth, heatmap wave). Corral's frame
-  function measured 1.1 ms per frame.
-- [tachyonfx](https://github.com/ratatui/tachyonfx) (Rust/Ratatui) supplies
-  the vocabulary: coalesce (logo decode), sweep-in (agent bar), diagonal
-  pattern (heatmap wave), fade (legend). TTE Beams inspires the finale.
-- Other surveyed engines ([sysc-Go](https://github.com/Nomadcxx/sysc-Go),
-  [tui-vfx](https://lib.rs/crates/tui-vfx)) are Go/Rust and not embeddable in
-  Corral's Python TUI.
-
-### 5.4 Image export
-
-`s` or `--png PATH` writes the final frame at 1200×630: the 72×19 grid
-rendered at 16×32 pixels per cell, centered (since §10.7: 72×21 at 16×28,
-the Spleen cell's blank top rows dropped). No new dependency: an embedded
-glyph subset of the BSD-2-Clause [Spleen](https://github.com/fcambus/spleen)
-16×32 bitmap font (license retained beside the data) and a standard-library
-`zlib` PNG encoder. Rejected alternatives: Pillow (Homebrew's Pillow pulls
-ten native libraries for every Corral user); Textual/Rich SVG screenshot plus a
-rasterizer (CairoSVG needs native Cairo, a headless browser is far heavier, and
-social platforms do not accept SVG). Spleen was chosen over other permissive
-bitmap fonts because it ships a native 16×32 size, which fits the 72×19 grid
-into 1200×630 without scaling. Default path is
-`corral-wrap-YYYYMMDD.png` in the current directory.
+Image export: `s` or `--png PATH` wrote the final frame at 1200×630 from the same grid, using an embedded BSD-2-Clause [Spleen](https://github.com/fcambus/spleen) 16×32 bitmap subset and a standard-library `zlib` PNG encoder (no new dependency). Pillow (ten native libraries per user) and an SVG-plus-rasterizer path (needs Cairo or a headless browser; social platforms reject SVG) were rejected; Spleen ships a native 16×32 size that fits the grid without scaling.
 
 ## 6. Card content constraints
 
-- Local only: nothing is uploaded, no network call.
-- Built for sharing: no prompts, message text, session titles, file paths or
-  project names on the default card.
+- Local only: nothing uploaded, no network call.
+- Built for sharing: no prompts, message text, session titles, file paths or project names on the default card.
 - Footer: one line linking to the public Corral repository.
-- Terminal rendering follows the terminal UI knowledge base and the global UI
-  standards; visual acceptance needs an inspected fresh capture.
+- Terminal rendering follows the terminal UI knowledge base and the global UI standards; visual acceptance needs an inspected fresh capture.
 
 ## 7. Product decisions (owner, 2026-11-04)
 
-1. **Tokens yes, money no.** The card shows native token totals with their
-   coverage. It shows no monetary amount, recorded or estimated.
-2. **Default period: last 7 days.** `--month` (30 days) and `--all` (all
-   retained history) are explicit options. Claude keeps about 30 days of
-   transcripts by default, so longer periods disclose each runtime's coverage.
-3. **Output: terminal card plus image export.** The terminal card is the
-   default; an export option writes a 1200×630 social image built from the
-   same aggregated values, never a separately computed set.
+1. **Tokens yes, money no** — native token totals with their coverage; no recorded or estimated monetary amount.
+2. **Default period: last 7 days**; `--month` (30 days) and `--all` (all retained history) are explicit. Claude keeps about 30 days of transcripts, so longer periods disclose each runtime's coverage.
+3. **Output: terminal card plus image export** — the terminal card is the default, and an export option writes a 1200×630 social image from the same aggregated values, never a separately computed set.
 
 ## 8. Market context (searched 2026-11-04)
 
-Many Claude Code "wrapped" cards already exist, for example
-[claude-code-wrapped](https://github.com/kschrader/claude-code-wrapped),
-[agent-wrapped](https://github.com/lfgcampos/agent-wrapped),
-[wrapped-mod](https://github.com/Ron-Nefyodov/wrapped-mod) (SVG export) and
-[Year in Code](https://news.ycombinator.com/item?id=46401120) (built on
-ccusage). [ccusage](https://github.com/ccusage/ccusage) now reports several
-agents and drove screenshot sharing through
-[a show-and-tell thread](https://github.com/ryoppippi/ccusage/discussions/26).
-Corral's distinguishing content is cross-runtime coverage of five agents and
-parallel-session work, so those metrics lead the card. The inspected
-references (claude-code-wrapped, agent-wrapped; cloned 2026-11-04) are static;
-Corral reuses only their label/value column and activity-heatmap layout idea,
-no code, and differentiates with motion.
+Claude Code "wrapped" cards already exist ([claude-code-wrapped](https://github.com/kschrader/claude-code-wrapped), [agent-wrapped](https://github.com/lfgcampos/agent-wrapped), [wrapped-mod](https://github.com/Ron-Nefyodov/wrapped-mod), [Year in Code](https://news.ycombinator.com/item?id=46401120) built on ccusage), and [ccusage](https://github.com/ccusage/ccusage) drove screenshot sharing through [a show-and-tell thread](https://github.com/ryoppippi/ccusage/discussions/26). Corral's differentiation is cross-runtime coverage of five agents and parallel-session work, so those metrics lead the card. The two inspected references (cloned 2026-11-04) are static; Corral reused only their label/value column and heatmap layout idea, no code, and differentiated with motion.
 
-## 9. Implementation notes and verification (2026-11-04)
+## 9. Implementation notes and verification (2026-11-04, retired prototype)
 
-- **Worker processes.** Per-session reads run in a `ProcessPoolExecutor`
-  (291 sessions: 4.5 s versus 17.6 s sequential). Textual replaces
-  `sys.stderr` with a capture whose `fileno()` is -1, and a multiprocessing
-  resource tracker first started inside the app fails with
-  `ValueError: bad value(s) in fds_to_keep` (found in the real terminal run).
-  `wrap_stats.prepare_workers()` starts the tracker before the TUI; regression
-  `WorkerPoolTests`. Spawned workers re-import the entry module, so any script
-  that calls `collect` needs a `__main__` guard (the installed entry points
-  have one).
-- **Scan.** Corral's listing with a 1,000-per-runtime limit, widened ×4 for a
-  runtime whose oldest returned session is still inside the period. A cold
-  derived cache makes the first scan 10–25 s; warm runtime scans take under
-  1 s. The loading frame says "scanning history" until totals are known.
-- **Frame timing (headless, real data).** 25.5 s load with 729 loading frames,
-  maximum gap 0.12 s (the UI keeps animating while reading); 122 reveal frames,
-  maximum gap 44 ms.
-- **Real terminal (iTerm, locked session with wake loop).** Sequential frames
-  after `r` showed the border light, logo decode with white flashes, count-up,
-  agent bar sweep with leading edge, heatmap diagonal wave, peak typing and the
-  finale beam, then the idle logo shimmer; `s` wrote the PNG and the hint line
-  showed its absolute path; the PNG equals the final terminal frame. Identical
-  consecutive captures occurred while the locked display blinked off; the
-  headless timing above shows the app itself kept rendering.
-- **Exported file mode** follows the user's umask (mkstemp's 0600 is widened),
-  since the image is meant to be shared.
+- **Worker processes:** per-session reads in a `ProcessPoolExecutor` (291 sessions: 4.5 s versus 17.6 s sequential). Textual replaces `sys.stderr` with a capture whose `fileno()` is -1, and a multiprocessing resource tracker first started inside the app fails with `ValueError: bad value(s) in fds_to_keep`; `wrap_stats.prepare_workers()` starts the tracker before the TUI (`WorkerPoolTests`). Spawned workers re-import the entry module, so scripts calling `collect` need a `__main__` guard.
+- **Scan:** Corral's listing at a 1,000-per-runtime limit, widened ×4 for a runtime whose oldest returned session is still inside the period. Cold derived cache makes the first scan 10–25 s; warm runtime scans take under 1 s.
+- **Frame timing (headless, real data):** 25.5 s load with 729 loading frames, maximum gap 0.12 s; 122 reveal frames, maximum gap 44 ms.
+- **Real terminal (iTerm, locked session with wake loop):** sequential frames after `r` showed every phase, `s` wrote the PNG with its absolute path in the hint line, and the PNG equalled the final terminal frame; identical consecutive captures occurred while the locked display blinked off, and the headless timing shows the app kept rendering.
+- **Exported file mode** follows the user's umask (mkstemp's 0600 is widened), since the image is meant to be shared.
 
 ## 10. Owner corrections, round 2 (2026-11-04)
 
-These supersede §1 (distribution), §3 (performance), §4–§5 (card content) and
-§7 item 3 where they conflict.
+These supersede §1 (distribution), §3 (performance), §4–§5 (card content) and §7 item 3 where they conflict.
 
 ### 10.1 Zero-friction distribution and speed
 
-- **Run without installing Corral.** The card must run on demand with a
-  single command such as `npx <name>`; installing Corral is not required.
-  `corral <subcommand>` keeps working for Corral users.
-- **Statistics complete within 1 second** for the default 7-day period. The
-  first version took 5–25 s.
-- **Install-time background precomputation was considered and rejected.**
-  `npx` has no install phase; pnpm 10 and Bun block dependency lifecycle
-  scripts by default and npm users often pass `--ignore-scripts`; a package that
-  reads AI conversation history from an install hook looks like a supply-chain
-  attack. Use an incremental per-file summary cache instead (only bytes or rows
-  added since the last run are parsed). Corral's existing background scan
-  worker may keep that cache warm for Corral users. The cold first run must
-  still meet the 1 s target.
+- **Run without installing Corral** with a single command such as `npx <name>`; `corral <subcommand>` keeps working for Corral users.
+- **Statistics complete within 1 second** for the default 7-day period (the first version took 5–25 s).
+- **Install-time background precomputation was considered and rejected:** `npx` has no install phase, pnpm 10 and Bun block dependency lifecycle scripts by default, npm users often pass `--ignore-scripts`, and a package that reads AI conversation history from an install hook looks like a supply-chain attack. Use an incremental per-file summary cache instead (only bytes or rows added since the last run are parsed); Corral's background scan worker may keep it warm for Corral users, and the cold first run must still meet 1 s.
 
-Measured 2026-11-04 on the owner's machine (7-day window): 160 recent JSONL
-files, 670 MB (Claude 256 MB, Codex 59 MB, Pi 318 MB) plus OpenCode rows in
-a 1.5 GB SQLite database. The first version spent scan 7.2 s, activity 3.5 s
-and usage 10.4 s single-threaded, parsing every file twice. A native SIMD
-multi-threaded literal scan (ripgrep) covered the same 670 MB in 0.04–0.06 s
-warm, and a time-filtered SQLite query takes milliseconds, so a native
-multi-core engine with window pruning (JSONL files are append-ordered: read
-backwards from the end until timestamps leave the window) fits well inside 1 s.
-The direct competitor ccusage ships a native binary through npm platform
-packages (`optionalDependencies` per OS/arch, checked with `npm view`), the
-same pattern as Biome.
+Measured 2026-11-04 over the 7-day window: 160 recent JSONL files, 670 MB (Claude 256 MB, Codex 59 MB, Pi 318 MB) plus OpenCode rows in a 1.5 GB SQLite database. The first version spent scan 7.2 s, activity 3.5 s, usage 10.4 s single-threaded, parsing every file twice. A native SIMD multi-threaded literal scan (ripgrep) covered the same 670 MB in 0.04–0.06 s warm and a time-filtered SQLite query takes milliseconds, so a native multi-core engine with window pruning (JSONL is append-ordered: read backwards until timestamps leave the window) fits inside 1 s. The competitor ccusage ships a native binary through npm platform packages (`optionalDependencies` per OS/arch, checked with `npm view`), the same pattern as Biome.
 
 ### 10.2 Card content
 
-- Remove the large `CORRAL` logo: it reads as an advertisement. The card
-  states its own purpose instead; the GitHub address stays as the only,
-  low-key promotion in the bottom-right border.
-- Remove the coverage disclosure (for example "11 without token data") from
-  the card; it carries no value for the reader. Coverage stays in `--json`.
-- Replace TOOL CALLS with average tokens per day.
-- Remove the absolute date range (the period label already says "last 7
-  days") and the `Mon-Sun` heatmap caption.
+Remove the large `CORRAL` logo (it reads as an advertisement; the card states its own purpose and the GitHub address stays as the only low-key promotion in the bottom-right border), remove the coverage disclosure from the card (it stays in `--json`), replace TOOL CALLS with average tokens per day, and remove the absolute date range and the `Mon-Sun` heatmap caption.
 
 ### 10.3 Name
 
-The owner questioned "wrap" (it reads as "to wrap", not as a Spotify
-Wrapped-style recap) and asked for a cooler word. **Decision: `flex`.** The
-standalone command is `npx agentflex` (npm name free on 2026-11-04) and the
-Corral subcommand is `corral flex`; `corral wrap` is retired with it.
-
-Hero (decision): the large block-font element is the token total with a small
-"tokens" label; the title line reads `CODING WEEK` (owner wording) with the
-period label on the right.
+The owner questioned "wrap" (it reads as "to wrap", not a Spotify Wrapped-style recap) and asked for a cooler word. **Decision: `flex`** — standalone command `npx agentflex` (npm name free on 2026-11-04), Corral subcommand `corral flex`; `corral wrap` is retired. Hero: the large block-font element is the token total with a small "tokens" label; the title reads `CODING WEEK` with the period label on the right.
 
 ### 10.4 Engine placement (decision)
 
-A 1 s implementation runnable through `npx` needs a native engine; npx cannot
-run Python. SessKit's hard rule forbids a second parser in consumers.
-**Decision: a multi-core Rust engine inside SessKit**, verified against the
-Python SessKit output on real histories, consumed by a standalone Rust card
-program (terminal animation and PNG export) distributed through npm platform
-packages like ccusage. The card program is downstream presentation and does not
-live in SessKit.
+A 1 s implementation runnable through `npx` needs a native engine (npx cannot run Python), and SessKit's hard rule forbids a second parser in consumers. **Decision: a multi-core Rust engine inside SessKit**, verified against the Python output on real histories, consumed by a standalone Rust card program (terminal animation, PNG export) distributed through npm platform packages like ccusage. The card program is downstream presentation and does not live in SessKit.
 
 ### 10.5 Platforms (owner requirement 2026-11-04)
 
+`npx agentflex` supports macOS, Linux and Windows (x64 and arm64 per npm platform package). History discovery uses each runtime's actual Windows location, never a POSIX path joined by hand. Windows acceptance runs on the Windows 11 test VM (infra guide: `win` / `win-test`, QGA fallback while its SSH is down) with real assistant histories created there, plus a `windows-latest` CI job in the standalone repository. This does not change Corral's own decision not to support Windows ([Windows compatibility](WINDOWS_COMPATIBILITY_DESIGN.md)); `corral flex` remains a macOS/Linux entry point running the same engine.
 
-`npx agentflex` supports macOS, Linux and Windows (x64 and arm64 builds per
-npm platform package). History discovery must use each runtime's actual
-Windows location, not a POSIX path joined by hand. Windows acceptance runs on
-the Windows 11 test VM (infra guide: `win` / `win-test`, QGA fallback while its
-SSH is down) with real assistant histories created there, plus a
-`windows-latest` CI job in the standalone repository. This does not change
-Corral's own decision not to support Windows
-([Windows compatibility](WINDOWS_COMPATIBILITY_DESIGN.md)); `corral flex`
-remains a macOS/Linux entry point that runs the same engine.
+### 10.6 Implementation status
 
-### 10.6 Implementation status (2026-11-04)
-
-- Engine: `~/Codes/SessKit/crates/sesskit-stats` (Rust, rayon, window
-  pruning); owner's 7-day window in 0.36–0.52 s versus 15–25 s for the Python
-  version. Parity against the Python reference is in progress.
-- Card program: `~/Codes/AgentFlex` (private Forgejo `Max/agentflex` until the
-  public repository exists): Rust, crossterm frame diffing, same 72×19 grid for
-  terminal and PNG, embedded Spleen subset and `flate2` PNG encoding.
-  Card content follows §10.2 and the hero decision: `CODING WEEK`, a
-  square-pixel 6×7 bitmap font for the token total (two pixel rows per cell),
-  sessions / tokens per day / peak parallel, agent bar, weekday × hour heatmap.
-  Storyboard: border light, title typing, slot-machine hero digits locking
-  left to right with a white flash, count-up, bar sweep, legend fade, heatmap
-  wave, peak typing, finale beams over the values and heatmap rows, idle
-  shimmer across the hero. Verified in a real iTerm window by sequential
-  replay captures.
-- Distribution scaffolding: npm main package with a Node launcher plus six
-  platform packages, release/CI workflows for macOS, Linux (static musl) and
-  Windows (x64, arm64). Publishing needs the owner's npm login and a public
-  GitHub repository.
-- `corral flex` (implemented 2026-11-04, `src/corral/flex_cmd.py`): execs the
-  installed `agentflex` binary when it is on PATH, otherwise
-  `npx --yes agentflex@latest`, passing arguments through; with neither it
-  prints one install hint and exits 1. The Python `corral wrap` modules, tests,
-  font asset and README section were removed in the same change. A Homebrew
-  `agentflex` formula for Corral's tap remains a follow-up.
-- Public repository: https://github.com/corral-dev/agentflex (MIT), README in
-  English and Chinese with a demo rendered from fictional data.
-- Released 0.2.0 on 2026-11-08 (model leaderboard, dark terminal stage); release
-  procedure in AgentFlex `AGENTS.md`. Open release follow-ups: publication runs
-  only through GitHub Actions (no local publish path independent of CI, as the
-  open-source guide requires), and the workflows' actions (`actions/checkout@v4`,
-  `setup-node@v4`, artifact actions) target Node 20, which GitHub now forces onto
-  Node 24 with a deprecation warning.
+- Engine `~/Codes/SessKit/crates/sesskit-stats` (Rust, rayon, window pruning): owner's 7-day window in 0.36–0.52 s versus 15–25 s for the Python version; parity with the Python reference was in progress.
+- Card program `~/Codes/AgentFlex` (private Forgejo `Max/agentflex` until the public repository existed): Rust, crossterm frame diffing, the same 72×19 grid for terminal and PNG, embedded Spleen subset and `flate2` PNG encoding. Content follows §10.2 and the hero decision, with a square-pixel 6×7 bitmap font for the token total; verified in a real iTerm window by sequential replay captures.
+- Distribution scaffolding: npm main package with a Node launcher plus six platform packages, release/CI workflows for macOS, Linux (static musl) and Windows (x64, arm64). Publishing needs the owner's npm login and a public GitHub repository.
+- `corral flex` (2026-11-04, `src/corral/flex_cmd.py`) execs the installed `agentflex` binary when on PATH, else `npx --yes agentflex@latest`, passing arguments through; with neither it prints one install hint and exits 1. The Python `corral wrap` modules, tests, font asset and README section were removed in the same change. A Homebrew `agentflex` formula for Corral's tap remains a follow-up.
+- Public repository https://github.com/corral-dev/agentflex (MIT) with English and Chinese READMEs and a demo from fictional data.
+- Released 0.2.0 on 2026-11-08 (model leaderboard, dark terminal stage); release procedure in AgentFlex `AGENTS.md`. Open release follow-ups: publication runs only through GitHub Actions (no local publish path independent of CI, as the open-source guide requires), and the workflows' actions target Node 20, which GitHub now forces onto Node 24 with a deprecation warning.
 
 ### 10.7 Model leaderboard (owner decision 2026-11-08)
 
-- **Both rows stay.** The card shows the agent share bar (sessions per agent)
-  and a model share bar below it; the owner considers both worth showing off.
-- **Ranked by tokens.** A model's share is its part of the hero token total,
-  attributed per usage record by the native record's model and time, so the
-  model shares add up to the hero number. Cache reads dominate the total and
-  some gateways report no cache, so long-context models rank higher; the
-  owner accepted this for consistency with the hero.
-- **No reasoning effort.** Claude and Codex record effort per turn, but Pi
-  only records changes and OpenCode records none unless a variant is picked
-  (most of the owner's sessions), so effort is omitted rather than shown as
-  mostly unknown.
-- **Display.** Top three models plus one grey "other" segment, warm palette
-  following the hero gradient (agent colors stay on the agent bar). Names are
-  shortened for display only: provider prefix (`x/`), bracket suffix (`[1m]`),
-  date suffix and a leading `claude-` are dropped, a trailing `-N-M` version
-  reads `-N.M`, and identical display names merge; records without a model
-  count as `unknown`. Longest names are truncated with `…` until the legend
-  fits.
-- **Grid.** The card grows from 19 to 21 rows (still fits 80×24 with the key
-  hint): agents rows 10–11, models rows 12–13, heatmap rows 15–18, axis 19.
-  The PNG keeps 1200×630 by drawing 16×28 cells: the top four rows of the
-  32-row Spleen cell are dropped (blank for every glyph on the card; the few
-  glyphs inked there, such as `/` and brackets, shift down to fit).
-- **Engine.** Per-model window tokens come from `sesskit-stats`
-  (`SessionStats.window_models`), never from parsing here.
+- **Both rows stay:** an agent share bar (sessions per agent) and a model share bar below it.
+- **Ranked by tokens:** a model's share is its part of the hero token total, attributed per usage record by the native record's model and time, so model shares add up to the hero number. Cache reads dominate the total and some gateways report no cache, so long-context models rank higher; the owner accepted this for consistency with the hero.
+- **No reasoning effort:** Claude and Codex record effort per turn, but Pi records only changes and OpenCode records none unless a variant is picked, so effort is omitted rather than shown as mostly unknown.
+- **Display:** top three models plus one grey "other" segment, warm palette following the hero gradient (agent colors stay on the agent bar). Names are shortened for display only — provider prefix (`x/`), bracket suffix (`[1m]`), date suffix and a leading `claude-` dropped, a trailing `-N-M` version read as `-N.M`, identical display names merged, records without a model counted as `unknown`, longest names truncated with `…` until the legend fits.
+- **Grid:** the card grows from 19 to 21 rows (still fits 80×24 with the key hint): agents rows 10–11, models rows 12–13, heatmap rows 15–18, axis 19. The PNG keeps 1200×630 by drawing 16×28 cells, dropping the top four blank rows of the 32-row Spleen cell (the few glyphs inked there shift down to fit).
+- **Engine:** per-model window tokens come from `sesskit-stats` (`SessionStats.window_models`), never parsed here.
 
 ### 10.8 Simplified Chinese TUI (owner request 2026-11-08)
 
-- **Locale.** The card follows the process locale: `LC_ALL`, `LC_MESSAGES`,
-  `LANG`, `LANGUAGE`, then the OS preferred language (`sys-locale`). A `zh`
-  language shows the Simplified Chinese card; every other language keeps the
-  existing English card. `LANG=zh_CN.UTF-8` forces Chinese for acceptance and
-  for English-primary Macs; `LANG=en_US.UTF-8` forces English.
-- **Vocabulary.** The card's own words stay English: `CODING WEEK` /
-  `CODING MONTH` / `CODING SO FAR`, `tokens`, `AGENTS`. Everything else is
-  translated the way Chinese developer tools write it, not word for word:
-  会话数, 日均 tokens, 峰值并发, 模型, 活跃时段, 最忙, 周一–周日, 其他, 未知.
-  Loading (正在扫描历史记录 / 正在读取 N / M 个会话), the empty state, the
-  key hints (保存图片 / 重播 / 退出), the save note (已保存到 …), save errors
-  and the small-terminal hint follow the same language.
-- **One grid.** The terminal and the 1200×630 PNG remain the same card in the
-  same language; a Chinese terminal run exports a Chinese PNG. Double-width
-  characters occupy a lead cell and a continuation (`CONT`) cell that every
-  renderer skips.
-- **PNG glyphs.** Spleen has no CJK. A small subset of the OFL-1.1 Fusion
-  Pixel 12px Mono zh_Hans (2× scaled to 24×24 inside the 32×28 double cell)
-  is embedded as `assets/fusion-pixel-12px-subset.json`; the generator is
-  `scripts/build-cjk-subset.py`, and the license sits beside the data.
-- **Verification (2026-11-08).** Real iTerm runs in Chinese and English
-  (card, loading, key hints, save note), the small-terminal hint, the Chinese
-  and English PNGs, the empty period, `cargo test` and clippy. On the Windows
-  11 zh-CN test VM (both `caozc` and `agenttest`), an unforced run detects
-  zh-CN and renders the Chinese card; `LANG=en_US.UTF-8` forces English; both
-  PNGs were inspected on the Mac.
+- **Locale:** the card follows the process locale — `LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE`, then the OS preferred language (`sys-locale`). `zh` shows the Chinese card, every other language keeps English; `LANG=zh_CN.UTF-8` forces Chinese for acceptance and on English-primary Macs, `LANG=en_US.UTF-8` forces English.
+- **Vocabulary:** the card's own words stay English (`CODING WEEK` / `CODING MONTH` / `CODING SO FAR`, `tokens`, `AGENTS`); everything else is translated the way Chinese developer tools write it: 会话数, 日均 tokens, 峰值并发, 模型, 活跃时段, 最忙, 周一–周日, 其他, 未知. Loading (正在扫描历史记录 / 正在读取 N / M 个会话), the empty state, key hints (保存图片 / 重播 / 退出), the save note (已保存到 …), save errors and the small-terminal hint follow the same language.
+- **One grid:** terminal and PNG remain the same card in the same language, so a Chinese run exports a Chinese PNG; double-width characters occupy a lead cell plus a `CONT` cell every renderer skips.
+- **PNG glyphs:** Spleen has no CJK, so a subset of the OFL-1.1 Fusion Pixel 12px Mono zh_Hans (2× scaled to 24×24 inside the 32×28 double cell) is embedded as `assets/fusion-pixel-12px-subset.json`, generated by `scripts/build-cjk-subset.py` with its license beside the data.
+- **Verification (2026-11-08):** real iTerm runs in Chinese and English (card, loading, key hints, save note), the small-terminal hint, both PNGs, the empty period, `cargo test` and clippy. On the Windows 11 zh-CN test VM (both `caozc` and `agenttest`) an unforced run detects zh-CN and renders the Chinese card, `LANG=en_US.UTF-8` forces English, and both PNGs were inspected on the Mac.
+
+<!-- 该文档整理/压缩于 2026-11-15 -->

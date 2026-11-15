@@ -7,4 +7,4 @@ Source: https://github.com/twitter/twemoji
 
 Used only by `../capture.py` to embed fruit glyphs when Cairo cannot paint Color Emoji.
 
-<!-- 该文档整理/压缩于 2026-09-29 -->
+<!-- 该文档整理/压缩于 2026-11-15 -->
