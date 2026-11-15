@@ -98,8 +98,11 @@ selection, brand-colored top-bar add-pane chips and the "Advanced" naming.
    Pane headers show only the transient `Restarting…`; the detail header no
    longer repeats the restart sentence.
 9. **Your prompts.** Panes narrower than 60 cells start collapsed. Clicking a
-   panel toggles that pane only; `Ctrl+G` toggles every pane and clears per-pane
-   choices. When no prompt has a timestamp, the time column (`N/A`) is omitted.
+   panel toggles that session only; the choice is remembered per session, so a
+   pane rebound to another session and back (or another pane showing the same
+   session) restores it, and one session never changes another's. `Ctrl+G`
+   toggles every pane and clears all remembered session choices. When no prompt
+   has a timestamp, the time column (`N/A`) is omitted.
 10. **Actions menu (`Ctrl+T`).** Title `Session actions`; disabled section rows
     `This session` (Export, Fork, Restart) and `New session from this history`
     (assistants, the source marked `same assistant`) are skipped by the keyboard.

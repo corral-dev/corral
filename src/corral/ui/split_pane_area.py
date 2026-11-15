@@ -317,6 +317,7 @@ class PaneCell(Vertical):
         on_restart: Callable[[str, bool], None] | None = None,
         on_sync_mask: Callable[[], None] | None = None,
         on_hud_toggle: Callable[[], None] | None = None,
+        hud_overrides: dict[str, bool] | None = None,
         closable: bool = True,
         **kwargs,
     ) -> None:
@@ -336,10 +337,10 @@ class PaneCell(Vertical):
         # 提示盖掉，否则用户会再按一次回车触发重复重启。
         self._restarting_hint = False
         # 小窗展开态：默认跟全局开关走，但窄格（< HUD_EXPAND_MIN_PANE_WIDTH）默认
-        # 收起，免得浮层盖住整格。点小窗只改本格（_hud_override），Ctrl+G 改全局
-        # 并清掉各格的单独选择。
+        # 收起，免得浮层盖住整格。点小窗只改这一会话（按会话键存在共享表里），
+        # 挪到别的格或改绑回来仍记得；Ctrl+G 改全局并清掉各会话的单独选择。
         self._hud_global_expanded = True
-        self._hud_override: bool | None = None
+        self._hud_overrides = hud_overrides if hud_overrides is not None else {}
         self._hud_data = None
         # Live panes must not *display* a transcript renderer (capture gaps
         # would flash chat). Keep it as an ended fallback so a confirmed-dead
@@ -433,8 +434,6 @@ class PaneCell(Vertical):
         `cell_id` 必须沿用旧的：格子里的 EmbedPane 的 DOM id 是 compose 时按它
         生成的，换了会和 `_cell_for_spec` 的匹配对不上。
         """
-        if spec.session_key != self.spec.session_key:
-            self._hud_override = None
         spec.cell_id = self.spec.cell_id
         self.spec = spec
         self._bind_renderers(detail_renderer, hosted=bool(spec.keepalive_name))
@@ -523,8 +522,9 @@ class PaneCell(Vertical):
         self._apply_hud()
 
     def _hud_effective_expanded(self) -> bool:
-        if self._hud_override is not None:
-            return self._hud_override
+        override = self._hud_overrides.get(self.spec.session_key)
+        if override is not None:
+            return override
         width = self.size.width
         # 尚未布局（宽 0）时先按全局；布局后 on_resize 会再算一次。
         return self._hud_global_expanded and (width == 0 or width >= HUD_EXPAND_MIN_PANE_WIDTH)
@@ -544,8 +544,8 @@ class PaneCell(Vertical):
             )
 
     def _toggle_hud_local(self) -> None:
-        """点小窗只切本格；其它格与全局开关不动。"""
-        self._hud_override = not self._hud_effective_expanded()
+        """点小窗只切这一会话；其它会话与全局开关不动。"""
+        self._hud_overrides[self.spec.session_key] = not self._hud_effective_expanded()
         self._apply_hud()
 
     def _jump_detail_latest(self) -> None:
@@ -554,7 +554,7 @@ class PaneCell(Vertical):
             self.screen.jump_to_latest(self.spec.session_key, self)
 
     def clear_hud_override(self) -> None:
-        self._hud_override = None
+        self._hud_overrides.pop(self.spec.session_key, None)
 
     def on_resize(self, event) -> None:
         if self._hud_data is not None:
@@ -750,6 +750,9 @@ class SplitPaneArea(Vertical):
         self._on_pane_focused = on_pane_focused
         self._on_pane_restart = on_pane_restart
         self._on_hud_toggle = on_hud_toggle
+        # 小窗展开/收起按会话记忆，所有格（含格池改绑）共用一张表；一格收起不会
+        # 动到别的会话。
+        self._hud_overrides: dict[str, bool] = {}
         self._on_dragon_click = on_dragon_click
         self._osc_report = osc_report
         self._render_detail = render_detail
@@ -1054,7 +1057,8 @@ class SplitPaneArea(Vertical):
         return projected_embed_sizes(row.size.width, row.size.height, count)
 
     def clear_hud_overrides(self) -> None:
-        """Ctrl+G：全局开关改了，各格单独的展开/收起选择一起作废。"""
+        """Ctrl+G：全局开关改了，各会话的单独展开/收起选择一起作废。"""
+        self._hud_overrides.clear()
         for cell in self._cells():
             cell.clear_hud_override()
 
@@ -1478,6 +1482,7 @@ class SplitPaneArea(Vertical):
             on_restart=self._on_pane_restart,
             on_sync_mask=self.sync_input_mask,
             on_hud_toggle=self._on_hud_toggle,
+            hud_overrides=self._hud_overrides,
             osc_report=self._osc_report,
             detail_renderer=renderer,
             closable=self.panes_closable,

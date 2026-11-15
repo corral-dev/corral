@@ -11789,6 +11789,62 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertFalse(any(h.expanded for h in huds))
 
+    async def test_hud_choice_is_remembered_per_session(self) -> None:
+        """小窗展开/收起按会话记忆：改绑到别的会话再切回来，原会话仍记得，
+        别的会话的选择也不受影响（2026-11-15 机主要求）。"""
+        sessions = self._live_sessions(2)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(140, 30)) as pilot:
+            await pilot.pause()
+            area = app.screen.query_one(SplitPaneArea)
+            key0 = corral.session_key(sessions[0])
+            key1 = corral.session_key(sessions[1])
+            app.screen._apply_layout_change(  # noqa: SLF001
+                lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
+            )
+            pair = [(s, s["keepalive_name"], lambda: "") for s in sessions]
+            area.show_hosted_group("/tmp", pair, focus_key=key0)
+            await _wait_until(
+                lambda: len(area._cells()) == 2  # noqa: SLF001
+                and all(cell.size.width > 0 for cell in area._cells())  # noqa: SLF001
+            )
+            app.screen._sync_hud()  # noqa: SLF001
+            huds = [cell.session_hud() for cell in area._cells()]  # noqa: SLF001
+            await _wait_until(lambda: all(h.display and not h.expanded for h in huds))
+            # Pilot clicks the widget's region; wait for the layout so a zero
+            # region cannot turn the click into a window-corner hit.
+            await _wait_until(lambda: all(h.region.width > 0 and h.region.height > 0 for h in huds))
+
+            # Session 0 explicitly opens its card; session 1 keeps its own state.
+            await pilot.click(huds[0])
+            await _wait_until(lambda: huds[0].expanded)
+            self.assertFalse(huds[1].expanded)
+
+            # Rebind the pane to session 1 alone, then show both again. Session
+            # 0's choice must come back from the per-session table.
+            area.show_hosted_group("/tmp", [(sessions[1], sessions[1]["keepalive_name"], lambda: "")], focus_key=key1)
+            await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            await pilot.pause()
+            area.show_hosted_group("/tmp", pair, focus_key=key0)
+            await _wait_until(
+                lambda: len(area._cells()) == 2  # noqa: SLF001
+                and all(cell.size.width > 0 for cell in area._cells())  # noqa: SLF001
+            )
+            app.screen._sync_hud()  # noqa: SLF001
+            by_key = {cell.spec.session_key: cell.session_hud() for cell in area._cells()}  # noqa: SLF001
+            await _wait_until(lambda: by_key[key0].expanded)
+            self.assertTrue(by_key[key0].expanded, "会话自己的展开选择没有被记住")
+            self.assertFalse(by_key[key1].expanded, "另一个会话的小窗被联动了")
+
+            # Ctrl+G clears every remembered choice, so narrow panes collapse.
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: not by_key[key0].expanded)
+            app.screen.action_toggle_hud()
+            await pilot.pause()
+            self.assertFalse(by_key[key0].expanded)
+            self.assertFalse(by_key[key1].expanded)
+
     async def test_hud_background_follows_pane_chrome(self) -> None:
         """Your prompts 底色是高光的一部分：选中蓝条，没选中跟灰条同色（面板深灰）。"""
         sessions = self._live_sessions(2)
