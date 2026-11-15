@@ -363,12 +363,17 @@ Today: no lifecycle events, no inventory, no cause, and a log budget that would 
 
 ### 8.1 Session list (TUI and both native clients)
 
+**The owner's daily surface is the native Mac client, not the TUI** (clarified 2026-11-15); the TUI and the remote payload follow the same rules, but any UI work lands in the client and belongs to the primary model, not to a delegated worker.
+
 A retired session is an ordinary ended card: `hosted=false`, `live=false`, history intact, same id, same title, same last message. Its rows must not gain a fifth dot: `activity_board` fixes four markers (`waiting`, `working`, `unread`, `recent`) and a retired session must resolve to none of them, exactly like a session with terminal native evidence today.
 
-The one thing that may differ is copy, not state:
+**Nothing on the surface says a session was retired (owner ruling 2026-11-15).** The list itself must not sort, group, filter, grey out, badge or annotate differently — retirement is not an event, and the owner's attention belongs to the sessions, not the tool. That supersedes the earlier D4 copy change ("ended because it was idle — Enter to resume"): there is no explanatory copy, anywhere.
 
-- Detail/pane placeholder: today a dead pane shows "Enter restart". For a retired session the honest copy is "ended because it was idle — Enter to resume". This is a copy change in the owner's surface, gated on the retirement record being readable; if there is no record (a crash), the existing copy stands. Owner decision D4.
-- The list itself must not sort, group or filter differently. Retirement is not an event.
+The only visible consequence is the one the owner causes himself, when he opens the session:
+
+- while the resume runs, the content area shows one indeterminate progress indicator and **no text**;
+- the retry sequence of §6.5 is invisible — one indicator for the whole sequence, never a failure followed by a recovery;
+- a failure that is established as unresolvable keeps the transcript visible and states the fact without asking him to act, retry or repair (§6.5).
 
 ### 8.2 Activity board / Attention filter
 
@@ -376,7 +381,7 @@ Must behave as ended: excluded from `recent` (the `resolve_active_marker` termin
 
 ### 8.3 Remote client
 
-- Payload: no new field is strictly required (`hosted`, `live` and `marker` already carry it), but a `retired_at` plus reason is worth adding to `session_payload` so the phone can explain rather than fail.
+- Payload: `retired_at` plus reason may be added to `session_payload` **for diagnostics only**; no client may render explanatory copy from it (owner ruling: a retired session looks like any other ended session until the owner opens it).
 - Watching a screen: `session.watch` on a retired session must keep returning the existing `unavailable` / `remote.err.no_live_screen`. Do not invent a new error.
 - Resume: reuse `session.resume` unchanged. `terminal_attach(vote=True)` already native-resumes through `_keepalive_name(resume_if_needed=True)`; the phone's chat input path already resumes through the same call. A readonly pairing never resumes (unchanged) and therefore sees the conversation, not a terminal.
 - Push: none. The silent contract stands, and the existing `remote_push_queued` abort path must not gain a "session retired" reason.
@@ -474,3 +479,15 @@ Stated so an implementer does not invent it:
 - tmux: [formats table](https://man7.org/linux/man-pages/man1/tmux.1.html), [window activity counts foreign send-keys](https://github.com/gastownhall/gascity/issues/3049)
 - Runtimes: [Pi session format](https://pi.dev/docs/latest/session-format), [Antigravity resume](https://antigravity.google/docs/cli/commands/resume), [Codex resume stuck on Working after an interrupted turn](https://github.com/openai/codex/issues/12382), [OpenCode shared background server](https://opencode.ai/docs/cli)
 - Repo: [`MAINTAINER_GUIDE.md`](../MAINTAINER_GUIDE.md) (silent reclaim contract, misleading idle timestamp, background-work rule), [`PERFORMANCE_KNOWLEDGE_BASE.md`](../PERFORMANCE_KNOWLEDGE_BASE.md) (E1-E10 incident measurements, perf-B backoff), [`SESSION_SCANNING_KNOWLEDGE_BASE.md`](../SESSION_SCANNING_KNOWLEDGE_BASE.md) (status versus liveness, Claude continuation hazard), [`REMOTE_KNOWLEDGE_BASE.md`](../REMOTE_KNOWLEDGE_BASE.md) (resume and watch semantics), [`MEMORY_OPTIMIZATION_DESIGN.md`](MEMORY_OPTIMIZATION_DESIGN.md) (footprint-versus-allocation method), [`apple/docs/MAC_PERF_SAMPLING_20261031.md`](../../../apple/docs/MAC_PERF_SAMPLING_20261031.md) (footprint sampling discipline), [`docs/2026-08-16-多助手会话专项汇报.md`](../../../docs/2026-08-16-多助手会话专项汇报.md) (historical, not an authority)
+
+## 13. Owner rulings recorded after the first draft (2026-11-15)
+
+These supersede any conflicting sentence above; where the two disagree, this section wins.
+
+| Ruling | Consequence |
+|---|---|
+| The owner's attention belongs to the sessions, not the tool. Anything the tool can heal, it heals silently (§7.6). | No prompt, toast, banner, badge or notification for retirement, resume, server loss, or a successful self-heal. Silence + no recovery is the worst outcome and is forbidden. |
+| "Nothing is allowed to fail" — a resume failure is never handed back to the owner (§6.5, INV-15). | Resume reliability is a *precondition* for retirement. A failed resume is retried by Corral under the INV-7 lock; no retry button, no repair instructions. |
+| No explanation of a retirement on any surface (§8.1). | D4's copy change is withdrawn. The list row does not change at all; the only visible thing is a spinner while the owner's own resume runs. |
+| The owner uses the native Mac client, not the TUI (2026-11-15). | UI work targets the client and stays with the primary model. The TUI and remote payload follow the same behavioural rules. |
+| Swap size is not a lever (see the host's performance governance guide). | Retirement exists to lower the working set; "add more swap" is never the answer to memory pressure. |
