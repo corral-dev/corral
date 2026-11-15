@@ -108,3 +108,5 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
 
 Report what `summary` returns: the published version links, the local installation result,
 the iPhone delivery outcome, matched known issues and remaining limits. Do not copy logs.
+
+<!-- 该文档整理/压缩于 2026-11-15 -->
