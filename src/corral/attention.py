@@ -599,6 +599,15 @@ class AttentionStore:
         """
         return self._pairs_in_phases(("working", "waiting"))
 
+    def waiting_pairs(self) -> list[tuple[str, str]] | None:
+        """返回 phase 为 waiting 的 (runtime_id, session_id)。
+
+        与 ``busy_pairs`` 同一个库、同一条查询，只按 phase 分开：等待结构化回答
+        的会话是 ``waiting_on_user`` 状态，执行中的是 ``working``，两者都不能
+        回收，但日志里要能看出是哪一种。库不可用时同样返回 ``None``。
+        """
+        return self._pairs_in_phases(("waiting",))
+
     def _pairs_in_phases(self, phases: tuple[str, ...]) -> list[tuple[str, str]] | None:
         conn = self._open()
         if conn is None:

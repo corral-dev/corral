@@ -81,11 +81,19 @@ _PS_TIMEOUT = 1.5
 
 @dataclass(frozen=True)
 class Proc:
-    """One row of ``ps -eo pid,ppid,command``."""
+    """One row of ``ps -eo pid,ppid,time,etime,command``.
+
+    ``cpu_seconds`` is cumulative CPU time consumed by this process (not its
+    children, and not ``%cpu`` — BSD ``ps(1)`` derives that from a decaying
+    average). ``etimes`` is the printed elapsed time, kept verbatim so a
+    respawned process can be told apart from the sampled one.
+    """
 
     pid: int
     ppid: int
     command: str
+    cpu_seconds: float | None = None
+    etimes: str = ""
 
     @property
     def comm(self) -> str:
@@ -138,14 +146,49 @@ def descendants(pane_pid: int, table: Sequence[Proc]) -> list[Proc]:
     return found
 
 
+_PS_FORMAT = "pid,ppid,time,etime,command"
+
+
+def cpu_seconds(text: str) -> float | None:
+    """Parse a printed CPU/elapsed time (``[[dd-]hh:]mm:ss``) defensively.
+
+    Returns None on anything unexpected: a parse failure is ``unknown``, never
+    zero, because zero is the value that proves a process did nothing.
+    """
+    raw = text.strip()
+    if not raw:
+        return None
+    days = 0
+    if "-" in raw:
+        day_text, _, raw = raw.partition("-")
+        try:
+            days = int(day_text)
+        except ValueError:
+            return None
+    parts = raw.split(":")
+    if not 1 <= len(parts) <= 3:
+        return None
+    total = 0.0
+    for part in parts:
+        try:
+            total = total * 60.0 + float(part)
+        except ValueError:
+            return None
+    return total + days * 86400.0
+
+
 def snapshot_ps(
     run: Callable[..., Any] | None = None,
 ) -> list[Proc] | None:
-    """One ``ps`` call for the whole machine; None when it cannot be read."""
+    """One ``ps`` call for the whole machine; None when it cannot be read.
+
+    ``time`` and ``etime`` ride along on the same call the process-tree signal
+    already made, so the cumulative-CPU signal costs no extra fork.
+    """
     check = run or subprocess.check_output
     try:
         out = check(
-            ["ps", "-eo", "pid,ppid,command"],
+            ["ps", "-eo", _PS_FORMAT],
             stderr=subprocess.DEVNULL, timeout=_PS_TIMEOUT,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -154,15 +197,52 @@ def snapshot_ps(
         out = out.decode(errors="ignore")
     table: list[Proc] = []
     for line in out.splitlines()[1:]:  # skip the header
-        parts = line.split(None, 2)
+        parts = line.split(None, 4)
         if len(parts) < 2:
             continue
         try:
             pid, ppid = int(parts[0]), int(parts[1])
         except ValueError:
             continue
-        table.append(Proc(pid, ppid, parts[2] if len(parts) > 2 else ""))
+        cpu = cpu_seconds(parts[2]) if len(parts) > 2 else None
+        etimes = parts[3].strip() if len(parts) > 3 else ""
+        command = parts[4] if len(parts) > 4 else ""
+        table.append(Proc(pid, ppid, command, cpu, etimes))
     return table
+
+
+def tree_cpu_seconds(pane_pid: int | None, table: Sequence[Proc] | None) -> float | None:
+    """Cumulative CPU time of the pane process plus every live descendant.
+
+    None when the pane is missing from the snapshot or any row in the tree has
+    an unreadable CPU column: a partial sum would look like a small delta and
+    falsely prove quiet.
+    """
+    if pane_pid is None or pane_pid <= 0 or table is None:
+        return None
+    rows = {proc.pid: proc for proc in table}
+    if pane_pid not in rows:
+        return None
+    total = 0.0
+    for proc in [rows[pane_pid], *descendants(pane_pid, table)]:
+        if proc.cpu_seconds is None:
+            return None
+        total += proc.cpu_seconds
+    return total
+
+
+def shared_background_servers(table: Sequence[Proc] | None, needle: str) -> bool | None:
+    """True when one account-wide background server for ``needle`` is running.
+
+    ``None`` when the process table cannot be read: unknown is never idle.
+    """
+    if table is None:
+        return None
+    lowered = needle.lower()
+    return any(
+        lowered in proc.command.lower() and "serve" in proc.command.lower()
+        for proc in table
+    )
 
 
 def process_verdict(pane_pid: int | None, table: Sequence[Proc] | None) -> BusyVerdict:
@@ -380,6 +460,34 @@ class BusyChecker:
                 return BusyVerdict(True, "background_transcript", merged)
             return BusyVerdict(False, "idle", merged)
         return proc
+
+    def tree_cpu(self, name: str) -> tuple[int, float, str] | None:
+        """(pane pid, cumulative CPU seconds, printed elapsed time) for one host.
+
+        Shares this tick's ``ps`` snapshot and pane map, so the cumulative-CPU
+        signal adds no fork. None means the sample is unknown for this host.
+        """
+        panes = self._panes()
+        table = self._ps()
+        if panes is None or table is None:
+            return None
+        pane_pid = panes.get(name)
+        total = tree_cpu_seconds(pane_pid, table)
+        if pane_pid is None or total is None:
+            return None
+        row = next((proc for proc in table if proc.pid == pane_pid), None)
+        if row is None or not row.etimes:
+            return None
+        return (pane_pid, total, row.etimes)
+
+    def pane_pid(self, name: str) -> int | None:
+        """Pane pid from this tick's pane map (no extra fork)."""
+        panes = self._panes()
+        return panes.get(name) if panes is not None else None
+
+    def shared_server_running(self, needle: str) -> bool | None:
+        """Whether an account-wide ``<needle> serve`` process exists (§6.4)."""
+        return shared_background_servers(self._ps(), needle)
 
     def process_busy_names(self, names: Sequence[str]) -> dict[str, BusyVerdict]:
         """Process-tree verdicts only, sharing this tick's snapshot.

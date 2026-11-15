@@ -23,7 +23,7 @@ from unittest import mock
 
 from sesskit.titles import STATUS_ABORTED, STATUS_DONE, STATUS_NONE, STATUS_PENDING
 
-from corral import embed, keepalive, reclaim, split_layout
+from corral import embed, keepalive, reclaim, retirement, split_layout
 from corral.attention import AttentionEvidence, AttentionStore
 from corral.reclaim import Context, History, Hosted
 
@@ -74,7 +74,8 @@ class EvaluateTests(unittest.TestCase):
             "attached_client": (host(foreign_clients=1), [done()], ctx()),
             "pinned": (host(), [done()], ctx(pinned_keys={"claude:aaaa1111-full-id"})),
             "busy": (host(), [done()], ctx(busy_pairs={("claude", "aaaa1111-full-id")})),
-            "recent_activity": (host(session_activity=NOW - 5 * MIN), [done()], ctx()),
+            "recent_activity": (host(session_activity=NOW - 60 * MIN), [done()], ctx()),
+            "floor": (host(session_activity=NOW - 5 * MIN), [done()], ctx()),
         }
         for reason, (session, entries, context) in cases.items():
             with self.subTest(reason=reason):
@@ -130,12 +131,14 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(verdict.evidence["idle_min"], 180.0)  # ...but never part of the idle clock
         with mock.patch.object(reclaim, "WINDOW_OUTPUT_GATES_HISTORY", True):
             strict = reclaim.evaluate(redrawing, [done()], ctx())
-        self.assertEqual(strict.reason, "recent_activity")
+        # 10 s of output is below the 30-minute absolute floor, so the floor is
+        # the binding reason now (D1); the point is that output gated it at all.
+        self.assertEqual(strict.reason, "floor")
         self.assertTrue(strict.evidence["window_gates"])
 
     def test_placeholder_session_is_still_gated_on_terminal_output(self) -> None:
         card = History(status_tag=STATUS_PENDING, provisional=True, runtime_id="claude", session_id="aaaa1111")
-        self.assertEqual(reclaim.evaluate(host(window_activity=NOW - 10), [card], ctx()).reason, "recent_activity")
+        self.assertEqual(reclaim.evaluate(host(window_activity=NOW - 10), [card], ctx()).reason, "floor")
         self.assertTrue(reclaim.evaluate(host(), [card], ctx()).reclaim)
 
     def test_normal_threshold_is_120_minutes(self) -> None:
@@ -145,13 +148,22 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(reclaim.evaluate(just_under, [entry], ctx()).reclaim)
         self.assertTrue(reclaim.evaluate(exactly, [entry], ctx()).reclaim)
 
-    def test_pressure_lowers_threshold_to_10_minutes(self) -> None:
+    def test_pressure_lowers_the_threshold_but_never_below_the_floor(self) -> None:
+        # D1: pressure may shorten 120 minutes, the 30-minute floor is invariant.
         idle_15 = host(window_activity=NOW - 15 * MIN, session_activity=NOW - 15 * MIN)
-        idle_5 = host(window_activity=NOW - 5 * MIN, session_activity=NOW - 5 * MIN)
+        idle_35 = host(window_activity=NOW - 35 * MIN, session_activity=NOW - 35 * MIN)
         entry = done(active_at=NOW - 60 * MIN)
         self.assertFalse(reclaim.evaluate(idle_15, [entry], ctx()).reclaim)
-        self.assertTrue(reclaim.evaluate(idle_15, [entry], ctx(pressure=True)).reclaim)
-        self.assertFalse(reclaim.evaluate(idle_5, [entry], ctx(pressure=True)).reclaim)
+        floor = reclaim.evaluate(idle_15, [entry], ctx(pressure=True))
+        self.assertFalse(floor.reclaim)
+        self.assertEqual(floor.reason, "floor")
+        self.assertTrue(reclaim.evaluate(idle_35, [entry], ctx(pressure=True)).reclaim)
+        self.assertEqual(reclaim.evaluate(idle_35, [entry], ctx(pressure=True)).evidence["threshold_min"], 10.0)
+
+    def test_the_floor_is_not_a_product_setting(self) -> None:
+        with mock.patch.dict(os.environ, {"CORRAL_RECLAIM_FLOOR_MINUTES": "1"}, clear=True):
+            self.assertEqual(reclaim.policy_from_env(NOW).floor_minutes, 30.0)
+        self.assertEqual(reclaim.Context(now=NOW).floor_minutes, reclaim.ABSOLUTE_IDLE_FLOOR_MINUTES)
 
     def test_pressure_never_overrides_a_protection(self) -> None:
         verdict = reclaim.evaluate(host(foreign_clients=2), [done()], ctx(pressure=True))
@@ -168,7 +180,7 @@ class EvaluateTests(unittest.TestCase):
 
     def test_provisional_card_keeps_every_other_protection(self) -> None:
         card = History(status_tag=STATUS_PENDING, provisional=True, runtime_id="claude", session_id="aaaa1111")
-        self.assertEqual(reclaim.evaluate(host(window_activity=NOW - MIN), [card], ctx()).reason, "recent_activity")
+        self.assertEqual(reclaim.evaluate(host(window_activity=NOW - MIN), [card], ctx()).reason, "floor")
         self.assertEqual(reclaim.evaluate(host(created_at=NOW - MIN), [card], ctx()).reason, "grace")
         self.assertEqual(
             reclaim.evaluate(host(), [card], ctx(busy_pairs={("claude", "aaaa1111")})).reason, "busy",
@@ -204,23 +216,41 @@ class DecideTests(unittest.TestCase):
 
 
 class ApplyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": self.temp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _verdicts(self, count: int, idle_hours: float = 3) -> list[reclaim.Verdict]:
         when = NOW - idle_hours * HOUR
         return [
             reclaim.evaluate(
                 host(f"corral-claude-cccc{i:04d}", window_activity=when, session_activity=when),
-                [done(active_at=when, session_id=f"c{i}")],
+                [done(active_at=when, session_id=f"c{i}", cwd="/tmp", history_path=f"/tmp/c{i}.jsonl")],
                 ctx(),
             )
             for i in range(count)
         ]
 
+    def _apply(self, verdicts, context, **overrides):
+        """Apply with the retirement side effects injected: no real cache, no kill."""
+        kwargs = dict(
+            kill=lambda host: True,
+            after_kill=lambda name: None,
+            record=lambda record: True,
+            identity=lambda name, socket: retirement.PaneIdentity(pane_pid=1, server_pid=2),
+            resume_guard=lambda *a, **k: None,
+        )
+        kwargs.update(overrides)
+        return reclaim.apply(verdicts, context, **kwargs)
+
     def test_audit_event_is_written_before_each_kill_with_evidence(self) -> None:
         order: list[str] = []
         with mock.patch.object(reclaim.observe, "event", side_effect=lambda *a, **k: order.append(f"event:{a[0]}")):
-            reclaimed = reclaim.apply(
-                self._verdicts(1), ctx(),
-                kill=lambda h: order.append("kill") or True, after_kill=lambda n: None,
+            reclaimed = self._apply(
+                self._verdicts(1), ctx(), kill=lambda h: order.append("kill") or True,
             )
         self.assertEqual(reclaimed, ["corral-claude-cccc0000"])
         self.assertEqual(order, ["event:reclaim", "kill"])
@@ -228,23 +258,25 @@ class ApplyTests(unittest.TestCase):
     def test_audit_event_carries_the_evidence(self) -> None:
         events: list[tuple] = []
         with mock.patch.object(reclaim.observe, "event", side_effect=lambda *a, **k: events.append((a, k))):
-            reclaim.apply(self._verdicts(1), ctx(), kill=lambda h: True, after_kill=lambda n: None)
+            self._apply(self._verdicts(1), ctx())
         (args, fields), = events
         self.assertEqual(args, ("reclaim",))
         self.assertEqual(fields["session"], "corral-claude-cccc0000")
-        for key in ("reason", "runtime", "status_tag", "idle_min", "window_idle_min", "session_idle_min",
-                    "history_idle_min", "threshold_min", "pressure", "created_age_min", "provisional"):
+        for key in ("reason", "state", "runtime", "status_tag", "idle_min", "window_idle_min",
+                    "session_idle_min", "history_idle_min", "threshold_min", "effective_threshold_min",
+                    "pressure", "created_age_min", "provisional"):
             self.assertIn(key, fields)
 
     def test_failed_kill_is_reported_and_not_counted(self) -> None:
         names: list[str] = []
         with mock.patch.object(reclaim.observe, "event", side_effect=lambda *a, **k: names.append(a[0])):
-            reclaimed = reclaim.apply(self._verdicts(1), ctx(), kill=lambda h: False, after_kill=lambda n: None)
+            reclaimed = self._apply(self._verdicts(1), ctx(), kill=lambda h: False)
         self.assertEqual(reclaimed, [])
         self.assertEqual(names, ["reclaim", "reclaim_failed"])
 
     def test_pass_stops_when_pressure_clears_and_keeps_only_baseline_idle(self) -> None:
-        # Three sessions qualify only under pressure (idle 20 min); one is idle 3 h.
+        # Three sessions qualify only under pressure (idle 20 min is above the
+        # floor but below the shipped 120-minute threshold); one is idle 3 h.
         young = [
             reclaim.evaluate(
                 host(f"corral-claude-dddd{i:04d}", window_activity=NOW - 20 * MIN, session_activity=NOW - 20 * MIN),
@@ -257,10 +289,10 @@ class ApplyTests(unittest.TestCase):
         )
         killed: list[str] = []
         with mock.patch.object(reclaim.observe, "event"):
-            reclaimed = reclaim.apply(
+            reclaimed = self._apply(
                 [old, *young], ctx(pressure=True),
                 kill=lambda h: killed.append(h.name) or True,
-                pressure_fn=lambda: False, after_kill=lambda n: None,
+                pressure_fn=lambda: False,
             )
         # The first kill happens under pressure; then pressure clears, so the two
         # 20-minute sessions no longer qualify.
@@ -269,9 +301,9 @@ class ApplyTests(unittest.TestCase):
 
     def test_pressure_that_persists_keeps_going(self) -> None:
         with mock.patch.object(reclaim.observe, "event"):
-            reclaimed = reclaim.apply(
+            reclaimed = self._apply(
                 self._verdicts(3, idle_hours=0.5), ctx(pressure=True, idle_minutes=120),
-                kill=lambda h: True, pressure_fn=lambda: True, after_kill=lambda n: None,
+                pressure_fn=lambda: True,
             )
         self.assertEqual(len(reclaimed), 3)
 
@@ -312,12 +344,13 @@ class MemoryPressureTests(unittest.TestCase):
         self.assertIsNone(reclaim._parse_swap_ratio("total = 0.00M  used = 0.00M  free = 0.00M"))
         self.assertIsNone(reclaim._parse_swap_ratio("garbage"))
 
-    def test_darwin_thresholds(self) -> None:
+    def test_darwin_pressure_ignores_sticky_swap_and_follows_the_level(self) -> None:
         def sysctl(values):
             return lambda name: values.get(name)
 
         cases = (
-            ({"vm.swapusage": "total = 100.00M used = 60.00M free = 40.00M"}, True),
+            # Swap used/total is informational: 60% used on a calm machine is not pressure.
+            ({"vm.swapusage": "total = 100.00M used = 60.00M free = 40.00M"}, False),
             ({"vm.swapusage": "total = 100.00M used = 59.00M free = 41.00M",
               "kern.memorystatus_vm_pressure_level": "1\n"}, False),
             ({"vm.swapusage": "total = 100.00M used = 1.00M free = 99.00M",
@@ -329,6 +362,17 @@ class MemoryPressureTests(unittest.TestCase):
         for values, expected in cases:
             with self.subTest(values=values), mock.patch.object(reclaim, "_sysctl", sysctl(values)):
                 self.assertEqual(reclaim._darwin_pressure(), expected)
+
+    def test_pressure_facts_still_report_swap_for_the_audit(self) -> None:
+        values = {
+            "vm.swapusage": "total = 100.00M used = 60.00M free = 40.00M",
+            "kern.memorystatus_vm_pressure_level": "1\n",
+        }
+        with mock.patch.object(reclaim.sys, "platform", "darwin"), \
+                mock.patch.object(reclaim, "_sysctl", lambda name: values.get(name)):
+            facts = reclaim.pressure_facts()
+        self.assertAlmostEqual(facts["swap_ratio"], 0.6)
+        self.assertEqual(facts["pressure_level"], 1)
 
     def test_linux_parsers_and_thresholds(self) -> None:
         psi = "some avg10=0.00 avg60=12.50 avg300=3.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
@@ -621,7 +665,7 @@ class EntryPointTests(unittest.TestCase):
         unlisted = host("corral-codex-bbbb2222", runtime_id="codex", ident="bbbb2222")
         handed: list[list[str]] = []
 
-        def fake_apply(verdicts, context):
+        def fake_apply(verdicts, context, **kwargs):
             handed.append([v.name for v in verdicts])
             return handed[-1]
 
@@ -662,6 +706,9 @@ class RealTmuxTests(unittest.TestCase):
             mock.patch.object(reclaim, "_SOCKETS", (self.socket,)),
             mock.patch.object(reclaim, "_STARTED_AT", time.monotonic() - 1000),
             mock.patch.object(reclaim, "memory_pressure", return_value=False),
+            # INV-15's machine check needs the runtime installed and a readable
+            # history file; these fixtures only have synthetic session dicts.
+            mock.patch.object(reclaim.retirement, "resume_block_reason", return_value=None),
         ):
             if patcher is not env_patch:
                 patcher.start()
@@ -762,8 +809,15 @@ class RealTmuxTests(unittest.TestCase):
         self.assertEqual(survivors, {self.NAMES[k] for k in ("pending", "terminal", "viewed")})
         audited = {fields["session"] for args, fields in events if args == ("reclaim",)}
         self.assertEqual(audited, expected)
-        for _args, fields in events:
-            self.assertGreaterEqual(fields["idle_min"], 120)
+        for args, fields in events:
+            if args == ("reclaim",):
+                self.assertGreaterEqual(fields["idle_min"], 120)
+                self.assertEqual(fields["state"], "parked")
+        # One pass event per pass carries the budget arithmetic (§4.4 step 3).
+        passes = [fields for args, fields in events if args == ("reclaim_pass",)]
+        self.assertEqual(len(passes), 1)
+        self.assertEqual(passes[0]["hosted"], 6)
+        self.assertIn("parked", passes[0])
 
         # Throttled: an immediate second pass does nothing even though it could.
         self.assertEqual(reclaim.maybe_reclaim(lambda: sessions, now=later + 5), [])

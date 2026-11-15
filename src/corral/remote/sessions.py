@@ -988,6 +988,9 @@ class SessionHub:
                     last_scan = time.monotonic()
                     self._search_refresh.set()
                     self._reclaim_inactive_hosts()
+                    # §6.5: a resume Corral had to absorb is retried on the same
+                    # tick, so no extra loop or timer exists.
+                    self._retry_failed_resumes()
                     title_keys.update(self.store.poll_title_updates())
                     last_title_poll = time.monotonic()
                 if now - last_chatter >= 60:
@@ -3739,7 +3742,15 @@ class SessionHub:
         )
 
     def resume_session(self, key: str) -> dict:
-        """原生恢复：用助手自己的恢复命令重开这条会话，历史完整延续。"""
+        """原生恢复：用助手自己的恢复命令重开这条会话，历史完整延续。
+
+        A failure is absorbed here, never handed back as an action (§6.5,
+        INV-15): the attempt is recorded and Corral retries it on its own under
+        the same per-session lock. Nothing the caller renders has to be retried
+        by the owner, and the conversation stays reachable meanwhile.
+        """
+        from corral import retirement
+
         if not embed.available():
             raise ActionError("unavailable", t("remote.err.tmux_missing_resume"))
         session = self.require_session(key)
@@ -3747,7 +3758,50 @@ class SessionHub:
         # Resume, explicit restart and failure-triggered input recovery share
         # one lock. Recovery already holds it when it calls us, hence RLock.
         with self._restart_lock_for(canonical), _resume_process_lock(canonical):
-            return self._resume_locked(canonical)
+            try:
+                payload = self._resume_locked(canonical)
+            except Exception as exc:  # noqa: BLE001 - absorbed below, then re-raised
+                retirement.schedule_resume_retry(
+                    canonical,
+                    cause=str(getattr(exc, "code", "") or type(exc).__name__),
+                    history_path=str(session.get("path") or ""),
+                )
+                raise
+            retirement.clear_resume_retry(canonical)
+            # INV-4: a resumed pane re-reads history and can look idle; mark it
+            # so the next passes honour the resume grace.
+            retirement.note_resume(canonical)
+            return payload
+
+    def _retry_failed_resumes(self) -> None:
+        """§6.5: Corral's own bounded resume retries; never a user-facing retry.
+
+        Driven by the existing background tick, so no new loop or timer exists.
+        Each retry re-enters the ordinary resume path under the INV-7 lock, and
+        the retry engine decides whether another attempt is due or the failure
+        is established as unresolvable.
+        """
+        try:
+            from corral import retirement
+
+            for attempt in retirement.due_resume_retries():
+                session = self.store.find_session(attempt.key)
+                if session is None:
+                    retirement.clear_resume_retry(attempt.key)
+                    continue
+                result = retirement.restore_session(
+                    attempt.key,
+                    lambda canonical=attempt.key: self._resume_locked(canonical),
+                    runtime_id=str(session.get("source") or ""),
+                    session_id=str(session.get("id") or ""),
+                    history_path=str(session.get("path") or attempt.history_path),
+                    cwd=str(session.get("cwd") or ""),
+                )
+                if result.state == "unresolvable":
+                    # The conversation stays readable; nothing asks for action.
+                    continue
+        except Exception:  # noqa: BLE001 — a broken retry must not stop the loop
+            pass
 
     @staticmethod
     def _adopt_foreign_host(session: dict) -> str | None:
