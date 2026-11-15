@@ -20,7 +20,7 @@ import time
 import uuid
 from collections.abc import Mapping
 
-from corral import titles
+from corral import hosted_lifecycle, titles
 from corral.legacy_names import LEGACY_SESSION_PREFIX as LEGACY_SESSION_PREFIX
 from corral.legacy_names import SESSION_PREFIX as SESSION_PREFIX
 from corral.legacy_names import SOCKET_NAME as SOCKET_NAME
@@ -457,6 +457,7 @@ def kill(name: str) -> bool:
     """手动/自动回收指定保活会话；不存在或 tmux 不可用时静默失败。"""
     if shutil.which("tmux") is None:
         return False
+    killed = False
     try:
         subprocess.run(
             [*tmux_argv_for_session(name), "kill-session", "-t", name],
@@ -464,9 +465,13 @@ def kill(name: str) -> bool:
             timeout=_SUBPROCESS_TIMEOUT, check=False,
             env=tmux_env(),
         )
-        return True
+        killed = True
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        killed = False
+    # 生命周期清单必须区分「我们停的」与「它自己消失了」：先摘掉这条，避免下一
+    # 轮把正常停止误记成 pane_died（hosted_lifecycle 从不抛错）。
+    hosted_lifecycle.forget_session(name, reason="corral:kill-session")
+    return killed
 
 
 def reap_idle(now: float | None = None) -> list[str]:

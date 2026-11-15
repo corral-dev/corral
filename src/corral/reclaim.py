@@ -42,7 +42,7 @@ from typing import Any
 from sesskit.models import session_key
 from sesskit.titles import STATUS_ABORTED, STATUS_DONE, STATUS_PENDING
 
-from corral import busycheck, keepalive, liveness, observe
+from corral import busycheck, hosted_lifecycle, keepalive, liveness, observe
 from corral.legacy_names import (
     ALL_SOCKET_NAMES,
     cache_dir,
@@ -653,7 +653,11 @@ def _kill_direct(name: str, socket: str) -> bool:
 def _default_kill(host: Hosted) -> bool:
     if host.socket == socket_for_session(host.name):
         return keepalive.kill(host.name)
-    return _kill_direct(host.name, host.socket)
+    stopped = _kill_direct(host.name, host.socket)
+    if stopped:
+        # 同样是「我们停的」：摘掉清单条目，免得下一轮误记成 pane_died。
+        hosted_lifecycle.forget_session(host.name, reason="corral:kill-session")
+    return stopped
 
 
 def _after_kill(name: str) -> None:
@@ -746,7 +750,12 @@ def _run_pass(sessions_provider: Callable[[], Iterable[Mapping[str, Any]]], now:
     hosted = probe_hosted()
     if not hosted:
         return []
-    history = history_by_name(sessions_provider() or ())
+    sessions = list(sessions_provider() or ())
+    # §7 lifecycle: refresh the hosted inventory, record sessions whose pane died
+    # while the server lives, and reconcile a server pid that changed. Read-only
+    # with respect to reclaim decisions; it never raises.
+    hosted_lifecycle.refresh_inventory(sessions=sessions, sockets=_sockets())
+    history = history_by_name(sessions)
     ctx = _build_context(now, hosted, history)
     if ctx is None:
         return []

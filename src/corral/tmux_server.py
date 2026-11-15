@@ -77,19 +77,41 @@ def ensure_server(socket: str, config_path: str, env: Mapping[str, str]) -> bool
     """Make sure the server runs as an Interactive launchd job.
 
     Returns True when this call started it. Never raises.
+
+    Every observation writes the §7 lifecycle record: a new server pid is
+    journalled with its version and config, and a pid that replaced the recorded
+    one without a Corral-initiated exit is reported as a lost server with its
+    hosted sessions.
     """
     try:
-        if not applies(socket) or server_running(socket, env):
-            return False
-        with _start_lock(socket):
-            if server_running(socket, env):
-                return False
-            if not _bootstrap(socket, config_path, env) or not _wait_running(socket, env):
-                return False
-            _seed_environment(socket, env)
-            return True
+        started = False
+        if applies(socket) and not server_running(socket, env):
+            with _start_lock(socket):
+                if not server_running(socket, env):
+                    if _bootstrap(socket, config_path, env) and _wait_running(socket, env):
+                        _seed_environment(socket, env)
+                        started = True
+        _observe(socket, config_path, env, started)
+        return started
     except Exception:  # noqa: BLE001 - fall back to tmux's own server start
         return False
+
+
+def _observe(socket: str, config_path: str, env: Mapping[str, str], started: bool) -> None:
+    """Journalled observation; a broken record never blocks hosting."""
+    from corral import hosted_lifecycle
+
+    try:
+        hosted_lifecycle.observe_server(
+            socket, config_path=config_path, env=env, started=started,
+        )
+    except Exception as exc:  # noqa: BLE001 - hosting outranks the record
+        try:
+            from corral import observe
+
+            observe.log_exception("keepalive-lifecycle-observe", exc)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def plist_payload(socket: str, config_path: str, env: Mapping[str, str], tmux: str) -> dict:

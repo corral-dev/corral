@@ -39,7 +39,7 @@ from rich.cells import cell_len as _rich_cell_len
 from rich.color import Color
 from rich.style import Style
 
-from corral import keepalive, liveness
+from corral import hosted_lifecycle, keepalive, liveness
 from corral.legacy_names import (
     IMG_SENTINEL_BEGIN,
     IMG_SENTINEL_END,
@@ -150,6 +150,10 @@ def host_session(
         # kill-server + retry covers the common CI flake without masking real
         # config errors on the second attempt.
         if "server exited unexpectedly" in detail.lower():
+            snapshot = hosted_lifecycle.record_server_exit(
+                socket_for_session(name), reason="corral:kill-server",
+                initiated_by=f"embed.host_session:{os.getpid()}",
+            )
             try:
                 subprocess.run(
                     [*keepalive.tmux_argv(), "kill-server"],
@@ -159,6 +163,7 @@ def host_session(
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
+            hosted_lifecycle.confirm_server_exit(snapshot)
             try:
                 proc = subprocess.run(
                     argv, check=True, capture_output=True, timeout=_CREATE_TIMEOUT,
@@ -185,6 +190,8 @@ def host_session(
     note_alive(name)
     _ensure_manual_window_size(name)
     keepalive._ensure_extended_keys(name)
+    # 托管当下就把清单刷新（不等下一轮回收）：事后取证时“谁在服务器上”要包含刚起的这条。
+    hosted_lifecycle.refresh_inventory(force=True, sockets=(socket_for_session(name),))
     if osc_report and supports_theme_report():
         open_channel(name)  # 让 report_theme 依赖的"当前有客户端连接"前提尽早成立
         channel = active_channel(name)

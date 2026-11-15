@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 
-from corral import busycheck, keepalive, observe, tmux_server
+from corral import busycheck, hosted_lifecycle, keepalive, observe, tmux_server
 from corral.legacy_names import SOCKET_NAME, cache_dir
 
 LOG = cache_dir() / "keepalive-migration.log"
@@ -120,11 +121,16 @@ def main() -> int:
         if not wait_until_idle(args.max_wait, args.poll, force=args.force):
             return 2
         ended = hosted_names()
+        snapshot = hosted_lifecycle.record_server_exit(
+            SOCKET_NAME, reason="corral:migration",
+            initiated_by=f"migrate-keepalive-server:{os.getpid()}",
+        )
         tmux("kill-server")
         for _ in range(100):
             if not tmux_server.server_running(SOCKET_NAME, env):
                 break
             time.sleep(0.1)
+        hosted_lifecycle.confirm_server_exit(snapshot)
         log("old_server_ended", sessions=ended)
     started = tmux_server.ensure_server(SOCKET_NAME, keepalive.ensure_config_file(), env)
     after = tmux_server.server_report(SOCKET_NAME, env)
