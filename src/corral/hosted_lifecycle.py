@@ -66,6 +66,7 @@ INVENTORY_INTERVAL_SECONDS = 60.0
 STOPPED_TTL_SECONDS = 24 * 3600
 MAX_STOPPED_ENTRIES = 200
 MAX_CRASH_NAMES = 5
+_MAX_OBSERVED_SOCKETS = 4
 
 _INVENTORY_VERSION = 1
 _SUBPROCESS_TIMEOUT = 2.0
@@ -384,7 +385,20 @@ def _session_entry(
 
 
 def _probe_sessions(sockets: Sequence[str], env: Mapping[str, str]) -> dict[str, dict[str, Any]] | None:
-    """Managed live sessions per socket; None when a running socket cannot be read."""
+    """Managed live sessions per socket; None when a running socket cannot be read.
+
+    A probe that raises is "unknown" too: an unreadable source is never allowed to
+    become "no sessions" (INV-12), and it must not turn into a loss record.
+    """
+    try:
+        return _probe_sessions_unsafe(sockets, env)
+    except Exception:  # noqa: BLE001 - unknown is not zero
+        return None
+
+
+def _probe_sessions_unsafe(
+    sockets: Sequence[str], env: Mapping[str, str],
+) -> dict[str, dict[str, Any]] | None:
     from corral import liveness, tmux_server
 
     if shutil.which("tmux", path=env.get("PATH")) is None:
@@ -469,8 +483,6 @@ def _observe_server(
     env: Mapping[str, str] | None,
     started: bool | None,
 ) -> dict[str, Any]:
-    from corral import tmux_server
-
     environment = _env(env)
     rebased = False
     with _lock() as held:
@@ -479,7 +491,7 @@ def _observe_server(
         inventory = read_inventory()
         tracked = str(inventory.get("socket") or "")
         recorded_pid = _int(inventory.get("server_pid"))
-        pid = tmux_server.server_pid(socket, environment)
+        pid = _server_pid(socket, environment)
         if pid is None:
             return inventory  # nothing running yet; tmux starts it on new-session
         expected = len(inventory.get("sessions") or {})
@@ -507,10 +519,16 @@ def _observe_server(
         else:
             # A transition socket: record the observation, leave the tracked product
             # server untouched so a rename-era socket cannot rewrite its history.
-            _record_started(
-                socket, pid, config_path, environment, started, expected,
-                sessions_live=len(_probe_sessions((socket,), environment) or {}),
-            )
+            # Dedupe by pid so this can never become one line per host launch.
+            observed = dict(inventory.get("observed") or {})
+            if _int(observed.get(socket)) != pid:
+                _record_started(
+                    socket, pid, config_path, environment, started, expected,
+                    sessions_live=len(_probe_sessions((socket,), environment) or {}),
+                )
+                observed[socket] = pid
+                inventory["observed"] = dict(sorted(observed.items())[-_MAX_OBSERVED_SOCKETS:])
+                _write_inventory(inventory)
     if rebased:
         # A fresh server is the moment the post-mortem baseline matters: record the
         # sessions it already hosts now, not only at the next 60 s pass.
@@ -556,9 +574,17 @@ def _record_started(
 ) -> bool:
     from corral import tmux_server
 
-    report = tmux_server.server_report(socket, env)
-    priority = report.get("priority") if isinstance(report, dict) else None
-    interactive = bool(report.get("interactive_job")) if isinstance(report, dict) else False
+    # Scheduling class is corroborating evidence, never a prerequisite: a failing
+    # diagnosis probe must not cost the start record (only a failed write does).
+    report: Mapping[str, Any] = {}
+    try:
+        raw = tmux_server.server_report(socket, env)
+        if isinstance(raw, Mapping):
+            report = raw
+    except Exception:  # noqa: BLE001 - optional evidence
+        report = {}
+    priority = report.get("priority")
+    interactive = bool(report.get("interactive_job"))
     if sessions_live is None:
         sessions_live = len(_probe_sessions((socket,), env) or {})
     return record(
@@ -816,9 +842,13 @@ def _crash_report_facts(last_heartbeat: Any) -> dict[str, Any]:
 
 
 def _server_pid(socket: str, env: Mapping[str, str]) -> int | None:
+    """Server pid, or None when it is unknown; a raising probe is never a loss."""
     from corral import tmux_server
 
-    return tmux_server.server_pid(socket, env)
+    try:
+        return tmux_server.server_pid(socket, env)
+    except Exception:  # noqa: BLE001 - unknown is not zero
+        return None
 
 
 def _count_sessions(socket: str, env: Mapping[str, str]) -> int | None:
