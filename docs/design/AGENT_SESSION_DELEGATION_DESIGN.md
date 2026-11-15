@@ -645,7 +645,7 @@ The implementation adopts these decisions; they supersede conflicting text above
 | F6 fresh identity | Claude launches with a preassigned `--session-id`, Pi with its existing ident; both bind by exact id. Codex binds by its exact claim. OpenCode and Cursor use the store's hosted binding; a second unbound create for the same runtime and project is rejected (`concurrent_unbound_create`). |
 | F7 model | `--model` is a launch flag for Claude, Codex, Cursor and Pi; OpenCode reports `model_selection_unsupported`. The model is verified only after the first turn from usage evidence: `model_check` is `match`, `alias_match`, `mismatch` or `unobserved`. A mismatch blocks further steering but cannot undo the first turn. |
 | F8 upgrades | Supervisors import their modules at start and record their version; reads report `supervisor_lost` when the owner lock is free and offer `run recover`. |
-| F9 topology | Detached per-run supervisors, no socket daemon. Runs on one session dispatch in submit order (the oldest unsettled run owns the session lock); at most 8 supervisors run at once. Queued runs expire after `--queue-timeout` (default 3600 s) as `queue_expired` without touching the target. |
+| F9 topology | Detached per-run supervisors, no socket daemon. Runs on one session dispatch in submit order (the oldest unsettled run owns the session lock); at most 8 supervisors run at once. Queued runs expire after `--queue-timeout` as `queue_expired` without touching the target (initial S3 default was 3600 s; superseded for peer A2A by S4 120 s default and 2026-11-15 `1..120` s hard cap). |
 | F10 skills | Superseded by the owner: skill installation is unrelated to AgentSync (see the [bundled skills design](BUNDLED_AGENT_SKILLS_DESIGN.md#paths)). |
 | P2 items | Run versions fingerprint execution/delivery/pending questions only; `search --project` filters by exact project path; `wait` exits 0 on any actionable state and carries run snapshots in `error.details` on timeout; reclaim treats hosts of unsettled runs as protected; `run create` rejects `/`, the home root, Desktop and Documents. |
 
@@ -981,7 +981,9 @@ other genuine failures retain their existing report-back behavior.
 The owner required the remaining items completed rather than deferred. The
 long correlation marker remains byte-compatible, and both old and new headers
 are parsed for origin/attribution. New sends use `[from <ref> · peer, not user]`;
-report-back needs no automatic-reply instruction. Explicit replies retain a
+report-back initially omitted automatic-reply text (superseded 2026-11-15:
+`report_back` now defaults off and explicitly instructs auto-reply without manual
+`corral send` when `--ask` / `--report-back` is active). Explicit replies retain a
 short command footer. Duplicate-active detection hashes the unwrapped body;
 idempotency still hashes the immutable wrapped spec.
 
@@ -1065,3 +1067,5 @@ five remaining failure modes when chatty or bypass-prone models call `send` or
    and status updates belong in shared workspace stigmergy (`TASKBOARD.md`),
    never proactive `corral peers` / `corral send` chatter; `corral send` is
    reserved for blocking questions (`--ask`) that require a peer's answer.
+
+Shared cross-project admission-expiry, fail-fast rejection, and anti-storm peer-callback principles are promoted to [Agent Session Integration Guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#bounded-queue-admission-rejection-and-peer-callbacks); Corral-specific CLI flags, quota numbers, and envelope formats remain authoritative here.
