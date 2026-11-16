@@ -121,8 +121,16 @@ class RemoteDaemon:
         A host left on a deleted install fails lazily: modules and packaged assets
         it has not loaded yet are gone, so client launches break while a freshly
         started TUI works.
+
+        Editing an editable checkout is not a replaced install. The process keeps
+        serving the modules it imported, and restarting on every save would evict
+        every client's channels and terminal streams and could exec into a
+        half-written module set. Those edits take effect on an explicit restart
+        (``launchctl kickstart -k`` or ``corral remote on --force``); the loop only
+        records ``remote_source_changed`` once as a hint.
         """
         replaced_before = False
+        stale_reported = False
         while not stop.is_set():
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_INSTALL_CHECK_INTERVAL)
@@ -135,6 +143,9 @@ class RemoteDaemon:
                     self.restart_requested = True
                     stop.set()
                     return
+                if not stale_reported and await asyncio.to_thread(updater.editable_source_changed):
+                    observe.event("remote_source_changed")
+                    stale_reported = True
             except Exception:
                 replaced = False
             replaced_before = replaced

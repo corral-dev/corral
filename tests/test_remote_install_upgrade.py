@@ -13,7 +13,7 @@ from corral.remote import daemon
 
 
 class EditableSourceWatchTests(unittest.TestCase):
-    def test_install_replaced_detects_editable_source_change(self) -> None:
+    def test_editable_source_change_is_reported_but_not_a_replacement(self) -> None:
         import tempfile
         from pathlib import Path
 
@@ -39,7 +39,10 @@ class EditableSourceWatchTests(unittest.TestCase):
                 updater.note_loaded_source()
                 self.assertFalse(updater.install_replaced())
                 helper.write_text("X = 12345\n", encoding="utf-8")
-                self.assertTrue(updater.install_replaced())
+                self.assertTrue(updater.editable_source_changed())
+                # An edit is not a replaced install: the host keeps the code it
+                # imported instead of re-execing under a live client.
+                self.assertFalse(updater.install_replaced())
 
 
 def _host(ready: bool) -> types.SimpleNamespace:
@@ -79,6 +82,17 @@ class InstallWatchTests(unittest.TestCase):
         host = _host(ready=False)
         asyncio.run(_watch(host, [True] * 10, ticks=20))
         self.assertFalse(host.restart_requested)
+
+    def test_edited_editable_checkout_never_restarts_the_host(self) -> None:
+        events: list[str] = []
+        host = _host(ready=True)
+        with (
+            mock.patch.object(daemon.updater, "editable_source_changed", return_value=True),
+            mock.patch.object(daemon.observe, "event", side_effect=lambda name, **_: events.append(name)),
+        ):
+            asyncio.run(_watch(host, [False] * 12, ticks=40))
+        self.assertFalse(host.restart_requested)
+        self.assertEqual(events.count("remote_source_changed"), 1)
 
 
 class ReexecTests(unittest.TestCase):

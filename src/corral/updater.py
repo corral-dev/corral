@@ -197,8 +197,14 @@ def note_loaded_source() -> None:
     _BASELINE_SOURCE = (pkg_dir, _source_fingerprint(pkg_dir))
 
 
-def _editable_source_changed() -> bool:
-    """Whether an editable checkout's Python sources changed on disk since startup."""
+def editable_source_changed() -> bool:
+    """Whether an editable checkout's Python sources changed on disk since startup.
+
+    This is advisory only. The running process keeps serving the modules it
+    imported, so an edit never forces a restart: a re-exec on every save evicts
+    every connected client's channels and terminal streams, and can load a
+    half-written module set while the tree is being edited.
+    """
     global _BASELINE_SOURCE
     pkg = package_file()
     pkg_dir = os.path.dirname(pkg)
@@ -216,9 +222,11 @@ def install_replaced() -> bool:
     """Whether the package this process loaded was replaced or removed on disk.
 
     True when the loaded ``corral/__init__.py`` is gone (Homebrew cleaned up the old
-    Cellar), reports another version (pipx/pip reinstalled in place), the Homebrew
-    opt link now resolves to a different Cellar version than ``sys.prefix``, or an
-    editable source checkout changed on disk since startup.
+    Cellar), reports another version (pipx/pip reinstalled in place), or the Homebrew
+    opt link now resolves to a different Cellar version than ``sys.prefix``.
+
+    Editable-checkout edits are deliberately excluded; ``editable_source_changed``
+    reports them for a hint only.
     """
     import corral
 
@@ -232,9 +240,7 @@ def install_replaced() -> bool:
         return True
     prefix = os.path.abspath(sys.prefix)
     stable = stable_install_path(prefix)
-    if stable != prefix and os.path.realpath(stable) != os.path.realpath(prefix):
-        return True
-    return _editable_source_changed()
+    return stable != prefix and os.path.realpath(stable) != os.path.realpath(prefix)
 
 
 def package_file() -> str:
