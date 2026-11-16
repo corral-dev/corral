@@ -41,30 +41,47 @@ write_dispatcher() {
 #!/usr/bin/env bash
 # 全局 pre-push：先跑 leakgate 泄漏门禁，再转调仓库内 .githooks/pre-push（如 Corral）。
 # 由 Corral scripts/install-git-hooks.sh 与 agentsync leakgate 共同约定；勿改成只保留一侧。
-# 关键：先缓存 stdin 再分别喂给两侧，避免 leakgate 读完后仓内钩子拿不到 refs。
-set -euo pipefail
+# 关键一：stdin 只能读一次，先原样落到临时文件，两侧都从文件重放。
+#         用 $(cat) + printf '%s' 会丢掉最后一行的结尾换行，while read 的消费方看不到它。
+# 关键二：把 git 传入的 $@（远端名 / 远端地址）原样转交，可见性按真实推送目标判定。
+set -uo pipefail
 
-input="$(cat || true)"
+refs="$(mktemp "${TMPDIR:-/tmp}/leakgate-refs.XXXXXX")"
+trap 'rm -f "$refs"' EXIT
+cat > "$refs"
+
+status=0
 
 # --- leakgate：对本机所有仓库生效 ---
 if [ "$(git config --bool --get leakgate.disabled 2>/dev/null || true)" != "true" ]; then
   LEAKGATE_PY="${HOME}/.config/agentsync/scripts/leakgate/leakgate.py"
   if [ -f "$LEAKGATE_PY" ]; then
-    PY=python3
-    if ! command -v python3 >/dev/null 2>&1; then
-      PY=python
+    PY=""
+    for candidate in python3 python; do
+      if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+        PY="$candidate"
+        break
+      fi
+    done
+    if [ -z "$PY" ]; then
+      echo "leakgate: 找不到可用的 python3，本次 push 未经泄漏扫描" >&2
+    else
+      "$PY" "$LEAKGATE_PY" prepush "$@" < "$refs" || status=$?
     fi
-    printf '%s' "$input" | "$PY" "$LEAKGATE_PY" prepush
   else
-    echo "leakgate: 未找到扫描器 $LEAKGATE_PY，本次跳过泄漏门禁（请检查 agentsync 是否已同步）" >&2
+    echo "leakgate: 未找到扫描器 $LEAKGATE_PY，本次 push 未经泄漏扫描（请检查 agentsync 是否已同步）" >&2
   fi
+fi
+
+if [ "$status" -ne 0 ]; then
+  exit "$status"
 fi
 
 # --- 仓库级钩子分发（Corral 等）---
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 hook="$root/.githooks/pre-push"
 if [ -x "$hook" ]; then
-  printf '%s' "$input" | exec "$hook" "$@"
+  "$hook" "$@" < "$refs" || exit $?
 fi
 exit 0
 EOF
