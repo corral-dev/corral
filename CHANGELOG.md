@@ -6,6 +6,30 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- A hosted pane keeps one terminal stream per session: a provisional key and its canonical history now share the same raw stream, control callback and ordered fan-out, so a promoted or reconnected session no longer alternates between two widths (a real Antigravity pane flipped 77×61 and 85×61) or rebuilds its pane, and detaching one alias withdraws only that view.
+- Remote terminals redraw immediately: an agent's 4–7 KB full-screen redraw no longer waits behind the 8 KiB coalescing window, taking publish p95 from 20.8 ms to 0.5 ms and raising renders per display frame to 0.81–0.86.
+- More than eight warm terminal streams no longer drag the keepalive server down: streaming channels get their own 32-slot budget instead of evicting each other every second, reconnects back off from 2 s to 30 s, the launchd server keeps 16384/65536 file limits and a bounded log, and a lost tmux server restarts and re-queues its sessions by itself — no dialog, banner, badge or notification.
+- Hosted-session lifecycles are now observable and self-healing: a seven-day journal records server start, exit and loss plus every hosted session that died, with a hosted inventory; a failing lifecycle probe counts as unknown instead of an error.
+- Idle hosted sessions are retired on evidence and restored silently: a seven-signal state machine, a 30-minute absolute floor, 12/6 resident budgets on 16 GB, a durable retirement record, and a resume that Corral retries instead of handing the failure back.
+- Session rows show the latest real reply instead of a superseded error: SessKit 0.3.6 stops an old Codex/Pi quota excerpt from owning the list preview. Antigravity sessions bounded to a hosted placeholder also recover their native history, because retained session IDs now augment discovery instead of replacing it — ending the persistent new-session title and the “no recorded history file path” handoff error.
+- TUI remembers each session's Your prompts state: rebinding a pane and coming back restores it, the same session in another pane agrees, and Ctrl+G still clears every remembered choice.
+- Peer messaging is bounded further: entries past their queue timeout no longer dispatch late, bypass paths are closed, and a double reply is suppressed.
+
+### 简体中文
+
+- 托管格每个会话只保留一条终端流：临时 key 与它对应的正式历史现在共用同一条原始流、同一个控制回调，事件按序分发到各个订阅通道，被提升或重连的会话不再在两个宽度间来回跳（实测 Antigravity 一格在 77×61 与 85×61 之间切换）或重建终端，摘掉一个别名也只撤掉那一个视图。
+- 远端终端重绘即时下发：智能体 4–7 KB 的全屏重绘不再被 8 KiB 合并窗口挡住，发布延迟 p95 从 20.8 ms 降到 0.5 ms，每个显示帧能渲染 0.81–0.86 次。
+- 超过 8 路暖流不再拖垮保活服务端：实时流通道改用自己的 32 个槽位预算，不再每秒互相驱逐；重连从 2 秒起指数退避、封顶 30 秒；launchd 服务端保持 16384/65536 文件句柄上限与有界日志；tmux 服务端丢失后自行重启并按清单重新排队会话，不弹对话框、横幅、角标或通知。
+- 托管会话生命周期可观测且能自愈：七天事件日志记录服务端启动、退出、丢失以及每个死掉的托管会话，并维护托管清单；生命周期探针失败记为“未知”，不再当错误。
+- 空闲托管会话按证据退休、静默恢复：七种状态的状态机、30 分钟硬底线、16 GB 下 12/6 常驻预算、必须落地退休记录，恢复失败由 Corral 重试，不甩给用户。
+- 会话列表显示最新真实回复，不再被过期报错占据：SessKit 0.3.6 让被取代的 Codex/Pi 额度错误不再占用预览。被停在托管占位符上的 Antigravity 会话也能恢复原生历史：保留的会话 ID 改为补充而不是替代原生发现，新的会话标题一直不变、“The original session has no recorded history file path”接力报错随之消失。
+- 终端界面按会话记住本会话提示词的开合：分屏换绑再换回能恢复，同一会话在另一格看到同样状态，Ctrl+G 仍然是全部清空。
+- 助手互发消息进一步收紧：超过排队超时的消息不再延迟投递，绕过路径关闭，重复回执被抑制。
+
 ## 0.24.365
 
 ### English
