@@ -508,6 +508,7 @@ Evidence: `tests/test_remote_transcript_concurrency.py`, `tests/test_remote_user
 | 手机详情顶栏显示 Ended / 已结束，但对话还在刷、电脑侧栏是执行中 | 常见不是 Cursor 判活假阴性。开发机 `corral list` 已是 `live=true` 时，根因是手机顶栏死守列表缓存的 `live`，进详情后列表 watch 常被卸掉，attention 事件又不带 live。修法：顶栏读打开中对话的 live；attention 事件带 `live`；live 翻转给已打开详情推 metadata。电脑「子代理跑、主会话已结束」另查扫描知识库 |
 | Pi 会话有对话却看不到 Agent activity / 工具调用 | 旧远程把 Pi 挂在纯文本解析上，`supports_tool_calls` 也不含 pi。现已按活动分支解析 `toolCall` / `toolResult`；须抬高规范化缓存版本并 `corral remote off && on`。手机端活动卡本身不用改 |
 | 置顶接口永远回未置顶 / 组内会话点置顶无效 | `session.pin` 必须读写 `pinned_session_keys`（不是已废弃的 `pinned_sessions`）；手机按单会话置顶，不走分组。桌面客户端走 `layout.pin`：成员属于分屏时由开发机改切 `pinned_group_ids`，成员不能单独置顶。列表载荷里组字段用 `group.id`（值取自 `SplitGroup.group_id`） |
+| Mac 侧栏置顶区空白 / 置顶的会话在列表里找不到（TUI 正常） | 2026-11-16 机主报告（Pi 组）：首屏窗口只把「等待/执行中/独立置顶」留在 80 行内，而 Mac 的行只来自这份窗口、却按 `layout` 画整组置顶，所以只在分屏组里置顶的会话落在窗口外就被整条截掉。窗口保留必须按 `_desktop_pinned_keys`（独立钉 + 置顶组全部成员，含成员独立钉提升出的派生组钉）判定，`_layout()` 读提升后的快照；手机载荷的 `pinned` 仍只认独立钉，组置顶不得进手机置顶区。改完重启常驻远程；会话已删的残留置顶键不占行、也不要删用户记录 |
 | 手机删掉组内一条后，另一条仍挂着幽灵分组 | `session.delete` 成功后必须 `layout_db.remove_session`，不足两成员时解散组 |
 | 会话列表整页空白 | 手机 `SessionSummary` 对 `id`/`short_id` 按 String、数值按 Double 解码；`session_payload` 必须先做类型收口，任一字段类型不符会让整份 `sessions.list` 解码失败（客户端 `catch` 后静默空白） |
 | 推送仍是占位文案 | NSE 解不开：缺 `host_id`、钥匙串 access group 两边不一致、或主 App 未把开发机公钥写入共享组 |

@@ -328,8 +328,77 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertFalse(by_key["claude:a"]["pinned"])
         self.assertFalse(by_key["codex:b"]["pinned"])
         self.assertNotIn("group", by_key["claude:a"])
-        phone_layout = self.hub.layout_db.read_with_promote(skip_promote=True)
-        self.assertFalse(remote_sessions._session_is_priority(sessions[0], phone_layout))
+        # 窗口保留是另一回事：桌面侧栏按 layout 画整组置顶，成员必须有行。
+        layout = self.hub.layout_db.read()
+        self.assertTrue(remote_sessions._session_is_priority(sessions[0], layout))
+        self.assertTrue(remote_sessions._session_is_priority(sessions[1], layout))
+        self.assertFalse(remote_sessions._session_is_priority(sessions[0], None))
+
+    def test_group_pinned_members_keep_rows_beyond_the_window(self) -> None:
+        """整组置顶的成员落在 80 行之外也要下发，否则 Mac 置顶区无行可画。"""
+        members = [
+            _session(sid="pin1", mtime=1), _session(sid="pin2", mtime=2),
+            _session(sid="pin3", mtime=3),
+        ]
+        self.hub.layout_db.set_group("/tmp/proj", ["claude:pin1", "claude:pin2", "claude:pin3"])
+        gid = self.hub.layout_db.read().get_group("claude:pin1").group_id
+        self.hub.layout_db.toggle_group_pin(gid)
+        idle = [
+            _session(sid=f"idle{index}", mtime=1_700_000_000 + index)
+            for index in range(120)
+        ]
+        with (
+            mock.patch.object(self.hub.store, "all_sessions", return_value=idle + members),
+            mock.patch.object(
+                self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
+            ),
+        ):
+            listed = self.hub.list_sessions()
+        by_key = {item["key"]: item for item in listed}
+        self.assertEqual(len(listed), remote_sessions._PHONE_LIST_LIMIT)
+        for key in ("claude:pin1", "claude:pin2", "claude:pin3"):
+            self.assertIn(key, by_key, key)
+            # 桌面上按整组置顶渲染，手机置顶区仍只认独立钉。
+            self.assertFalse(by_key[key]["pinned"], key)
+
+    def test_derived_group_pin_keeps_sibling_rows_beyond_the_window(self) -> None:
+        """成员独立钉提升出的派生组钉：桌面同样整组置顶，同组成员也要有行。"""
+        siblings = [_session(sid="a", mtime=1), _session(sid="b", source="codex", mtime=2)]
+        self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
+        self.assertTrue(self.hub.toggle_pin("claude:a"))
+        idle = [
+            _session(sid=f"idle{index}", mtime=1_700_000_000 + index)
+            for index in range(120)
+        ]
+        with (
+            mock.patch.object(self.hub.store, "all_sessions", return_value=idle + siblings),
+            mock.patch.object(
+                self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
+            ),
+        ):
+            listed = self.hub.list_sessions()
+        by_key = {item["key"]: item for item in listed}
+        self.assertIn("claude:a", by_key)
+        self.assertIn("codex:b", by_key)
+        self.assertTrue(by_key["claude:a"]["pinned"])
+        self.assertFalse(by_key["codex:b"]["pinned"])
+
+    def test_stale_pin_keys_do_not_crowd_out_other_rows(self) -> None:
+        """已删会话的残留置顶键不得占用窗口名额。"""
+        self.hub.layout_db.toggle_session_pin("claude:gone")
+        idle = [
+            _session(sid=f"idle{index}", mtime=1_700_000_000 + index)
+            for index in range(120)
+        ]
+        with (
+            mock.patch.object(self.hub.store, "all_sessions", return_value=idle),
+            mock.patch.object(
+                self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
+            ),
+        ):
+            listed = self.hub.list_sessions()
+        self.assertEqual(len(listed), remote_sessions._PHONE_LIST_LIMIT)
+        self.assertNotIn("claude:gone", {item["key"] for item in listed})
 
     def test_list_search_ignores_desktop_group_name(self) -> None:
         sessions = [

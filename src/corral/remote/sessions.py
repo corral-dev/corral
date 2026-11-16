@@ -575,40 +575,46 @@ def _phone_list_window_items(
     return must + rest[: cap - len(must)]
 
 
-def _session_is_priority(session: dict, layout) -> bool:
-    """移动端按单会话判定：等回复/执行中/独立置顶优先；分组不参与。"""
+def _session_is_priority(session: dict, layout, *, desktop_pinned: set[str] | None = None) -> bool:
+    """窗口保留判定：等回复／执行中／桌面侧栏画得出置顶的会话。
+
+    置顶成员进窗口只为让桌面侧栏画得出置顶块（Mac 的行只来自这份窗口，
+    而它按 layout 渲染整组置顶）。手机置顶区仍按 ``pinned_session_keys``
+    单会话判定（``session_payload`` 的 ``pinned``），组置顶不参与。
+    """
     attention = str(session.get("attention_kind") or "none")
     if attention in ("waiting", "working"):
         return True
+    pinned = _desktop_pinned_keys(layout) if desktop_pinned is None else desktop_pinned
+    return session_key(session) in pinned
+
+
+def _desktop_pinned_keys(layout) -> set[str]:
+    """桌面上渲染成置顶的全部会话键：独立钉 + 被置顶分屏组的每个成员。
+
+    ``pinned_group_ids`` 取自提升后的快照，所以成员独立钉提升出的派生组钉
+    也在内——桌面侧栏对派生组同样渲染整组置顶，同组成员一样要有行。
+    """
     if layout is None:
-        return False
-    key = session_key(session)
-    if key in (getattr(layout, "pinned_session_keys", {}) or {}):
-        return True
-    # 移动端没有分组概念：哪怕该会话在桌面侧栏属于某个分屏组，也只看它自己
-    # 有没有独立置顶。整组置顶是桌面侧栏的展示行为，不能把同组其它会话一起抬进
-    # 移动端置顶区（否则 pin 一条会把整组都钉上去）。
-    return False
-
-
-def _phone_list_window(payloads: list[dict], *, cap: int = _PHONE_LIST_LIMIT) -> list[dict]:
-    """手机首包只带当前页用得上的会话：等待/执行中/独立置顶优先，分组不参与。"""
-    return _phone_list_window_items(
-        payloads,
-        is_priority=lambda payload: (
-            payload.get("attention") in ("waiting", "working")
-            or payload.get("pinned")
-        ),
-        cap=cap,
-    )
+        return set()
+    keys = set(getattr(layout, "pinned_session_keys", {}) or {})
+    groups = getattr(layout, "groups", None) or {}
+    for group_id in getattr(layout, "pinned_group_ids", {}) or {}:
+        group = groups.get(group_id)
+        if group is not None:
+            keys.update(group.session_keys)
+    return keys
 
 
 def _phone_list_window_sessions(
     sessions: list[dict], layout, *, cap: int = _PHONE_LIST_LIMIT
 ) -> list[dict]:
+    pinned = _desktop_pinned_keys(layout)
     return _phone_list_window_items(
         sessions,
-        is_priority=lambda session: _session_is_priority(session, layout),
+        is_priority=lambda session: _session_is_priority(
+            session, layout, desktop_pinned=pinned
+        ),
         cap=cap,
     )
 
@@ -1302,9 +1308,10 @@ class SessionHub:
     # -- 会话查询 ---------------------------------------------------------
 
     def _layout(self):
-        # 移动端没有分组概念：读布局必须跳过成员独立钉到整组置顶的提升，
-        # 否则 pin 一条会把同组其它会话一起抬进手机置顶区。桌面侧栏仍走
-        # 默认 read()（组可见时整组展示）。
+        # 读提升后的快照：窗口保留要认桌面整组置顶，`pinned_group_ids` 必须含
+        # 「成员独立钉提升出的派生组钉」，桌面侧栏正按它渲染置顶块。手机置顶语义
+        # 不受影响——`session_payload` 的 `pinned` 只读 `pinned_session_keys`，
+        # 提升不改写成员键，也不会把同组其它会话推进手机置顶区。
         # A full read rebuilds every group (~20 ms with ~300 groups) and the
         # state loop asks every second; reuse the read-only snapshot until the
         # store's revision moves (every group/pin write bumps it).
@@ -1316,8 +1323,7 @@ class SessionHub:
             cached = self._layout_cache
             if revision is not None and cached is not None and cached[0] == revision:
                 return cached[1]
-            reader = getattr(self.layout_db, "read_with_promote", None)
-            layout = reader(skip_promote=True) if callable(reader) else self.layout_db.read()
+            layout = self.layout_db.read()
             if revision is not None:
                 self._layout_cache = (revision, layout)
             return layout

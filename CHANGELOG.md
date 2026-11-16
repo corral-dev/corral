@@ -6,6 +6,16 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- The Mac sidebar's pinned section no longer goes blank: the host's first-page window now keeps every session the desktop can render as pinned — independent pins plus every member of a pinned split (including a split pinned through one member), so a pinned Pi session beyond the 80-row window is no longer dropped from the Mac list. The phone's pinned section still counts independent pins only.
+
+### 简体中文
+
+- Mac 侧栏置顶区不再空白：开发机的首屏窗口现在保留桌面上所有能画成置顶的会话——独立置顶键，以及被置顶分屏组的全部成员（含成员独立钉提升出的整组置顶），落在 80 行外的置顶 Pi 会话不再从 Mac 列表里消失。手机置顶区仍然只按独立置顶判定。
+
 ## 0.24.366
 
 ### English

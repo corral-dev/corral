@@ -52,6 +52,11 @@ class LayoutHubTests(unittest.TestCase):
         self.assertIn("claude:aaaa", changed.pinned_session_keys)
 
     def test_mobile_layout_reuses_revision_then_observes_external_pin_changes(self) -> None:
+        """`_layout()` 缓存按版本复用，且外部置顶变化必须被看到。
+
+        这份快照是提升后的读（窗口覆盖要认整组置顶），所以成员独立钉会提升出
+        派生组钉；手机置顶语义仍看载荷 `pinned`，只看独立钉。
+        """
         self.hub.layout_set_group("/p", ["claude:a", "codex:b"], None)
         db = self.hub.layout_db
         with mock.patch.object(db, "read_with_promote", wraps=db.read_with_promote) as reader:
@@ -65,7 +70,11 @@ class LayoutHubTests(unittest.TestCase):
             pinned = self.hub._layout()
             self.assertIn("claude:a", pinned.pinned_session_keys)
             self.assertNotIn("codex:b", pinned.pinned_session_keys)
-            self.assertFalse(pinned.pinned_group_ids)
+            with mock.patch.object(self.hub.store, "get_title", return_value="t"):
+                member = self.hub.session_payload({"source": "claude", "id": "a"}, pinned)
+                sibling = self.hub.session_payload({"source": "codex", "id": "b"}, pinned)
+            self.assertTrue(member["pinned"])
+            self.assertFalse(sibling["pinned"])
             self.assertEqual(reader.call_count, 2)
             writer.toggle_session_pin("claude:a", promote_to_group=False)
             self.assertNotIn("claude:a", self.hub._layout().pinned_session_keys)
