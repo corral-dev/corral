@@ -227,9 +227,16 @@ def unknown_failures(failed: list[str], known: list[dict], platform: str) -> tup
 
 
 def ci_report(log_text: str) -> dict | None:
+    """The last machine report; trailing stderr may share its line, so decode one value only."""
     reports = [line.split("CORRAL_CI_TEST_REPORT:", 1)[1] for line in log_text.splitlines()
                if "CORRAL_CI_TEST_REPORT:" in line]
-    return json.loads(reports[-1]) if reports else None
+    if not reports:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(reports[-1].lstrip())
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 # ---------- process helpers ----------
@@ -660,8 +667,10 @@ def phase_cli_linux(ctx: Context) -> str:
               "uv sync -q --frozen --no-install-project --extra remote && "
               "uv pip install -q --python .venv/bin/python --no-deps ../wheels/*.whl && "
               ".venv/bin/python -c 'import corral, corral._native; print(\"installed\", corral.__version__)' && "
-              # The suite runs Ruff from PATH, as an activated environment would provide.
-              "env -u TEXTUAL_DISABLE_KITTY_KEY PATH=\"$PWD/.venv/bin:$PATH\" .venv/bin/python scripts/ci-test.py")
+              # The suite runs Ruff from PATH, as an activated environment would provide. The stamp
+              # has nowhere to live in an extracted tree (no .git), so keep it inside the remote workspace.
+              f"env -u TEXTUAL_DISABLE_KITTY_KEY CORRAL_CI_STAMP=$HOME/{remote}/corral-ci-stamp "
+              "PATH=\"$PWD/.venv/bin:$PATH\" .venv/bin/python scripts/ci-test.py")
     run_logged(["ssh", host, script], log, timeout=3600)
     text = log.read_text(errors="replace")
     if f"installed {ctx.version('cli')}" not in text:
