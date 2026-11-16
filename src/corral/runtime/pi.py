@@ -41,6 +41,7 @@ class PiRuntime(BaseRuntime):
     executable = "pi"
     history_reading_hint = "Pi coding agent JSONL；首行 session header，沿 message entry 的 parentId 回溯当前活动分支。"
     auto_approve_args = ("--approve",)
+    skill_invocation_style = "pi"
 
     def composer_region(self, screen: str) -> str | None:
         # Editor between the last two rules, footer below.

@@ -89,6 +89,10 @@ class BaseRuntime(ABC):
     executable: str
     history_reading_hint: str
     auto_approve_args: tuple[str, ...] = ()  # 全自动放行参数（跳过权限审批），供直启子命令复用
+    # Native command style for Corral's explicit portable /skill:name input.
+    # Claude, Cursor and Antigravity use slash commands; adapters with a
+    # different documented form override this single attribute.
+    skill_invocation_style = "slash"
     # 用户实际会敲、但不等于 id 也不等于 executable 的命令名。直启子命令按这张表把
     # `corral cursor-agent …` 解析到本运行时——用户记得住的是自己天天敲的命令名，
     # 不是 corral 内部的运行时 id。
@@ -122,6 +126,25 @@ class BaseRuntime(ABC):
             "fork_supported": type(self).build_fork_plan is not BaseRuntime.build_fork_plan,
             "mcp_supported": False,
         }
+
+    def prepare_user_prompt(self, text: str) -> str:
+        """Translate an explicit portable skill call for this runtime's composer."""
+        from corral.skill_invocation import format_skill_invocation
+
+        return format_skill_invocation(text, self.skill_invocation_style)
+
+    def user_prompt_display_text(self, text: str) -> str:
+        """Human task text for the immediate remote echo of a submitted prompt."""
+        from corral.skill_invocation import parse_skill_invocation
+
+        invocation = parse_skill_invocation(text)
+        if invocation is None:
+            return text
+        if self.id in {"claude", "pi"}:
+            # Their native expansions normalize to task arguments. Keep the
+            # native command for an invocation without arguments.
+            return invocation.arguments or self.prepare_user_prompt(text)
+        return self.prepare_user_prompt(text)
 
     def composer_region(self, screen: str) -> str | None:
         """The TUI's own input box on a plain-text pane capture.

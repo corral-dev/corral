@@ -20,6 +20,7 @@ class CodexRuntime(BaseRuntime):
         "以及 user_message、agent_message、task_complete、工具调用与结果。"
     )
     auto_approve_args = ("--dangerously-bypass-approvals-and-sandbox",)
+    skill_invocation_style = "dollar"
 
     def composer_region(self, screen: str) -> str | None:
         # The bottommost `›` line starts the composer; popups and pending

@@ -22,6 +22,7 @@ from corral.i18n import get_lang, t
 from corral.legacy_names import cache_dir as _product_cache_dir
 from corral.models import session_key
 from corral.runtime.host_extension import split_handoff_text as _split_handoff_text
+from corral.skill_invocation import skill_invocation_display_text
 
 CACHE_DIR = str(_product_cache_dir())
 CACHE_FILE = os.path.join(CACHE_DIR, "titles.json")
@@ -391,6 +392,9 @@ def _is_low_value_title(text: str | None) -> bool:
         PROMPT_MARKER,
         "API Error:",
         "Base directory for this skill:",
+        "<skill",
+        "<command-name>",
+        "<command-message>",
         "This page isn't working",
         "This page isn’t working",
         "You've hit your session limit",
@@ -466,7 +470,9 @@ def _is_skippable_leading_clause(clause: str) -> bool:
 
 
 def _task_source_text(text: str | None) -> str | None:
-    inherited, body = _split_handoff_text(text)
+    inherited, body = _split_handoff_text(
+        skill_invocation_display_text(text) if isinstance(text, str) else text
+    )
     stripped = body.strip()
     recent = stripped.startswith(("[Recent conversation]", "【最近对话】"))
     if inherited and not _is_low_value_title(inherited) and (not stripped or recent):
@@ -617,8 +623,8 @@ def _is_insufficient_title(text: object) -> bool:
 
 
 def _prompt_item(session: dict) -> dict[str, str]:
-    first_raw = session.get("first_user_msg") or ""
-    last_raw = session.get("last_user_msg") or ""
+    first_raw = skill_invocation_display_text(session.get("first_user_msg") or "")
+    last_raw = skill_invocation_display_text(session.get("last_user_msg") or "")
     inherited, digest = _split_handoff_text(first_raw)
     first_task = digest.strip() or ("" if inherited else first_raw)
     later = last_raw
@@ -633,7 +639,11 @@ def _prompt_item(session: dict) -> dict[str, str]:
     native = session.get("native_title") or ""
     if _is_machine_slug(native) or _is_low_value_title(native):
         native = ""
-    user_request = first_task or inherited or session.get("fallback_title") or ""
+    user_request = (
+        first_task
+        or inherited
+        or skill_invocation_display_text(session.get("fallback_title") or "")
+    )
     if any(marker in user_request for marker in _HANDOFF_INTRO_MARKERS):
         user_request = digest.strip() or inherited or ""
     return {

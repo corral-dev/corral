@@ -1842,7 +1842,7 @@ def _pi_build_messages(path: str) -> list[RichMessage]:
         role = message.get("role")
 
         if role == "user":
-            clipped = _clip(scan_pi.message_text(message.get("content")), _MAX_TEXT)
+            clipped = _clip(scan_pi.user_message_text(message.get("content")), _MAX_TEXT)
             if clipped and not _phone_injected_user(clipped):
                 built.append(RichMessage(next_seq(), "user", clipped, timestamp))
             continue

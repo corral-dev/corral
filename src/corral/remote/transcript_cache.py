@@ -27,7 +27,7 @@ from urllib.request import pathname2url
 from corral.cache import cache_dir, enabled, file_signature, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-11-14.1"  # antigravity rich transcript via SessKit open_reader
+PARSER_VERSION = "2026-11-16.1"  # Pi skill wrappers project to the human request
 _SCHEMA_VERSION = 2  # 2: session_prompts projection beside the transcript row
 
 

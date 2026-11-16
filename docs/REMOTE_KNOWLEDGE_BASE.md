@@ -7,6 +7,7 @@
 ## §0 目录索引
 
 - [Task execution reliability](#task-execution-reliability)
+- [Portable skill invocation](#portable-skill-invocation-owner-request-2026-11-16)
 - [开源中继硬规则](#开源中继硬规则2026-09-12-用户裁定-记牢)
 - [产品边界](#产品边界)
 - [Project-shell list portability](#project-shell-list-portability)
@@ -32,6 +33,12 @@ Project-list responses must contain plain JSON strings for names and paths, incl
 
 
 Phone-submitted tasks must continue through normal Agent execution; delivery acknowledgement is not task completion. Automatic idle and capacity cleanup are disabled by default. Manual termination remains available. Automatic cleanup must never terminate an executing Agent. Input sent through the phone and output from detached terminals count as activity. If execution is interrupted or cannot resume, preserve the original task and surface failure rather than implying completion. Never blindly replay a delivered task because it may already have changed user data.
+
+## Portable skill invocation (owner request 2026-11-16)
+
+Remote chat accepts the explicit portable form `/skill:name [arguments]` and translates it only on a submitted turn: Claude/Cursor/Antigravity `/name`, Codex `$name`, OpenCode `@name`, Pi `/skill:name`. The runtime adapter owns that native form; ordinary slash commands, mentions, dollar-prefixed text, malformed names and unsubmitted terminal typing are never rewritten heuristically. Arguments remain byte-for-byte intact after the command separator. This applies to hosted input, busy OpenCode API steering and the shared send-turn path rather than adding a client-specific formatter.
+
+Delivery text and display text are separate. The immediate echo matches the target runtime’s normalized native history: Claude/Pi show task arguments (or their native command without arguments), while Codex/OpenCode/Cursor/Antigravity retain the native command. Do not strip the command universally: these histories preserve it, which would otherwise leave a duplicate local bubble after confirmation. Pi's persisted `<skill name=…>…</skill>` expansion is interpreted once by SessKit: the arguments are the human message, while a no-argument expansion remains the concise command. Corral's title input uses the same task text. Neither Apple client nor the TUI may add another native-wrapper parser; update the pinned SessKit provider and derived-cache cohorts together.
 
 ## 开源中继硬规则（2026-09-12 用户裁定 · 记牢）
 
