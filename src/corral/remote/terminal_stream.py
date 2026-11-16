@@ -274,6 +274,15 @@ class TerminalStream:
 
     def start(self) -> None:
         self._need_snapshot.set()
+        # Wake the worker for the first screen instead of letting it run out a
+        # whole `_TICK_SECONDS`. Measured on this host 2026-11-16 against real
+        # hosted panes: a start that only sets `_need_snapshot` publishes its
+        # first snapshot at 1030-1140 ms; also setting `_wake` publishes at
+        # 18-64 ms. The hub attach path calls `request_snapshot()` right after
+        # `start()`, which masks this today, so the wake keeps `start()` itself
+        # sufficient and stops a future caller from inheriting a one-second
+        # cold open.
+        self._wake.set()
         self._thread.start()
 
     def _publish(self, payload: dict) -> None:

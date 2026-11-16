@@ -202,6 +202,23 @@ class BarrierTests(unittest.TestCase):
             stream._snapshot()
         self.assertEqual(self.events[-1]["kind"], "ended")
 
+    def test_start_publishes_the_first_screen_without_waiting_a_tick(self) -> None:
+        """A cold attach must not pay the worker's one-second idle wait.
+
+        Measured on this host 2026-11-16: without the start wake the first
+        snapshot lands at 1030-1140 ms, with it at 18-64 ms. The assertion
+        stays far below `_TICK_SECONDS` so a regression fails loudly on any
+        machine instead of only on a quiet one.
+        """
+        started = time.monotonic()
+        self.stream.start()
+        self.addCleanup(self.stream.stop)
+        deadline = started + ts._TICK_SECONDS / 2
+        while time.monotonic() < deadline and not self.events:
+            time.sleep(0.01)
+        self.assertTrue(self.events, "first snapshot waited for the tick sleep")
+        self.assertLess(time.monotonic() - started, ts._TICK_SECONDS / 2)
+
 
 class _TerminalHub:
     def __init__(self) -> None:
