@@ -41,6 +41,7 @@ jobs:
             pyproject.toml
             uv.lock
             scripts/sesskit_dep.py
+            scripts/control_dep.py
       - name: Verify SessKit pin and package metadata
         run: |
           set -euo pipefail
@@ -103,6 +104,7 @@ jobs:
             pyproject.toml
             uv.lock
             scripts/sesskit_dep.py
+            scripts/control_dep.py
       - name: Install tmux
         # Linux runners do not guarantee tmux; without it hosted-pane tests stay on
         # the static "Press Enter to restart" frame and fail after 6s waits.
@@ -123,6 +125,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install "$(python scripts/sesskit_dep.py wheel-requirement)"
+          # agent-session-control is published as a versioned GitHub Release wheel, not on
+          # PyPI, so the plain requirement cannot resolve without this pin first.
+          python -m pip install "$(python scripts/control_dep.py wheel-requirement)"
           python -m pip install ".[remote]"
       - name: Smoke host_session
         # Fail fast if keepalive new-session is broken on this runner before the
