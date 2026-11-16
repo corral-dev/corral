@@ -650,6 +650,17 @@ class RestoreTests(CacheIsolated):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These cases measure the §6.5/§7.6 restore bookkeeping, not whether the
+        # machine happens to have the runtime CLI installed. The INV-15 probe
+        # does depend on PATH (a Linux CI runner has none of them), so present a
+        # machine that has every runtime; the probe itself is covered by
+        # test_resume_block_reason_checks_the_machine and
+        # test_a_runtime_missing_from_this_machine_is_never_attempted.
+        installed = mock.patch.object(
+            retirement.shutil, "which", side_effect=lambda name, *args, **kwargs: f"/usr/bin/{name}",
+        )
+        installed.start()
+        self.addCleanup(installed.stop)
 
     def test_restored_once_and_the_retry_sequence_is_cleared(self) -> None:
         calls: list[int] = []
@@ -720,6 +731,19 @@ class RestoreTests(CacheIsolated):
                 "pi:eeee", lambda: calls.append(1), runtime_id="pi", session_id="eeee", now=NOW,
             )
         self.assertEqual((result.state, calls), ("unresolvable", []))
+        self.assertEqual(retirement.read_records()[-1].reason, "resume_unverified")
+
+    def test_a_runtime_missing_from_this_machine_is_never_attempted(self) -> None:
+        # The machine probe, not the retry sequence: a runtime whose executable
+        # is not on PATH cannot be guaranteed to resume, so nothing is tried.
+        calls: list[int] = []
+        with mock.patch.object(retirement.shutil, "which", return_value=None):
+            result = retirement.restore_session(
+                "pi:hhhh", lambda: calls.append(1), runtime_id="pi", session_id="hhhh",
+                history_path=__file__, cwd="/tmp", now=NOW,
+            )
+        self.assertEqual((result.state, result.cause, calls), ("unresolvable", "resume_unverified", []))
+        self.assertEqual(retirement.load_resume_retries(), {})
         self.assertEqual(retirement.read_records()[-1].reason, "resume_unverified")
 
     def test_the_rate_cap_is_three_in_flight_and_not_a_total(self) -> None:
