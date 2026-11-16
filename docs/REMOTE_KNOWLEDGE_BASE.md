@@ -413,6 +413,7 @@ infrastructure runbook; they are not an open-source default deployment:
 3. **重连必须重新选路**：按「这台开发机」重新抢答，禁止复用上次成功的具体地址（否则出门后会死磕家里局域网）。
 4. **换网立刻重赛**：路径变化时强制重新并行抢答，不必先空等旧链路探测，也不必等用户切前台。回家后若中继仍通，可在后台再赛一轮局域网并无感升级。
 5. **局域网候选是多源、解耦的**：配对 `l=`、运行时 `hello.local_hints`、可选 Bonjour/mDNS（`_corral._tcp`）都只产出 `"ip:port"` 列表，抢答逻辑不耦合发现手段。缺 Bonjour / 禁组播的网络仍靠 `l=` + `hello` 兜底。手机端**不依赖** Multicast Networking 特权（该能力需苹果单独批 provisioning）；有本地网络权限 + `NSBonjourServices` 即可浏览，失败就静默降级。
+6. **名字解析绝不阻塞 `hello`（2026-11-16）**：`hello.local_hints` 与配对 `l=` 都经 `lan.lan_addresses()`，其中 hostname 解析只是探针答案的补充：未注册的主机名（CI runner、无名字解析的 Wi-Fi）在 macOS 上每次 `getaddrinfo` 实测阻塞 5.00 s，会把回包拖过客户端握手预算。现在该查询有 0.2 s 上限且同刻只跑一次，探针地址独立成答；回归 `test_remote_lan.LanAddressTests.test_an_unresolvable_hostname_never_stalls_the_answer`。
 
 ### Same-machine and LAN connections never drop (owner requirement 2026-10-05)
 

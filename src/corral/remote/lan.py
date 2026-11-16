@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 from ipaddress import ip_address, ip_network
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,15 @@ DEFAULT_LOCAL_PORT = 8737
 
 #: 配对二维码 / hello 里最多带几条局域网提示。
 MAX_LOCAL_HINTS = 3
+
+#: Hostname resolution is a supplement, never a gate: `getaddrinfo` has no
+#: timeout of its own and blocks for seconds when the name does not resolve
+#: (5.00 s measured on macOS for an unregistered `.local` name — the norm on a
+#: CI runner). ``hello`` and the pairing payload call :func:`lan_addresses` on
+#: a request path, so the probe answer stands on its own after this bound.
+_HOSTNAME_LOOKUP_SECONDS = 0.2
+_hostname_lock = threading.Lock()
+_hostname_in_flight = False
 
 _RFC1918 = (
     ip_network("10.0.0.0/8"),
@@ -83,20 +93,7 @@ def lan_addresses() -> list[str]:
         pass
     finally:
         probe.close()
-    try:
-        hostname = socket.gethostname()
-    except OSError:
-        hostname = ""
-    if hostname:
-        try:
-            infos = socket.getaddrinfo(hostname, None, socket.AF_INET)
-        except OSError:
-            infos = []
-        for info in infos:
-            try:
-                candidates.append(info[4][0])
-            except (IndexError, TypeError):
-                continue
+    candidates.extend(_hostname_addresses())
     ranked: list[tuple[int, str]] = []
     seen: set[str] = set()
     for raw in candidates:
@@ -107,6 +104,53 @@ def lan_addresses() -> list[str]:
         ranked.append(item)
     ranked.sort()
     return [text for _, text in ranked]
+
+
+def _hostname_addresses() -> list[str]:
+    """What the hostname resolves to, bounded; an empty answer is allowed.
+
+    One lookup runs at a time: a caller arriving while the bounded wait is
+    still running gets the probe-only answer instead of stacking resolver
+    threads on a machine whose name never resolves.
+    """
+    global _hostname_in_flight
+    with _hostname_lock:
+        if _hostname_in_flight:
+            return []
+        _hostname_in_flight = True
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = ""
+    if not hostname:
+        with _hostname_lock:
+            _hostname_in_flight = False
+        return []
+    found: list[str] = []
+    done = threading.Event()
+
+    def _resolve() -> None:
+        global _hostname_in_flight
+        addresses: list[str] = []
+        try:
+            try:
+                infos = socket.getaddrinfo(hostname, None, socket.AF_INET)
+            except Exception:  # noqa: BLE001 - a name we cannot resolve proves nothing
+                infos = []
+            for info in infos:
+                try:
+                    addresses.append(str(info[4][0]))
+                except (IndexError, TypeError):
+                    continue
+        finally:
+            found.extend(addresses)
+            with _hostname_lock:
+                _hostname_in_flight = False
+            done.set()
+
+    threading.Thread(target=_resolve, name="corral-lan-hints", daemon=True).start()
+    done.wait(_HOSTNAME_LOOKUP_SECONDS)
+    return list(found)
 
 
 def local_hints(port: int) -> list[str]:

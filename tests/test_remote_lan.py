@@ -6,6 +6,8 @@ import io
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 import urllib.parse
 from contextlib import redirect_stdout
@@ -86,6 +88,39 @@ class LanAddressTests(unittest.TestCase):
         self.assertEqual(effective_local_port(zero), DEFAULT_LOCAL_PORT)
         custom = remote_config.RemoteState(host_id="h", host_name="dev", local_port=9999)
         self.assertEqual(effective_local_port(custom), 9999)
+
+    def test_an_unresolvable_hostname_never_stalls_the_answer(self):
+        """hello 与配对都在请求路径上调这里：解析慢不能拖住第一帧。
+
+        未注册的 `.local` 名字（CI runner、没有名字解析的 Wi-Fi）在 macOS 上
+        实测每次阻塞 5.00 s，比整条连接的超时还长。
+        """
+        release = threading.Event()
+
+        def slow_resolve(*_args, **_kwargs):
+            release.wait(10.0)
+            return [(2, 1, 6, "", ("192.168.1.5", 0))]
+
+        fake = _FakeSocketModule("192.168.110.11", [])
+        fake.getaddrinfo = slow_resolve
+        try:
+            with mock.patch.object(lan_module, "socket", fake):
+                started = time.monotonic()
+                addresses = lan_addresses()
+                elapsed = time.monotonic() - started
+                started = time.monotonic()
+                again = lan_addresses()
+                stacked = time.monotonic() - started
+        finally:
+            release.set()
+            for _ in range(500):
+                if not lan_module._hostname_in_flight:
+                    break
+                time.sleep(0.01)
+        self.assertEqual(addresses, ["192.168.110.11"])
+        self.assertLess(elapsed, 1.0)
+        self.assertLess(stacked, 0.05, "a pending lookup must not stack another")
+        self.assertEqual(again, ["192.168.110.11"])
 
 
 class PairingPayloadTests(unittest.TestCase):
