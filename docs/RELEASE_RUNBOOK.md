@@ -14,7 +14,11 @@ read only this page. Open another guide only when a phase failure names it.
   registered in `scripts/release_known_issues.json` (in `cli/` or `apple/`) passes and is
   listed in the summary. Register an entry only with its origin, reason, residual risk,
   follow-up and evidence. On macOS the CLI suite must pass completely. Linux test failures may
-  match registered environment-specific entries.
+  match registered environment-specific entries. A new dependency pin must also reach the `test`
+  workflow's install step and its `cache-dependency-path`: the release resolves through
+  `uv sync --frozen`, so a pin missing from CI turns `main` red and stalls the release
+  workflow's `require-tests` job without failing any release lane (2026-11-16,
+  `agent-session-control` 0.1.3).
 - Per-release evidence (logs, receipts, checksums, screenshots) stays in the release workspace.
   Guides record only durable findings.
 - iPhone delivery succeeds once the AppShelf upload is verified. If direct installation fails,
