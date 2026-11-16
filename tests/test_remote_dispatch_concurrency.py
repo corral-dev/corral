@@ -48,6 +48,12 @@ class _DispatchHub:
         self.sent_text: list[tuple] = []
         self.watch_calls = 0
         self.unwatch_calls = 0
+        self.conversation_started = threading.Event()
+        self.release_conversation = threading.Event()
+        self.conversation_watch_calls: list[tuple] = []
+        self.conversation_page_calls: list[tuple] = []
+        self.conversation_unwatch_calls = 0
+        self.watching_conversations: dict[str, int] = {}
         self.ready = True
         self._lock = threading.Lock()
 
@@ -96,6 +102,49 @@ class _DispatchHub:
         with self._lock:
             self.unwatch_calls += 1
 
+    def watch_conversation(
+        self, key: str, *, limit: int = 80, after_seq=None, generation=None,
+    ) -> dict:
+        with self._lock:
+            self.active_reads += 1
+            self.max_active_reads = max(self.max_active_reads, self.active_reads)
+            self.conversation_watch_calls.append((key, limit, after_seq, generation))
+            self.watching_conversations[key] = self.watching_conversations.get(key, 0) + 1
+        try:
+            self.conversation_started.set()
+            self.release_conversation.wait(10.0)
+            return {
+                "messages": [{"seq": 1, "role": "assistant", "text": "first"}],
+                "oldest_seq": 1,
+                "newest_seq": 1,
+                "generation": generation or 1,
+                "resume": "tail",
+            }
+        finally:
+            with self._lock:
+                self.active_reads -= 1
+
+    def conversation_watch_page(
+        self, key: str, *, limit: int = 80, after_seq=None, generation=None,
+    ) -> dict:
+        with self._lock:
+            self.conversation_page_calls.append((key, limit, after_seq, generation))
+        return {
+            "messages": [
+                {"seq": 1, "role": "assistant", "text": "first"},
+                {"seq": 2, "role": "assistant", "text": "arrived before reply"},
+            ],
+            "oldest_seq": 1,
+            "newest_seq": 2,
+            "generation": generation or 1,
+            "resume": "replay" if after_seq is not None else "tail",
+        }
+
+    def unwatch_conversation(self, key: str) -> None:
+        with self._lock:
+            self.conversation_unwatch_calls += 1
+            self.watching_conversations[key] = self.watching_conversations.get(key, 0) - 1
+
     def wait_ready(self, timeout: float) -> bool:
         return self.ready
 
@@ -140,6 +189,7 @@ class _ChannelFixture(unittest.TestCase):
         self.addCleanup(self._stop_channel)
         self.addCleanup(self.hub.release_slow.set)
         self.addCleanup(self.hub.release_list.set)
+        self.addCleanup(self.hub.release_conversation.set)
 
     def _record(self, message: dict) -> None:
         with self.changed:
@@ -439,6 +489,109 @@ class SessionsListHeadOfLineTests(_ChannelFixture):
         self.assertEqual(self._slots_in_use(), 0)
 
 
+class ConversationWatchHeadOfLineTests(_ChannelFixture):
+    """A cold session.watch loads off-thread without late re-subscription."""
+
+    def _watching(self, key: str = "codex:slow") -> int:
+        with self.hub._lock:
+            return self.hub.watching_conversations.get(key, 0)
+
+    def test_blocked_conversation_watch_does_not_delay_input(self) -> None:
+        self._send(1, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self.assertTrue(self.hub.conversation_started.wait(2.0), "conversation read never started")
+
+        started = time.perf_counter()
+        self._send(2, protocol.M_TERMINAL_INPUT, {"key": "codex:live", "data": "YQ=="})
+        typed = self._response(2, timeout=_FOLLOWING_FRAME_BOUND)
+        elapsed = time.perf_counter() - started
+        self.assertTrue(typed["ok"], typed)
+        self.assertLess(elapsed, _FOLLOWING_FRAME_BOUND)
+        self.assertEqual(self.hub.inputs, [b"a"])
+        self.assertNotIn(1, self._response_ids())
+
+        self.hub.release_conversation.set()
+        watched = self._response(1)
+        self.assertTrue(watched["ok"], watched)
+        # The post-attach page, not the pre-attach cold page, is returned.
+        self.assertEqual([m["seq"] for m in watched["d"]["messages"]], [1, 2])
+        self.assertIn(protocol.session_channel("codex:slow"), self.connection.channels)
+        self.assertEqual(self._watching(), 1)
+
+    def test_unwatch_during_cold_read_never_resubscribes(self) -> None:
+        self._send(1, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self.assertTrue(self.hub.conversation_started.wait(2.0))
+        self._send(2, protocol.M_SESSION_UNWATCH, {"key": "codex:slow"})
+        self.assertTrue(self._response(2, timeout=_FOLLOWING_FRAME_BOUND)["ok"])
+        self.assertNotIn(protocol.session_channel("codex:slow"), self.connection.channels)
+
+        self.hub.release_conversation.set()
+        self.assertTrue(self._response(1)["ok"])
+        self.assertEqual(self._watching(), 0)
+        self.assertEqual(self.hub.conversation_unwatch_calls, 1)
+        self.assertNotIn(protocol.session_channel("codex:slow"), self.connection.channels)
+        self.assertNotIn("codex:slow", self.connection.session_watch_pending)
+
+    def test_disconnect_during_cold_read_balances_temporary_watch(self) -> None:
+        self._send(1, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self.assertTrue(self.hub.conversation_started.wait(2.0))
+        self.service.detach(self.connection)
+        self.hub.release_conversation.set()
+        self._wait_for(lambda: self._watching() == 0)
+        self.assertEqual(self.hub.conversation_unwatch_calls, 1)
+        self.assertNotIn(protocol.session_channel("codex:slow"), self.connection.channels)
+        self.assertNotIn("codex:slow", self.connection.session_watch_pending)
+
+    def test_two_pending_watches_leave_exactly_one_subscription(self) -> None:
+        self._send(1, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self.assertTrue(self.hub.conversation_started.wait(2.0))
+        self._send(2, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self._wait_for(lambda: len(self.hub.conversation_watch_calls) == 2)
+        self.hub.release_conversation.set()
+        self.assertTrue(self._response(1)["ok"])
+        self.assertTrue(self._response(2)["ok"])
+        self._wait_for(lambda: self._watching() == 1)
+        self.assertEqual(self.hub.conversation_unwatch_calls, 1)
+        self.assertIn(protocol.session_channel("codex:slow"), self.connection.channels)
+        self.assertNotIn("codex:slow", self.connection.session_watch_pending)
+
+    def test_duplicate_watch_after_attach_does_not_double_count(self) -> None:
+        self._send(1, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self.hub.release_conversation.set()
+        self.assertTrue(self._response(1)["ok"])
+        self._send(2, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        self.assertTrue(self._response(2)["ok"])
+        self.assertEqual(len(self.hub.conversation_watch_calls), 1)
+        self.assertEqual(len(self.hub.conversation_page_calls), 2)
+        self.assertEqual(self._watching(), 1)
+        self.assertEqual(self.hub.conversation_unwatch_calls, 0)
+
+    def test_resume_cursor_reaches_cold_and_post_attach_pages(self) -> None:
+        params = {"key": "codex:slow", "after_seq": 12, "generation": 3}
+        self._send(1, protocol.M_SESSION_WATCH, params)
+        self.hub.release_conversation.set()
+        watched = self._response(1)
+        self.assertTrue(watched["ok"], watched)
+        self.assertEqual(watched["d"]["resume"], "replay")
+        expected = ("codex:slow", 80, 12, 3)
+        self.assertEqual(self.hub.conversation_watch_calls, [expected])
+        self.assertEqual(self.hub.conversation_page_calls, [expected])
+
+    def test_saturated_watch_has_no_pending_subscription(self) -> None:
+        bound = service_module._MAX_CONCURRENT_READS
+        for req_id in range(10, 10 + bound):
+            self._send(req_id, protocol.M_SESSION_GET, {"key": f"codex:{req_id}"})
+        self._wait_for(lambda: self.hub.max_active_reads == bound, timeout=10.0)
+        self._send(1, protocol.M_SESSION_WATCH, {"key": "codex:slow"})
+        rejected = self._response(1, timeout=3.0)
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertEqual(rejected["e"]["code"], protocol.E_UNAVAILABLE)
+        self.assertEqual(self.hub.conversation_watch_calls, [])
+        self.assertNotIn("codex:slow", self.connection.session_watch_pending)
+        self.hub.release_slow.set()
+        for req_id in range(10, 10 + bound):
+            self.assertTrue(self._response(req_id)["ok"])
+
+
 class WhitelistTests(unittest.TestCase):
     def test_only_slow_read_only_methods_are_offloaded(self) -> None:
         self.assertEqual(
@@ -458,10 +611,10 @@ class WhitelistTests(unittest.TestCase):
                 protocol.M_SESSIONS_LIST,
             }),
         )
-        # Ordering-sensitive frames must never move off the reader thread.
-        # sessions.watch/unwatch keep subscribe/unsubscribe inline (C1 split:
-        # only the watch payload runs off-thread); they must never join the
-        # generic read whitelist.
+        # Ordering-sensitive frames must never join the generic read whitelist.
+        # sessions.watch keeps subscribe/unsubscribe inline; session.watch uses
+        # its epoch-guarded split above. Only their expensive payloads leave the
+        # serial reader, through dedicated dispatchers.
         for method in (
             protocol.M_INPUT_TEXT,
             protocol.M_INPUT_KEYS,

@@ -822,6 +822,7 @@ class SessionHub:
     # -- 生命周期 ---------------------------------------------------------
 
     def start(self) -> None:
+        from corral.cache import enabled as cache_enabled
         from corral.history_watch import HistoryWatcher
         from corral.schedprio import demote_background
 
@@ -830,12 +831,26 @@ class SessionHub:
         self._history_watcher = watcher
         watcher.start()
         try:
+            # Answer opens from the last sidebar snapshot while the first scan
+            # runs. A cold scan costs 15-45 s on this host (measured
+            # 2026-11-16), and every read used to wait out the readiness
+            # window before it could resolve a conversation; the scan below
+            # still merges and the state loop converges liveness, attention
+            # and status. Laying down the push baseline first keeps hydrated
+            # rows from reading as fresh transitions.
+            if cache_enabled() and self.store.hydrate_from_snapshot():
+                self._record_state_baseline()
+                self._ready.set()
             self.store.load()
-            self._snapshot_attention()
-            self._snapshot_live()
-            self._snapshot_status()
+            self._record_state_baseline()
         finally:
             self._ready.set()
+
+    def _record_state_baseline(self) -> None:
+        """Record the attention/live/status baseline the push loops diff against."""
+        self._snapshot_attention()
+        self._snapshot_live()
+        self._snapshot_status()
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop, self._search_loop):
             thread = threading.Thread(target=target, daemon=True, name=f"remote-{target.__name__}")
             thread.start()
@@ -2599,14 +2614,45 @@ class SessionHub:
         after_seq: int | None = None,
         generation: int | None = None,
     ) -> dict:
-        """订阅一条会话的实时聊天流，同时只返回有限历史窗口。
+        """Add one watcher and return its bounded initial/replay page."""
+        return self._conversation_watch_page(
+            key, limit=limit, after_seq=after_seq, generation=generation,
+            count_watch=True,
+        )
 
-        首包与实时增量共用同一份规范化缓存和同一把 reader：
-        打开会话时不再为了推进游标或生成首包而把历史读两遍。
+    def conversation_watch_page(
+        self,
+        key: str,
+        *,
+        limit: int = MESSAGE_PAGE_LIMIT,
+        after_seq: int | None = None,
+        generation: int | None = None,
+    ) -> dict:
+        """Refresh a watch page without adding another hub watcher.
+
+        The async service uses this immediately after channel attachment to
+        close the subscribe/snapshot gap. Existing replay buffers and message
+        generation retain exactly the same semantics as `watch_conversation`.
+        """
+        return self._conversation_watch_page(
+            key, limit=limit, after_seq=after_seq, generation=generation,
+            count_watch=False,
+        )
+
+    def _conversation_watch_page(
+        self,
+        key: str,
+        *,
+        limit: int,
+        after_seq: int | None,
+        generation: int | None,
+        count_watch: bool,
+    ) -> dict:
+        """首包与实时增量共用同一份规范化缓存和同一把 reader。
 
         手机重连可带 after_seq / generation：代次一致且缺口仍在则只回放更新
         （resume=replay）；否则退回当前尾部窗口（resume=tail）。未传 after_seq
-        保持今天的尾部行为，旧手机不用改。
+        保持尾部行为。``count_watch=False`` 只刷新页面，不增加订阅计数。
         """
         session = self.require_session(key)
         transcript = self._ensure_transcript(session)
@@ -2631,14 +2677,16 @@ class SessionHub:
                     generation=transcript.generation,
                     canonical_key=canonical,
                 )
-                self._conversations[key] = watch
+                if count_watch:
+                    self._conversations[key] = watch
             else:
                 if watch.generation != transcript.generation:
                     watch.deltas.clear()
                 watch.reader = transcript.reader
                 watch.generation = transcript.generation
                 watch.canonical_key = canonical
-            watch.watchers += 1
+            if count_watch:
+                watch.watchers += 1
             if after_seq is not None:
                 replayed = _try_replay(watch, transcript, int(after_seq), generation)
         self._trim_transcripts()
@@ -3382,6 +3430,9 @@ class SessionHub:
         woke: list[bool] = []
         name = self._keepalive_name(key, resume_if_needed=True, resumed=woke)
         session = self.store.find_session(self.resolve_session_key(key)) or {}
+        runtime = self._runtime_or_none(session) if submit else None
+        delivery_text = runtime.prepare_user_prompt(text) if runtime is not None else text
+        echo_text = runtime.user_prompt_display_text(text) if runtime is not None else text
         if woke:
             # Just native-resumed: Enter sent while the assistant is still
             # starting is dropped and the text stays in the composer.
@@ -3401,7 +3452,7 @@ class SessionHub:
                 # Nothing injected yet: a certain, retryable rejection.
                 raise ActionError("unavailable", cause)
             if _opencode_api_steer_applies(session):
-                self._steer_opencode_via_api(key, session, text)
+                self._steer_opencode_via_api(key, session, delivery_text)
                 self._emit_provisional_working(key)
                 self._on_event(
                     f"session:{key}",
@@ -3410,19 +3461,18 @@ class SessionHub:
                         "kind": "echo",
                         "session": key,
                         "role": "user",
-                        "text": text,
+                        "text": echo_text,
                     },
                 )
                 return
         pasted = False
         if text:
             name, session = self._attempt_with_recovery(
-                key, name, lambda pane: embed.paste_detailed(pane, text)
+                key, name, lambda pane: embed.paste_detailed(pane, delivery_text)
             )
             pasted = True
         if submit:
-            runtime = self._runtime_or_none(session)
-            verifiable = pasted and self._await_composer_holds(name, runtime, text)
+            verifiable = pasted and self._await_composer_holds(name, runtime, delivery_text)
             res = self._submit_enter(name, session)
             if res.uncertain or (not res.ok and pasted):
                 raise PartialInjectionError(t("remote.err.inject_partial"))
@@ -3434,7 +3484,7 @@ class SessionHub:
                     key, name, lambda pane: embed.send_key_detailed(pane, "Enter")
                 )
             if verifiable:
-                self._ensure_turn_submitted(name, session, runtime, text)
+                self._ensure_turn_submitted(name, session, runtime, delivery_text)
             if text:
                 self._emit_provisional_working(key)
         # Only a submitted turn is a user message. Unsubmitted text is live
@@ -3448,7 +3498,7 @@ class SessionHub:
                     "kind": "echo",
                     "session": key,
                     "role": "user",
-                    "text": text,
+                    "text": echo_text,
                 },
             )
 
@@ -3542,6 +3592,9 @@ class SessionHub:
         """
         name = self._keepalive_name(key, resume_if_needed=True)
         session = self.store.find_session(self.resolve_session_key(key)) or {}
+        runtime = self._runtime_or_none(session) if submit else None
+        delivery_text = runtime.prepare_user_prompt(text) if runtime is not None else text
+        echo_text = runtime.user_prompt_display_text(text) if runtime is not None else text
         if self._pane_proven_dead(name):
             # Dead binding would burn the whole ready-timeout in captures that
             # can never turn ready; resume the same conversation up front.
@@ -3568,12 +3621,12 @@ class SessionHub:
                 # Image paths are already in the pane: a text failure now must
                 # NOT resume/retry (that would replay the turn without its
                 # images, or double-deliver). Partial/unknown, always.
-                res = embed.paste_detailed(name, text)
+                res = embed.paste_detailed(name, delivery_text)
                 if res.uncertain or not res.ok:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
             else:
                 name, session = self._attempt_with_recovery(
-                    key, name, lambda pane: embed.paste_detailed(pane, text)
+                    key, name, lambda pane: embed.paste_detailed(pane, delivery_text)
                 )
             pasted = True
 
@@ -3585,7 +3638,7 @@ class SessionHub:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
             if text:
-                self._ensure_turn_submitted(name, session, self._runtime_or_none(session), text)
+                self._ensure_turn_submitted(name, session, runtime, delivery_text)
             self._emit_provisional_working(key)
 
         if text:
@@ -3596,7 +3649,7 @@ class SessionHub:
                     "kind": "echo",
                     "session": key,
                     "role": "user",
-                    "text": text,
+                    "text": echo_text,
                 },
             )
         return paths

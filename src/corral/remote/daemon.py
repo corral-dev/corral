@@ -72,8 +72,9 @@ class RemoteDaemon:
         observe.event("remote_started", host=self.state.host_name)
 
         # The first scan can take tens of seconds on a loaded machine. Open the
-        # LAN listener and the relay first so clients connect at once; requests
-        # that need session data wait for the scan (`SessionHub.wait_ready`).
+        # LAN listener and the relay first so clients connect at once; the hub
+        # then serves the last sidebar snapshot while that scan runs and only
+        # gates data requests that arrive before the snapshot is hydrated.
         self.hub.mark_starting()
         tasks = []
         if self.relay is not None:

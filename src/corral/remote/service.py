@@ -206,6 +206,7 @@ _GLOBAL_HISTORY_READ_METHODS = frozenset(
         protocol.M_SESSION_TOOL_DETAIL,
         protocol.M_SESSION_PROMPTS,
         protocol.M_SESSION_USER_PROMPTS,
+        protocol.M_SESSION_WATCH,
         protocol.M_MEDIA_IMAGE,
         protocol.M_SEARCH,
         protocol.M_SEARCH_FULLTEXT,
@@ -252,6 +253,11 @@ class Connection:
         self.instance_id = ""
         self.attached_at = 0.0
         self.terminal_prompt_requests: dict[str, str] = {}
+        # Pending session.watch generations, guarded by RemoteService._lock.
+        # A late worker may return its snapshot but must never resurrect a
+        # subscription retired by a newer watch, unwatch or disconnect.
+        self.session_watch_epochs: dict[str, int] = {}
+        self.session_watch_pending: set[str] = set()
         # Bounded slots for this connection's slow read-only RPCs (dispatch()).
         # Per connection, so one device's cold history read cannot make another
         # device's `projects.list` or `terminal.peek` retry.
@@ -519,6 +525,11 @@ class RemoteService:
         connection.data_send = None
         connection.data_channel = None
         with self._lock:
+            for key in list(connection.session_watch_pending):
+                connection.session_watch_epochs[key] = (
+                    connection.session_watch_epochs.get(key, 0) + 1
+                )
+            connection.session_watch_pending.clear()
             was_attached = connection in self._connections
             self._connections.discard(connection)
             stale = [token for token, bind in self._data_binds.items() if bind.connection is connection]
@@ -614,13 +625,17 @@ class RemoteService:
         observe.event("remote_data_bind_issued", device=connection.device_name or connection.device_id)
         return token
 
+    def _subscribe_locked(self, connection: Connection, channel: str) -> bool:
+        """Subscribe while the caller owns ``_lock`` (watch finalization)."""
+        if channel in connection.channels:
+            return False
+        connection.channels.add(channel)
+        self._subscribers.setdefault(channel, set()).add(connection)
+        return True
+
     def _subscribe(self, connection: Connection, channel: str) -> bool:
         with self._lock:
-            if channel in connection.channels:
-                return False
-            connection.channels.add(channel)
-            self._subscribers.setdefault(channel, set()).add(connection)
-        return True
+            return self._subscribe_locked(connection, channel)
 
     def _unsubscribe(self, connection: Connection, channel: str) -> bool:
         with self._lock:
@@ -680,14 +695,18 @@ class RemoteService:
         Admission, startup readiness, device/read-only checks and handler
         validation still run through `handle` → `_invoke`.
 
-        sessions.watch is split: subscribe/unsubscribe and their hub watch
-        counts run here in serial arrival order; only the expensive list
-        payload runs on a read worker. The async completion never calls
-        `_sessions_watch` again and never re-subscribes.
+        sessions.watch and session.watch are split: subscription retirement
+        stays ordered while expensive payloads run on read workers. Async
+        completions never re-enter the ordinary handlers or resurrect an
+        unsubscribed watch. A per-key session-watch epoch balances the hub
+        reference when unwatch/disconnect wins the race with a cold read.
         """
         method = str(message.get("m") or "")
         if message.get("t") == "req" and method == protocol.M_SESSIONS_WATCH:
             self._dispatch_sessions_watch(connection, message, reply=reply)
+            return
+        if message.get("t") == "req" and method == protocol.M_SESSION_WATCH:
+            self._dispatch_session_watch(connection, message, reply=reply)
             return
         if message.get("t") != "req" or method not in _CONCURRENT_READ_METHODS:
             self.handle(connection, message, reply=reply)
@@ -894,6 +913,150 @@ class RemoteService:
         try:
             threading.Thread(target=run, daemon=True, name="remote-watch-rpc").start()
         except RuntimeError:
+            release()
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+
+    def _dispatch_session_watch(self, connection: Connection, message: dict, *, reply=None) -> None:
+        """Load a conversation off-thread without letting a late watch resurrect.
+
+        The first hub call owns one temporary watcher reference but is not yet
+        on this connection's channel. If unwatch/disconnect/a newer watch wins,
+        that reference is dropped instead of being subscribed late. Once the
+        channel is attached, a second cheap page closes the pre-subscription
+        gap and includes any replay deltas that arrived during the cold read.
+        """
+        method = protocol.M_SESSION_WATCH
+        inbound = reply if reply is not None else connection.send
+        req_id = int(message.get("id") or 0)
+        params = message.get("p") if isinstance(message.get("p"), dict) else {}
+        started = time.perf_counter()
+        if connection.paired:
+            wait_ready = getattr(self.hub, "wait_ready", None)
+            if wait_ready is not None and not wait_ready(0):
+                self._defer_startup_query(connection, message, wait_ready, reply=reply)
+                return
+        if not connection.read_slots.acquire(blocking=False):
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+            return
+        if not self._history_read_slots.acquire(blocking=False):
+            connection.read_slots.release()
+            inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
+            return
+
+        def release() -> None:
+            connection.read_slots.release()
+            self._history_read_slots.release()
+
+        key = ""
+        channel = ""
+        epoch = 0
+        needs_hub_watch = False
+        try:
+            self._check_access(connection, method, params)
+            key = _key(params)
+            limit = _int_param(params, "limit", MESSAGE_PAGE_LIMIT, max_value=MESSAGE_PAGE_LIMIT_MAX)
+            after_seq = _optional_int_param(params, "after_seq")
+            generation = _optional_int_param(params, "generation")
+            channel = protocol.session_channel(key)
+            with self._lock:
+                needs_hub_watch = channel not in connection.channels
+                if needs_hub_watch:
+                    epoch = connection.session_watch_epochs.get(key, 0) + 1
+                    connection.session_watch_epochs[key] = epoch
+                    connection.session_watch_pending.add(key)
+                else:
+                    epoch = connection.session_watch_epochs.get(key, 0)
+        except ActionError as exc:
+            release()
+            inbound(protocol.error(req_id, exc.code, exc.message))
+            return
+        except Exception as exc:
+            release()
+            observe.event("remote_method_failed", method=method, error=str(exc))
+            inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+            return
+
+        def run() -> None:
+            registered = False
+            adopted = False
+
+            def discard_temporary_watch() -> None:
+                nonlocal registered
+                if not registered or adopted:
+                    return
+                try:
+                    self.hub.unwatch_conversation(key)
+                except Exception as exc:
+                    observe.event("remote_method_failed", method=method, error=str(exc))
+                registered = False
+
+            try:
+                if connection.closed:
+                    return
+                try:
+                    if needs_hub_watch:
+                        initial = self.hub.watch_conversation(
+                            key, limit=limit, after_seq=after_seq, generation=generation,
+                        )
+                        registered = True
+                        with self._lock:
+                            if (
+                                not connection.closed
+                                and connection.session_watch_epochs.get(key, 0) == epoch
+                                and channel not in connection.channels
+                            ):
+                                adopted = self._subscribe_locked(connection, channel)
+                            if connection.session_watch_epochs.get(key, 0) == epoch:
+                                connection.session_watch_pending.discard(key)
+                        if adopted:
+                            # Close the gap between the cold first page and channel
+                            # attachment. This also replays deltas buffered meanwhile.
+                            payload = self.hub.conversation_watch_page(
+                                key, limit=limit, after_seq=after_seq, generation=generation,
+                            )
+                        else:
+                            discard_temporary_watch()
+                            payload = initial
+                    else:
+                        payload = self.hub.conversation_watch_page(
+                            key, limit=limit, after_seq=after_seq, generation=generation,
+                        )
+                except ActionError as exc:
+                    discard_temporary_watch()
+                    try:
+                        inbound(protocol.error(req_id, exc.code, exc.message))
+                    except Exception:
+                        pass
+                    return
+                except Exception as exc:
+                    discard_temporary_watch()
+                    observe.event("remote_method_failed", method=method, error=str(exc))
+                    try:
+                        inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+                    except Exception:
+                        pass
+                    return
+                try:
+                    self._send_success(connection, method, message, payload, inbound, started)
+                except Exception as exc:
+                    observe.event("remote_method_failed", method=method, error=str(exc))
+                    try:
+                        inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+                    except Exception:
+                        pass
+            finally:
+                if needs_hub_watch:
+                    with self._lock:
+                        if connection.session_watch_epochs.get(key, 0) == epoch:
+                            connection.session_watch_pending.discard(key)
+                release()
+
+        try:
+            threading.Thread(target=run, daemon=True, name="remote-session-watch").start()
+        except RuntimeError:
+            with self._lock:
+                if connection.session_watch_epochs.get(key, 0) == epoch:
+                    connection.session_watch_pending.discard(key)
             release()
             inbound(protocol.error(req_id, protocol.E_UNAVAILABLE, t("remote.err.action_rate_limited")))
 
@@ -1262,6 +1425,9 @@ class RemoteService:
 
     def _session_unwatch(self, connection: Connection, params: dict):
         key = _key(params)
+        with self._lock:
+            connection.session_watch_epochs[key] = connection.session_watch_epochs.get(key, 0) + 1
+            connection.session_watch_pending.discard(key)
         if self._unsubscribe(connection, protocol.session_channel(key)):
             self.hub.unwatch_conversation(key)
         return {"ok": True}

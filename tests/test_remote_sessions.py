@@ -635,6 +635,23 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.hub.unwatch_conversation("claude:a")
         self.hub.unwatch_conversation("claude:a")
 
+    def test_conversation_watch_page_refreshes_replay_without_double_count(self) -> None:
+        """The async post-attach page closes the gap without another watcher."""
+        path = Path(self._tmp.name) / "claude.jsonl"
+        _write_assistant_jsonl(path, ["一", "二", "三"])
+        session = _session(sid="a")
+        session["path"] = str(path)
+        with mock.patch.object(self.hub, "require_session", return_value=session):
+            first = self.hub.watch_conversation("claude:a")
+            page = self.hub.conversation_watch_page(
+                "claude:a", after_seq=1, generation=first["generation"],
+            )
+            watchers = self.hub._conversations["claude:a"].watchers
+        self.assertEqual(watchers, 1)
+        self.assertEqual(page["resume"], "replay")
+        self.assertEqual([item["seq"] for item in page["messages"]], [2, 3])
+        self.hub.unwatch_conversation("claude:a")
+
     def test_message_page_is_bounded_and_supports_before_cursor(self) -> None:
         items = [
             remote_sessions.richmsg.RichMessage(index, "assistant", f"消息 {index}")
@@ -2417,5 +2434,98 @@ def _write_assistant_jsonl(path: Path, texts: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+class StartupHydrationTests(unittest.TestCase):
+    """The daemon resolves the first open from the sidebar snapshot.
+
+    A cold first scan costs 15-45 s on the maintainer host (measured
+    2026-11-16, 966 sessions), so a readiness window that waited for it made
+    every open sit behind the scan even though the previous list was on disk.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._cache = Path(self._tmp.name)
+        self._env = mock.patch.dict(
+            os.environ,
+            {"CORRAL_CACHE_DIR": self._tmp.name, "CORRAL_CACHE": "1"},
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        split_layout.reset_default_layout_db()
+        self.addCleanup(split_layout.reset_default_layout_db)
+
+    def _write_snapshot(self, key: str = "claude:recent") -> None:
+        runtime, ident = key.split(":", 1)
+        payload = {
+            "version": remote_sessions.SessionStore._SNAPSHOT_VERSION,
+            "order": [key],
+            "sessions": {runtime: [_session(sid=ident, short_id=ident)]},
+        }
+        (self._cache / "sidebar-snapshot.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+    def _hub_with_blocked_load(self, release, entered) -> SessionHub:
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(hub.layout_db.close)
+        # The daemon closes the window before the first scan (daemon.run).
+        hub.mark_starting()
+
+        def blocked_load(_store) -> None:
+            entered.set()
+            release.wait(10)
+
+        for patch in (
+            mock.patch("corral.history_watch.HistoryWatcher", return_value=mock.Mock()),
+            mock.patch.object(SessionHub, "_refresh_loop", lambda self: None),
+            mock.patch.object(remote_sessions.SessionStore, "load", blocked_load),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        return hub
+
+    def test_reads_answer_from_the_snapshot_while_the_first_scan_runs(self) -> None:
+        import threading
+
+        self._write_snapshot()
+        release, entered = threading.Event(), threading.Event()
+        hub = self._hub_with_blocked_load(release, entered)
+        worker = threading.Thread(target=hub.start, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(5), "start() should still run the first scan")
+        try:
+            self.assertTrue(hub.wait_ready(0), "reads must not wait for the first scan")
+            self.assertEqual(
+                [row["key"] for row in hub.list_sessions()], ["claude:recent"]
+            )
+            # An open resolves the conversation from that row.
+            self.assertEqual(
+                hub.require_session("claude:recent")["path"], "/tmp/hist.jsonl"
+            )
+        finally:
+            release.set()
+            worker.join(5)
+
+    def test_without_a_snapshot_the_readiness_window_still_gates_reads(self) -> None:
+        import threading
+
+        release, entered = threading.Event(), threading.Event()
+        hub = self._hub_with_blocked_load(release, entered)
+        worker = threading.Thread(target=hub.start, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(5))
+        try:
+            self.assertFalse(hub.wait_ready(0))
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertTrue(hub.wait_ready(5))
+
+
 if __name__ == "__main__":
+
     unittest.main()
