@@ -29,6 +29,14 @@ INDEX_VERSION = 1
 # usable this long. Consumers still force a local scan on their own cadence
 # (see SessionStore._FULL_MERGE_INTERVAL) so new sessions cannot stall forever.
 DEFAULT_TTL_SECONDS = 12.0
+# A fixed TTL only works while scans are faster than it. When the machine is
+# loaded a cold scan takes longer than the TTL, so every consumer sees an
+# already-expired index and cold-scans again — a self-feeding loop (measured
+# 2026-11-16: 9-17 s scans against a 12 s TTL, three processes re-scanning ~400
+# sessions for six minutes, ~0.65 core). The window therefore scales with the
+# publisher's own measured scan duration, bounded by the cap below.
+TTL_DURATION_FACTOR = 3.0
+TTL_MAX_SECONDS = 120.0
 # Same-process publishes closer together than this with identical result keys
 # are skipped: the on-disk payload is hundreds of KB and every scan_all would
 # otherwise rewrite it (~3 s TUI cadence). Still well inside DEFAULT_TTL_SECONDS
@@ -59,6 +67,57 @@ MISS_EVENT_MIN_INTERVAL_SECONDS = 300.0
 _MISS_LOCK = threading.Lock()
 _LAST_MISS: dict[str, object] = {"at": 0.0, "reason": "none", "detail": {}}
 _LAST_MISS_EVENT: dict[str, object] = {"at": 0.0, "reason": ""}
+# Longest cold scan this process has measured. Older indexes carry no duration,
+# so this is the fallback that keeps the freshness window honest for them.
+_LAST_SCAN_DURATION: dict[str, float] = {"seconds": 0.0}
+
+
+def note_scan_duration(seconds: float) -> None:
+    """Record how long this process' last local scan took (never raises)."""
+    try:
+        value = max(0.0, float(seconds))
+    except (TypeError, ValueError):
+        return
+    with _META_LOCK:
+        _LAST_SCAN_DURATION["seconds"] = value
+
+
+def last_scan_duration() -> float:
+    with _META_LOCK:
+        return float(_LAST_SCAN_DURATION.get("seconds") or 0.0)
+
+
+def effective_max_age(max_age: float, duration_s: float | None = None) -> float:
+    """Freshness window for an index that cost ``duration_s`` to build.
+
+    Fresh means "no process has produced newer data yet", not "the producer was
+    fast": a window shorter than the scan itself guarantees the next refresh
+    misses and re-scans, which is what turns a loaded machine into a scan loop.
+    """
+    seconds = last_scan_duration() if duration_s is None else max(0.0, float(duration_s))
+    if seconds <= 0:
+        return max_age
+    return max(max_age, min(seconds * TTL_DURATION_FACTOR, TTL_MAX_SECONDS))
+
+
+def _payload_scan_duration(payload: object) -> float:
+    try:
+        return max(0.0, float((payload or {}).get("scan_duration_s") or 0.0))  # type: ignore[union-attr]
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def _existing_scan_duration(path) -> float:
+    """Duration recorded by the index already on disk, or 0 when unreadable.
+
+    Keep-alive publishers (scan worker) rewrite a completed snapshot without
+    producing a new one; they must not reset the window to zero.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return _payload_scan_duration(json.load(handle))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return 0.0
 
 
 def last_miss() -> dict[str, object]:
@@ -201,9 +260,10 @@ def try_consume(
         _note_miss("limit", published_limit=published_limit, need_limit=limit)
         return None
     age = time.time() - published_at
-    if age < 0 or age > max_age:
+    window = effective_max_age(max_age, _payload_scan_duration(payload) or None)
+    if age < 0 or age > window:
         _note_miss(
-            "ttl", age_s=round(age, 1), max_age_s=max_age,
+            "ttl", age_s=round(age, 1), max_age_s=window,
             published_limit=published_limit,
         )
         return None
@@ -285,7 +345,7 @@ def _covered_by_fresh_index(limit: int) -> bool:
         return False
     return (
         int(published_limit) > int(limit)
-        and 0 <= age <= DEFAULT_TTL_SECONDS
+        and 0 <= age <= effective_max_age(DEFAULT_TTL_SECONDS)
     )
 
 
@@ -317,8 +377,13 @@ def publish(
     limit: int,
     keep_ids_by_runtime: dict[str, set[str]] | None = None,
     expected_published_at: float | None = None,
+    scan_duration_s: float | None = None,
 ) -> float | None:
     """Replace a completed snapshot; return its publication time on success.
+
+    ``scan_duration_s`` is how long the scan behind this snapshot took. It is
+    stored so consumers can size their freshness window from real cost instead
+    of a fixed constant (see ``effective_max_age``).
 
     Keep-alive callers pass the publication they observed. The compare and
     replace share one lock, so they cannot overwrite a newer completed scan.
@@ -357,11 +422,19 @@ def publish(
         }
         now_mono = time.monotonic()
         path = index_path()
+        if scan_duration_s is not None:
+            note_scan_duration(scan_duration_s)
+        duration = (
+            max(0.0, float(scan_duration_s))
+            if scan_duration_s is not None
+            else (last_scan_duration() or _existing_scan_duration(path))
+        )
         payload = {
             "version": INDEX_VERSION,
             "provider_cohort": provider_cohort(),
             "published_at": time.time(),
             "limit": int(limit),
+            "scan_duration_s": round(duration, 2),
             "keep_ids": keep_payload,
             "uncoverable_keep": uncoverable,
             "sessions": {

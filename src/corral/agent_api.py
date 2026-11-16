@@ -380,9 +380,12 @@ def _list_scan(registry, runtimes: list, limit: int, *, fresh: bool) -> tuple[di
             scanned = {runtime.id: list(shared.get(runtime.id) or []) for runtime in runtimes}
             age = round(max(0.0, time.time() - meta[0]), 1) if meta else None
             return scanned, {}, {"scan_source": "shared_index", "index_age_s": age}
+    scan_started = time.monotonic()
     scanned, failures = _scan_runtimes(runtimes, limit)
     if standard and not failures and len(runtimes) == len(list(registry)):
-        scan_index.publish(scanned, limit=limit)
+        scan_index.publish(
+            scanned, limit=limit, scan_duration_s=time.monotonic() - scan_started,
+        )
     return scanned, failures, {"scan_source": "local", "index_age_s": None}
 
 

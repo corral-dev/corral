@@ -77,6 +77,7 @@ class ScanIndexTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         scan_index._LAST_PUBLISH.update({"at": 0.0, "path": "", "limit": 0, "keys": None})
+        scan_index._LAST_SCAN_DURATION.update({"seconds": 0.0})
         self.addCleanup(
             scan_index._LAST_PUBLISH.update,
             {"at": 0.0, "path": "", "limit": 0, "keys": None},
@@ -213,6 +214,59 @@ class ScanIndexTests(unittest.TestCase):
         payload["published_at"] = time.time() - 100
         path.write_text(json.dumps(payload), encoding="utf-8")
         self.assertIsNone(scan_index.try_consume(50, max_age=12.0))
+
+    def test_slow_scan_window_scales_with_measured_duration(self) -> None:
+        """A scan slower than the TTL must not make its own index look stale."""
+        scan_index.publish(
+            {"claude": [self._session("claude", "a", 1)]},
+            limit=50,
+            scan_duration_s=17.0,
+        )
+        path = scan_index.index_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["published_at"] = time.time() - 20
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        # 20 s old beats the 12 s constant, but not 3x the publisher's 17 s cost.
+        self.assertIsNotNone(scan_index.try_consume(50, max_age=12.0))
+
+    def test_scan_window_is_capped(self) -> None:
+        scan_index.publish(
+            {"claude": [self._session("claude", "a", 1)]},
+            limit=50,
+            scan_duration_s=300.0,
+        )
+        path = scan_index.index_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["published_at"] = time.time() - (scan_index.TTL_MAX_SECONDS + 30)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertIsNone(scan_index.try_consume(50, max_age=12.0))
+
+    def test_keepalive_republish_preserves_scan_duration(self) -> None:
+        scan_index.publish(
+            {"claude": [self._session("claude", "a", 1)]},
+            limit=50,
+            scan_duration_s=17.0,
+        )
+        meta = scan_index.published_meta()
+        self.assertIsNotNone(meta)
+        # A keep-alive rewrite brings no new scan; the recorded cost must survive.
+        scan_index.publish(
+            {"claude": [self._session("claude", "b", 2)]},
+            limit=50,
+            expected_published_at=meta[0],
+        )
+        payload = json.loads(scan_index.index_path().read_text(encoding="utf-8"))
+        self.assertEqual(payload["scan_duration_s"], 17.0)
+
+    def test_index_without_duration_falls_back_to_process_measurement(self) -> None:
+        scan_index.publish({"claude": [self._session("claude", "a", 1)]}, limit=50)
+        path = scan_index.index_path()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.pop("scan_duration_s", None)
+        payload["published_at"] = time.time() - 20
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        scan_index.note_scan_duration(17.0)
+        self.assertIsNotNone(scan_index.try_consume(50, max_age=12.0))
 
     def test_disabled_cache_skips(self) -> None:
         with mock.patch("corral.scan_index._shared_index_enabled", return_value=False):

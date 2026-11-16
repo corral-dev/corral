@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -172,6 +173,7 @@ class RuntimeRegistry:
         # 快照必须随本轮扫描一起结束，否则后续扫描看不到新写入的会话。
         # 扫描期协议收敛在 cache.scan_period（见其 docstring），异常由它吞掉，
         # 派生缓存永远不能影响原始会话扫描结果。
+        scan_started = time.monotonic()
         with scan_period():
             with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
                 scanned = list(pool.map(_scan_one, runtimes))
@@ -179,10 +181,14 @@ class RuntimeRegistry:
                     runtime.id: sessions
                     for runtime, (sessions, _hit) in zip(runtimes, scanned, strict=True)
                 }
+        scan_elapsed = time.monotonic() - scan_started
         hits = [hit for _sessions, hit in scanned if hit is not None]
         self.last_scan_cache_hit_all = bool(hits) and all(hits)
+        # The duration travels with the snapshot: consumers size the freshness
+        # window from it, so a slow scan cannot make its own index look expired.
         scan_index.publish(
             result, limit=limit, keep_ids_by_runtime=keep_ids_by_runtime,
+            scan_duration_s=scan_elapsed,
         )
         return result
 
