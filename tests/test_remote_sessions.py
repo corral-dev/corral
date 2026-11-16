@@ -51,7 +51,7 @@ def _session(
 
 class SessionHubPayloadTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._tmp.cleanup)
         self._env = mock.patch.dict(
             os.environ, {"CORRAL_CACHE_DIR": self._tmp.name}, clear=False
@@ -2434,6 +2434,62 @@ def _write_assistant_jsonl(path: Path, texts: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+class ScanMissBackoffTests(unittest.TestCase):
+    """A cache-missing full scan must not repeat at the healthy cadence.
+
+    Measured 2026-11-16: after the shared index went unusable, this daemon ran
+    66 scans / 495 s of CPU in 15 minutes (9-23 s each) while every client
+    reconnect waited out the ordinary window.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._env = mock.patch.dict(
+            os.environ, {"CORRAL_CACHE_DIR": self._tmp.name}, clear=False
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.hub = SessionHub(scan_limit=10)
+        self.addCleanup(self.hub.stop)
+
+    def _scan(self, *, hit: bool, seconds: float) -> None:
+        self.hub.store.registry.last_scan_cache_hit_all = hit
+        self.hub._note_scan_cost(seconds)
+
+    def test_three_slow_misses_stretch_the_cadence_in_both_triggers(self) -> None:
+        self._scan(hit=False, seconds=9.0)
+        self._scan(hit=False, seconds=11.0)
+        self.assertEqual(self.hub._stretched_cadence(15.0, 15.0), (15.0, 15.0))
+        self._scan(hit=False, seconds=19.0)
+        reconcile, min_gap = self.hub._stretched_cadence(15.0, 15.0)
+        self.assertGreater(reconcile, 15.0)
+        self.assertEqual(reconcile, min_gap)
+        # Memory pressure may already ask for longer; never shorten it.
+        self.assertEqual(self.hub._stretched_cadence(60.0, 60.0), (60.0, 60.0))
+
+    def test_backoff_grows_to_a_cap_and_a_cache_hit_clears_it(self) -> None:
+        for _ in range(12):
+            self._scan(hit=False, seconds=12.0)
+        self.assertLessEqual(
+            self.hub._scan_backoff, remote_sessions._SCAN_BACKOFF_MAX_SECONDS
+        )
+        self.assertGreaterEqual(self.hub._scan_backoff, 30.0)
+        self._scan(hit=True, seconds=0.3)
+        self.assertEqual(self.hub._scan_backoff, 0.0)
+        self.assertEqual(self.hub._stretched_cadence(15.0, 15.0), (15.0, 15.0))
+
+    def test_cheap_misses_and_slow_hits_keep_the_healthy_cadence(self) -> None:
+        # A quiet host misses nothing worth protecting; a slow cached scan is
+        # the index working, not the index being unavailable.
+        for _ in range(5):
+            self._scan(hit=False, seconds=0.4)
+        self.assertEqual(self.hub._scan_backoff, 0.0)
+        for _ in range(5):
+            self._scan(hit=True, seconds=8.0)
+        self.assertEqual(self.hub._scan_backoff, 0.0)
+
+
 class StartupHydrationTests(unittest.TestCase):
     """The daemon resolves the first open from the sidebar snapshot.
 
@@ -2443,7 +2499,7 @@ class StartupHydrationTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._tmp.cleanup)
         self._cache = Path(self._tmp.name)
         self._env = mock.patch.dict(

@@ -58,6 +58,15 @@ _STATE_HOSTS_EVERY_TICKS = 2
 # long (the scan worker parses it on its next pass) with this minimum gap.
 _ARRIVAL_FOLLOW_SECONDS = 20.0
 _ARRIVAL_MIN_GAP = 1.0
+# A full scan that misses every cache and still costs seconds means the shared
+# index is unusable (parser/provider change, dead worker, cold cohort). Running
+# that at the ordinary cadence never converges and pegs a core: on 2026-11-16
+# this daemon produced 66 scans / 495 s of CPU in 15 minutes (9-23 s each,
+# 969 sessions, cache_hit false) while both clients reconnected into 15 s waits.
+# Stretch the cadence until a scan hits again; state pushes are unaffected.
+_SCAN_BACKOFF_AFTER_MISSES = 3
+_SCAN_BACKOFF_MIN_MS = 2000.0
+_SCAN_BACKOFF_MAX_SECONDS = 120.0
 _LAYOUT_POLL_SECONDS = 1.0
 _PHONE_LIST_LIMIT = 80
 # OpenCode drops two interrupt presses that arrive in one read; 0.3 s apart
@@ -812,6 +821,10 @@ class SessionHub:
         self._scan_title_keys: set[str] = set()
         # Provisional -> canonical keys already announced to list watchers.
         self._announced_migrations: set[tuple[str, str]] = set()
+        # Consecutive full scans that missed the cache while costing seconds;
+        # non-zero `_scan_backoff` stretches the refresh cadence (see constants).
+        self._scan_miss_streak = 0
+        self._scan_backoff = 0.0
         self._history_watcher = None
         # Set once the first scan is loaded. Library users that never call
         # `start()` are ready immediately; the daemon clears it before it opens
@@ -977,6 +990,7 @@ class SessionHub:
                 )
                 if watcher is None:
                     reconcile = min_gap = _TITLE_POLL_SLICE
+                reconcile, min_gap = self._stretched_cadence(reconcile, min_gap)
                 arrivals = self._watcher_arrivals(watcher)
                 if arrivals != arrival_seen:
                     arrival_seen = arrivals
@@ -985,7 +999,9 @@ class SessionHub:
                 full = since_scan >= reconcile or (
                     watcher is not None and watcher.is_set() and since_scan >= min_gap
                 )
-                if not full and now < arrival_until and since_scan >= _ARRIVAL_MIN_GAP:
+                if not full and now < arrival_until and since_scan >= max(
+                    _ARRIVAL_MIN_GAP, self._scan_backoff
+                ):
                     stamp = _scan_index_stamp()
                     full = stamp != index_stamp
                 title_keys: set[str] = set()
@@ -1001,11 +1017,14 @@ class SessionHub:
                     # Stamp before scanning: a publish that lands during this (multi-
                     # second) refresh must still trigger the next arrival-follow scan.
                     index_stamp = _scan_index_stamp()
+                    scan_started = time.monotonic()
                     try:
                         changed = self.store.refresh()
                     except Exception:
                         # History scan failures must not block state or title propagation.
                         pass
+                    else:
+                        self._note_scan_cost(time.monotonic() - scan_started)
                     last_scan = time.monotonic()
                     self._search_refresh.set()
                     self._reclaim_inactive_hosts()
@@ -1074,6 +1093,43 @@ class SessionHub:
         self._detect_marker_changes()
         if self._sessions_watchers:
             self._on_event("sessions", self.list_snapshot())
+
+    def _stretched_cadence(self, reconcile: float, min_gap: float) -> tuple[float, float]:
+        """Apply the miss backoff to both scan triggers."""
+        if not self._scan_backoff:
+            return reconcile, min_gap
+        return max(reconcile, self._scan_backoff), max(min_gap, self._scan_backoff)
+
+    def _note_scan_cost(self, elapsed: float) -> None:
+        """Stretch the cadence while full scans keep missing and costing seconds.
+
+        A cached scan (shared index or per-file signature cache) is the healthy
+        path no matter how loaded the host is; only a scan that re-parsed
+        everything is worth spacing out, because repeating it cannot converge
+        and starves the machine. Any hit clears the backoff.
+        """
+        from corral import observe
+
+        hit = bool(getattr(self.store.registry, "last_scan_cache_hit_all", True))
+        if hit or elapsed * 1000 < _SCAN_BACKOFF_MIN_MS:
+            if self._scan_backoff:
+                observe.event("scan_miss_backoff", seconds=0, streak=self._scan_miss_streak)
+            self._scan_miss_streak = 0
+            self._scan_backoff = 0.0
+            return
+        self._scan_miss_streak += 1
+        if self._scan_miss_streak < _SCAN_BACKOFF_AFTER_MISSES:
+            return
+        self._scan_backoff = min(
+            _SCAN_BACKOFF_MAX_SECONDS,
+            (self._scan_backoff or _REFRESH_RECONCILE) * 2,
+        )
+        observe.event(
+            "scan_miss_backoff",
+            seconds=round(self._scan_backoff, 1),
+            streak=self._scan_miss_streak,
+            duration_ms=int(elapsed * 1000),
+        )
 
     @staticmethod
     def _watcher_arrivals(watcher) -> int:
