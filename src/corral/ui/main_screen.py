@@ -814,7 +814,12 @@ class MainScreen(
         import time as _time
 
         import corral
-        from corral.history_watch import HistoryWatcher, memory_pressured, pressure_cadence
+        from corral.history_watch import (
+            HistoryWatcher,
+            ScanMissBackoff,
+            memory_pressured,
+            pressure_cadence,
+        )
 
         worker = get_current_worker()
         watcher = HistoryWatcher()
@@ -828,6 +833,10 @@ class MainScreen(
             else REFRESH_RECONCILE_FALLBACK
         )
         last_refresh = 0.0
+        # Repeated slow, cache-missing scans mean the shared index is unusable
+        # (provider change, dead worker). Space them out instead of burning a
+        # core; the 1 s state probe keeps dots and Working fresh meanwhile.
+        scan_backoff = ScanMissBackoff()
         # Hot-session probes run on their own thread: a full refresh under
         # memory pressure can take tens of seconds and must not hold dots,
         # Working or Ended (2026-10-07).
@@ -844,6 +853,7 @@ class MainScreen(
                 reconcile, min_gap = pressure_cadence(
                     base_reconcile, REFRESH_MIN_GAP, memory_pressured(),
                 )
+                reconcile, min_gap = scan_backoff.stretch(reconcile, min_gap)
                 deadline = _time.monotonic() + reconcile
                 while not worker.is_cancelled:
                     left = deadline - _time.monotonic()
@@ -872,6 +882,7 @@ class MainScreen(
                     continue
                 watcher.clear()
                 had_error = self.store.get_load_error() is not None
+                scan_started = _time.monotonic()
                 try:
                     changed = self.store.refresh()
                 except Exception as exc:  # noqa: BLE001 — keep the loop alive
@@ -881,6 +892,12 @@ class MainScreen(
                         self.app.call_from_thread(self._update_header)
                     continue
                 last_refresh = _time.monotonic()
+                scan_backoff.note(
+                    _time.monotonic() - scan_started,
+                    bool(getattr(self.store.registry, "last_scan_cache_hit_all", True)),
+                    base=base_reconcile,
+                    reason="tui",
+                )
                 if worker.is_cancelled:
                     return
                 recovered = had_error and self.store.get_load_error() is None

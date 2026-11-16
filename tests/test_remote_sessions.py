@@ -2437,13 +2437,13 @@ def _write_assistant_jsonl(path: Path, texts: list[str]) -> None:
 class ScanMissBackoffTests(unittest.TestCase):
     """A cache-missing full scan must not repeat at the healthy cadence.
 
-    Measured 2026-11-16: after the shared index went unusable, this daemon ran
-    66 scans / 495 s of CPU in 15 minutes (9-23 s each) while every client
-    reconnect waited out the ordinary window.
+    Measured 2026-11-16: after the shared index went unusable, the daemon ran
+    66 scans / 495 s of CPU in 15 minutes (9-23 s each) and the TUI 137 / 207 s
+    while every client reconnect waited out the ordinary window.
     """
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._tmp.cleanup)
         self._env = mock.patch.dict(
             os.environ, {"CORRAL_CACHE_DIR": self._tmp.name}, clear=False
@@ -2457,37 +2457,52 @@ class ScanMissBackoffTests(unittest.TestCase):
         self.hub.store.registry.last_scan_cache_hit_all = hit
         self.hub._note_scan_cost(seconds)
 
-    def test_three_slow_misses_stretch_the_cadence_in_both_triggers(self) -> None:
+    def test_three_slow_misses_stretch_the_remote_cadence_in_both_triggers(self) -> None:
         self._scan(hit=False, seconds=9.0)
         self._scan(hit=False, seconds=11.0)
-        self.assertEqual(self.hub._stretched_cadence(15.0, 15.0), (15.0, 15.0))
+        self.assertEqual(self.hub._scan_backoff.stretch(15.0, 15.0), (15.0, 15.0))
         self._scan(hit=False, seconds=19.0)
-        reconcile, min_gap = self.hub._stretched_cadence(15.0, 15.0)
-        self.assertGreater(reconcile, 15.0)
-        self.assertEqual(reconcile, min_gap)
+        reconcile, min_gap = self.hub._scan_backoff.stretch(15.0, 15.0)
+        self.assertEqual((reconcile, min_gap), (30.0, 30.0))
         # Memory pressure may already ask for longer; never shorten it.
-        self.assertEqual(self.hub._stretched_cadence(60.0, 60.0), (60.0, 60.0))
+        self.assertEqual(self.hub._scan_backoff.stretch(60.0, 60.0), (60.0, 60.0))
 
     def test_backoff_grows_to_a_cap_and_a_cache_hit_clears_it(self) -> None:
+        from corral import history_watch
+
         for _ in range(12):
             self._scan(hit=False, seconds=12.0)
         self.assertLessEqual(
-            self.hub._scan_backoff, remote_sessions._SCAN_BACKOFF_MAX_SECONDS
+            self.hub._scan_backoff.seconds, history_watch.SCAN_MISS_BACKOFF_MAX_SECONDS
         )
-        self.assertGreaterEqual(self.hub._scan_backoff, 30.0)
+        self.assertGreaterEqual(self.hub._scan_backoff.seconds, 30.0)
         self._scan(hit=True, seconds=0.3)
-        self.assertEqual(self.hub._scan_backoff, 0.0)
-        self.assertEqual(self.hub._stretched_cadence(15.0, 15.0), (15.0, 15.0))
+        self.assertEqual(self.hub._scan_backoff.seconds, 0.0)
+        self.assertEqual(self.hub._scan_backoff.stretch(15.0, 15.0), (15.0, 15.0))
 
     def test_cheap_misses_and_slow_hits_keep_the_healthy_cadence(self) -> None:
         # A quiet host misses nothing worth protecting; a slow cached scan is
         # the index working, not the index being unavailable.
         for _ in range(5):
             self._scan(hit=False, seconds=0.4)
-        self.assertEqual(self.hub._scan_backoff, 0.0)
+        self.assertEqual(self.hub._scan_backoff.seconds, 0.0)
         for _ in range(5):
             self._scan(hit=True, seconds=8.0)
-        self.assertEqual(self.hub._scan_backoff, 0.0)
+        self.assertEqual(self.hub._scan_backoff.seconds, 0.0)
+
+    def test_shared_backoff_starts_from_the_caller_cadence(self) -> None:
+        from corral.history_watch import ScanMissBackoff
+
+        # The TUI polls at 3-7 s and the hub at 15 s: the first step follows
+        # that base instead of a hard-coded floor.
+        tui = ScanMissBackoff()
+        for _ in range(3):
+            tui.note(9.0, False, base=3.0, reason="tui")
+        self.assertEqual(tui.stretch(3.0, 3.0), (6.0, 6.0))
+        hub = ScanMissBackoff()
+        for _ in range(3):
+            hub.note(9.0, False, base=15.0, reason="remote")
+        self.assertEqual(hub.stretch(15.0, 15.0), (30.0, 30.0))
 
 
 class StartupHydrationTests(unittest.TestCase):

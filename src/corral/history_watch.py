@@ -61,6 +61,65 @@ def pressure_cadence(
     return max(float(normal_reconcile) * 3.0, 60.0), max(float(normal_min_gap) * 4.0, 1.0)
 
 
+# A full scan that missed every cache and still cost seconds means the shared
+# index is unusable (parser/provider change, dead scan worker, cold cohort).
+# Repeating it at the ordinary cadence cannot converge and pegs a core: measured
+# 2026-11-16 the daemon ran 66 scans / 495 s of CPU in 15 min and the TUI 137 /
+# 207 s, while clients reconnected into 15 s waits. Both refresh loops therefore
+# space slow misses out and clear on the first hit.
+SCAN_MISS_BACKOFF_AFTER = 3
+SCAN_MISS_BACKOFF_MIN_MS = 2000.0
+SCAN_MISS_BACKOFF_MAX_SECONDS = 120.0
+
+
+class ScanMissBackoff:
+    """Stretch a refresh loop's cadence while full scans keep missing.
+
+    Shared by the TUI and the remote hub so both degrade the same way; the 1 s
+    state probe is untouched, so dots, Working, list pushes and notifications
+    keep their latency. Only a scan that re-parsed everything counts: a cached
+    scan (any duration) or a cheap miss keeps the ordinary cadence.
+    """
+
+    def __init__(self) -> None:
+        self.streak = 0
+        self.seconds = 0.0
+
+    def note(self, elapsed: float, cache_hit: bool, *, base: float,
+             reason: str = "") -> float:
+        """Record one scan; return the new backoff in seconds (0 = none)."""
+        from corral import observe
+
+        if cache_hit or elapsed * 1000.0 < SCAN_MISS_BACKOFF_MIN_MS:
+            if self.seconds:
+                observe.event("scan_miss_backoff", seconds=0, streak=self.streak,
+                              **({"reason": reason} if reason else {}))
+            self.streak = 0
+            self.seconds = 0.0
+            return 0.0
+        self.streak += 1
+        if self.streak < SCAN_MISS_BACKOFF_AFTER:
+            return self.seconds
+        self.seconds = min(
+            SCAN_MISS_BACKOFF_MAX_SECONDS,
+            (self.seconds or float(base)) * 2,
+        )
+        observe.event(
+            "scan_miss_backoff",
+            seconds=round(self.seconds, 1),
+            streak=self.streak,
+            duration_ms=int(elapsed * 1000.0),
+            **({"reason": reason} if reason else {}),
+        )
+        return self.seconds
+
+    def stretch(self, reconcile: float, min_gap: float) -> tuple[float, float]:
+        """Apply the current backoff to both poll triggers."""
+        if not self.seconds:
+            return reconcile, min_gap
+        return max(reconcile, self.seconds), max(min_gap, self.seconds)
+
+
 def memory_pressured() -> bool:
     """Best-effort memory-pressure probe for refresh loops (never raises)."""
     try:
