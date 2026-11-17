@@ -98,6 +98,17 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
 - New warning: fix it if it is in owned code. Otherwise register it with an assessment.
 - New Linux failure: fix it. Register it only after showing that it also fails on the
   previous release tag on the same host, or after you have identified an environment cause.
+- Leak-gate block on the public tag push (2026-11-17): the updated `generic-api-key` rule
+  flagged three public-by-design values — the Developer Team ID inside the Keychain access
+  group (also public in `project.yml`), a SHA-256 asset hash in the ChatDiagrams manifest and
+  the Sparkle `SUPublicEDKey`. Verify each is a non-secret, then append the reported `fp:`
+  lines with a review comment to the private `.leakignore` **and** to
+  `~/.config/corral/release/apple-export/files/.leakignore`, and set the recipe's
+  `.leakignore` `source_sha256` to the private file's digest. The prepared public checkout is
+  one commit that publish must recreate, and `resume --refresh` is refused once `mac.install`
+  succeeded, so the exempted copy reaches a tag only through a new release: restate the
+  pending notes under `## Unreleased` and replace the unpublished version's section with one
+  `Not published. Its changes ship in <next>.` line.
 - Network or notarization interruption: `resume` reuses confirmed artifacts and receipts. Reconcile an unknown external outcome against the target first; do not assume every backend offers exactly-once publication. In particular, the shared AppShelf guide documents that an upload retry without a confirmed receipt can create a duplicate shelf release.
 
 ## Private configuration
