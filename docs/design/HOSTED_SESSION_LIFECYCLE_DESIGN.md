@@ -377,7 +377,7 @@ Must behave as ended: excluded from `recent` (the `resolve_active_marker` termin
 
 ### 8.4 The resume trigger, stated once
 
-There is exactly one resume path for all surfaces: `SessionHub.resume_session(key)` → `registry.build_resume_plan(session)` → `keepalive.wrap_plan` → `new-session -A`. Retirement adds nothing to it. What retirement adds is the *precondition*: the session must still be resumable, which is what INV-5 guarantees.
+There is exactly one resume path for all surfaces: `SessionHub.resume_session(key)` → `registry.build_resume_plan(session)` → `keepalive.wrap_plan` → `new-session -A`. Retirement adds nothing to it. What retirement adds is the *precondition*: the session must still be resumable, which is what INV-5 guarantees. Native resume (`_resume_locked`) must reuse the session's existing `id` as the tmux `ident` (matching `_restart_locked`, TUI `HostController`, and `cli.py`) rather than generating a fresh random `new_session_ident()`; otherwise `_restarts_known_session` and `_annotate_unmatched_by_session_name` miss the new pane during launch and briefly flash an empty `"New <Runtime> session"` provisional card.
 
 ## 9. Rollout and revert
 

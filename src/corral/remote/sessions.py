@@ -4019,7 +4019,9 @@ class SessionHub:
             self.store.mark_hosted(canonical, adopted)
             refreshed = self.store.find_session(canonical) or session
             return self.session_payload(refreshed, self._layout())
-        ident = keepalive.new_session_ident()
+        # Reuse the session id as tmux ident so _restarts_known_session and
+        # name-based liveness match the pane without flashing a New placeholder.
+        ident = str(session.get("id") or "").strip() or keepalive.new_session_ident()
         width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
         try:
             name = embed.host_session(plan, runtime.id, ident, width, height)

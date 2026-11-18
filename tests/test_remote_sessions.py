@@ -1743,6 +1743,30 @@ class SessionHubPayloadTests(unittest.TestCase):
                 self.assertNotIn(raw, message)
             self.assertEqual(calls["n"], 2)
 
+    def test_resume_locked_reuses_session_id_as_tmux_ident(self) -> None:
+        from corral import keepalive
+        from corral.store import _restarts_known_session
+
+        session = _session(source="pi", sid="71991543-abcd-4000-8000-000000000001")
+        self.hub.store.sessions = {"pi": [session]}
+        fake_runtime = mock.Mock()
+        fake_runtime.id = "pi"
+        fake_runtime.build_resume_plan.return_value = mock.Mock()
+        with (
+            mock.patch.object(self.hub, "_runtime_of", return_value=fake_runtime),
+            mock.patch.object(self.hub, "_adopt_foreign_host", return_value=None),
+            mock.patch.object(remote_sessions, "_raise_if_failed_at_start"),
+            mock.patch.object(
+                keepalive, "new_session_ident", side_effect=AssertionError("must not invent random ident"),
+            ),
+            mock.patch.object(
+                remote_sessions.embed, "host_session", return_value="corral-pi-71991543",
+            ) as host_session,
+        ):
+            self.hub._resume_locked("pi:71991543-abcd-4000-8000-000000000001")
+        self.assertEqual(host_session.call_args.args[2], "71991543-abcd-4000-8000-000000000001")
+        self.assertTrue(_restarts_known_session("corral-pi-71991543", "pi", [session]))
+
     def test_send_text_cursor_promotes_with_second_enter(self) -> None:
         """Phone Cursor submits must steer: paste + Enter + empty Enter."""
         session = _session(source="cursor", sid="c1", attention="working")
