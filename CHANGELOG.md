@@ -6,6 +6,16 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Silent idle-session reclaim now uses a 60-minute idle threshold (down from 120 minutes) with a 5-minute check interval, keeps up to the 8 newest parked sessions resident under normal memory conditions without a per-pass retirement cap, and under armed memory pressure retires every eligible session idle for 60 minutes or more without stepping down below 60 minutes.
+
+### 简体中文
+
+- 静默自动清理闲置托管会话改为 60 分钟闲置门槛（原 120 分钟）、每 5 分钟巡检一次；内存正常时最多保留最新 8 个闲置会话常驻并取消每轮清理个数上限；系统真缺内存时保留 60 分钟门槛不下探，直接清理全部超过 60 分钟闲置的符合条件会话。
+
 ## 0.24.367
 
 ### English
