@@ -20,3 +20,7 @@ fp:76edac4e95cc6c4f
 
 # tests/test_remote_restart.py: corral-claude-abc12345 is a synthetic tmux pane name in an assertion, not an API key.
 fp:549be037545370ce
+
+# tests/test_remote_status.py: mocked loopback/LAN address fixtures in daemon hints caching unit test, not a real internal endpoint.
+fp:4825b3071982e16b
+fp:d1be8ab24755b980
