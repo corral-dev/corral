@@ -12,8 +12,11 @@ reported as unavailable instead of shipping an oversized frame.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -300,3 +303,186 @@ def _sips_size(sips: str, path: Path) -> tuple[int, int]:
             except ValueError:
                 return 0, 0
     return values.get("pixelWidth", 0), values.get("pixelHeight", 0)
+
+
+# --- Linked file downloads (media.file) -----------------------------------
+
+MAX_FILE_BYTES = 20 * 1024 * 1024
+DEFAULT_FILE_SLICE_BYTES = 1_572_864
+MAX_FILE_SLICE_BYTES = 2_097_152
+
+_LOCATION_HASH_RE = re.compile(r"#.*$")
+_LOCATION_LINE_RE = re.compile(r":\d+(?::\d+)?$")
+
+_EXT_MIME_OVERRIDES = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".mdx": "text/markdown",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".toml": "application/toml",
+    ".py": "text/x-python",
+    ".swift": "text/x-swift",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".js": "text/javascript",
+    ".jsx": "text/javascript",
+    ".sh": "text/x-shellscript",
+    ".zsh": "text/x-shellscript",
+    ".pdf": "application/pdf",
+}
+
+
+class FileError(Exception):
+    """``code`` is ``not_found`` or ``unavailable``; ``reason`` refines the cause."""
+
+    def __init__(self, code: str, reason: str | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.reason = reason or code
+
+
+def containment_candidates(ref: str) -> list[str]:
+    """Candidate literal substrings that a message text may hold for ``ref``."""
+    raw = normalize_ref(ref)
+    if not raw:
+        return []
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        cleaned = value.strip()
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+
+    add(raw)
+    unquoted = urllib.parse.unquote(raw)
+    add(unquoted)
+    for item in (raw, unquoted):
+        no_hash = _LOCATION_HASH_RE.sub("", item)
+        add(no_hash)
+        add(_LOCATION_LINE_RE.sub("", no_hash))
+        if item.lower().startswith("file://"):
+            path_part = urllib.parse.urlsplit(item).path
+            add(path_part)
+            add(urllib.parse.unquote(path_part))
+            no_line = _LOCATION_LINE_RE.sub("", urllib.parse.unquote(path_part))
+            add(no_line)
+    return candidates
+
+
+def _strip_file_location(text: str) -> str:
+    """Strip ``file://``, URL fragments, and optional ``:line[:col]`` suffixes."""
+    cleaned = text
+    if cleaned.lower().startswith("file://"):
+        cleaned = urllib.parse.unquote(urllib.parse.urlsplit(cleaned).path)
+    else:
+        cleaned = urllib.parse.unquote(_LOCATION_HASH_RE.sub("", cleaned))
+    candidate = Path(os.path.expanduser(cleaned))
+    if not candidate.exists():
+        stripped = _LOCATION_LINE_RE.sub("", cleaned)
+        if stripped != cleaned:
+            cleaned = stripped
+    return cleaned
+
+
+def resolve_local_file(ref: str, cwd: str | None) -> Path:
+    """Map a file link reference to a regular file or raise ``FileError``."""
+    text = normalize_ref(ref)
+    if not text or is_url(text):
+        raise FileError("not_found" if not text else "unavailable")
+    scheme = urllib.parse.urlsplit(text).scheme.lower()
+    if scheme and scheme != "file" and not re.match(r"^[a-zA-Z]:[\\/]", text):
+        raise FileError("unavailable")
+    local = _strip_file_location(text)
+    if not local:
+        raise FileError("not_found")
+    path = Path(os.path.expanduser(local))
+    if not path.is_absolute():
+        if not cwd:
+            raise FileError("not_found")
+        path = Path(os.path.expanduser(cwd)) / path
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise FileError("not_found") from exc
+    if resolved.is_dir():
+        raise FileError("unavailable", "is_directory")
+    if not resolved.is_file():
+        raise FileError("unavailable")
+    return resolved
+
+
+def guess_file_mime(path: Path, sample: bytes = b"") -> str:
+    ext = path.suffix.lower()
+    if ext in _EXT_MIME_OVERRIDES:
+        return _EXT_MIME_OVERRIDES[ext]
+    sniffed = sniff_mime(sample) if sample else None
+    if sniffed:
+        return sniffed
+    guessed, _ = mimetypes.guess_type(path.name)
+    if guessed:
+        return guessed
+    return "application/octet-stream"
+
+
+def display_host_path(path: Path) -> str:
+    home = str(Path.home())
+    text = str(path)
+    if text == home:
+        return "~"
+    if text.startswith(home + os.sep):
+        return "~" + text[len(home) :]
+    return text
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(256 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_file_slice(
+    ref: str,
+    *,
+    cwd: str | None,
+    offset: int = 0,
+    max_bytes: int | None = None,
+) -> dict:
+    """Read one bounded slice of a message-referenced regular file."""
+    resolved = resolve_local_file(ref, cwd)
+    try:
+        stat = resolved.stat()
+    except OSError as exc:
+        raise FileError("not_found") from exc
+    size = int(stat.st_size)
+    if size > MAX_FILE_BYTES:
+        raise FileError("unavailable", "too_large")
+    start = max(0, int(offset))
+    limit = DEFAULT_FILE_SLICE_BYTES if max_bytes is None else max(1, min(MAX_FILE_SLICE_BYTES, int(max_bytes)))
+    try:
+        digest = _file_sha256(resolved)
+        with resolved.open("rb") as handle:
+            sample = handle.read(64)
+            handle.seek(min(start, size))
+            chunk = handle.read(limit)
+    except OSError as exc:
+        raise FileError("not_found") from exc
+    return {
+        "name": resolved.name,
+        "display_path": display_host_path(resolved),
+        "mime": guess_file_mime(resolved, sample),
+        "size": size,
+        "offset": min(start, size),
+        "data": base64.b64encode(chunk).decode("ascii"),
+        "eof": min(start, size) + len(chunk) >= size,
+        "sha256": digest,
+    }

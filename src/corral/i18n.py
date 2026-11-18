@@ -1961,6 +1961,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "That image cannot be previewed",
         "zh": "这张图片无法预览",
     },
+    "remote.err.file_not_found": {
+        "en": "That file is not available on this computer",
+        "zh": "开发机上找不到这个文件",
+    },
+    "remote.err.file_is_directory": {
+        "en": "Folders cannot be previewed on mobile",
+        "zh": "手机端不支持预览文件夹",
+    },
+    "remote.err.file_too_large": {
+        "en": "This file is too large to preview on mobile",
+        "zh": "这个文件太大，超出手机端预览上限",
+    },
+    "remote.err.file_unavailable": {
+        "en": "This file cannot be previewed",
+        "zh": "这个文件无法预览",
+    },
     "remote.err.no_image": {
         "en": "No image data",
         "zh": "没有图片数据",
@@ -2294,6 +2310,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.err.relay_url_scheme": {
         "en": "Relay URL must start with wss://",
         "zh": "中继地址必须以 wss:// 开头",
+    },
+    "remote.err.export_not_supported": {
+        "en": "This item cannot be exported",
+        "zh": "该会话不支持导出",
+    },
+    "remote.err.export_too_large": {
+        "en": "Exported session JSON exceeds the remote transfer limit",
+        "zh": "导出的会话 JSON 超过远程传输上限",
     },
     "flex.unavailable": {
         "en": "corral flex needs agentflex: install Node.js (for npx) or run: npm install -g agentflex",

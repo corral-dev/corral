@@ -192,6 +192,35 @@ class PartialInjectionError(RuntimeError):
         self.message = message or "partial injection"
 
 
+def _antigravity_send_immediately() -> bool:
+    """True when `agy` is configured to steer on Enter instead of queueing."""
+    app_data = os.environ.get("ANTIGRAVITY_APP_DATA_DIR")
+    root = Path(app_data).expanduser() if app_data else Path.home() / ".gemini" / "antigravity-cli"
+    settings_path = root / "settings.json"
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("queuedMessages") or "").strip().lower() == "send-immediately"
+
+
+def _submit_key_for_session(session: dict) -> str:
+    """Key that submits *and steers* mid-turn for this hosted runtime.
+
+    `agy` defaults `queuedMessages` to `"queue"`, so pressing Enter while a
+    turn is running queues a follow-up instead of steering; `Alt+M` (`M-m` in
+    tmux, `prompt.submit_alternate`) sends immediately. When configured to
+    `"send-immediately"`, Enter already steers and `Alt+M` queues instead.
+    """
+    source = str(session.get("source") or "").strip().lower()
+    attention = str(session.get("attention_kind") or "none").strip().lower()
+    if source == "antigravity" and attention == "working" and not _antigravity_send_immediately():
+        return "M-m"
+    return "Enter"
+
+
 def _phone_steer_promote(session: dict) -> bool:
     """Phone must steer mid-turn; Cursor needs a second empty Enter to promote.
 
@@ -2230,6 +2259,45 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.image_unavailable")) from exc
         return preview.to_wire()
 
+    def file_slice(
+        self,
+        key: str,
+        *,
+        seq: int,
+        ref: str,
+        offset: int = 0,
+        max_bytes: int | None = None,
+    ) -> dict:
+        """Bounded slice of a regular file referenced in message ``seq``."""
+        from corral.remote import media
+
+        session = self.require_session(key)
+        reference = media.normalize_ref(ref)
+        transcript = self._ensure_transcript(session)
+        target = next((item for item in transcript.messages if item.seq == seq), None)
+        if target is None:
+            self._fill_earlier(transcript, seq + 1, 1)
+            target = next((item for item in transcript.messages if item.seq == seq), None)
+        text = (target.text or "") if target is not None else ""
+        candidates = media.containment_candidates(reference)
+        if target is None or not candidates or not any(item in text for item in candidates):
+            raise ActionError("not_found", t("remote.err.file_not_found"))
+        try:
+            return media.read_file_slice(
+                reference,
+                cwd=str(session.get("cwd") or ""),
+                offset=offset,
+                max_bytes=max_bytes,
+            )
+        except media.FileError as exc:
+            if exc.code == "not_found":
+                raise ActionError("not_found", t("remote.err.file_not_found")) from exc
+            if exc.reason == "is_directory":
+                raise ActionError("unavailable", t("remote.err.file_is_directory")) from exc
+            if exc.reason == "too_large":
+                raise ActionError("unavailable", t("remote.err.file_too_large")) from exc
+            raise ActionError("unavailable", t("remote.err.file_unavailable")) from exc
+
     def user_prompts(self, key: str) -> dict:
         """Every human prompt of the session, oldest first (clients' Your prompts).
 
@@ -3493,11 +3561,13 @@ class SessionHub:
             if res.uncertain or (not res.ok and pasted):
                 raise PartialInjectionError(t("remote.err.inject_partial"))
             if not res.ok:
-                # Certain Enter failure with nothing pasted (empty text): the
-                # Enter itself hit a dead binding — same single
+                # Certain submit-key failure with nothing pasted (empty text): the
+                # submit key itself hit a dead binding — same single
                 # same-conversation recovery, then retry once.
                 name, session = self._attempt_with_recovery(
-                    key, name, lambda pane: embed.send_key_detailed(pane, "Enter")
+                    key,
+                    name,
+                    lambda pane: embed.send_key_detailed(pane, _submit_key_for_session(session)),
                 )
             if verifiable:
                 self._ensure_turn_submitted(name, session, runtime, delivery_text)
@@ -3721,13 +3791,14 @@ class SessionHub:
         _opencode_api_prompt(session_id, text)
 
     def _submit_enter(self, name: str, session: dict):
-        """Send Enter (+ Cursor steer promote). Returns the first Enter's result.
+        """Send submit key (Enter, or Alt+M to steer busy `agy`) + Cursor promote.
 
-        Uncertainty propagates: an Enter that may have landed is partial/unknown
-        for the caller, never a plain failure. The promote Enter stays
-        best-effort — the first Enter already landed by then.
+        Returns the first submit key's result. Uncertainty propagates: a key
+        that may have landed is partial/unknown for the caller, never a plain
+        failure. The promote Enter stays best-effort — the first submit already
+        landed by then.
         """
-        res = embed.send_key_detailed(name, "Enter")
+        res = embed.send_key_detailed(name, _submit_key_for_session(session))
         if not res.ok:
             return res
         if _phone_steer_promote(session):
@@ -4194,6 +4265,22 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
         copy_title = request.title
         return self._host(plan, request.target_runtime_id, copy_title, session.get("cwd"))
+
+    def export_session(self, key: str) -> dict:
+        """Build the share transcript JSON envelope for remote clipboard export."""
+        from corral import agent_api
+
+        session = self.require_session(key)
+        if is_shell_session(session):
+            raise ActionError("usage_error", t("remote.err.export_not_supported"))
+        payload = agent_api.build_share_payload(session, self.registry)
+        raw_json = json.dumps(
+            agent_api._ok(payload), ensure_ascii=False, separators=(",", ":")
+        )
+        # Leave headroom for the outer {"t":"res",...} JSON wrapper inside 4 MiB.
+        if len(raw_json.encode("utf-8")) > 3_500_000:
+            raise ActionError("unavailable", t("remote.err.export_too_large"))
+        return {"json": raw_json}
 
     # -- 关注状态变化 -----------------------------------------------------
 

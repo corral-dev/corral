@@ -993,6 +993,24 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.assertEqual(earliest["messages"][0]["text"], "提问-0")
         self.hub.unwatch_conversation("claude:p")
 
+    def test_export_session_returns_compact_share_json_envelope(self) -> None:
+        path = Path(self._tmp.name) / "claude-export.jsonl"
+        _write_assistant_jsonl(path, ["hello export"])
+        session = _session(sid="exp1")
+        session["path"] = str(path)
+        with mock.patch.object(self.hub, "require_session", return_value=session):
+            exported = self.hub.export_session("claude:exp1")
+        envelope = json.loads(exported["json"])
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["data"]["id"], "exp1")
+        self.assertEqual(envelope["data"]["event_count"], 1)
+        self.assertEqual(envelope["data"]["events"][0]["text"], "hello export")
+
+        shell_session = {"source": "shell", "id": "1", "key": "shell:1"}
+        with mock.patch.object(self.hub, "require_session", return_value=shell_session):
+            with self.assertRaises(ActionError):
+                self.hub.export_session("shell:1")
+
     def test_handoff_prompt_stays_a_human_prompt(self) -> None:
         """接力提示词是真人消息：Your prompts 与对话分页都必须照常返回。"""
         path = Path(self._tmp.name) / "claude-handoff.jsonl"
@@ -2129,6 +2147,105 @@ class SessionHubPayloadTests(unittest.TestCase):
                 {"source": "claude", "attention_kind": "working"}
             )
         )
+
+    def test_antigravity_submit_key_and_send_text_steer(self) -> None:
+        settings_dir = Path(self._tmp.name) / "agy-cfg"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        with mock.patch.dict(os.environ, {"ANTIGRAVITY_APP_DATA_DIR": str(settings_dir)}):
+            self.assertEqual(
+                remote_sessions._submit_key_for_session(
+                    {"source": "antigravity", "attention_kind": "working"}
+                ),
+                "M-m",
+            )
+            (settings_dir / "settings.json").write_text(
+                json.dumps({"queuedMessages": "queue"}), encoding="utf-8"
+            )
+            self.assertEqual(
+                remote_sessions._submit_key_for_session(
+                    {"source": "antigravity", "attention_kind": "working"}
+                ),
+                "M-m",
+            )
+            self.assertEqual(
+                remote_sessions._submit_key_for_session(
+                    {"source": "antigravity", "attention_kind": "waiting"}
+                ),
+                "Enter",
+            )
+            self.assertEqual(
+                remote_sessions._submit_key_for_session(
+                    {"source": "antigravity", "attention_kind": "none"}
+                ),
+                "Enter",
+            )
+            (settings_dir / "settings.json").write_text(
+                json.dumps({"queuedMessages": "send-immediately"}), encoding="utf-8"
+            )
+            self.assertEqual(
+                remote_sessions._submit_key_for_session(
+                    {"source": "antigravity", "attention_kind": "working"}
+                ),
+                "Enter",
+            )
+            self.assertEqual(
+                remote_sessions._submit_key_for_session(
+                    {"source": "claude", "attention_kind": "working"}
+                ),
+                "Enter",
+            )
+
+            (settings_dir / "settings.json").write_text("{}", encoding="utf-8")
+            busy = _session(source="antigravity", sid="ag_busy", attention="working")
+            busy["keepalive_name"] = "pane-ag-busy"
+            waiting = _session(source="antigravity", sid="ag_wait", attention="waiting")
+            waiting["keepalive_name"] = "pane-ag-wait"
+            self.hub.store.sessions = {"antigravity": [busy, waiting]}
+
+            with (
+                mock.patch.object(remote_sessions.embed, "capture", return_value="> "),
+                mock.patch.object(
+                    remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+                ) as paste,
+                mock.patch.object(
+                    remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+                ) as send_key,
+                mock.patch.object(remote_sessions.time, "sleep"),
+            ):
+                self.hub.send_text("antigravity:ag_busy", "改用 steering")
+                paste.assert_called_once_with("pane-ag-busy", "改用 steering")
+                send_key.assert_called_once_with("pane-ag-busy", "M-m")
+
+            with (
+                mock.patch.object(remote_sessions.embed, "capture", return_value="> "),
+                mock.patch.object(
+                    remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+                ) as paste,
+                mock.patch.object(
+                    remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+                ) as send_key,
+                mock.patch.object(remote_sessions.time, "sleep"),
+            ):
+                self.hub.send_text("antigravity:ag_wait", "选 A")
+                paste.assert_called_once_with("pane-ag-wait", "选 A")
+                send_key.assert_called_once_with("pane-ag-wait", "Enter")
+
+            with (
+                mock.patch.object(
+                    remote_sessions.embed, "capture", return_value="Accept-edits mode:\n> "
+                ),
+                mock.patch.object(remote_sessions.embed, "pane_liveness", return_value="alive"),
+                mock.patch.object(
+                    remote_sessions.embed, "paste_detailed", return_value=InjectionResult(True)
+                ) as paste,
+                mock.patch.object(
+                    remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)
+                ) as send_key,
+                mock.patch.object(remote_sessions.time, "sleep"),
+            ):
+                self.hub.send_turn("antigravity:ag_busy", "带图 steering", images=None)
+                paste.assert_called_once_with("pane-ag-busy", "带图 steering")
+                send_key.assert_called_once_with("pane-ag-busy", "M-m")
 
     def test_attention_change_publishes_to_conversation_watch(self) -> None:
         events: list[tuple[str, dict]] = []

@@ -205,5 +205,137 @@ class HubImagePreviewTests(unittest.TestCase):
         self.assertIn(protocol.M_MEDIA_IMAGE, service._HANDLERS)
 
 
+class HubFileDownloadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.hub = SessionHub()
+        self.markdown_file = self.root / "CORE PROFILE.md"
+        self.markdown_file.write_text("# Profile\n\nHello **world**!\n", encoding="utf-8")
+        self.large_file = self.root / "chunked.bin"
+        self.large_file.write_bytes(b"A" * 128 + b"B" * 128)
+        self.subdir = self.root / "folder"
+        self.subdir.mkdir()
+
+        history = self.root / "session.jsonl"
+        file_url = self.markdown_file.as_uri() + "#L10-L20"
+        text = (
+            f"Read [CORE PROFILE.md]({file_url}), "
+            f"[chunked.bin](chunked.bin), "
+            f"[folder]({self.subdir.as_uri()}), "
+            f"[missing](missing.md)."
+        )
+        history.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "msg-file-1",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": text}],
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.session = {
+            "source": "claude",
+            "id": "files",
+            "short_id": "files",
+            "cwd": str(self.root),
+            "cwd_display": str(self.root),
+            "mtime": 1_700_000_000.0,
+            "display_time": "",
+            "size_kb": 1.0,
+            "status_tag": "ended",
+            "live": False,
+            "keepalive_name": None,
+            "fallback_title": "files",
+            "attention_kind": "none",
+            "last_user_msg": "",
+            "last_agent_msg": "",
+            "path": str(history),
+        }
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _seq(self) -> int:
+        with mock.patch.object(self.hub, "require_session", return_value=self.session):
+            page = self.hub.message_page("claude:files")
+        return page["messages"][0]["seq"]
+
+    def test_file_url_with_spaces_and_line_fragment_downloads(self) -> None:
+        import base64
+
+        seq = self._seq()
+        with mock.patch.object(self.hub, "require_session", return_value=self.session):
+            payload = self.hub.file_slice(
+                "claude:files",
+                seq=seq,
+                ref=self.markdown_file.as_uri() + "#L10-L20",
+            )
+        self.assertEqual(payload["name"], "CORE PROFILE.md")
+        self.assertEqual(payload["mime"], "text/markdown")
+        self.assertTrue(payload["eof"])
+        self.assertEqual(
+            base64.b64decode(payload["data"]).decode("utf-8"),
+            "# Profile\n\nHello **world**!\n",
+        )
+
+    def test_chunked_file_download_reassembles_and_verifies_sha(self) -> None:
+        import base64
+        import hashlib
+
+        seq = self._seq()
+        with mock.patch.object(self.hub, "require_session", return_value=self.session):
+            first = self.hub.file_slice(
+                "claude:files", seq=seq, ref="chunked.bin", offset=0, max_bytes=128
+            )
+            second = self.hub.file_slice(
+                "claude:files", seq=seq, ref="chunked.bin", offset=128, max_bytes=128
+            )
+        self.assertFalse(first["eof"])
+        self.assertTrue(second["eof"])
+        combined = base64.b64decode(first["data"]) + base64.b64decode(second["data"])
+        self.assertEqual(combined, b"A" * 128 + b"B" * 128)
+        self.assertEqual(first["sha256"], hashlib.sha256(combined).hexdigest())
+
+    def test_directory_and_oversized_and_unreferenced_files_are_rejected(self) -> None:
+        seq = self._seq()
+        with mock.patch.object(self.hub, "require_session", return_value=self.session):
+            with self.assertRaises(ActionError) as dir_err:
+                self.hub.file_slice("claude:files", seq=seq, ref=self.subdir.as_uri())
+            self.assertEqual(dir_err.exception.code, "unavailable")
+
+            with self.assertRaises(ActionError) as missing_err:
+                self.hub.file_slice("claude:files", seq=seq, ref="missing.md")
+            self.assertEqual(missing_err.exception.code, "not_found")
+
+            secret = self.root / "secret.txt"
+            secret.write_text("top-secret", encoding="utf-8")
+            with self.assertRaises(ActionError) as unref_err:
+                self.hub.file_slice("claude:files", seq=seq, ref=str(secret))
+            self.assertEqual(unref_err.exception.code, "not_found")
+
+    def test_oversized_file_is_unavailable(self) -> None:
+        seq = self._seq()
+        with mock.patch.object(self.hub, "require_session", return_value=self.session):
+            with mock.patch.object(media, "MAX_FILE_BYTES", 10):
+                with self.assertRaises(ActionError) as caught:
+                    self.hub.file_slice("claude:files", seq=seq, ref="chunked.bin")
+        self.assertEqual(caught.exception.code, "unavailable")
+
+    def test_media_file_is_readonly_data_plane_and_advertised(self) -> None:
+        from corral.remote import service
+
+        self.assertIn(protocol.M_MEDIA_FILE, service._READONLY_METHODS)
+        self.assertIn(protocol.M_MEDIA_FILE, service._DATA_PAYLOAD_METHODS)
+        self.assertIn(protocol.M_MEDIA_FILE, service._HANDLERS)
+
+
 if __name__ == "__main__":
     unittest.main()

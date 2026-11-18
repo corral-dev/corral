@@ -207,6 +207,8 @@ CAPABILITY_COMPLETION_NOTIFY = "completion_notify"
 CAPABILITY_TRANSIENT_NOTIFY = "transient_notify"
 # Message-referenced images are previewed through media.image (downscaled on the host).
 CAPABILITY_MEDIA_IMAGE = "media_image"
+# Message-linked files are downloaded in bounded slices through media.file.
+CAPABILITY_MEDIA_FILE = "media_file"
 # Host supports session.restart (remote access to the desktop advanced-restart).
 # Advertised only with the implementation; old hosts lack the method entirely.
 CAPABILITY_SESSION_RESTART = "session_restart"
@@ -225,6 +227,8 @@ CAPABILITY_USER_PROMPTS = "user_prompts"
 # Project shells (remote/shell_terminal.py): shell.* below; their output, input,
 # sizing and colours use terminal.* with keys ``shell:<id>``. Full pairings only.
 CAPABILITY_PROJECT_SHELL = "project_shell"
+# Host exports a compact share transcript JSON envelope (`session.export`).
+CAPABILITY_SESSION_EXPORT = "session_export"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -243,6 +247,8 @@ M_SESSION_UNWATCH = "session.unwatch"
 M_SESSION_MARK_READ = "session.markRead"
 # Read-only: {key, seq, ref, max_px?, quality?} → bounded preview of an image that message cites.
 M_MEDIA_IMAGE = "media.image"
+# Read-only: {key, seq, ref, offset?, max_bytes?} → bounded file slice referenced by message.
+M_MEDIA_FILE = "media.file"
 
 M_SCREEN_WATCH = "screen.watch"
 M_SCREEN_UNWATCH = "screen.unwatch"
@@ -267,6 +273,8 @@ M_SESSION_HANDOFF = "session.handoff"
 # 同助手复制会话：params 只有 {key}，返回 {"session": SessionSummary}，与 handoff/resume 同形。
 # 官方分叉优先，否则磁盘克隆；故意不进 service._READONLY_METHODS（只读配对服务端拒掉）。
 M_SESSION_COPY = "session.copy"
+# Read-only: {key} → {"json": "<compact share envelope JSON>"}.
+M_SESSION_EXPORT = "session.export"
 M_SESSION_STOP = "session.stop"
 M_SESSION_DELETE = "session.delete"
 M_SESSION_PIN = "session.pin"

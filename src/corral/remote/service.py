@@ -80,6 +80,8 @@ _READONLY_METHODS = frozenset(
         protocol.M_SESSION_MARK_READ,
         protocol.M_COMMAND_STATUS,
         protocol.M_MEDIA_IMAGE,
+        protocol.M_MEDIA_FILE,
+        protocol.M_SESSION_EXPORT,
     }
 )
 
@@ -183,12 +185,14 @@ _CONCURRENT_READ_METHODS = frozenset(
         protocol.M_SESSION_PROMPTS,
         protocol.M_SESSION_USER_PROMPTS,
         protocol.M_MEDIA_IMAGE,
+        protocol.M_MEDIA_FILE,
         protocol.M_SEARCH,
         protocol.M_SEARCH_FULLTEXT,
         protocol.M_PROJECTS_LIST,
         protocol.M_RUNTIMES_LIST,
         protocol.M_TERMINAL_PEEK,
         protocol.M_SESSIONS_LIST,
+        protocol.M_SESSION_EXPORT,
     }
 )
 # Concurrent slow reads one connection may run. Excess requests get a retryable
@@ -208,8 +212,10 @@ _GLOBAL_HISTORY_READ_METHODS = frozenset(
         protocol.M_SESSION_USER_PROMPTS,
         protocol.M_SESSION_WATCH,
         protocol.M_MEDIA_IMAGE,
+        protocol.M_MEDIA_FILE,
         protocol.M_SEARCH,
         protocol.M_SEARCH_FULLTEXT,
+        protocol.M_SESSION_EXPORT,
     }
 )
 _MAX_GLOBAL_HISTORY_READS = 8
@@ -1269,6 +1275,7 @@ class RemoteService:
                 protocol.CAPABILITY_COMPLETION_NOTIFY: True,
                 protocol.CAPABILITY_TRANSIENT_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
+                protocol.CAPABILITY_MEDIA_FILE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
                 protocol.CAPABILITY_SESSION_INTERRUPT: True,
                 protocol.CAPABILITY_SESSION_CREATE_RECEIPTS: True,
@@ -1279,6 +1286,7 @@ class RemoteService:
                 protocol.CAPABILITY_TERMINAL_LATEST: True,
                 protocol.CAPABILITY_USER_PROMPTS: True,
                 protocol.CAPABILITY_PROJECT_SHELL: True,
+                protocol.CAPABILITY_SESSION_EXPORT: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -1400,6 +1408,15 @@ class RemoteService:
             ref=str(params.get("ref") or ""),
             max_px=_int_param(params, "max_px", 0),
             quality=_int_param(params, "quality", 0, max_value=100),
+        )
+
+    def _media_file(self, connection: Connection, params: dict):
+        return self.hub.file_slice(
+            _key(params),
+            seq=_int_param(params, "seq", 0, max_value=10_000_000),
+            ref=str(params.get("ref") or ""),
+            offset=_int_param(params, "offset", 0, max_value=100_000_000),
+            max_bytes=_optional_int_param(params, "max_bytes", max_value=10_000_000),
         )
 
     def _session_watch(self, connection: Connection, params: dict):
@@ -1988,6 +2005,9 @@ class RemoteService:
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
         return {"session": self.hub.copy_session(_key(params))}
 
+    def _session_export(self, connection: Connection, params: dict):
+        return self.hub.export_session(_key(params))
+
     def _projects_list(self, connection: Connection, params: dict):
         return {"projects": self.hub.projects()}
 
@@ -2112,8 +2132,11 @@ _DATA_PAYLOAD_METHODS = frozenset(
         protocol.M_SESSION_MESSAGES,
         protocol.M_SESSION_TOOL_DETAIL,
         protocol.M_SESSION_USER_PROMPTS,
+        protocol.M_MEDIA_IMAGE,
+        protocol.M_MEDIA_FILE,
         protocol.M_SESSION_GET,
         protocol.M_SESSION_WATCH,
+        protocol.M_SESSION_EXPORT,
         protocol.M_SCREEN_WATCH,
         protocol.M_SCREEN_SCROLL,
         protocol.M_TERMINAL_PEEK,
@@ -2129,6 +2152,7 @@ _HANDLERS = {
     protocol.M_SESSION_MESSAGES: RemoteService._session_messages,
     protocol.M_SESSION_TOOL_DETAIL: RemoteService._session_tool_detail,
     protocol.M_MEDIA_IMAGE: RemoteService._media_image,
+    protocol.M_MEDIA_FILE: RemoteService._media_file,
     protocol.M_SESSION_PROMPTS: RemoteService._session_prompts,
     protocol.M_SESSION_USER_PROMPTS: RemoteService._session_user_prompts,
     protocol.M_SESSION_WATCH: RemoteService._session_watch,
@@ -2158,6 +2182,7 @@ _HANDLERS = {
     protocol.M_SESSION_INTERRUPT: RemoteService._session_interrupt,
     protocol.M_SESSION_HANDOFF: RemoteService._session_handoff,
     protocol.M_SESSION_COPY: RemoteService._session_copy,
+    protocol.M_SESSION_EXPORT: RemoteService._session_export,
     protocol.M_SESSION_STOP: RemoteService._session_stop,
     protocol.M_SESSION_DELETE: RemoteService._session_delete,
     protocol.M_SESSION_PIN: RemoteService._session_pin,
