@@ -156,6 +156,7 @@ def _output_json(registry, limit: int) -> None:
                 "time": session.get("display_time") or "",
                 "mtime": session.get("mtime"),
                 "size_kb": round(session.get("size_kb") or 0, 1),
+                "loop_count": session.get("loop_count"),
                 "status": session.get("status_tag") or "",
                 "resume_command": resume_cmd,
                 "history_path": session.get("path") or "",

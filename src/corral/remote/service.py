@@ -46,6 +46,7 @@ from corral.remote.sessions import (
 )
 
 _PAIRING_TTL = 10 * 60  # 配对码有效期：够扫码，又不至于长期挂着一个可用凭据
+_EVENT_RECONCILE_MIN_INTERVAL = 0.5
 
 # 只读配对允许的方法（看会话 / 画面 / 搜索；不能输入、不能改布局、不能启停）
 _READONLY_METHODS = frozenset(
@@ -352,6 +353,7 @@ class RemoteService:
         self._input_targets: set[str] = set()
         self._input_lock = threading.Lock()
         self._input_target_free = threading.Condition(self._input_lock)
+        self._last_reconcile_at = float("-inf")
 
     # -- 状态同步 ---------------------------------------------------------
 
@@ -369,6 +371,7 @@ class RemoteService:
 
     def reconcile_devices(self) -> int:
         """踢掉已不在磁盘清单里的连接。返回被踢数量。"""
+        self._last_reconcile_at = time.monotonic()
         self.refresh_state()
         known = {d.public_key for d in self.state.devices}
         kicked = 0
@@ -669,8 +672,13 @@ class RemoteService:
             self.hub.unwatch_conversation(channel[len("session:") :])
 
     def _dispatch_event(self, channel: str, data) -> None:
-        # 事件推送前顺手对账一次，避免已解绑设备还在收画面
-        self.reconcile_devices()
+        with self._lock:
+            has_targets = bool(self._subscribers.get(channel))
+        if not has_targets:
+            return
+        # 事件推送前顺手对账一次，避免已解绑设备还在收画面；高频终端帧复用 0.5 s 窗口。
+        if (time.monotonic() - self._last_reconcile_at) >= _EVENT_RECONCILE_MIN_INTERVAL:
+            self.reconcile_devices()
         with self._lock:
             targets = list(self._subscribers.get(channel, ()))
         if not targets:

@@ -13,7 +13,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from corral import embed, keepalive, split_layout
+from corral import embed, keepalive, liveness, split_layout
 from corral.models import LaunchPlan
 from corral.remote import protocol, ratelimit
 from corral.remote.service import Connection, RemoteService
@@ -159,6 +159,8 @@ class RealResumeTests(_ResumeFixture, unittest.TestCase):
         subprocess.run([*command, "new-session", "-d", "-s", "sentinel", "sleep 60"], check=True)
         self.addCleanup(lambda: subprocess.run([*command, "kill-server"], capture_output=True))
         with mock.patch.object(keepalive, "tmux_argv", side_effect=lambda *args: command), \
+             mock.patch.object(keepalive, "tmux_argv_for_session", side_effect=lambda *_args: tuple(command)), \
+             mock.patch.object(liveness, "tmux_argv_for_session", side_effect=lambda *_args: tuple(command)), \
              mock.patch.object(embed, "socket_for_session", return_value=socket), \
              mock.patch.object(keepalive, "ensure_server"), \
              mock.patch.object(keepalive, "reap_pressure"):

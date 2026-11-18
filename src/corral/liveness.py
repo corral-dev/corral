@@ -169,6 +169,12 @@ def _socket_may_exist(socket: str) -> bool:
 
 def _list_tmux_sessions(fields: str) -> list[list[str]]:
     """列出新旧保活 socket 上的托管会话；某个 socket 还不存在时跳过，不报错。"""
+    if (
+        os.environ.get("CORRAL_ISOLATE_MANAGED_HOSTS") == "1"
+        and getattr(subprocess.check_output, "__module__", "") == "subprocess"
+        and (keepalive.tmux_env().get("TMUX_TMPDIR") or "/tmp") == "/tmp"
+    ):
+        return []
     if shutil.which("tmux") is None:
         return []
     with _tmux_list_lock:

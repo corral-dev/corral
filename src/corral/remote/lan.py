@@ -77,6 +77,18 @@ def _rank(address: object) -> tuple[int, str] | None:
     return (3, str(ip))
 
 
+def probe_outbound_ipv4() -> str:
+    """Return the OS-selected outbound IPv4 address without sending packets or DNS."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))  # TEST-NET-1 文档保留地址，不会真的发包
+        return str(probe.getsockname()[0])
+    except OSError:
+        return ""
+    finally:
+        probe.close()
+
+
 def lan_addresses() -> list[str]:
     """列出这台开发机在局域网上的地址，真局域网在前，去重并排好序。
 
@@ -85,14 +97,9 @@ def lan_addresses() -> list[str]:
     `_rank` 过滤，VPN/代理的脏地址进不了结果。
     """
     candidates: list[str] = []
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect(("192.0.2.1", 9))  # TEST-NET-1 文档保留地址，不会真的发包
-        candidates.append(probe.getsockname()[0])
-    except OSError:
-        pass
-    finally:
-        probe.close()
+    primary = probe_outbound_ipv4()
+    if primary:
+        candidates.append(primary)
     candidates.extend(_hostname_addresses())
     ranked: list[tuple[int, str]] = []
     seen: set[str] = set()

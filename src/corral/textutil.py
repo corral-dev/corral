@@ -69,3 +69,45 @@ def wrap_preview_text(text: str, width: int) -> list[str]:
             continue
         lines.extend(_rich_chop_cells(paragraph, width))
     return lines
+
+
+def parse_loop_count(value: object) -> int | None:
+    """Normalize an optional non-negative agent loop count, returning None when invalid."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value >= 0 else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = int(stripped)
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
+def format_loop_count(value: object) -> str:
+    """Format positive agent loop counts compactly (`1.2k` at >= 1000); omit 0/None."""
+    count = parse_loop_count(value)
+    if count is None or count <= 0:
+        return ""
+    if count >= 1000:
+        return f"{count / 1000:.1f}k"
+    return str(count)
+
+
+def loop_count_tier(value: object) -> str | None:
+    """Contrast tier (`light` / `medium` / `heavy`) for positive loop counts."""
+    count = parse_loop_count(value)
+    if count is None or count <= 0:
+        return None
+    if count <= 3:
+        return "light"
+    if count <= 30:
+        return "medium"
+    return "heavy"

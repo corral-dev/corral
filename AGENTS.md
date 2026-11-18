@@ -157,6 +157,7 @@ Read the documents whose described content is relevant before deciding or editin
 - 运行时跳过权限审批的危险启动参数（如 Claude 的 `--dangerously-skip-permissions`、Codex 的 `--dangerously-bypass-approvals-and-sandbox`）必须声明为对应适配器的 `auto_approve_args` 类属性，不得在 `build_resume_plan`/`build_new_plan`/直启透传等多处各写一份字面量字符串；入口层和 `registry.build_passthrough_plan` 只负责按需拼接这个属性，不感知具体参数内容。
 - Model and reasoning defaults remain user-owned across resume, handoff, blank creation, direct launch, shim and title generation. Corral must inherit runtime defaults without hard-coded selections. Exceptions are explicit direct-launch arguments, explicit per-request model selection for the new Agent fresh-session workflow (owner decision 2026-10-20), and the title-only `CORRAL_TITLE_MODEL` override (legacy `SC_TITLE_MODEL`). A fresh-session model override belongs to that launch and must not rewrite global defaults or silently choose another model; report requested and observed models separately. Do not select models to save quota or claim better quality on the user’s behalf. See the [delegation design](docs/design/AGENT_SESSION_DELEGATION_DESIGN.md#fresh-creation-and-model-selection) for the capability and verification boundary.
 - **「默认跳过全部权限问询」是本项目的既定产品默认，不是待讨论选项**（机主 2026-08-01 明确拍板）。凡是 corral 拉起运行时的路径——原生恢复、跨运行时接力、空白新建、直启透传，以及未来的命令拦截/shim 入口——都必须自动垫上该运行时的放行参数，让用户拿到的是开箱免打断的体验。新增运行时时，找出并验证它的放行参数属于接入工作的必做项，不是可选增强；找不到就在维护指南里如实记录能力差距，而不是默默留空。放行参数在某些运行时里只属于部分子命令、或对位置敏感（OpenCode 的 `--auto` 两者都占），这类规则写进适配器的 `compose_passthrough_argv`，不要塞进注册表。**禁止把它改成默认关闭、需显式开启，也不要再以「不安全」为由向机主重复征询确认**——理由是当前各家模型自身的谨慎度已足以覆盖日常风险，机主已知悉并接受。唯一允许不加的情形是运行时自身硬性拒绝该参数（如 Claude 在 root/sudo 下带 `--dangerously-skip-permissions` 会直接退出；OpenCode 的 `stats`/`export`/`auth` 等子命令不认 `--auto`），这类情形按"加了就起不来"的事实判断，与安全权衡无关。**运行时旧版本不支持放行参数不属于此列**：按"该升级那个助手"处理，不为旧版保留降级分支（机主 2026-08-04 拍板）。
+- **运行时 CLI/API 多版本兼容（永久，2026-10-31 机主要求）**：各家运行时的 flag/子命令/API 会在升级中增删改（OpenCode v2.2.5 主命令删 `--fork` 即一例：旧 `opencode -s <id> --fork` 在新版是用法错误直接退出，内嵌侧只看到 exit 1 + `ERROR`，极易误判成模型崩溃）。核心启动路径（原生恢复、分叉、接力新建、空白新建、直启透传）的适配器不得只按单个版本的 `--help` 写死一种 argv：上新版本写法时保留曾经成功的旧写法，能共存则共存，不能共存则按已装版本探测分流（结果缓存，禁止每次启动都 fork 子进程探版本）。版本相关分支必须在注释写明实测版本号与 `--help` 依据，新旧两种 argv 各留回归断言。单步 `LaunchPlan` 表达不了"先分叉再恢复"两步走时，走 `clone_session` + 原生恢复拆分，不要用 shell 拼两条命令。**2026-08-04「旧版不支持放行参数按该升级处理」裁定仅限放行参数**，不扩展到恢复/分叉等核心路径。
 
 ## 发版要求
 
@@ -176,7 +177,7 @@ Read the documents whose described content is relevant before deciding or editin
   env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
   ```
 
-  `ci-test.py` 在 checkout `.venv` 已存在且就绪时自动重进该解释器跑全套（CI 无 `.venv` 路径不变；`.venv` 存在但未就绪则直接失败并指引 `prepare`，不在错误依赖上跑）。该脚本与 CI 一样先跑 Ruff 再跑全量单测。不要用单测子集、跳过 UI / 终端集成或手动跳过标记替代发布门禁。
+  `ci-test.py` 在 checkout `.venv` 已存在且就绪时自动重进该解释器跑全套（CI 无 `.venv` 路径不变；`.venv` 存在但未就绪则直接失败并指引 `prepare`，不在错误依赖上跑）。该脚本与 CI 一样先跑 Ruff 再跑全量单测。不要用单测子集、跳过 UI / 终端集成或手动跳过标记替代发布门禁。Focused single-file runs work via `.venv/bin/python -m unittest tests/<file>.py -v` or `python3 scripts/dev_env.py run --repo . -- python -m unittest tests/<file>.py -v` (both `src/` and `tests/` are on `PYTHONPATH`; `[tool.pytest.ini_options]` also sets `pythonpath = ["src", "tests"]` for external pytest runners).
 - 改动扫描、标题或界面代码后，仍须独立测量首屏扫描耗时并如实记录（该指标不再是阻断线）：
 
   ```bash

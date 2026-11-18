@@ -103,9 +103,13 @@ def _freshen_from_disk(sessions: list[dict]) -> bool:
     return changed
 
 
-def _opencode_db_signature(session: dict) -> tuple:
+def _opencode_db_signature(session: dict, *, memo: dict | None = None) -> tuple:
     """Stat of the shared OpenCode database and its WAL (no SQL)."""
     path = str(session.get("path") or "")
+    if memo is not None:
+        key = ("opencode", path)
+        if key in memo:
+            return memo[key]
     signature = []
     for candidate in (path, f"{path}-wal" if path else ""):
         try:
@@ -113,15 +117,22 @@ def _opencode_db_signature(session: dict) -> tuple:
         except OSError:
             info = None
         signature.append((info.st_size, info.st_mtime_ns) if info is not None else None)
-    return tuple(signature)
+    result = tuple(signature)
+    if memo is not None:
+        memo[("opencode", path)] = result
+    return result
 
 
-def _antigravity_db_signature(session: dict) -> tuple:
+def _antigravity_db_signature(session: dict, *, memo: dict | None = None) -> tuple:
     """Stat of Antigravity's `conversation_summaries.db` and its WAL (no SQL)."""
     root = liveness._antigravity_root_from_path(session.get("path"))
     if root is None:
         return ()
     db = str(root / "conversation_summaries.db")
+    if memo is not None:
+        key = ("antigravity", db)
+        if key in memo:
+            return memo[key]
     signature = []
     for candidate in (db, f"{db}-wal"):
         try:
@@ -129,7 +140,10 @@ def _antigravity_db_signature(session: dict) -> tuple:
         except OSError:
             info = None
         signature.append((info.st_size, info.st_mtime_ns) if info is not None else None)
-    return tuple(signature)
+    result = tuple(signature)
+    if memo is not None:
+        memo[("antigravity", db)] = result
+    return result
 
 
 # Fields the per-session turn probe owns between full scans (status follows
@@ -143,7 +157,7 @@ _SUBMIT_QUIET_RELEASE_SECONDS = 15.0
 _ATTENTION_FIELDS = ("attention_kind", "attention_token", "attention_updated_at")
 
 
-def _turn_evidence_stamp(session: dict) -> tuple | None:
+def _turn_evidence_stamp(session: dict, *, db_memo: dict | None = None) -> tuple | None:
     """Cheap stat-only stamp of one session's history; None when not probeable."""
     source = session.get("source")
     if source == "antigravity":
@@ -152,7 +166,7 @@ def _turn_evidence_stamp(session: dict) -> tuple | None:
             info = os.stat(path) if path else None
         except OSError:
             info = None
-        db_sig = _antigravity_db_signature(session)
+        db_sig = _antigravity_db_signature(session, memo=db_memo)
         if info is None and db_sig is None:
             return None
         file_sig = (info.st_size, info.st_mtime_ns) if info is not None else None
@@ -167,7 +181,7 @@ def _turn_evidence_stamp(session: dict) -> tuple | None:
     if source == "cursor":
         return SessionStore._cursor_attention_signature(session)
     if source == "opencode":
-        return _opencode_db_signature(session)
+        return _opencode_db_signature(session, memo=db_memo)
     return None
 
 
@@ -212,6 +226,7 @@ class SessionStore:
         self.limit = limit
         self.registry = registry or default_registry()
         self.lock = threading.Lock()
+        self._scan_lock = threading.Lock()
         self.sessions: dict[str, list[dict]] = {runtime_id: [] for runtime_id in self.registry.ids}
         self.attention_store = attention_store or AttentionStore()
         self.attention_states: dict[str, AttentionState] = {}
@@ -458,12 +473,13 @@ class SessionStore:
             self._ensure_scan_worker()
             t0 = time.perf_counter()
             keep_ids = self._remembered_scan_ids()
-            scanned = self.registry.scan_all(
-                self.limit, keep_ids_by_runtime=keep_ids,
-            )
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            session_count = sum(len(items) for items in scanned.values())
-            shared = bool(getattr(self.registry, "last_scan_shared", False))
+            with self._scan_lock:
+                scanned = self.registry.scan_all(
+                    self.limit, keep_ids_by_runtime=keep_ids,
+                )
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                session_count = sum(len(items) for items in scanned.values())
+                shared = bool(getattr(self.registry, "last_scan_shared", False))
             observe.event(
                 "scan_all",
                 duration_ms=duration_ms,
@@ -542,16 +558,17 @@ class SessionStore:
                 # cheap when one is already live.
                 self._ensure_scan_worker()
             keep_ids = self._remembered_scan_ids()
-            scanned = self.registry.scan_all(
-                self.limit,
-                keep_ids_by_runtime=keep_ids,
-                prefer_shared=not force_local,
-            )
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            session_count = sum(len(items) for items in scanned.values())
-            cache_hit = bool(getattr(self.registry, "last_scan_cache_hit_all", False))
-            shared = bool(getattr(self.registry, "last_scan_shared", False))
-            shared_miss = getattr(self.registry, "last_scan_shared_miss", None)
+            with self._scan_lock:
+                scanned = self.registry.scan_all(
+                    self.limit,
+                    keep_ids_by_runtime=keep_ids,
+                    prefer_shared=not force_local,
+                )
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                session_count = sum(len(items) for items in scanned.values())
+                cache_hit = bool(getattr(self.registry, "last_scan_cache_hit_all", False))
+                shared = bool(getattr(self.registry, "last_scan_shared", False))
+                shared_miss = getattr(self.registry, "last_scan_shared_miss", None)
             if not shared:
                 self._last_local_scan_at = now
             use_live = (
@@ -711,11 +728,12 @@ class SessionStore:
         """
         previous = self._turn_probe
         probes: dict[str, tuple[tuple, dict]] = {}
+        db_memo: dict = {}
         for session in sessions:
             if session.get("provisional"):
                 continue
             key = session_key(session)
-            stamp = _turn_evidence_stamp(session)
+            stamp = _turn_evidence_stamp(session, db_memo=db_memo)
             if stamp is None:
                 continue
             cached = self._turn_probe.get(key)
@@ -896,6 +914,7 @@ class SessionStore:
                     pi_phases = live_agent_phases()
                 except Exception:
                     pi_phases = {}
+            db_memo: dict = {}
             for session in sessions:
                 candidate = dict(session)
                 key = session_key(candidate)
@@ -938,11 +957,11 @@ class SessionStore:
                 elif candidate.get("source") == "opencode" and candidate.get("live"):
                     # One shared database: its per-session size is not a file stat,
                     # so a live session re-reads evidence whenever the DB moves.
-                    evidence_signature = base_signature + (_opencode_db_signature(candidate),)
+                    evidence_signature = base_signature + (_opencode_db_signature(candidate, memo=db_memo),)
                 elif candidate.get("source") == "antigravity" and candidate.get("live"):
                     # Live `agy` updates status / not_fully_idle in shared
                     # conversation_summaries.db even when transcript JSONL pauses.
-                    evidence_signature = base_signature + (_antigravity_db_signature(candidate),)
+                    evidence_signature = base_signature + (_antigravity_db_signature(candidate, memo=db_memo),)
                 else:
                     evidence_signature = base_signature
                 prepared.append((candidate, evidence_signature))
@@ -1986,6 +2005,7 @@ class SessionStore:
             "file_mtime": now,
             "size_bytes": 0,
             "size_kb": 0,
+            "loop_count": None,
             "native_title": None,
             "fallback_title": title or t("session.title.new", name=runtime_id),
             "status_tag": titles.STATUS_PENDING,

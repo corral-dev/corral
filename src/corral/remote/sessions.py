@@ -60,6 +60,8 @@ _STATE_HOSTS_EVERY_TICKS = 2
 _ARRIVAL_FOLLOW_SECONDS = 20.0
 _ARRIVAL_MIN_GAP = 1.0
 _LAYOUT_POLL_SECONDS = 1.0
+_SEARCH_IDLE_RECONCILE = 300.0
+_SEARCH_INDEX_MIN_GAP = 15.0
 _PHONE_LIST_LIMIT = 80
 # OpenCode drops two interrupt presses that arrive in one read; 0.3 s apart
 # both count, about 1.3 s apart the first has already expired.
@@ -821,6 +823,10 @@ class SessionHub:
         self._layout_cache: tuple[int, object] | None = None
         self._stop = threading.Event()
         self._search_refresh = threading.Event()
+        self._search_catalog_needed = False
+        self._loops_started = False
+        self._loading_done = threading.Event()
+        self._loading_done.set()
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
@@ -862,6 +868,7 @@ class SessionHub:
         watcher = HistoryWatcher()
         self._history_watcher = watcher
         watcher.start()
+        self._loading_done.clear()
         try:
             # Answer opens from the last sidebar snapshot while the first scan
             # runs. A cold scan costs 15-45 s on this host (measured
@@ -872,17 +879,27 @@ class SessionHub:
             # rows from reading as fresh transitions.
             if cache_enabled() and self.store.hydrate_from_snapshot():
                 self._record_state_baseline()
+                self._start_background_loops()
                 self._ready.set()
             self.store.load()
-            self._record_state_baseline()
+            self._record_state_baseline(merge=True)
+            self._start_background_loops()
         finally:
+            self._loading_done.set()
             self._ready.set()
 
-    def _record_state_baseline(self) -> None:
+    def _record_state_baseline(self, *, merge: bool = False) -> None:
         """Record the attention/live/status baseline the push loops diff against."""
-        self._snapshot_attention()
-        self._snapshot_live()
-        self._snapshot_status()
+        self._snapshot_attention(merge=merge)
+        self._snapshot_live(merge=merge)
+        self._snapshot_status(merge=merge)
+
+    def _start_background_loops(self) -> None:
+        """Start background worker threads once per hub lifecycle."""
+        with self._lock:
+            if self._loops_started or self._stop.is_set():
+                return
+            self._loops_started = True
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop, self._search_loop):
             thread = threading.Thread(target=target, daemon=True, name=f"remote-{target.__name__}")
             thread.start()
@@ -954,23 +971,41 @@ class SessionHub:
         return [session for session in self.store.search_sessions()
                 if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS]
 
+    def _request_search_refresh(self, *, catalog: bool = False) -> None:
+        if catalog:
+            self._search_catalog_needed = True
+        self._search_refresh.set()
+
     def _search_loop(self) -> None:
         """Own parsing outside RPC threads; publish only complete index snapshots."""
         from corral import observe
         from corral.schedprio import demote_background
 
         demote_background()
+        while not self._stop.is_set() and not self._loading_done.wait(0.2):
+            pass
+        if self._stop.is_set():
+            return
         index = self._search_index()
+        warmed = False
+        last_catalog_at = 0.0
         while not self._stop.is_set():
             self._search_refresh.clear()
+            need_catalog = self._search_catalog_needed
+            self._search_catalog_needed = False
+            now = time.monotonic()
+            if not warmed or need_catalog or (now - last_catalog_at >= _SEARCH_IDLE_RECONCILE):
+                try:
+                    self.store.prepare_search()
+                except Exception as exc:
+                    observe.event("search_index_refresh_failed", error=str(exc))
+                last_catalog_at = time.monotonic()
             try:
-                self.store.prepare_search()
                 index.refresh(self.store, self._search_sessions())
             except Exception as exc:
                 observe.event("search_index_refresh_failed", error=str(exc))
-            # Also validate file/WAL signatures between catalog scans so fresh
-            # messages in a known session do not wait for the next full scan.
-            self._search_refresh.wait(2.0)
+            warmed = True
+            self._search_refresh.wait(_SEARCH_IDLE_RECONCILE)
 
     def _refresh_loop(self) -> None:
         """Full history scans on this thread; the state probe on its own thread.
@@ -994,6 +1029,7 @@ class SessionHub:
         last_scan = time.monotonic()  # start() just loaded
         last_title_poll = last_scan
         last_chatter = last_scan
+        last_search_wake = 0.0
         arrival_seen = self._watcher_arrivals(watcher)
         arrival_until = 0.0
         index_stamp = _scan_index_stamp()
@@ -1045,7 +1081,9 @@ class SessionHub:
                     else:
                         self._note_scan_cost(time.monotonic() - scan_started)
                     last_scan = time.monotonic()
-                    self._search_refresh.set()
+                    if changed and (last_scan - last_search_wake) >= _SEARCH_INDEX_MIN_GAP:
+                        self._request_search_refresh(catalog=False)
+                        last_search_wake = last_scan
                     self._reclaim_inactive_hosts()
                     self._reconcile_hosted_lifecycle()
                     # §6.5: a user-initiated resume Corral had to absorb is retried on
@@ -1091,10 +1129,11 @@ class SessionHub:
                 self._scan_title_keys = set()
             self._follow_key_migrations()
             self._announce_key_migrations()
-            self._detect_attention_changes()
-            self._detect_live_changes()
-            self._detect_status_changes()
-            markers_changed = self._detect_marker_changes()
+            sessions = self.store.all_sessions()
+            self._detect_attention_changes(sessions=sessions)
+            self._detect_live_changes(sessions=sessions)
+            self._detect_status_changes(sessions=sessions)
+            markers_changed = self._detect_marker_changes(sessions=sessions)
             if (changed or title_keys or markers_changed) and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
@@ -1108,8 +1147,9 @@ class SessionHub:
         """
         if not self._ready.is_set():
             return
-        self._detect_status_changes()
-        self._detect_marker_changes()
+        sessions = self.store.all_sessions()
+        self._detect_status_changes(sessions=sessions)
+        self._detect_marker_changes(sessions=sessions)
         if self._sessions_watchers:
             self._on_event("sessions", self.list_snapshot())
 
@@ -1127,14 +1167,15 @@ class SessionHub:
         except Exception:
             return 0
 
-    def _detect_marker_changes(self) -> bool:
+    def _detect_marker_changes(self, *, sessions: list[dict] | None = None) -> bool:
         """True when any row's TUI marker or Attention membership flipped.
 
         A ``recent`` mark and the Attention windows expire with time alone,
         without any history change, so the list push cannot rely on
         ``store.refresh()`` reporting a change.
         """
-        sessions = self.store.all_sessions()
+        if sessions is None:
+            sessions = self.store.all_sessions()
         now = time.time()
         current = {
             session_key(session): (
@@ -1331,6 +1372,12 @@ class SessionHub:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _wire_optional_nonneg_int(value: object) -> int | None:
+        from corral.textutil import parse_loop_count
+
+        return parse_loop_count(value)
+
     def session_payload(self, session: dict, layout=None) -> dict:
         key = session_key(session)
         title = self.store.get_title(session)
@@ -1347,6 +1394,7 @@ class SessionHub:
             "mtime": self._wire_float(session.get("mtime")),
             "time": str(session.get("display_time") or ""),
             "size_kb": round(self._wire_float(session.get("size_kb")), 1),
+            "loop_count": self._wire_optional_nonneg_int(session.get("loop_count")),
             "status": str(session.get("status_tag") or ""),
             "live": bool(session.get("live")),
             "hosted": bool(session.get("keepalive_name")),
@@ -1409,6 +1457,7 @@ class SessionHub:
                     pinned,
                     resolve_active_marker(session) or "",
                     needs_attention(session),
+                    self._wire_optional_nonneg_int(session.get("loop_count")),
                 ]
             )
         return _list_version_blob(rows)
@@ -1420,10 +1469,12 @@ class SessionHub:
         if query.strip():
             if self._threads:
                 if not self.store.search_catalog.ready:
+                    self._request_search_refresh(catalog=True)
                     raise ActionError("unavailable", t("filter.searching"))
                 # A reconciliation may be doing slow native reads. Serve the
                 # last complete catalog, never wait on its preparation lock.
-                self._search_refresh.set()
+                if not self.store.search_catalog.fresh:
+                    self._request_search_refresh(catalog=True)
             else:
                 try:
                     self.store.prepare_search()
@@ -1526,14 +1577,14 @@ class SessionHub:
             return result
         catalog = self.store.search_catalog
         authoritative = catalog.fresh
-        if not authoritative:
-            self._search_refresh.set()
         found: dict[str, dict] = {}
         missing = []
+        missing_lookup = False
         for key in dict.fromkeys(keys):
             canonical = self.resolve_session_key(key)
             session = self.store.find_session(canonical)
             if session is None:
+                missing_lookup = True
                 if authoritative:
                     missing.append(key)
                 continue
@@ -1541,6 +1592,8 @@ class SessionHub:
             if canonical != key:
                 aliases[key] = canonical
             found[canonical] = self.session_payload(session, layout)
+        if missing_lookup and not authoritative:
+            self._request_search_refresh(catalog=True)
         result.update(retained_sessions=list(found.values()), missing_keys=missing)
         return result
 
@@ -2564,7 +2617,10 @@ class SessionHub:
         if not self._threads:
             self.store.prepare_search()
         elif not index.ready or not self.store.search_catalog.ready:
+            self._request_search_refresh(catalog=True)
             raise ActionError("unavailable", t("filter.searching"))
+        elif not self.store.search_catalog.fresh:
+            self._request_search_refresh(catalog=True)
         sessions = self._search_sessions()
         if not self._threads:
             index.refresh(self.store, sessions)
@@ -4210,25 +4266,42 @@ class SessionHub:
 
     # -- 关注状态变化 -----------------------------------------------------
 
-    def _snapshot_attention(self) -> None:
-        self._last_attention = {
-            session_key(s): str(s.get("attention_kind") or "none") for s in self.store.all_sessions()
-        }
+    def _snapshot_attention(self, *, merge: bool = False) -> None:
+        sessions = self.store.all_sessions()
+        if not merge:
+            self._last_attention = {
+                session_key(s): str(s.get("attention_kind") or "none") for s in sessions
+            }
+            return
+        for s in sessions:
+            self._last_attention.setdefault(session_key(s), str(s.get("attention_kind") or "none"))
 
-    def _snapshot_live(self) -> None:
-        self._last_live = {
-            session_key(s): bool(s.get("live")) for s in self.store.all_sessions()
-        }
+    def _snapshot_live(self, *, merge: bool = False) -> None:
+        sessions = self.store.all_sessions()
+        if not merge:
+            self._last_live = {
+                session_key(s): bool(s.get("live")) for s in sessions
+            }
+            return
+        for s in sessions:
+            self._last_live.setdefault(session_key(s), bool(s.get("live")))
 
-    def _snapshot_status(self) -> None:
-        self._last_status = {
-            session_key(s): str(s.get("status_tag") or "") for s in self.store.all_sessions()
-        }
-        self._last_completion = {
-            session_key(s): str(s.get("completion_id") or "") for s in self.store.all_sessions()
-        }
+    def _snapshot_status(self, *, merge: bool = False) -> None:
+        sessions = self.store.all_sessions()
+        if not merge:
+            self._last_status = {
+                session_key(s): str(s.get("status_tag") or "") for s in sessions
+            }
+            self._last_completion = {
+                session_key(s): str(s.get("completion_id") or "") for s in sessions
+            }
+            return
+        for s in sessions:
+            key = session_key(s)
+            self._last_status.setdefault(key, str(s.get("status_tag") or ""))
+            self._last_completion.setdefault(key, str(s.get("completion_id") or ""))
 
-    def _detect_attention_changes(self) -> None:
+    def _detect_attention_changes(self, *, sessions: list[dict] | None = None) -> None:
         """关注状态变化：正在看的对话走实时事件；系统推送仍只报「等你回答」。
 
         推送层只收 waiting 跃迁，避免长任务刷屏。已经打开详情的手机必须立刻
@@ -4243,7 +4316,9 @@ class SessionHub:
                 for watch in self._conversations.values()
                 if watch.watchers > 0
             ]
-        for session in self.store.all_sessions():
+        if sessions is None:
+            sessions = self.store.all_sessions()
+        for session in sessions:
             key = session_key(session)
             current = str(session.get("attention_kind") or "none")
             previous = self._last_attention.get(key)
@@ -4277,7 +4352,7 @@ class SessionHub:
                 except Exception:
                     continue
 
-    def _detect_live_changes(self) -> None:
+    def _detect_live_changes(self, *, sessions: list[dict] | None = None) -> None:
         """Process alive flips for open conversation watches.
 
         List watch is often torn down on the detail page, so a live-only flip
@@ -4291,13 +4366,15 @@ class SessionHub:
                 for watch in self._conversations.values()
                 if watch.watchers > 0
             ]
+        if sessions is None:
+            sessions = self.store.all_sessions()
         if not watches:
             # Still advance the baseline so the first open after a flip is clean.
-            for session in self.store.all_sessions():
+            for session in sessions:
                 self._last_live[session_key(session)] = bool(session.get("live"))
             return
         layout = self._layout()
-        for session in self.store.all_sessions():
+        for session in sessions:
             key = session_key(session)
             current = bool(session.get("live"))
             previous = self._last_live.get(key)
@@ -4326,7 +4403,7 @@ class SessionHub:
                 {"kind": "notification", "notification_kind": kind, "notification": payload},
             )
 
-    def _detect_status_changes(self) -> None:
+    def _detect_status_changes(self, *, sessions: list[dict] | None = None) -> None:
         """SessKit status_tag 变化 → 推送层（已完成 / 已中断）。
 
         启动基线不推。同值抖动不推——但同一会话 `completion_id` 变了
@@ -4354,7 +4431,9 @@ class SessionHub:
         terminal_sessions: list[dict] = []
         # key -> (identity, session) for every ABORTED row seen this scan.
         seen_aborts: dict[str, tuple[str, dict]] = {}
-        for session in self.store.all_sessions():
+        if sessions is None:
+            sessions = self.store.all_sessions()
+        for session in sessions:
             key = session_key(session)
             current = str(session.get("status_tag") or "")
             previous = self._last_status.get(key)

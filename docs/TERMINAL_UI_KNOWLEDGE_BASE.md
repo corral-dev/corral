@@ -488,6 +488,8 @@ stateDiagram-v2
 
 会话卡固定三行：第一行最左是关注圆点，之后隔一个空格接统一基础样式、空格分隔且不带冒号的「项目 标题」；无圆点时不留占位空格，标题顶到最左并吃满整行；第二行右侧是运行时，第三行右侧是时间。标题不再因会话运行中而整行变绿；状态只由圆点和详情头文字表达。
 
+- **项目名位置（机主 2026-11-12 裁定）**：试过把项目名移到第二行靠左（标题独占首行），观感不如现在首行「项目 标题」前缀，已还原。以后再有人提把项目名挪到第二行，先提醒机主这次的结论再动手。
+
 | 优先级 | 圆点 | 业务语义 | 产生条件 |
 |---|---|---|---|
 | 1 | 黄 | 等待回答 | 助手提出仍未得到结果的结构化问题；普通文本问句不算 |
@@ -1057,5 +1059,13 @@ CORRAL_LANG=zh python3 -m corral --limit 5
 Owner correction (2026-10-11): each expanded prompt uses up to four wrapped body lines, truncating only when a fifth line exists. Two-, three- and exactly four-line prompts remain complete; short prompts do not reserve unused lines. The collapsed summary remains compact. Reuse `SessionHud._entry_lines` and its cell-width-aware wrapping, time-column alignment and scrolling. This is Corral presentation, not a SessKit parser change.
 
 Verification: the focused HUD render/summary suite passes 25 tests, including exact two/three/four-line ASCII and CJK bodies. The complete CLI gate covers 2345 tests. The synthetic production TUI screenshot shows a complete three-line prompt, a complete four-line prompt and truncation only in the fourth line of longer content.
+
+### Session card loop count indicator (owner decision, 2026-11-19)
+
+Session rows display session size via SessKit's cross-runtime `loop_count` (agent loop rounds, not token or byte size, and without text unit labels):
+
+- **Placement:** on `SessionCard` row 2 left side (`↻ <count>`), leaving row 1 (title), row 2 right-aligned runtime name, and row 3 right-aligned relative time column intact and still keeping the fixed 3-row card height.
+- **Formatting & suppression:** `None` or `<= 0` is omitted (blank); `>= 1000` formats compactly as `1.2k` (`textutil.format_loop_count`). Narrow columns reserve space for the right-aligned runtime column first and drop/truncate the loop indicator only if insufficient width remains.
+- **Visual hierarchy:** monochrome `$foreground` alpha tiers (`1–3`: 38%, `4–30`: 58%, `> 30`: 78%) without new hue accents, capsules, or `dim` SGR attributes; `_compute_signature()` includes `loop_count` so in-place updates repaint when a session completes a new loop.
 
 <!-- 该文档整理/压缩于 2026-10-20 -->

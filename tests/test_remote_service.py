@@ -122,6 +122,10 @@ class FakeHub:
     def delete_session(self, key: str):
         raise ActionError(protocol.E_NOT_FOUND, "会话不在了")
 
+    def export_session(self, key: str):
+        self._record("export_session", key)
+        return {"json": json.dumps({"ok": True, "data": {"id": key}}, separators=(",", ":"))}
+
 
 class RemoteServiceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -281,8 +285,8 @@ class RemoteServiceTests(unittest.TestCase):
 
     # -- 订阅记账 -----------------------------------------------------------
 
-    def _paired(self) -> Connection:
-        code = self.service.begin_pairing()
+    def _paired(self, mode: str = "full") -> Connection:
+        code = self.service.begin_pairing(mode=mode)
         connection = self._connect()
         self._call(connection, protocol.M_PAIR, {"code": code})
         return connection
@@ -760,6 +764,29 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertEqual(len(inbound_data), 1)
         self.assertTrue(inbound_data[0]["ok"])
 
+    def test_session_export_is_readonly_and_uses_data_plane(self):
+        connection = self._paired(mode="readonly")
+        hello = self._call(connection, protocol.M_HELLO, {"name": "Mac"})
+        self.assertTrue(hello["d"]["capabilities"].get(protocol.CAPABILITY_SESSION_EXPORT))
+
+        data_sent: list[dict] = []
+        connection.data_send = data_sent.append
+        self.sent.clear()
+        self.service.handle(
+            connection,
+            protocol.request(9, protocol.M_SESSION_EXPORT, {"key": "codex:abc"}),
+        )
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(data_sent), 1)
+        self.assertTrue(data_sent[0]["ok"])
+        parsed = json.loads(data_sent[0]["d"]["json"])
+        self.assertEqual(parsed["data"]["id"], "codex:abc")
+
+        full = self._paired()
+        rejected = self._call(full, protocol.M_SESSION_EXPORT, {"key": "shell:1"})
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(rejected["e"]["code"], protocol.E_USAGE)
+
     # -- 同一设备只保留一条控制面 -----------------------------------------
 
     def test_new_control_plane_supersedes_stale_one_from_same_device(self):
@@ -886,6 +913,17 @@ class RemoteServiceTests(unittest.TestCase):
         timed = [e for e in audit if e["method"] == protocol.M_SESSION_MESSAGES]
         self.assertEqual(len(timed), 1)
         self.assertEqual(timed[0]["plane"], "data")
+
+    def test_dispatch_event_skips_reconcile_without_subscribers_and_throttles_bursts(self):
+        with mock.patch.object(self.service, "reconcile_devices", wraps=self.service.reconcile_devices) as rec:
+            self.service._dispatch_event(protocol.CH_SESSIONS, {"sessions": []})
+            rec.assert_not_called()
+            watcher = self._paired()
+            self._call(watcher, protocol.M_SESSIONS_WATCH)
+            rec.reset_mock()
+            self.service._dispatch_event(protocol.CH_SESSIONS, {"sessions": []})
+            self.service._dispatch_event(protocol.CH_SESSIONS, {"sessions": []})
+            self.assertEqual(rec.call_count, 1)
 
 
 class PairingWindowTests(unittest.TestCase):

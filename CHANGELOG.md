@@ -6,6 +6,18 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- TUI session list & session API (via SessKit 0.3.8): sessions now expose cross-runtime agent loop counts (`loop_count: int | None`), rendered on Row 2 of each TUI session card as `↻ <count>` (`1.2k` at 1,000+) using three neutral foreground contrast tiers (`1-3`, `4-30`, `>30`) and hidden when zero or unavailable.
+- Remote host & lifecycle: added `media.file` RPC and Antigravity `M-m` steering, reused the session ID as the tmux ident on native resume, stopped automatic background relaunches after reboot or crash, skipped missing tmux sockets in `busycheck`, cached remote LAN hints and throttled unchanged status snapshot writes in `RemoteDaemon`, and isolated `_list_tmux_sessions` under `CORRAL_ISOLATE_MANAGED_HOSTS=1`.
+
+### 简体中文
+
+- 终端界面会话列表与会话接口（依赖 SessKit 0.3.8）：会话现已提供跨运行时统一的 agent loop 轮次（`loop_count: int | None`），在 TUI 会话卡片第二行左侧以 `↻ <数字>`（1,000 起简写为 `1.2k`）配合三档中性前景透明度（`1-3`、`4-30`、`>30`）展示，为 0 或无数据时隐藏。
+- 远程主机与生命周期：新增 `media.file` RPC 与 Antigravity `M-m` 引导发送；原生恢复时复用会话 ID 作为 tmux 标识；取消重启或崩溃后的后台自动拉起，并在 `busycheck` 中跳过不存在的 tmux socket；`RemoteDaemon` 缓存局域网提示地址并节流未变化的状态快照写入；`CORRAL_ISOLATE_MANAGED_HOSTS=1` 下同步隔离 `_list_tmux_sessions`。
+
 ## 0.24.368
 
 ### English

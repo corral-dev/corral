@@ -60,6 +60,14 @@ Rules:
   existing same-name directory with unknown content is a conflict that is
   reported, never overwritten. Uninstall removes only unchanged owned copies.
 
+### Public skill discovery (skills.sh)
+
+- `cli/docs/SKILL.md` stays the maintained authority; `cli/skills/corral/SKILL.md`
+  is its byte-identical public-discovery copy for scanners that only read
+  `skills/<name>/SKILL.md` (verified 2026-11-02: `npx skills add corral-dev/corral -g`
+  found 1 skill, `corral`, into `~/.agents/skills/`). Keep the two in sync on every
+  `docs/SKILL.md` change; never diverge them into competing authorities.
+
 Paths are defaults, not proof of discovery in every client/version. Upstream
 references: [Claude](https://code.claude.com/docs/en/skills),
 [Codex](https://learn.chatgpt.com/docs/build-skills),

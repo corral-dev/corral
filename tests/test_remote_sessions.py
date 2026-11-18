@@ -2737,6 +2737,112 @@ class StartupHydrationTests(unittest.TestCase):
             worker.join(5)
         self.assertTrue(hub.wait_ready(5))
 
+    def test_start_with_snapshot_starts_single_set_of_background_loops(self) -> None:
+        self._write_snapshot()
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(hub.layout_db.close)
+        started_targets: list[str] = []
+
+        class _FakeThread:
+            def __init__(self, *, target=None, daemon=None, name=None) -> None:
+                self.name = name
+                started_targets.append(str(name or target))
+
+            def start(self) -> None:
+                pass
+
+            def join(self, timeout=None) -> None:
+                pass
+
+        with (
+            mock.patch("corral.history_watch.HistoryWatcher", return_value=mock.Mock()),
+            mock.patch.object(remote_sessions.SessionStore, "load"),
+            mock.patch.object(remote_sessions.threading, "Thread", side_effect=_FakeThread),
+        ):
+            hub.start()
+        self.assertEqual(
+            started_targets,
+            [
+                "remote-_refresh_loop",
+                "remote-_screen_loop",
+                "remote-_conversation_loop",
+                "remote-_search_loop",
+            ],
+        )
+
+    def test_search_loop_warms_once_then_waits_for_explicit_demand(self) -> None:
+        import threading
+
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(hub.layout_db.close)
+        prepare_calls = threading.Event()
+        prepare_count = 0
+        waits: list[float | None] = []
+        wait_entered = threading.Event()
+        wait_release = threading.Event()
+
+        def fake_prepare():
+            nonlocal prepare_count
+            prepare_count += 1
+            hub.store.search_catalog.ready = True
+            prepare_calls.set()
+
+        def fake_wait(timeout=None):
+            waits.append(timeout)
+            wait_entered.set()
+            return wait_release.wait(5)
+
+        index = hub._search_index()
+        with (
+            mock.patch("corral.schedprio.demote_background"),
+            mock.patch.object(hub.store, "prepare_search", side_effect=fake_prepare),
+            mock.patch.object(index, "refresh", return_value=0),
+            mock.patch.object(hub._search_refresh, "wait", side_effect=fake_wait),
+        ):
+            worker = threading.Thread(target=hub._search_loop, daemon=True)
+            worker.start()
+            self.assertTrue(prepare_calls.wait(3))
+            self.assertTrue(wait_entered.wait(3))
+            self.assertEqual(prepare_count, 1)
+            self.assertEqual(waits[-1], remote_sessions._SEARCH_IDLE_RECONCILE)
+            hub._stop.set()
+            wait_release.set()
+            worker.join(5)
+
+    def test_retained_snapshot_skips_search_refresh_when_all_keys_found(self) -> None:
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(hub.layout_db.close)
+        session = _session(sid="present")
+        hub.store.sessions = {"claude": [session]}
+        hub.store.search_catalog.ready = False
+        hub._search_refresh.clear()
+        result = hub.list_snapshot(retained_keys=["claude:present"])
+        self.assertEqual(result["missing_keys"], [])
+        self.assertEqual(len(result["retained_sessions"]), 1)
+        self.assertFalse(hub._search_refresh.is_set())
+
+    def test_session_payload_and_window_version_include_loop_count(self) -> None:
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        session = _session(sid="looped")
+        session["loop_count"] = 18
+        payload = hub.session_payload(session)
+        self.assertEqual(payload["loop_count"], 18)
+
+        v1 = hub._window_version([session], None)
+        session["loop_count"] = 19
+        v2 = hub._window_version([session], None)
+        self.assertNotEqual(v1, v2)
+
+        session["loop_count"] = -5
+        self.assertIsNone(hub.session_payload(session)["loop_count"])
+
 
 if __name__ == "__main__":
 

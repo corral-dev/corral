@@ -1057,9 +1057,9 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
                 real_build = scan_claude._build_session_info
                 build_calls: list[str] = []
 
-                def counting_build(fpath: str, proj: str, host=None):
+                def counting_build(fpath: str, proj: str, host=None, **kwargs):
                     build_calls.append(fpath)
-                    return real_build(fpath, proj, host)
+                    return real_build(fpath, proj, host, **kwargs)
 
                 with (
                     mock.patch.object(scan_claude.os.path, "isdir", side_effect=counting_isdir),

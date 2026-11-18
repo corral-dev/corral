@@ -15,7 +15,7 @@ import time
 from corral import __version__, observe, updater
 from corral.i18n import t
 from corral.remote import config as remote_config
-from corral.remote.lan import DEFAULT_LOCAL_PORT, local_hints
+from corral.remote.lan import DEFAULT_LOCAL_PORT, local_hints, probe_outbound_ipv4
 from corral.remote.mdns import MdnsAdvertiser
 from corral.remote.push import PushNotifier
 from corral.remote.service import RemoteService
@@ -24,6 +24,8 @@ from corral.remote.transport.local import LocalServer
 from corral.remote.transport.relay import RelayClient
 
 _RECONCILE_INTERVAL = 2.0
+_LOCAL_HINTS_TTL = 60.0
+_STATUS_HEARTBEAT_INTERVAL = 15.0
 # Package managers replace the install over several seconds; restart only after
 # two consecutive replaced readings and a successful import probe of the new one.
 _INSTALL_CHECK_INTERVAL = 10.0
@@ -55,6 +57,11 @@ class RemoteDaemon:
         self.hub.set_attention_hook(self.push.on_attention_change)
         self.hub.set_status_hook(self.push.on_status_change)
         self.hub.set_chatter_hook(self.push.on_agent_chatter)
+        self._hints_cache: list[str] = []
+        self._hints_key: tuple[int, str] | None = None
+        self._hints_at = 0.0
+        self._last_status_body: dict | None = None
+        self._last_status_write_at = 0.0
         updater.note_loaded_source()
 
     async def run(self) -> None:
@@ -168,6 +175,23 @@ class RemoteDaemon:
             return False
         return probe.returncode == 0
 
+    def _cached_local_hints(self, port: int) -> list[str]:
+        """Cache LAN hints until the port, outbound IPv4, or TTL expires."""
+        if not (self.state.local_enabled and port):
+            return []
+        key = (port, probe_outbound_ipv4())
+        now = time.monotonic()
+        if (
+            self._hints_key == key
+            and (now - self._hints_at) < _LOCAL_HINTS_TTL
+        ):
+            return list(self._hints_cache)
+        hints = local_hints(port)
+        self._hints_cache = list(hints)
+        self._hints_key = key
+        self._hints_at = now
+        return hints
+
     def _reconcile_once(self) -> None:
         self.service.reconcile_devices()
         # 给另一进程的 `corral remote status` 看：谁在线、最近干了啥、中继是否真连上
@@ -181,20 +205,26 @@ class RemoteDaemon:
         port = self.local.port if self.local is not None else 0
         if not port:
             port = DEFAULT_LOCAL_PORT if self.state.local_enabled else 0
-        remote_config.write_status_snapshot(
-            {
-                "updated_at": time.time(),
-                "version": __version__,
-                "online": self.service.online_devices(),
-                "recent": self.service.recent_audit(12),
-                "relay_online": relay_online,
-                "relay_connected_at": relay_connected_at,
-                "relay_error": relay_error,
-                "local_port": port,
-                "local_hints": local_hints(port) if self.state.local_enabled and port else [],
-                "mdns": bool(self.mdns is not None and self.mdns.advertising),
-            }
-        )
+        body = {
+            "version": __version__,
+            "online": self.service.online_devices(),
+            "recent": self.service.recent_audit(12),
+            "relay_online": relay_online,
+            "relay_connected_at": relay_connected_at,
+            "relay_error": relay_error,
+            "local_port": port,
+            "local_hints": self._cached_local_hints(port),
+            "mdns": bool(self.mdns is not None and self.mdns.advertising),
+        }
+        now = time.monotonic()
+        if (
+            body == self._last_status_body
+            and (now - self._last_status_write_at) < _STATUS_HEARTBEAT_INTERVAL
+        ):
+            return
+        remote_config.write_status_snapshot({"updated_at": time.time(), **body})
+        self._last_status_body = body
+        self._last_status_write_at = now
 
     @property
     def local_port(self) -> int:

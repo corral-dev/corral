@@ -132,6 +132,11 @@ _TIME_FALLBACK_STYLES = {
     "today": Style(dim=True),
     "old": Style(dim=True),
 }
+_LOOP_FALLBACK_STYLES = {
+    "light": Style(dim=True),
+    "medium": Style(dim=True),
+    "heavy": Style(),
+}
 
 
 class NoSelectListItem(ListItem):
@@ -349,6 +354,9 @@ class SessionCard(Widget):
         "session-card--time-recent",
         "session-card--time-today",
         "session-card--time-old",
+        "session-card--loop-light",
+        "session-card--loop-medium",
+        "session-card--loop-heavy",
         "session-card--tree",
     }
 
@@ -388,6 +396,15 @@ class SessionCard(Widget):
     }
     SessionCard > .session-card--time-old {
         color: $foreground 30%;
+    }
+    SessionCard > .session-card--loop-light {
+        color: $foreground 38%;
+    }
+    SessionCard > .session-card--loop-medium {
+        color: $foreground 58%;
+    }
+    SessionCard > .session-card--loop-heavy {
+        color: $foreground 78%;
     }
     /* 组内树线：与卡片基础色同亮，靠「非 bold」让标题仍跳一层；绝不用终端
        dim——那一档在深色底上几乎看不见。 */
@@ -464,6 +481,16 @@ class SessionCard(Widget):
             return fallback
         return Style.from_color(style.color)
 
+    def _loop_style(self, tier: str) -> Style:
+        """Loop-count contrast tier; foreground-only so selection backgrounds show through."""
+        fallback = _LOOP_FALLBACK_STYLES[tier]
+        style = self.get_component_rich_style(
+            f"session-card--loop-{tier}", default=fallback
+        )
+        if style is fallback or style.color is None:
+            return fallback
+        return Style.from_color(style.color)
+
     def _compute_signature(self) -> tuple:
         """渲染相关字段的轻量快照，用来判定"内容是否真的变了"、要不要 refresh()。"""
         import corral
@@ -476,6 +503,7 @@ class SessionCard(Widget):
             session.get("attention_token"),
             session.get("attention_updated_at"),
             session.get("mtime"),
+            session.get("loop_count"),
             # 「刚刚」绿点依赖本窗口托管；托管标记变化必须触发重绘。
             bool(session.get("keepalive_name")),
             # mtime 不变但会话「变旧」跨过档位线时，时间行要跟着压暗，所以档位
@@ -600,7 +628,19 @@ class SessionCard(Widget):
                     )
         out.append("\n")
         out.append(continuation_prefix, style=tree_style)
-        out.append(runtime_cell, style=corral.runtime_label_style(runtime_id))
+        from corral.textutil import format_loop_count, loop_count_tier
+
+        loop_text = format_loop_count(session.get("loop_count"))
+        loop_tier = loop_count_tier(session.get("loop_count"))
+        loop_label = f"↻ {loop_text}" if loop_text else ""
+        runtime_width = corral._text_width(runtime_name)
+        loop_width = corral._text_width(loop_label) if loop_label else 0
+        if loop_label and loop_tier and loop_width + 1 + runtime_width <= content_width:
+            out.append(loop_label, style=self._loop_style(loop_tier))
+            out.append(" " * (content_width - loop_width - runtime_width))
+            out.append(runtime_name, style=corral.runtime_label_style(runtime_id))
+        else:
+            out.append(runtime_cell, style=corral.runtime_label_style(runtime_id))
         out.append("\n")
         out.append(continuation_prefix, style=tree_style)
         out.append(time_cell, style=time_style)

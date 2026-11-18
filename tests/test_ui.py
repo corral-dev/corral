@@ -2098,6 +2098,46 @@ class SessionCardVisualTests(unittest.TestCase):
         self.assertNotIn("…", lines[0])
         # 截断处仍是标题正文的字符，且整行铺满可用宽度
         self.assertIn("这是一个非常", lines[0])
+
+    def test_loop_count_renders_on_row_two_and_respects_narrow_width(self) -> None:
+        card = self._card()
+        card.session["loop_count"] = 42
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
+        ):
+            lines = card.render().plain.splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[1].startswith("↻ 42"))
+        self.assertTrue(lines[1].endswith("OpenCode"))
+        self.assertEqual([corral._text_width(line) for line in lines], [39, 39, 39])
+
+        card.session["loop_count"] = 1250
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
+        ):
+            lines_k = card.render().plain.splitlines()
+        self.assertTrue(lines_k[1].startswith("↻ 1.2k"))
+
+        card.session["loop_count"] = 0
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
+        ):
+            lines_zero = card.render().plain.splitlines()
+        self.assertNotIn("↻", lines_zero[1])
+
+        card.session["loop_count"] = 42
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(10, 3),
+        ):
+            lines_narrow = card.render().plain.splitlines()
+        self.assertTrue(lines_narrow[1].endswith("OpenCode"))
+        self.assertNotIn("↻", lines_narrow[1])
+
+        updated_session = dict(card.session, loop_count=43)
+        with mock.patch.object(card, "refresh") as refresh_mock:
+            changed = card.apply_update(updated_session, card.display_title)
+        self.assertTrue(changed)
+        refresh_mock.assert_called_once()
         self.assertEqual(corral._text_width(lines[0]), 39)
 
     def test_runtime_label_uses_distinct_brand_colors(self) -> None:

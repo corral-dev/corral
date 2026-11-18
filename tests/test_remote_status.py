@@ -346,6 +346,40 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         self.assertIn('"relay_online": false', buf.getvalue())
         self.assertIn("连接被重置", buf.getvalue())
 
+    def test_reconcile_once_caches_local_hints_and_skips_redundant_writes(self) -> None:
+        from corral.remote import daemon as remote_daemon
+
+        state = remote_config.RemoteState(
+            host_id="h1",
+            host_name="suzhou",
+            relay_url="",
+            relay_enabled=False,
+            local_enabled=True,
+            local_port=8737,
+            devices=[],
+        )
+        with (
+            mock.patch.object(remote_config, "load_or_create_identity", return_value=b"\x00" * 32),
+            mock.patch.object(remote_daemon, "SessionHub"),
+            mock.patch.object(remote_daemon, "RemoteService") as service_cls,
+            mock.patch.object(remote_daemon, "MdnsAdvertiser") as mdns_cls,
+            mock.patch.object(remote_daemon, "PushNotifier"),
+        ):
+            service = service_cls.return_value
+            service.online_devices.return_value = []
+            service.recent_audit.return_value = []
+            mdns_cls.return_value.advertising = True
+            daemon = remote_daemon.RemoteDaemon(state)
+            with (
+                mock.patch.object(remote_daemon, "probe_outbound_ipv4", return_value="192.168.1.10"),
+                mock.patch.object(remote_daemon, "local_hints", return_value=["192.168.1.10:8737"]) as hints,
+                mock.patch.object(remote_config, "write_status_snapshot") as write_snap,
+            ):
+                daemon._reconcile_once()
+                daemon._reconcile_once()
+        hints.assert_called_once_with(8737)
+        write_snap.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,7 @@ from corral.legacy_names import getenv
 from corral.models import format_message_time, is_shell_session, session_key
 from corral.runtime import LaunchError, default_registry
 from corral.runtime.base import usable_cwd
+from corral.textutil import parse_loop_count
 from corral.transcript import SCHEMA_ID, count_events, load_events
 
 AGENT_API_VERSION = 1
@@ -158,7 +159,7 @@ def _resolve_out_path(out: str) -> str:
 # session_payload 产出的全部字段名：--fields 白名单的真源（与 payload 共用定义，不另写一套）。
 _SESSION_FIELD_NAMES = frozenset({
     "runtime", "id", "short_id", "title", "cwd", "cwd_display", "time", "mtime",
-    "size_kb", "status", "status_tag", "history_path", "resumable", "resume_command",
+    "size_kb", "loop_count", "status", "status_tag", "history_path", "resumable", "resume_command",
     "live", "keepalive", "attention", "pid", "last_user", "last_agent", "initiated_by",
 })
 _SEARCH_EXTRA_FIELDS = frozenset({"score", "matched_via", "matched_fields", "snippet"})
@@ -312,6 +313,7 @@ def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] 
         "time": session.get("display_time") or "",
         "mtime": session.get("mtime"),
         "size_kb": round(session.get("size_kb") or 0, 1),
+        "loop_count": parse_loop_count(session.get("loop_count")),
         "status": STATUS_LABELS.get(status_tag, "unknown"),
         "status_tag": status_tag,
         "history_path": session.get("path") or "",
@@ -1235,6 +1237,7 @@ COMMANDS = [
             "time": "最后更新时间（人类可读）",
             "mtime": "最后更新时间（Unix 时间戳）",
             "size_kb": "历史文件大小（KB）",
+            "loop_count": "Agent Loop 轮数（模型决策循环次数；无可用原生记录时为 null）",
             "status": "英文状态枚举：done / pending / aborted / unknown",
             "status_tag": "中文状态标签（含图标），供人类展示用",
             "live": "进程是否真实运行中（true/false），不是文件时间推断",
