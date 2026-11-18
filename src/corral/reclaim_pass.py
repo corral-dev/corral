@@ -38,8 +38,9 @@ STATE_FILE = "reclaim-pass.json"
 PRESSURE_SAMPLES = 2
 PRESSURE_SAMPLE_GAP_SECONDS = 60.0
 PRESSURE_DISARM_SECONDS = 600.0
-# §4.2 "absolute floor" ladder, only reachable while pressure is armed.
-BUDGET_LADDER_MINUTES: tuple[float, ...] = (120.0, 90.0, 60.0, 45.0, 30.0)
+# 2026-11-18 owner ruling: pressure never shortens the 60-minute threshold
+# below 60 minutes; instead it drops the 8-session resident holdback to 0.
+BUDGET_LADDER_MINUTES: tuple[float, ...] = (60.0,)
 
 # CPU burned below this per pass is TUI repaint noise, not work. The measured
 # incident had exactly 0.0 s of CPU on all 34 parked sessions; a named tolerance

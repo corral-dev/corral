@@ -140,16 +140,14 @@ class PressureHysteresisTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CORRAL_RECLAIM_PRESSURE_SAMPLES": "nope"}, clear=True):
             self.assertEqual(reclaim.pressure_knobs()["samples"], reclaim_pass.PRESSURE_SAMPLES)
 
-    def test_ladder_only_applies_while_pressure_is_armed(self) -> None:
+    def test_ladder_stays_at_sixty_minutes_under_pressure(self) -> None:
         state = self.state()
         self.assertIsNone(reclaim_pass.ladder_minutes(state, armed=False))
-        self.assertEqual(reclaim_pass.ladder_minutes(state, armed=True), 120.0)
-        state = reclaim_pass.escalate(state, over_budget=True)
-        self.assertEqual(reclaim_pass.ladder_minutes(state, armed=True), 90.0)
-        for _ in range(10):
+        self.assertEqual(reclaim_pass.ladder_minutes(state, armed=True), 60.0)
+        for _ in range(5):
             state = reclaim_pass.escalate(state, over_budget=True)
-        self.assertEqual(reclaim_pass.ladder_minutes(state, armed=True), 30.0)
-        # Under budget again: the ladder resets in one pass.
+        self.assertEqual(reclaim_pass.ladder_minutes(state, armed=True), 60.0)
+        # Under budget again: resets cleanly.
         self.assertEqual(reclaim_pass.escalate(state, over_budget=False).budget_steps, 0)
 
 
@@ -245,37 +243,41 @@ class CpuDeltaTests(unittest.TestCase):
 class PolicyNumberTests(unittest.TestCase):
     def test_floor_and_default_threshold(self) -> None:
         context = ctx()
-        self.assertEqual(context.effective_idle_minutes, 120.0)
+        self.assertEqual(context.effective_idle_minutes, 60.0)
         self.assertEqual(context.threshold_reason, "default")
         self.assertEqual(context.floor_minutes, 30.0)
 
-    def test_d1_pressure_never_goes_below_the_floor(self) -> None:
+    def test_pressure_keeps_sixty_minute_threshold(self) -> None:
         context = ctx(pressure=True)
-        self.assertEqual(context.threshold_minutes, 10.0)
-        self.assertEqual(context.effective_idle_minutes, 30.0)
-        self.assertEqual(context.threshold_reason, "pressure")
+        self.assertEqual(context.threshold_minutes, 60.0)
+        self.assertEqual(context.effective_idle_minutes, 60.0)
+        self.assertEqual(context.threshold_reason, "default")
         self.assertEqual(
-            reclaim.evaluate(host(session_activity=NOW - 29 * MIN), [done()], context).reason, "floor",
+            reclaim.evaluate(host(session_activity=NOW - 45 * MIN), [done()], context).reason, "recent_activity",
         )
-        self.assertTrue(reclaim.evaluate(host(session_activity=NOW - 31 * MIN), [done()], context).reclaim)
+        self.assertTrue(reclaim.evaluate(host(session_activity=NOW - 65 * MIN), [done()], context).reclaim)
 
-    def test_ladder_cannot_break_the_floor_either(self) -> None:
+    def test_explicit_override_cannot_break_the_floor(self) -> None:
         context = ctx(pressure=True, budget_threshold_minutes=30.0)
         self.assertEqual(context.effective_idle_minutes, 30.0)
         self.assertEqual(context.threshold_reason, "budget_pressure")
         floored = ctx(pressure=True, budget_threshold_minutes=1.0)
         self.assertEqual(floored.effective_idle_minutes, 30.0)
 
-    def test_budget_and_per_pass_numbers(self) -> None:
-        self.assertEqual(ctx().budget, reclaim.RESIDENT_BUDGET)
-        self.assertEqual(ctx(pressure=True).budget, reclaim.PRESSURE_RESIDENT_BUDGET)
-        normal = [verdict(f"corral-pi-bbbb{i:04d}") for i in range(8)]
-        pressure = [verdict(f"corral-pi-cccc{i:04d}") for i in range(8)]
+    def test_budget_and_uncapped_per_pass_numbers(self) -> None:
+        self.assertEqual(reclaim.RESIDENT_BUDGET, 8)
+        self.assertEqual(reclaim.PRESSURE_RESIDENT_BUDGET, 0)
+        self.assertEqual(ctx().budget, 8)
+        self.assertEqual(ctx(pressure=True).budget, 0)
+        normal = [verdict(f"corral-pi-bbbb{i:04d}") for i in range(15)]
+        pressure = [verdict(f"corral-pi-cccc{i:04d}") for i in range(15)]
         normal_hosts = [v.host for v in normal]
         pressure_hosts = [v.host for v in pressure]
-        self.assertEqual(len(reclaim.decide(normal_hosts, records_from(normal_hosts), ctx())), 3)
+        # 15 parked normal -> keep 8, retire 7 without per-pass cap.
+        self.assertEqual(len(reclaim.decide(normal_hosts, records_from(normal_hosts), ctx())), 7)
+        # 15 parked under pressure -> keep 0, retire all 15 without per-pass cap.
         self.assertEqual(
-            len(reclaim.decide(pressure_hosts, records_from(pressure_hosts), ctx(pressure=True))), 6,
+            len(reclaim.decide(pressure_hosts, records_from(pressure_hosts), ctx(pressure=True))), 15,
         )
 
     def test_budget_env_zero_disables_the_lever(self) -> None:
@@ -288,12 +290,15 @@ class PolicyNumberTests(unittest.TestCase):
         with mock.patch.object(reclaim, "_LAST_REPORT", None), \
                 mock.patch.object(reclaim_pass, "load_state", return_value=reclaim_pass.PressureState()):
             view = reclaim.policy_view(now=NOW)
-        self.assertEqual(view["effective_idle_minutes"], 120.0)
+        self.assertEqual(view["effective_idle_minutes"], 60.0)
         self.assertEqual(view["threshold_reason"], "default")
-        report = PassReport(at=NOW, effective_idle_minutes=30.0, threshold_reason="pressure", parked=4)
+        self.assertEqual(view["resident_budget"], 8)
+        report = PassReport(
+            at=NOW, effective_idle_minutes=60.0, threshold_reason="default", parked=4, resident_budget=8,
+        )
         with mock.patch.object(reclaim, "_LAST_REPORT", report):
             view = reclaim.policy_view()
-        self.assertEqual((view["effective_idle_minutes"], view["threshold_reason"]), (30.0, "pressure"))
+        self.assertEqual((view["effective_idle_minutes"], view["threshold_reason"]), (60.0, "default"))
         self.assertEqual(view["parked"], 4)
 
 
@@ -357,18 +362,18 @@ def records_from(hosts):
 
 
 class PolicyNumberDecideTests(unittest.TestCase):
-    def test_per_pass_cap_is_three_then_six(self) -> None:
-        normal = [host(f"corral-pi-bbbb{i:04d}") for i in range(8)]
-        self.assertEqual(len(reclaim.decide(normal, records_from(normal), ctx())), 3)
-        self.assertEqual(len(reclaim.decide(normal, records_from(normal), ctx(pressure=True))), 6)
+    def test_normal_keeps_eight_resident_and_pressure_reclaims_all_without_cap(self) -> None:
+        normal = [host(f"corral-pi-bbbb{i:04d}") for i in range(14)]
+        self.assertEqual(len(reclaim.decide(normal, records_from(normal), ctx())), 6)
+        self.assertEqual(len(reclaim.decide(normal, records_from(normal), ctx(pressure=True))), 14)
 
-    def test_ties_at_the_cap_are_broken_by_measured_footprint(self) -> None:
+    def test_ties_at_the_budget_boundary_are_broken_by_measured_footprint(self) -> None:
         hosts = [host(f"corral-pi-dddd{i:04d}") for i in range(5)]
         history = records_from(hosts)
         measured = {hosts[0].name: 100, hosts[1].name: 300, hosts[2].name: 200,
                     hosts[3].name: 900, hosts[4].name: 50}
         with mock.patch.object(reclaim, "_footprint_bytes", side_effect=lambda v, c: measured[v.name]) as probe:
-            picked = reclaim.decide(hosts, history, ctx(max_per_pass=2))
+            picked = reclaim.decide(hosts, history, ctx(resident_budget=3))
         self.assertEqual(
             [verdict.name for verdict in picked],
             ["corral-pi-dddd0003", "corral-pi-dddd0001"],
@@ -382,7 +387,7 @@ class PolicyNumberDecideTests(unittest.TestCase):
             for index, h in enumerate(hosts)
         }
         with mock.patch.object(reclaim, "_footprint_bytes", side_effect=AssertionError("no fork wanted")):
-            picked = reclaim.decide(hosts, history, ctx(max_per_pass=2))
+            picked = reclaim.decide(hosts, history, ctx(resident_budget=2))
         self.assertEqual([verdict.name for verdict in picked], ["corral-pi-eeee0003", "corral-pi-eeee0002"])
 
 
@@ -864,33 +869,37 @@ class PassHarness(CacheIsolated):
 
 class HysteresisPassTests(PassHarness):
     def test_a_single_pressure_blip_never_retires(self) -> None:
-        self.add_host("corral-pi-aaaa1111", idle_minutes=60)
+        self.add_host("corral-pi-aaaa1111", idle_minutes=70)
         with mock.patch.object(reclaim, "memory_pressure", return_value=True):
             self.assertEqual(self.run_pass(time.time()), [])
         self.assertFalse(reclaim.last_pass().pressure)
         with mock.patch.object(reclaim, "memory_pressure", return_value=False):
-            self.assertEqual(self.run_pass(time.time() + 61), [])
+            self.assertEqual(self.run_pass(time.time() + 301), [])
         self.assertEqual(self.killed, [])
 
-    def test_two_armed_reads_retire_earlier_than_the_normal_threshold(self) -> None:
-        self.add_host("corral-pi-bbbb2222", idle_minutes=60)
+    def test_two_armed_reads_retire_all_over_sixty_ignoring_resident_budget(self) -> None:
+        for index in range(5):
+            self.add_host(f"corral-pi-bbbb{index:04d}", idle_minutes=70)
         with mock.patch.object(reclaim, "memory_pressure", return_value=True):
+            # Pass 1: not yet armed; normal mode keeps all 5 under the 8-session budget.
             self.assertEqual(self.run_pass(time.time()), [])
-            reclaimed = self.run_pass(time.time() + 61)
-        self.assertEqual(reclaimed, ["corral-pi-bbbb2222"])
+            # Pass 2 (5 min later): pressure arms, budget drops to 0, all 5 retired.
+            reclaimed = self.run_pass(time.time() + 301)
+        self.assertEqual(len(reclaimed), 5)
         self.assertTrue(reclaim.last_pass().pressure)
-        self.assertEqual(reclaim.last_pass().effective_idle_minutes, 30.0)
-        self.assertEqual(reclaim.policy_view()["threshold_reason"], "pressure")
+        self.assertEqual(reclaim.last_pass().effective_idle_minutes, 60.0)
+        self.assertEqual(reclaim.last_pass().resident_budget, 0)
+        self.assertEqual(reclaim.policy_view()["threshold_reason"], "default")
 
     def test_budget_overrun_alone_never_shortens_the_threshold(self) -> None:
         for index in range(15):
-            self.add_host(f"corral-pi-cccc{index:04d}", idle_minutes=60)
+            self.add_host(f"corral-pi-cccc{index:04d}", idle_minutes=45)
         self.assertEqual(self.run_pass(time.time()), [])
         report = reclaim.last_pass()
         assert report is not None
         self.assertTrue(report.over_budget)
         self.assertFalse(report.pressure)
-        self.assertEqual(report.effective_idle_minutes, 120.0)
+        self.assertEqual(report.effective_idle_minutes, 60.0)
         self.assertEqual(report.threshold_reason, "default")
         self.assertEqual(self.killed, [])
         blocked = [fields for name, fields in self.events if name == "reclaim_blocked"]
@@ -898,23 +907,27 @@ class HysteresisPassTests(PassHarness):
         self.assertEqual(blocked[0]["blocked"].get("recent_activity"), 15)
         self.assertEqual(blocked[0]["parked"], 15)
 
-    def test_the_ladder_steps_one_per_armed_pass(self) -> None:
+    def test_pressure_does_not_step_below_sixty_for_younger_sessions(self) -> None:
         for index in range(15):
-            self.add_host(f"corral-pi-dddd{index:04d}", idle_minutes=55)
+            self.add_host(f"corral-pi-dddd{index:04d}", idle_minutes=35)
         effective: list[float] = []
-        with mock.patch.dict(os.environ, {"CORRAL_RECLAIM_PRESSURE_IDLE_MINUTES": "60"}), \
-                mock.patch.object(reclaim, "memory_pressure", return_value=True):
-            for step in range(5):
-                self.run_pass(time.time() + step * 61)
+        with mock.patch.object(reclaim, "memory_pressure", return_value=True):
+            for step in range(4):
+                self.run_pass(time.time() + step * 301)
                 effective.append(reclaim.last_pass().effective_idle_minutes)
-        self.assertEqual(effective, [120.0, 60.0, 60.0, 60.0, 45.0])
-        self.assertTrue(self.killed, "the ladder must converge on the 55-minute sessions")
+        self.assertEqual(effective, [60.0, 60.0, 60.0, 60.0])
+        self.assertEqual(self.killed, [])
 
     def test_inv13_cooldown_blocks_a_second_retirement(self) -> None:
-        self.add_host("corral-pi-eeee5555", idle_minutes=180)
+        for index in range(9):
+            self.add_host(f"corral-pi-eeee{index:04d}", idle_minutes=90 + index * 10)
         first = self.run_pass(time.time())
-        self.assertEqual(first, ["corral-pi-eeee5555"])
-        second = self.run_pass(time.time() + 61)
+        self.assertEqual(first, ["corral-pi-eeee0008"])
+        # Re-open the same hosted name (e.g. reused slot) and verify cooldown blocks within 30 min.
+        self.hosts = [h for h in self.hosts if h.name != "corral-pi-eeee0008"]
+        self.sessions = [s for s in self.sessions if s["keepalive_name"] != "corral-pi-eeee0008"]
+        self.add_host("corral-pi-eeee0008", idle_minutes=180)
+        second = self.run_pass(time.time() + 301)
         self.assertEqual(second, [])
         report = reclaim.last_pass()
         assert report is not None
@@ -987,9 +1000,10 @@ class PiResumeRealTmuxTests(unittest.TestCase):
             "path": str(self.history), "cwd": self.temp.name,
         }
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, {"CORRAL_RECLAIM_BUDGET": "0"}):
             # Look three hours ahead: tmux stamped the pane "now", so the
-            # creation grace and the 120-minute threshold need a later clock.
+            # creation grace and the 60-minute threshold need a later clock.
             reclaimed = reclaim.maybe_reclaim(lambda: [session], now=time.time() + 3 * HOUR)
         self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
         self.assertEqual(reclaimed, [self.NAME])

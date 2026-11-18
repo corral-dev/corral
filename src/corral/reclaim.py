@@ -63,18 +63,14 @@ from corral.legacy_names import (
     tmux_base_argv,
 )
 
-DEFAULT_IDLE_MINUTES = 120.0
-DEFAULT_PRESSURE_IDLE_MINUTES = 10.0
+DEFAULT_IDLE_MINUTES = 60.0
+DEFAULT_PRESSURE_IDLE_MINUTES = 60.0
 GRACE_SECONDS = 30 * 60.0
-MAX_PER_PASS = 3
-# §4.2: pressure may drain faster, still bounded so one tick cannot end a work day.
-MAX_PER_PASS_UNDER_PRESSURE = 6
-# §4.2: the resident parked budget is a COUNT on purpose. ``phys_footprint`` is
-# the honest number but costs a fork per pid (1-2 s for 43 sessions, unusable on a
-# 60 s tick) and summed RSS understates by ~10x, which would make a byte budget
-# meaningless. A count is exact, free and proportional to what is controlled.
-RESIDENT_BUDGET = 12
-PRESSURE_RESIDENT_BUDGET = 6
+# §4.2 (updated 2026-11-18): normally keep the 8 newest parked sessions
+# resident and retire any excess beyond 8 that are idle >= 60 min (uncapped
+# per pass). Under armed pressure, keep 0 resident and retire all eligible.
+RESIDENT_BUDGET = 8
+PRESSURE_RESIDENT_BUDGET = 0
 # §4.2: a resume makes a pane re-read history and look idle; ending it again is
 # the worst possible behaviour. Anti-flap cooldown sits next to it.
 RESUME_GRACE_SECONDS = 10 * 60.0
@@ -83,9 +79,9 @@ COOLDOWN_SECONDS = 30 * 60.0
 # this module's policy numbers sees the floor without a second import.
 ABSOLUTE_IDLE_FLOOR_MINUTES = retirement.ABSOLUTE_IDLE_FLOOR_MINUTES
 
-# One pass per interval machine-wide; a young process waits before its first pass
-# so that opening a TUI never kills anything (the clock starts at first import).
-_MIN_INTERVAL_SECONDS = 60.0
+# One pass per interval machine-wide (5 minutes); a young process waits before
+# its first pass so that opening a TUI never kills anything (clock at import).
+_MIN_INTERVAL_SECONDS = 300.0
 _MIN_PROCESS_AGE_SECONDS = 120.0
 _STARTED_AT = time.monotonic()
 _STAMP_NAME = "reclaim.stamp"
@@ -189,8 +185,6 @@ class Context:
     idle_minutes: float = DEFAULT_IDLE_MINUTES
     pressure_idle_minutes: float = DEFAULT_PRESSURE_IDLE_MINUTES
     grace_seconds: float = GRACE_SECONDS
-    max_per_pass: int = MAX_PER_PASS
-    max_per_pass_under_pressure: int = MAX_PER_PASS_UNDER_PRESSURE
     background: BackgroundState | None = None
     # --- retirement policy (§4.2, §5) ---
     floor_minutes: float = ABSOLUTE_IDLE_FLOOR_MINUTES
@@ -235,13 +229,6 @@ class Context:
         if self.effective_idle_minutes > self.threshold_minutes:
             return "floor"
         return "default"
-
-    @property
-    def max_retirements(self) -> int:
-        cap = max(0, self.max_per_pass)
-        if self.pressure:
-            cap = max(cap, max(0, self.max_per_pass_under_pressure))
-        return cap
 
     @property
     def budget(self) -> int:
@@ -290,7 +277,6 @@ class PassReport:
     over_budget: bool = False
     budget_steps: int = 0
     dry_run: bool = False
-    max_per_pass: int = MAX_PER_PASS
     retired: list[str] = field(default_factory=list)
     blocked: dict[str, int] = field(default_factory=dict)
     skipped: list[dict[str, Any]] = field(default_factory=list)
@@ -313,7 +299,6 @@ class PassReport:
             "resident_budget": self.resident_budget,
             "over_budget": self.over_budget,
             "budget_steps": self.budget_steps,
-            "max_per_pass": self.max_per_pass,
             "retired": len(self.retired),
             "blocked": dict(self.blocked),
             "dry_run": self.dry_run,
@@ -589,12 +574,13 @@ def evaluate(host: Hosted, entries: Sequence[History], ctx: Context) -> Verdict:
 def decide(
     hosted: Sequence[Hosted], history: Mapping[str, Sequence[History]], ctx: Context,
 ) -> list[Verdict]:
-    """Reclaimable sessions, longest idle first, capped per pass.
+    """Reclaimable sessions, longest idle first, with no per-pass cap.
 
-    The cap is 3 per pass, 6 under pressure (§4.2). Ties at the truncation
-    boundary are ordered by last-measured ``phys_footprint`` (biggest first);
-    footprints are only measured when such a tie exists, because each one is a
-    fork and idle seconds are almost never exactly equal.
+    Normally keeps the newest ``resident_budget`` (8) parked sessions resident
+    and retires only the excess beyond that budget that qualify as idle. Under
+    pressure (``pressure_resident_budget == 0``), retires every eligible session.
+    Ties at the budget-truncation boundary are ordered by last-measured
+    ``phys_footprint`` (biggest first).
     """
     return _pick([evaluate(host, history.get(host.name, ()), ctx) for host in hosted], ctx)
 
@@ -1188,7 +1174,7 @@ def apply(
     ctx: Context,
     *,
     kill: Callable[[Hosted], bool] = _default_kill,
-    pressure_fn: Callable[[], bool] = memory_pressure,
+    pressure_fn: Callable[[], bool] | None = None,
     after_kill: Callable[[str], None] = _after_kill,
     record: Callable[[retirement.RetirementRecord], bool] | None = None,
     identity: Callable[[str, str], retirement.PaneIdentity | None] | None = None,
@@ -1206,6 +1192,7 @@ def apply(
     record = record or _default_record
     identity = identity or retirement.pane_identity
     resume_guard = resume_guard or retirement.resume_block_reason
+    check_pressure = pressure_fn or memory_pressure
     baseline_seconds = max(ctx.idle_minutes, ctx.floor_minutes) * 60.0
     pressured = ctx.pressure
     reclaimed: list[str] = []
@@ -1215,10 +1202,17 @@ def apply(
             report.block("server_operation", verdict.name)
         return []
     for verdict in verdicts:
-        if pressured and reclaimed and not pressure_fn():
+        if pressured and reclaimed and not check_pressure():
             pressured = False
-        if not pressured and verdict.idle_seconds < baseline_seconds:
-            continue
+        if not pressured:
+            if verdict.idle_seconds < baseline_seconds:
+                continue
+            if (
+                report.parked > 0
+                and ctx.resident_budget > 0
+                and report.parked - len(reclaimed) <= ctx.resident_budget
+            ):
+                break
         if _retire(
             verdict, ctx, kill=kill, after_kill=after_kill, record=record,
             identity=identity, resume_guard=resume_guard, report=report,
@@ -1266,15 +1260,21 @@ def _release_slot(fd: int) -> None:
 
 
 def _pick(verdicts: Sequence[Verdict], ctx: Context) -> list[Verdict]:
-    """Order and cap already-computed verdicts (see ``decide``)."""
+    """Order eligible sessions (longest idle first) and apply resident budget."""
     picked = [verdict for verdict in verdicts if verdict.reclaim]
-    picked.sort(key=lambda verdict: verdict.idle_seconds, reverse=True)
-    cap = ctx.max_retirements
-    if cap <= 0:
+    if not picked:
         return []
-    if len(picked) > cap:
-        picked = _break_ties(picked, cap, ctx)
-    return picked[:cap]
+    picked.sort(key=lambda verdict: verdict.idle_seconds, reverse=True)
+    budget = max(0, ctx.budget)
+    if budget <= 0:
+        return picked
+    parked_count = sum(1 for verdict in verdicts if verdict.parked)
+    excess = max(0, parked_count - budget)
+    if excess <= 0:
+        return []
+    if len(picked) > excess:
+        picked = _break_ties(picked, excess, ctx)
+    return picked[:excess]
 
 
 def _pass_state(now: float) -> tuple[reclaim_pass.PressureState, dict[str, Any]]:
@@ -1316,13 +1316,6 @@ def _run_pass(sessions_provider: Callable[[], Iterable[Mapping[str, Any]]], now:
     verdicts = [evaluate(host, history.get(host.name, ()), ctx) for host in hosted]
     parked = sum(1 for verdict in verdicts if verdict.parked)
     over_budget = ctx.resident_budget > 0 and parked > ctx.budget
-    # §4.4 step 1 is gated on armed pressure: a bare resident-count overrun must
-    # never shorten the owner's 120-minute contract. One step per pass.
-    if over_budget and state.armed:
-        ladder = reclaim_pass.ladder_minutes(state, armed=True)
-        if ladder is not None and ladder < ctx.effective_idle_minutes:
-            ctx = replace(ctx, budget_threshold_minutes=ladder)
-            verdicts = [evaluate(host, history.get(host.name, ()), ctx) for host in hosted]
     state = reclaim_pass.escalate(state, over_budget=over_budget and state.armed)
     reclaim_pass.save_state(state)
     report.parked = parked
@@ -1331,7 +1324,6 @@ def _run_pass(sessions_provider: Callable[[], Iterable[Mapping[str, Any]]], now:
     report.effective_idle_minutes = ctx.effective_idle_minutes
     report.threshold_reason = ctx.threshold_reason
     report.resident_budget = ctx.budget
-    report.max_per_pass = ctx.max_retirements
     for verdict in verdicts:
         if not verdict.reclaim:
             report.blocked[verdict.reason] = report.blocked.get(verdict.reason, 0) + 1

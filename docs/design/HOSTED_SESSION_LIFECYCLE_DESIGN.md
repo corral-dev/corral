@@ -193,18 +193,18 @@ Parked footprint measured on this machine: median ~124 MB per parked session (4.
 
 | Knob | Normal | Under pressure | Why |
 |---|---|---|---|
-| Idle threshold before `parked → retired` | 120 min (`DEFAULT_IDLE_MINUTES`) | 10 min (`DEFAULT_PRESSURE_IDLE_MINUTES`) | Unchanged from the shipped contract; re-measured against the incident, where the 34 parked sessions had been idle for hours |
-| Absolute floor, any reason | 30 min | 30 min | A session younger than this cannot have been "forgotten"; below it the only thing retirement frees is work the user may return to in the next breath |
+| Idle threshold before `parked → retired` | 60 min (`DEFAULT_IDLE_MINUTES`) | 60 min (`DEFAULT_PRESSURE_IDLE_MINUTES`) | Owner ruling 2026-11-18: tighten normal idle from 120 min to 60 min, and keep pressure at 60 min (no step-down to 30 min) |
+| Absolute floor, any reason | 30 min | 30 min | Safety floor for explicit env overrides (`CORRAL_RECLAIM_IDLE_MINUTES`); default policy stays ≥ 60 min |
 | Grace after creation | 30 min (`GRACE_SECONDS`) | 30 min | Unchanged |
-| Grace after resume | 10 min (**new**) | 10 min | A resumed pane spends its first minutes re-reading history and can look idle; retiring it again is the worst possible behaviour |
-| Per-session cooldown | 30 min (**new**) | 30 min | Anti-flap: a session oscillating parked/working must not be retired repeatedly |
-| Resident parked budget | 12 sessions (**new**) | 6 | ~1.5 GB at the measured median; under pressure halve it |
-| Max retirements per pass | 3 (`MAX_PER_PASS`) | 6 | Pressure must be able to drain faster, but still bounded so one tick cannot end a working day |
-| Pass interval, machine-wide | 60 s (`_MIN_INTERVAL_SECONDS`) | 60 s | Unchanged; the cross-process `flock` slot already guarantees one pass |
+| Grace after resume | 10 min | 10 min | A resumed pane spends its first minutes re-reading history and can look idle; retiring it again is the worst possible behaviour |
+| Per-session cooldown | 30 min | 30 min | Anti-flap: a session oscillating parked/working must not be retired repeatedly |
+| Resident parked budget | 8 sessions (`RESIDENT_BUDGET`) | 0 (`PRESSURE_RESIDENT_BUDGET`) | Owner ruling 2026-11-18: normally keep up to the 8 newest parked sessions resident and retire excess ≥ 60 min; under armed pressure keep 0 resident and retire every eligible session ≥ 60 min |
+| Max retirements per pass | uncapped | uncapped | Owner ruling 2026-11-18: remove per-pass rate limit (`MAX_PER_PASS` / `MAX_PER_PASS_UNDER_PRESSURE`) |
+| Pass interval, machine-wide | 5 min (`_MIN_INTERVAL_SECONDS = 300.0`) | 5 min | Owner ruling 2026-11-18: changed from 60 s to 300 s; the cross-process `flock` slot guarantees one pass per 5 minutes |
 | Young-process guard | 120 s (`_MIN_PROCESS_AGE_SECONDS`) | same | Unchanged: opening the TUI must never kill anything |
-| Pressure arming | 2 consecutive true reads ≥ 60 s apart (**new**) | — | Kills the one-sample blip |
-| Pressure disarming | pressure false for 10 min (**new**) | — | Kills the sticky-swap false arm |
-| Swap ratio | informational only (**change**) | — | Not a pressure trigger; retained in the audit |
+| Pressure arming | 2 consecutive true reads ≥ 60 s apart | — | Kills the one-sample blip |
+| Pressure disarming | pressure false for 10 min | — | Kills the sticky-swap false arm |
+| Swap ratio | informational only | — | Not a pressure trigger; retained in the audit |
 
 The budget is a **count**, not a byte budget, and that is deliberate. `phys_footprint` is the honest number but costs one fork per pid (`footprint -p <pid> -f bytes`), i.e. 1-2 s for 43 sessions — unusable every 60 s. Summing RSS from the `ps` snapshot already taken would be exact and cheap but understates by roughly an order of magnitude on this machine (13 MB RSS vs 129 MB footprint for the same parked process), which would make the budget meaningless. Count is exact, free, stable, and directly proportional to the thing being controlled. Footprint is used where it is cheap and where it matters: acceptance (§10) and the per-candidate tiebreak below.
 
@@ -218,12 +218,11 @@ The budget is a **count**, not a byte budget, and that is deliberate. `phys_foot
 
 ### 4.4 Budget exceeded but nothing eligible
 
-This is the normal position during the incident: 43 sessions, most of them pinned to a live pane or owned by a user who was actually working. The ladder, in order, and it stops at the first step that frees the budget:
+This is the normal position during the incident: many sessions, most of them pinned to a live pane or owned by a user who was actually working, or parked for less than 60 minutes. Under the 2026-11-18 owner ruling, Corral does **not** shorten the 60-minute threshold below 60 minutes even when pressure is armed:
 
-1. **Tighten this tick's effective threshold** toward the 30-minute floor, in steps (120 → 90 → 60 → 45 → 30 min), one step per pass. Not silent-arbitrary: every step is recorded in the pass event with the budget arithmetic.
-2. **Lower the pressure threshold** 10 → 5 min, only if pressure is armed. Never below the resume grace.
-3. **Do nothing destructive.** Record one `reclaim_blocked` event per pass carrying the reason histogram (`attached_client: 12, busy: 9, viewed: 3, grace: 2`) and the resident count. Do not kill anything outside `parked`.
-4. **Reduce Corral's own cost** through the already-shipped pressure-adaptive backoff for scans and frame pacing ([`PERFORMANCE_KNOWLEDGE_BASE.md`](../PERFORMANCE_KNOWLEDGE_BASE.md) perf-B item (e)). This is the only other lever the owner has authorised.
+1. **Under armed pressure:** drop the 8-session resident holdback to 0 (`PRESSURE_RESIDENT_BUDGET = 0`) and retire **all** eligible sessions idle ≥ 60 minutes without a per-pass cap.
+2. **Do nothing destructive beyond `parked` ≥ 60 min.** Record one `reclaim_blocked` event per pass carrying the reason histogram (`attached_client: 12, busy: 9, viewed: 3, grace: 2`) and the resident count. Do not kill anything outside `parked` or younger than the threshold.
+3. **Reduce Corral's own cost** through the already-shipped pressure-adaptive backoff for scans and frame pacing ([`PERFORMANCE_KNOWLEDGE_BASE.md`](../PERFORMANCE_KNOWLEDGE_BASE.md) perf-B item (e)). This is the only other lever the owner has authorised.
 
 Step 3 must be loud in the log and silent in the UI. The incident's root failure was not the wrong threshold; it was that nobody could tell afterwards what had been happening.
 
@@ -253,7 +252,7 @@ Numbered so tests can name them. Each is stated as a property of `evaluate`/`dec
 7. **INV-7 — idempotent under a resume race.** If the user resumes between decision and kill, the outcome is exactly one live pane, one agent process, and no lost message. Mechanically: a per-session advisory lock (a file under the cache dir, `flock`) held across *re-check protections → kill → record*; `resume` takes the same lock. Whoever loses waits and re-reads, never retries blindly.
 8. **INV-8 — never from a UI thread or a startup path.** Only the existing background ticks call it; `maybe_reclaim` must not appear in `host_controller`, `embed` or `cli` (an existing test already guards the source).
 9. **INV-9 — no retirement without a durable audit.** The audit write is verified (append + `fsync` or a size check) before the kill.
-10. **INV-10 — bounded and non-retrying.** At most `max_per_pass` per pass; a failed kill is recorded and not retried in the same pass.
+10. **INV-10 — non-retrying.** A failed kill is recorded and not retried in the same pass (per-pass retirement cap removed per 2026-11-18 owner ruling).
 11. **INV-11 — never during a server-wide operation.** While a keepalive migration or server restart is in progress (the existing migration script's lock file), no retirement.
 12. **INV-12 — unknown is never idle, at every level.** Per-session and per-pass. This is the existing contract and it must survive every addition above.
 13. **INV-13 — one retirement per session per cooldown.** A retire record must not be producible twice for the same session key inside 30 minutes.
@@ -397,11 +396,13 @@ There is exactly one resume path for all surfaces: `SessionHub.resume_session(ke
 | Lever | Default | Env |
 |---|---|---|
 | Retirement on/off | On (unchanged) | `CORRAL_RECLAIM=0` disables everything |
-| Age thresholds | 120 / 10 min (unchanged) | `CORRAL_RECLAIM_IDLE_MINUTES`, `CORRAL_RECLAIM_PRESSURE_IDLE_MINUTES` |
-| Absolute floor | 30 min (new constant) | none: a fixed invariant, not a product setting; tests may inject it |
-| Resident parked budget | 12 (new) | `CORRAL_RECLAIM_BUDGET=0` disables only the budget lever, keeps age-based retirement |
-| Resume grace / cooldown | 10 / 30 min (new) | not configurable; constants |
-| Pressure hysteresis | on (new) | `CORRAL_RECLAIM_PRESSURE_SAMPLES`, `CORRAL_RECLAIM_PRESSURE_DISARM_MINUTES` |
+| Age thresholds | 60 / 60 min (normal / pressure) | `CORRAL_RECLAIM_IDLE_MINUTES`, `CORRAL_RECLAIM_PRESSURE_IDLE_MINUTES` |
+| Absolute floor | 30 min | none: a fixed invariant, not a product setting; tests may inject it |
+| Resident parked budget | 8 normal / 0 under pressure | `CORRAL_RECLAIM_BUDGET=0` disables the normal 8-session holdback |
+| Per-pass retirement cap | Uncapped | removed per 2026-11-18 owner ruling |
+| Pass interval | 5 min (300 s) | `_MIN_INTERVAL_SECONDS` |
+| Resume grace / cooldown | 10 / 30 min | not configurable; constants |
+| Pressure hysteresis | on | `CORRAL_RECLAIM_PRESSURE_SAMPLES`, `CORRAL_RECLAIM_PRESSURE_DISARM_MINUTES` |
 | Dry run | off | `CORRAL_RECLAIM_DRY_RUN=1` emits `reclaim_would` with full evidence and kills nothing |
 | Lifecycle log | on | shares `CORRAL_CACHE_DIR` |
 
@@ -491,3 +492,4 @@ These supersede any conflicting sentence above; where the two disagree, this sec
 | No explanation of a retirement on any surface (§8.1). | D4's copy change is withdrawn. The list row does not change at all; the only visible thing is a spinner while the owner's own resume runs. |
 | The owner uses the native Mac client, not the TUI (2026-11-15). | UI work targets the client and stays with the primary model. The TUI and remote payload follow the same behavioural rules. |
 | Swap size is not a lever (see the host's performance governance guide). | Retirement exists to lower the working set; "add more swap" is never the answer to memory pressure. |
+| Idle 60 min, 8-session normal budget, uncapped per pass, 5-min cadence, pressure kills all > 60 min without dropping to 30 min (2026-11-18). | Normal mode keeps the 8 newest parked sessions and retires excess idle ≥ 60 min; armed pressure drops the resident budget to 0 and retires all eligible sessions idle ≥ 60 min with no per-pass cap; passes run every 5 minutes (`300 s`). |

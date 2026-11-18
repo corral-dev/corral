@@ -74,7 +74,7 @@ class EvaluateTests(unittest.TestCase):
             "attached_client": (host(foreign_clients=1), [done()], ctx()),
             "pinned": (host(), [done()], ctx(pinned_keys={"claude:aaaa1111-full-id"})),
             "busy": (host(), [done()], ctx(busy_pairs={("claude", "aaaa1111-full-id")})),
-            "recent_activity": (host(session_activity=NOW - 60 * MIN), [done()], ctx()),
+            "recent_activity": (host(session_activity=NOW - 45 * MIN), [done()], ctx()),
             "floor": (host(session_activity=NOW - 5 * MIN), [done()], ctx()),
         }
         for reason, (session, entries, context) in cases.items():
@@ -141,24 +141,28 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(reclaim.evaluate(host(window_activity=NOW - 10), [card], ctx()).reason, "floor")
         self.assertTrue(reclaim.evaluate(host(), [card], ctx()).reclaim)
 
-    def test_normal_threshold_is_120_minutes(self) -> None:
-        just_under = host(window_activity=NOW - 119 * MIN, session_activity=NOW - 119 * MIN)
-        exactly = host(window_activity=NOW - 120 * MIN, session_activity=NOW - 120 * MIN)
-        entry = done(active_at=NOW - 200 * MIN)
+    def test_normal_threshold_is_60_minutes(self) -> None:
+        just_under = host(window_activity=NOW - 59 * MIN, session_activity=NOW - 59 * MIN)
+        exactly = host(window_activity=NOW - 60 * MIN, session_activity=NOW - 60 * MIN)
+        entry = done(active_at=NOW - 90 * MIN)
         self.assertFalse(reclaim.evaluate(just_under, [entry], ctx()).reclaim)
         self.assertTrue(reclaim.evaluate(exactly, [entry], ctx()).reclaim)
 
-    def test_pressure_lowers_the_threshold_but_never_below_the_floor(self) -> None:
-        # D1: pressure may shorten 120 minutes, the 30-minute floor is invariant.
-        idle_15 = host(window_activity=NOW - 15 * MIN, session_activity=NOW - 15 * MIN)
+    def test_pressure_keeps_60_minute_threshold_and_explicit_override_respects_floor(self) -> None:
+        # 2026-11-18 ruling: pressure does not lower the 60-minute threshold.
         idle_35 = host(window_activity=NOW - 35 * MIN, session_activity=NOW - 35 * MIN)
-        entry = done(active_at=NOW - 60 * MIN)
-        self.assertFalse(reclaim.evaluate(idle_15, [entry], ctx()).reclaim)
-        floor = reclaim.evaluate(idle_15, [entry], ctx(pressure=True))
-        self.assertFalse(floor.reclaim)
-        self.assertEqual(floor.reason, "floor")
-        self.assertTrue(reclaim.evaluate(idle_35, [entry], ctx(pressure=True)).reclaim)
-        self.assertEqual(reclaim.evaluate(idle_35, [entry], ctx(pressure=True)).evidence["threshold_min"], 10.0)
+        idle_65 = host(window_activity=NOW - 65 * MIN, session_activity=NOW - 65 * MIN)
+        entry = done(active_at=NOW - 90 * MIN)
+        self.assertFalse(reclaim.evaluate(idle_35, [entry], ctx(pressure=True)).reclaim)
+        self.assertEqual(reclaim.evaluate(idle_35, [entry], ctx(pressure=True)).reason, "recent_activity")
+        pressured = reclaim.evaluate(idle_65, [entry], ctx(pressure=True))
+        self.assertTrue(pressured.reclaim)
+        self.assertEqual(pressured.evidence["threshold_min"], 60.0)
+        # Explicit env overrides still cannot break the 30-minute safety floor.
+        idle_15 = host(window_activity=NOW - 15 * MIN, session_activity=NOW - 15 * MIN)
+        custom = ctx(pressure=True, pressure_idle_minutes=10.0)
+        self.assertEqual(reclaim.evaluate(idle_15, [entry], custom).reason, "floor")
+        self.assertTrue(reclaim.evaluate(idle_35, [entry], custom).reclaim)
 
     def test_the_floor_is_not_a_product_setting(self) -> None:
         with mock.patch.dict(os.environ, {"CORRAL_RECLAIM_FLOOR_MINUTES": "1"}, clear=True):
@@ -193,23 +197,41 @@ class EvaluateTests(unittest.TestCase):
 
 
 class DecideTests(unittest.TestCase):
-    def test_oldest_idle_first_and_capped_per_pass(self) -> None:
+    def test_normal_keeps_eight_newest_parked_and_retires_all_excess_without_cap(self) -> None:
         hosts, history = [], {}
-        for index, idle_hours in enumerate((3, 9, 5, 7, 4)):
+        for index, idle_hours in enumerate((2, 12, 5, 9, 4, 11, 3, 10, 6, 8, 7, 13)):
             name = f"corral-claude-aaaa{index:04d}"
             when = NOW - idle_hours * HOUR
             hosts.append(host(name, window_activity=when, session_activity=when))
             history[name] = [done(active_at=when, session_id=f"s{index}")]
         picked = reclaim.decide(hosts, history, ctx())
+        # 12 parked -> keep newest 8 (idle 2..9 h), retire 4 oldest (13, 12, 11, 10 h) in one pass.
         self.assertEqual([v.name for v in picked], [
-            "corral-claude-aaaa0001", "corral-claude-aaaa0003", "corral-claude-aaaa0002",
+            "corral-claude-aaaa0011",
+            "corral-claude-aaaa0001",
+            "corral-claude-aaaa0005",
+            "corral-claude-aaaa0007",
         ])
+        # Under memory pressure, keep 0 resident and retire all 12 in one pass.
+        pressured = reclaim.decide(hosts, history, ctx(pressure=True))
+        self.assertEqual(len(pressured), 12)
 
-    def test_cap_is_configurable_and_zero_reclaims_nothing(self) -> None:
-        hosts = [host(f"corral-claude-bbbb{i:04d}") for i in range(4)]
-        history = {h.name: [done(session_id=h.name)] for h in hosts}
-        self.assertEqual(len(reclaim.decide(hosts, history, ctx(max_per_pass=1))), 1)
-        self.assertEqual(reclaim.decide(hosts, history, ctx(max_per_pass=0)), [])
+    def test_resident_budget_is_configurable_and_counts_all_parked_sessions(self) -> None:
+        hosts = [host(f"corral-claude-bbbb{i:04d}", session_activity=NOW - (i + 2) * HOUR) for i in range(4)]
+        history = {
+            h.name: [done(active_at=NOW - (i + 2) * HOUR, session_id=h.name)]
+            for i, h in enumerate(hosts)
+        }
+        self.assertEqual(reclaim.decide(hosts, history, ctx()), [])
+        self.assertEqual(len(reclaim.decide(hosts, history, ctx(resident_budget=2))), 2)
+        self.assertEqual(len(reclaim.decide(hosts, history, ctx(resident_budget=0))), 4)
+        # Younger (< 60 min) parked sessions still count toward the 8 resident slots.
+        young_hosts = [host(f"corral-claude-yyyy{i:04d}", session_activity=NOW - 40 * MIN) for i in range(6)]
+        for h in young_hosts:
+            history[h.name] = [done(active_at=NOW - 40 * MIN, session_id=h.name)]
+        # 6 young + 4 old = 10 parked -> excess = 2 -> only 2 oldest of the 4 eligible die.
+        picked = reclaim.decide(young_hosts + hosts, history, ctx())
+        self.assertEqual([v.name for v in picked], ["corral-claude-bbbb0003", "corral-claude-bbbb0002"])
 
     def test_hosted_session_missing_from_the_caller_list_is_left_alone(self) -> None:
         self.assertEqual(reclaim.decide([host()], {}, ctx()), [])
@@ -274,38 +296,52 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(reclaimed, [])
         self.assertEqual(names, ["reclaim", "reclaim_failed"])
 
-    def test_pass_stops_when_pressure_clears_and_keeps_only_baseline_idle(self) -> None:
-        # Three sessions qualify only under pressure (idle 20 min is above the
-        # floor but below the shipped 120-minute threshold); one is idle 3 h.
+    def test_pass_stops_when_pressure_clears_and_spares_resident_budget(self) -> None:
+        # 10 parked sessions idle >= 60 min; under pressure all 10 are queued,
+        # then pressure clears after the 1st kill, so the pass stops once 8 remain.
+        verdicts = self._verdicts(10, idle_hours=2)
+        killed: list[str] = []
+        report = reclaim.PassReport(at=NOW, parked=10)
+        with mock.patch.object(reclaim.observe, "event"):
+            reclaimed = self._apply(
+                verdicts, ctx(pressure=True),
+                kill=lambda h: killed.append(h.name) or True,
+                pressure_fn=lambda: False,
+                report=report,
+            )
+        self.assertEqual(len(reclaimed), 2)
+        self.assertEqual(len(killed), 2)
+
+        # Also respects custom pressure_idle_minutes clearing mid-pass.
+        custom = ctx(pressure=True, idle_minutes=60, pressure_idle_minutes=10)
         young = [
             reclaim.evaluate(
-                host(f"corral-claude-dddd{i:04d}", window_activity=NOW - 20 * MIN, session_activity=NOW - 20 * MIN),
-                [done(active_at=NOW - 20 * MIN, session_id=f"d{i}")], ctx(pressure=True),
+                host(f"corral-claude-dddd{i:04d}", window_activity=NOW - 35 * MIN, session_activity=NOW - 35 * MIN),
+                [done(active_at=NOW - 35 * MIN, session_id=f"d{i}")], custom,
             )
             for i in range(2)
         ]
         old = reclaim.evaluate(
-            host("corral-claude-dddd0009"), [done(session_id="d9")], ctx(pressure=True),
+            host("corral-claude-dddd0009"), [done(session_id="d9")], custom,
         )
-        killed: list[str] = []
+        killed_custom: list[str] = []
         with mock.patch.object(reclaim.observe, "event"):
-            reclaimed = self._apply(
-                [old, *young], ctx(pressure=True),
-                kill=lambda h: killed.append(h.name) or True,
+            reclaimed_custom = self._apply(
+                [old, *young], custom,
+                kill=lambda h: killed_custom.append(h.name) or True,
                 pressure_fn=lambda: False,
             )
-        # The first kill happens under pressure; then pressure clears, so the two
-        # 20-minute sessions no longer qualify.
-        self.assertEqual(reclaimed, ["corral-claude-dddd0009"])
-        self.assertEqual(killed, ["corral-claude-dddd0009"])
+        self.assertEqual(reclaimed_custom, ["corral-claude-dddd0009"])
+        self.assertEqual(killed_custom, ["corral-claude-dddd0009"])
 
     def test_pressure_that_persists_keeps_going(self) -> None:
         with mock.patch.object(reclaim.observe, "event"):
             reclaimed = self._apply(
-                self._verdicts(3, idle_hours=0.5), ctx(pressure=True, idle_minutes=120),
+                self._verdicts(10, idle_hours=2), ctx(pressure=True),
                 pressure_fn=lambda: True,
+                report=reclaim.PassReport(at=NOW, parked=10),
             )
-        self.assertEqual(len(reclaimed), 3)
+        self.assertEqual(len(reclaimed), 10)
 
 
 class MemoryPressureTests(unittest.TestCase):
@@ -611,12 +647,12 @@ class EntryPointTests(unittest.TestCase):
             self.assertEqual(reclaim.maybe_reclaim(self.provider, now=NOW), [])
         self.assertFalse(self._stamp().exists())
 
-    def test_throttled_machine_wide_to_one_pass_per_minute(self) -> None:
+    def test_throttled_machine_wide_to_one_pass_per_five_minutes(self) -> None:
         with mock.patch.object(reclaim, "probe_hosted", return_value=[]) as probe:
             reclaim.maybe_reclaim(self.provider, now=NOW)
-            reclaim.maybe_reclaim(self.provider, now=NOW + 30)
+            reclaim.maybe_reclaim(self.provider, now=NOW + 299)
             self.assertEqual(probe.call_count, 1)
-            reclaim.maybe_reclaim(self.provider, now=NOW + 61)
+            reclaim.maybe_reclaim(self.provider, now=NOW + 301)
             self.assertEqual(probe.call_count, 2)
 
     def test_pass_in_flight_elsewhere_blocks_a_second_pass(self) -> None:
@@ -671,6 +707,7 @@ class EntryPointTests(unittest.TestCase):
 
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, {"CORRAL_RECLAIM_BUDGET": "0"}), \
                 mock.patch.object(reclaim, "probe_hosted", return_value=[old, unlisted]), \
                 mock.patch.object(reclaim, "memory_pressure", return_value=False), \
                 mock.patch.object(reclaim, "apply", side_effect=fake_apply):
@@ -796,9 +833,21 @@ class RealTmuxTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         # tmux stamped the sessions "now"; look 3 hours ahead so they read as idle past the grace period.
         later = real_now + 3 * HOUR
+        # Normal mode keeps up to 8 parked sessions resident (here only 3 are parked).
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
                 mock.patch.object(reclaim.observe, "event", side_effect=lambda *a, **k: events.append((a, k))):
-            reclaimed = reclaim.maybe_reclaim(lambda: sessions, now=later)
+            normal_reclaimed = reclaim.maybe_reclaim(lambda: sessions, now=later)
+        self.assertEqual(normal_reclaimed, [])
+        self.assertEqual(len(self._survivors()), 6)
+
+        # Armed memory pressure (two reads >= 60 s apart, passes >= 300 s apart)
+        # drops the resident holdback to 0 and retires every eligible session >= 60 min.
+        events.clear()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(reclaim, "memory_pressure", return_value=True), \
+                mock.patch.object(reclaim.observe, "event", side_effect=lambda *a, **k: events.append((a, k))):
+            self.assertEqual(reclaim.maybe_reclaim(lambda: sessions, now=later + 305), [])
+            reclaimed = reclaim.maybe_reclaim(lambda: sessions, now=later + 610)
 
         self.assertEqual((out.getvalue(), err.getvalue()), ("", ""), "reclaim must be silent")
         # A finished session, an unused placeholder, and one watched only by a control-mode
@@ -811,16 +860,16 @@ class RealTmuxTests(unittest.TestCase):
         self.assertEqual(audited, expected)
         for args, fields in events:
             if args == ("reclaim",):
-                self.assertGreaterEqual(fields["idle_min"], 120)
+                self.assertGreaterEqual(fields["idle_min"], 60)
                 self.assertEqual(fields["state"], "parked")
         # One pass event per pass carries the budget arithmetic (§4.4 step 3).
         passes = [fields for args, fields in events if args == ("reclaim_pass",)]
-        self.assertEqual(len(passes), 1)
-        self.assertEqual(passes[0]["hosted"], 6)
-        self.assertIn("parked", passes[0])
+        self.assertEqual(len(passes), 2)
+        self.assertEqual(passes[-1]["hosted"], 6)
+        self.assertIn("parked", passes[-1])
 
         # Throttled: an immediate second pass does nothing even though it could.
-        self.assertEqual(reclaim.maybe_reclaim(lambda: sessions, now=later + 5), [])
+        self.assertEqual(reclaim.maybe_reclaim(lambda: sessions, now=later + 615), [])
 
 
 if __name__ == "__main__":
