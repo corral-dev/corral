@@ -385,7 +385,7 @@ class BusyChecker:
     ) -> BusyChecker | None:
         """Probe tmux pane pids on the managed sockets. None when tmux or ps
         is unusable — the caller must then prove nothing idle."""
-        from corral import keepalive
+        from corral import keepalive, liveness
         from corral.legacy_names import ALL_SOCKET_NAMES, tmux_base_argv
 
         if shutil.which("tmux") is None:
@@ -395,16 +395,28 @@ class BusyChecker:
         def fetch() -> Mapping[str, int] | None:
             merged: dict[str, int] = {}
             for socket in names:
+                if not liveness._socket_may_exist(socket):
+                    continue
                 try:
-                    out = subprocess.check_output(
+                    proc = subprocess.run(
                         [*tmux_base_argv(socket),
                          "list-panes", "-a", "-F", "#{session_name}|#{pane_pid}"],
-                        stderr=subprocess.DEVNULL, timeout=keepalive.SUBPROCESS_TIMEOUT,
-                        env=keepalive.tmux_env(),
-                    ).decode()
-                except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                        capture_output=True, text=True,
+                        timeout=keepalive.SUBPROCESS_TIMEOUT,
+                        env=keepalive.tmux_env(), check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
                     return None
-                for line in out.splitlines():
+                if proc.returncode != 0:
+                    err = proc.stderr.lower()
+                    if (
+                        "no server running" in err
+                        or "no such file" in err
+                        or "connection refused" in err
+                    ):
+                        continue
+                    return None
+                for line in proc.stdout.splitlines():
                     name, _, pid = line.partition("|")
                     try:
                         merged[name] = int(pid.strip())

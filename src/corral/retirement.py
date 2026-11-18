@@ -649,10 +649,32 @@ def schedule_resume_retry(
 
 
 def due_resume_retries(now: float | None = None) -> list[ResumeAttempt]:
-    """Retries whose backoff has elapsed, oldest first. Pure read."""
+    """Retries whose backoff has elapsed, oldest first.
+
+    Pre-boot retries from an earlier OS boot are discarded so rebooting never
+    auto-launches agents in the background (2026-11-18 owner ruling).
+    """
+    from corral import hosted_lifecycle
+
     stamp = time.time() if now is None else float(now)
+    boot_ts = hosted_lifecycle.boot_time()
+    retries = load_resume_retries()
+    kept: dict[str, ResumeAttempt] = {}
+    dropped = False
+    for key, attempt in retries.items():
+        if (
+            boot_ts is not None
+            and stamp >= boot_ts
+            and attempt.first_at > 1_000_000_000.0
+            and attempt.first_at < boot_ts
+        ):
+            dropped = True
+            continue
+        kept[key] = attempt
+    if dropped:
+        _save_resume_retries(kept)
     return sorted(
-        (attempt for attempt in load_resume_retries().values() if attempt.next_at <= stamp),
+        (attempt for attempt in kept.values() if attempt.next_at <= stamp),
         key=lambda attempt: attempt.next_at,
     )
 

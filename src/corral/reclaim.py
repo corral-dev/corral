@@ -837,6 +837,8 @@ def _foreign_clients(socket: str) -> dict[str, int] | None:
 
 
 def _probe_socket(socket: str) -> list[Hosted] | None:
+    if _SOCKETS is None and not liveness._socket_may_exist(socket):
+        return None
     out = _tmux_out(socket, "list-sessions", "-F", _LIST_FORMAT)
     clients = _foreign_clients(socket) if out else {}
     if out is None or clients is None:
@@ -929,6 +931,21 @@ def _background_state(
     )
 
 
+def _unreadable_context_source(
+    busy: Any, waiting: Any, viewed: Any, pinned: Any, delegated: Any,
+) -> str | None:
+    for name, value in (
+        ("attention_busy", busy),
+        ("attention_waiting", waiting),
+        ("host_viewers", viewed),
+        ("pinned_keys", pinned),
+        ("delegated_runs", delegated),
+    ):
+        if value is None:
+            return name
+    return None
+
+
 def _build_context(
     now: float,
     hosted: Sequence[Hosted] = (),
@@ -954,11 +971,20 @@ def _build_context(
     pinned = split_layout.pinned_keys_effective()
     # Hosts of unsettled Agent delegation runs are leased like viewed ones.
     delegated = RunStore().active_hosts()
-    if busy is None or waiting is None or viewed is None or pinned is None or delegated is None:
+    missing = _unreadable_context_source(busy, waiting, viewed, pinned, delegated)
+    if missing is not None:
+        try:
+            observe.event("reclaim_blocked", hosted=len(hosted), blocked={"context_unavailable": 1}, source=missing)
+        except Exception:  # noqa: BLE001
+            pass
         return None
     viewed = set(viewed) | delegated
     background = _background_state(hosted, history or {})
     if background is None:
+        try:
+            observe.event("reclaim_blocked", hosted=len(hosted), blocked={"context_unavailable": 1}, source="busycheck")
+        except Exception:  # noqa: BLE001
+            pass
         return None
     if pressure is None:
         pressure = memory_pressure()
@@ -981,6 +1007,13 @@ def _build_context(
             return None
         verdict = checker.shared_server_running("opencode")
         if verdict is None:
+            try:
+                observe.event(
+                    "reclaim_blocked", hosted=len(hosted),
+                    blocked={"context_unavailable": 1}, source="opencode_server",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return None
         shared_server = verdict
     return policy_from_env(

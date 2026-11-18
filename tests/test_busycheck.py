@@ -307,6 +307,36 @@ class CheckerTests(unittest.TestCase):
         with mock.patch.object(busycheck.shutil, "which", return_value=None):
             self.assertIsNone(BusyChecker.from_probe())
 
+    def test_from_probe_skips_absent_legacy_socket_and_probes_live_socket(self) -> None:
+        from corral import liveness
+
+        def fake_run(argv, **_kwargs):
+            socket_name = argv[argv.index("-L") + 1]
+            if socket_name == "pickup-keepalive":
+                return mock.Mock(
+                    returncode=1,
+                    stdout="",
+                    stderr="error connecting to /tmp/tmux-501/pickup-keepalive (No such file or directory)\n",
+                )
+            return mock.Mock(returncode=0, stdout="corral-pi-11111111|4321\n", stderr="")
+
+        with mock.patch.object(busycheck.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(liveness, "_socket_may_exist", return_value=True), \
+                mock.patch.object(busycheck.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(busycheck, "snapshot_ps", return_value=[Proc(4321, 1, "pi")]):
+            checker = BusyChecker.from_probe(sockets=("corral-keepalive", "pickup-keepalive"))
+        assert checker is not None
+        self.assertEqual(checker.pane_pid("corral-pi-11111111"), 4321)
+
+    def test_from_probe_returns_none_when_live_socket_errors(self) -> None:
+        from corral import liveness
+
+        bad = mock.Mock(returncode=1, stdout="", stderr="unexpected tmux protocol failure\n")
+        with mock.patch.object(busycheck.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(liveness, "_socket_may_exist", return_value=True), \
+                mock.patch.object(busycheck.subprocess, "run", return_value=bad):
+            self.assertIsNone(BusyChecker.from_probe(sockets=("corral-keepalive",)))
+
 
 class ReclaimWiringTests(unittest.TestCase):
     def test_process_tree_busy_holds_with_evidence(self) -> None:

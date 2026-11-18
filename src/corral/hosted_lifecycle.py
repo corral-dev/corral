@@ -315,8 +315,7 @@ def _refresh_inventory(
             "sessions": entries,
             "recently_stopped": _prune_stopped(dict(inventory.get("recently_stopped") or {})),
         }
-        if not inventory.get("pending_restores"):
-            inventory.pop("pending_restores", None)
+        inventory.pop("pending_restores", None)
         _write_inventory(inventory)
         return inventory
 
@@ -687,7 +686,12 @@ def _reconcile_server(
     *,
     records: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], set[str]]:
-    """Mark the tracked server's sessions dead when its pid changed or vanished."""
+    """Mark the tracked server's sessions dead when its pid changed or vanished.
+
+    2026-11-18 owner ruling: Corral never auto-launches agent sessions in the
+    background after server loss or machine reboot, so ``pending_restores`` is
+    never populated and any stale queue from earlier versions is cleared.
+    """
     socket = str(inventory.get("socket") or "")
     recorded_pid = _int(inventory.get("server_pid"))
     if not socket or recorded_pid is None:
@@ -698,6 +702,15 @@ def _reconcile_server(
     sessions = dict(records if records is not None else inventory.get("sessions") or {})
     last_exit = dict(inventory.get("last_exit") or {})
     recorded_exit = _int(last_exit.get("pid")) == recorded_pid
+    prior_ts = _parse_iso(inventory.get("server_started_at")) or _parse_iso(inventory.get("updated_at"))
+    current_boot = boot_time()
+    rebooted = (
+        not recorded_exit
+        and current_boot is not None
+        and prior_ts is not None
+        and current_boot > prior_ts
+    )
+    cause = "machine_reboot" if rebooted else "server_lost"
     reported: set[str] = set()
     if not recorded_exit:
         # A recorded exit names the reason and the requester; its absence is itself
@@ -708,6 +721,7 @@ def _reconcile_server(
             last_pid=recorded_pid,
             last_heartbeat=inventory.get("updated_at"),
             recorded_exit=False,
+            machine_reboot=rebooted,
             observed_at=_now_iso(),
             socket_answers=pid is not None,
             sessions_before=len(sessions),
@@ -719,20 +733,12 @@ def _reconcile_server(
         if str((entry or {}).get("socket") or socket) != socket:
             continue  # another socket's session: left to the per-session diff
         _record_session_died(
-            name, entry, cause="server_lost",
+            name, entry, cause=cause,
             server_exit_recorded=recorded_exit,
             initiated_by=last_exit.get("initiated_by") or "",
         )
         reported.add(name)
     surviving = {name: entry for name, entry in sessions.items() if name not in reported}
-    existing_pending = list(inventory.get("pending_restores") or ())
-    new_pending: list[dict[str, Any]] = []
-    if not recorded_exit:
-        for name in reported:
-            entry = dict(sessions.get(name) or {})
-            if entry:
-                new_pending.append({"name": name, **entry})
-    merged_pending = _merge_pending_restores(existing_pending, new_pending)
     updated = {
         **inventory,
         "server_pid": pid,
@@ -741,10 +747,7 @@ def _reconcile_server(
         "sessions": surviving,
         "updated_at": _now_iso(),
     }
-    if merged_pending:
-        updated["pending_restores"] = merged_pending
-    else:
-        updated.pop("pending_restores", None)
+    updated.pop("pending_restores", None)
     return updated, reported
 
 
@@ -839,13 +842,8 @@ def _merge_pending_restores(
 
 
 def pending_restores() -> list[dict[str, Any]]:
-    """Lost hosted sessions awaiting silent §7.6 restoration, ordered by priority."""
-    from corral import retirement
-
-    items = [dict(item) for item in (read_inventory().get("pending_restores") or ()) if isinstance(item, Mapping)]
-    if not items:
-        return []
-    return list(retirement.ordered_restore_candidates(items))
+    """Auto-restore after server loss is disabled by the 2026-11-18 owner ruling."""
+    return []
 
 
 def consume_pending_restores(identifiers: Iterable[str]) -> int:
@@ -1018,6 +1016,26 @@ def _env(env: Mapping[str, str] | None) -> dict[str, str]:
     from corral import keepalive
 
     return keepalive.tmux_env()
+
+
+_BOOT_SEC_RE = re.compile(r"sec\s*=\s*(\d+)")
+_LINUX_BTIME_RE = re.compile(r"^btime\s+(\d+)", re.MULTILINE)
+
+
+def boot_time() -> float | None:
+    """Host OS boot epoch seconds, or None when unavailable."""
+    try:
+        if sys.platform == "darwin":
+            out = _run(("sysctl", "-n", "kern.boottime")) or ""
+            match = _BOOT_SEC_RE.search(out)
+            return float(match.group(1)) if match else None
+        if sys.platform.startswith("linux"):
+            raw = Path("/proc/stat").read_text(encoding="ascii", errors="ignore")
+            match = _LINUX_BTIME_RE.search(raw)
+            return float(match.group(1)) if match else None
+    except Exception:  # noqa: BLE001 - best-effort diagnostic helper
+        return None
+    return None
 
 
 def _now_iso() -> str:

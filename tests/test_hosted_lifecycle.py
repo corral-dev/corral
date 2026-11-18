@@ -470,7 +470,7 @@ class PassWiringTests(unittest.TestCase):
         self.assertEqual(entry["cwd"], "/tmp/project")
         self.assertEqual(inventory["socket"], self.socket)
 
-    def test_server_loss_with_zero_live_sessions_populates_and_heals_ordered_queue(self) -> None:
+    def test_server_loss_and_reboot_record_events_without_auto_restoring(self) -> None:
         s_idle = {
             "source": "pi", "id": "idle-1111", "path": "/hist/idle.jsonl",
             "cwd": "/tmp/p1", "keepalive_name": "corral-pi-11111111", "status_tag": "done",
@@ -495,33 +495,29 @@ class PassWiringTests(unittest.TestCase):
         ):
             self.reclaim._run_pass(lambda: all_sessions, now=time.time())
 
-        # Write a tail to keepalive-server.log, then simulate an unrecorded crash (`kill-server`).
+        # Write a tail to keepalive-server.log, then simulate a reboot-induced loss (`kill-server` + newer boot_time).
         (Path(self.temp.name) / "keepalive-server.log").write_text("oops\nfatal test reason\n", encoding="utf-8")
         self._tmux("kill-server")
-        with mock.patch.object(self.reclaim, "_SOCKETS", (self.socket,)):
+        with mock.patch.object(self.reclaim, "_SOCKETS", (self.socket,)), \
+                mock.patch.object(hosted_lifecycle, "boot_time", return_value=time.time() + 10.0):
             self.reclaim._run_pass(lambda: all_sessions, now=time.time() + 120)
 
         lost = _by_event(hosted_lifecycle.log_path(), hosted_lifecycle.SERVER_LOST)
         self.assertEqual(len(lost), 1)
         self.assertFalse(lost[0]["recorded_exit"])
+        self.assertTrue(lost[0]["machine_reboot"])
         self.assertIn("fatal test reason", lost[0].get("server_log_tail", ""))
+        died = _by_event(hosted_lifecycle.log_path(), hosted_lifecycle.SESSION_DIED)
+        self.assertTrue(all(item.get("cause") == "machine_reboot" for item in died))
 
-        pending = hosted_lifecycle.pending_restores()
-        self.assertEqual(pending[0]["session_id"], "work-3333")
-        self.assertEqual({item["session_id"] for item in pending}, {"work-3333", "wait-2222", "idle-1111"})
-
-        # Verify waiting_on_user ordering inside pending_restores() too.
+        # 2026-11-18 ruling: pending_restores stays empty and _reconcile_hosted_lifecycle
+        # never restarts tmux or auto-launches agent sessions (and drops legacy queues).
+        self.assertEqual(hosted_lifecycle.pending_restores(), [])
         inv = hosted_lifecycle.read_inventory()
-        for item in inv["pending_restores"]:
-            if item["session_id"] == "wait-2222":
-                item["state"] = "waiting_on_user"
+        inv["pending_restores"] = [{"name": "corral-pi-11111111", "session_id": "idle-1111"}]
         hosted_lifecycle._write_inventory(inv)
-        self.assertEqual(
-            [item["session_id"] for item in hosted_lifecycle.pending_restores()],
-            ["work-3333", "wait-2222", "idle-1111"],
-        )
+        self.assertEqual(hosted_lifecycle.pending_restores(), [])
 
-        # Wire check on SessionHub._heal_lost_server: ensures server, restores working first, consumes queue.
         from corral import keepalive, retirement
         from corral.remote.sessions import SessionHub
 
@@ -530,31 +526,18 @@ class PassWiringTests(unittest.TestCase):
         store = mock.Mock()
         store.loaded = True
         store.all_sessions.return_value = list(all_sessions)
-        store.find_session.side_effect = lambda key: next(
-            (s for s in all_sessions if key in {s["id"], f"{s['source']}:{s['id']}"}), None,
-        )
         hub = SessionHub.__new__(SessionHub)
         hub.store = store
-        hub._stop = __import__("threading").Event()
-        hub._state_wake = __import__("threading").Event()
-        hub._adopt_foreign_host = lambda _s: None
-        restored_order: list[str] = []
-
-        def fake_restore(key, _resume, **_kwargs):
-            restored_order.append(key)
-            return retirement.RestoreResult(key, "restored")
-
         with (
-            mock.patch.object(keepalive, "ensure_server") as ensure_mock,
-            mock.patch.object(retirement, "restore_session", side_effect=fake_restore),
+            mock.patch.object(keepalive, "ensure_server", side_effect=AssertionError("must not start server")),
+            mock.patch.object(retirement, "restore_session", side_effect=AssertionError("must not auto-restore")),
+            mock.patch.object(hosted_lifecycle, "refresh_inventory", wraps=hosted_lifecycle.refresh_inventory) as ref,
             mock.patch.dict(os.environ, {"CORRAL_ISOLATE_MANAGED_HOSTS": "0"}),
         ):
-            hub._heal_lost_server()
+            hub._reconcile_hosted_lifecycle()
 
-        ensure_mock.assert_called_once()
-        self.assertEqual(restored_order[0], "codex:work-3333")
-        self.assertEqual(set(restored_order), {"codex:work-3333", "claude:wait-2222", "pi:idle-1111"})
-        self.assertEqual(hosted_lifecycle.pending_restores(), [])
+        ref.assert_called_once()
+        self.assertNotIn("pending_restores", hosted_lifecycle.read_inventory())
 
 
 if __name__ == "__main__":

@@ -694,6 +694,19 @@ class RestoreTests(CacheIsolated):
         self.assertEqual(retirement.due_resume_retries(now=time.time()), [])
         self.assertEqual(len(retirement.due_resume_retries(now=time.time() + 3600)), 1)
 
+    def test_pre_boot_resume_retries_are_discarded_after_reboot(self) -> None:
+        from corral import hosted_lifecycle
+
+        pre_boot = 1_795_000_000.0
+        boot = 1_795_010_000.0
+        retirement.schedule_resume_retry(
+            "pi:rebooted", cause="RuntimeError", now=pre_boot, history_path=__file__,
+        )
+        self.assertIn("pi:rebooted", retirement.load_resume_retries())
+        with mock.patch.object(hosted_lifecycle, "boot_time", return_value=boot):
+            self.assertEqual(retirement.due_resume_retries(now=boot + 3600), [])
+        self.assertEqual(retirement.load_resume_retries(), {})
+
     def test_repeated_failures_are_bounded_then_reported_once(self) -> None:
         def fail():
             raise RuntimeError("still failing")
