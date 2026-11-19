@@ -746,6 +746,13 @@ def run_loop(
                         next_parse_at = now_mono + _parse_gap_seconds(
                             streak, floor, pressured
                         )
+                    else:
+                        # First adoption of a freshly published foreign index:
+                        # wait at least one interval instead of leaving
+                        # next_parse_at == 0.0 and re-parsing immediately.
+                        next_parse_at = now_mono + _parse_gap_seconds(
+                            streak, floor, pressured
+                        )
                     fingerprint = adopted_fp
                     last_buckets = adopted
                     last_buckets_keep_ids = keep_ids

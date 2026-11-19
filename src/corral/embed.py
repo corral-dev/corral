@@ -333,7 +333,7 @@ _manual_window_size_sockets: set[str] = set()
 # Cross-window viewer sizes: the shared grid follows the viewer the user used
 # most recently. Registry failures degrade to this pane's own size.
 _HOST_VIEW_STALE_SECONDS = 8.0
-_HOST_VIEW_WRITE_INTERVAL = 1.0
+_HOST_VIEW_WRITE_INTERVAL = 3.0
 _VIEWER_LOCK = threading.Lock()
 _viewer_last_write: dict[tuple[str, str], tuple[int, int, float, float]] = {}
 _VIEWER_SCHEMA = """
@@ -349,6 +349,8 @@ CREATE TABLE IF NOT EXISTS host_viewers (
 )
 """
 _viewer_schema_ready: set[str] = set()
+_viewer_conn: sqlite3.Connection | None = None
+_viewer_conn_key: tuple[str, tuple[int, int] | None] | None = None
 
 
 def _ensure_manual_window_size(name: str) -> None:
@@ -571,6 +573,62 @@ def _connect_host_viewers() -> sqlite3.Connection | None:
         return None
 
 
+_DEFAULT_CONNECT_HOST_VIEWERS = _connect_host_viewers
+
+
+def _close_cached_viewer_conn() -> None:
+    """Close any cached host-viewer connection. Caller holds ``_VIEWER_LOCK``."""
+    global _viewer_conn, _viewer_conn_key
+    conn = _viewer_conn
+    _viewer_conn = None
+    _viewer_conn_key = None
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
+def _acquire_host_viewers_conn() -> tuple[sqlite3.Connection | None, bool]:
+    """Return ``(conn, close_after)`` for host-viewer operations.
+
+    Caller MUST hold ``_VIEWER_LOCK``. Reuses a single persistent connection
+    when unpatched and pointed at the same inode/schema, avoiding per-tick WAL
+    open/close/shm churn across active terminal streams.
+    """
+    global _viewer_conn, _viewer_conn_key
+    if _connect_host_viewers is not _DEFAULT_CONNECT_HOST_VIEWERS:
+        _close_cached_viewer_conn()
+        return _connect_host_viewers(), True
+    path = _host_viewers_path()
+    path_str = str(path)
+    try:
+        st = path.stat()
+        inode: tuple[int, int] | None = (st.st_dev, st.st_ino)
+    except OSError:
+        inode = None
+    key = (path_str, inode)
+    if (
+        _viewer_conn is not None
+        and _viewer_conn_key == key
+        and inode is not None
+        and path_str in _viewer_schema_ready
+    ):
+        return _viewer_conn, False
+    _close_cached_viewer_conn()
+    conn = _connect_host_viewers()
+    if conn is None:
+        return None, False
+    try:
+        st = path.stat()
+        current_inode: tuple[int, int] | None = (st.st_dev, st.st_ino)
+    except OSError:
+        current_inode = None
+    _viewer_conn = conn
+    _viewer_conn_key = (path_str, current_inode)
+    return conn, False
+
+
 def _pid_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -623,7 +681,7 @@ def desired_host_size(
             or used_at > last[3]
             or now - last[2] >= _HOST_VIEW_WRITE_INTERVAL
         )
-        conn = _connect_host_viewers()
+        conn, close_after = _acquire_host_viewers_conn()
         if conn is None:
             return local
         try:
@@ -660,9 +718,12 @@ def desired_host_size(
                 conn.rollback()
             except sqlite3.Error:
                 pass
+            if not close_after:
+                _close_cached_viewer_conn()
             return local
         finally:
-            conn.close()
+            if close_after:
+                conn.close()
     # Own row may be missing (another process dropped it); count this call anyway.
     best: tuple[float, int, int] | None = None if below_min else (used_at, *local)
     stale: list[str] = []
@@ -694,17 +755,21 @@ def live_host_viewer_names() -> set[str] | None:
     registry cannot be read — callers that want to stop a session must treat
     that as "unknown", not as "nobody is watching".
     """
-    conn = _connect_host_viewers()
-    if conn is None:
-        return None
-    try:
-        rows = conn.execute(
-            "SELECT session_name, pid, updated_at FROM host_viewers"
-        ).fetchall()
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
+    with _VIEWER_LOCK:
+        conn, close_after = _acquire_host_viewers_conn()
+        if conn is None:
+            return None
+        try:
+            rows = conn.execute(
+                "SELECT session_name, pid, updated_at FROM host_viewers"
+            ).fetchall()
+        except sqlite3.Error:
+            if not close_after:
+                _close_cached_viewer_conn()
+            return None
+        finally:
+            if close_after:
+                conn.close()
     now = time.monotonic()
     live: set[str] = set()
     for name, pid, updated_at in rows:
@@ -724,7 +789,7 @@ def release_host_view(name: str | None, viewer_id: str) -> None:
         return
     with _VIEWER_LOCK:
         _viewer_last_write.pop((name, viewer_id), None)
-        conn = _connect_host_viewers()
+        conn, close_after = _acquire_host_viewers_conn()
         if conn is None:
             return
         try:
@@ -738,8 +803,11 @@ def release_host_view(name: str | None, viewer_id: str) -> None:
                 conn.rollback()
             except sqlite3.Error:
                 pass
+            if not close_after:
+                _close_cached_viewer_conn()
         finally:
-            conn.close()
+            if close_after:
+                conn.close()
 
 
 def _drop_host_viewers(name: str, viewer_ids: list[str]) -> None:
@@ -748,7 +816,7 @@ def _drop_host_viewers(name: str, viewer_ids: list[str]) -> None:
     with _VIEWER_LOCK:
         for viewer_id in viewer_ids:
             _viewer_last_write.pop((name, viewer_id), None)
-        conn = _connect_host_viewers()
+        conn, close_after = _acquire_host_viewers_conn()
         if conn is None:
             return
         try:
@@ -762,8 +830,11 @@ def _drop_host_viewers(name: str, viewer_ids: list[str]) -> None:
                 conn.rollback()
             except sqlite3.Error:
                 pass
+            if not close_after:
+                _close_cached_viewer_conn()
         finally:
-            conn.close()
+            if close_after:
+                conn.close()
 
 
 def resize(name: str, width: int, height: int) -> None:
@@ -1916,6 +1987,9 @@ def close_channel(name: str | None = None) -> None:
             channels = [ch] if ch is not None else []
     for ch in channels:
         ch.close()
+    if name is None:
+        with _VIEWER_LOCK:
+            _close_cached_viewer_conn()
 
 
 def _active_channel(name: str) -> ControlChannel | None:

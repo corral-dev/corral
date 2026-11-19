@@ -318,6 +318,7 @@ class SessionStore:
         self._last_full_merge_at: float | None = None
         # 最近一次真正本地磁盘扫描（非共享索引）的单调时钟；到点强制 prefer_shared=False。
         self._last_local_scan_at: float | None = None
+        self._last_merged_scan_sig: tuple | None = None
         # Wall clock of the last successful load/refresh (for honest "updated Ns ago").
         self.last_refresh_at: float | None = None
 
@@ -451,7 +452,10 @@ class SessionStore:
         except Exception:
             return False
 
-    def _ensure_scan_worker(self) -> None:
+    _SCAN_WORKER_BOOTSTRAP_TIMEOUT = 45.0
+    _SCAN_WORKER_BOOTSTRAP_POLL = 0.25
+
+    def _ensure_scan_worker(self):
         """Start the singleton scan worker if none is live (perf-C).
 
         Rate-limited inside; a no-op when disabled (tests, CORRAL_CACHE=0).
@@ -460,19 +464,90 @@ class SessionStore:
         try:
             from corral import scan_worker
 
-            scan_worker.ensure_scan_worker(self.limit)
+            return scan_worker.ensure_scan_worker(self.limit)
         except Exception:
-            pass
+            return None
+
+    def _wait_for_scan_worker_index(
+        self,
+        proc,
+        keep_ids: dict[str, set[str]],
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait for a freshly spawned scan_worker to publish its initial index.
+
+        Prevents SessionStore.load() from running a duplicate parallel cold
+        scan while the off-process worker is already performing the exact same
+        cold scan. Falls back at once if the worker exits early or after the
+        bounded timeout.
+        """
+        if proc is None or not callable(getattr(proc, "poll", None)):
+            return False
+        from corral import scan_index
+
+        if scan_index.try_consume(self.limit, keep_ids) is not None:
+            return True
+        last_checked_meta = scan_index.published_meta()
+        limit_s = (
+            self._SCAN_WORKER_BOOTSTRAP_TIMEOUT
+            if timeout is None
+            else float(timeout)
+        )
+        deadline = time.monotonic() + max(0.0, limit_s)
+        while True:
+            if proc.poll() is not None:
+                return False
+            meta = scan_index.published_meta()
+            if meta is not None and meta[1] >= self.limit and meta != last_checked_meta:
+                last_checked_meta = meta
+                if scan_index.try_consume(self.limit, keep_ids) is not None:
+                    return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return False
+            time.sleep(min(self._SCAN_WORKER_BOOTSTRAP_POLL, remaining))
+
+    @staticmethod
+    def _scanned_content_signature(scanned: dict[str, list[dict]]) -> tuple:
+        """Content signature over scanned buckets for steady-state skip checks."""
+        return tuple(
+            (
+                runtime_id,
+                tuple(
+                    (
+                        session.get("id"),
+                        session.get("path"),
+                        session.get("mtime"),
+                        session.get("file_mtime"),
+                        session.get("size_bytes"),
+                        bool(session.get("live")),
+                        session.get("pid"),
+                        session.get("status_tag"),
+                        session.get("completion_id"),
+                        session.get("native_title"),
+                        session.get("fallback_title"),
+                        session.get("last_user_msg"),
+                        session.get("last_agent_msg"),
+                        session.get("loop_count"),
+                    )
+                    for session in bucket
+                ),
+            )
+            for runtime_id, bucket in sorted(scanned.items())
+        )
 
     def load(self) -> None:
         from corral import observe
 
         try:
-            # Warm the off-process scanner so later refreshes consume instead
-            # of parsing (perf-C); best-effort, never blocks the load itself.
-            self._ensure_scan_worker()
-            t0 = time.perf_counter()
             keep_ids = self._remembered_scan_ids()
+            # Warm the off-process scanner so later refreshes consume instead
+            # of parsing (perf-C), and let a freshly spawned worker complete
+            # the single cold scan so this process does not duplicate it.
+            proc = self._ensure_scan_worker()
+            self._wait_for_scan_worker_index(proc, keep_ids)
+            t0 = time.perf_counter()
             with self._scan_lock:
                 scanned = self.registry.scan_all(
                     self.limit, keep_ids_by_runtime=keep_ids,
@@ -488,6 +563,7 @@ class SessionStore:
                 shared_index=shared,
             )
             self._merge_scanned(scanned)
+            self._last_merged_scan_sig = self._scanned_content_signature(scanned)
             self._last_full_merge_at = time.monotonic()
             if not shared:
                 self._last_local_scan_at = self._last_full_merge_at
@@ -571,10 +647,27 @@ class SessionStore:
                 shared_miss = getattr(self.registry, "last_scan_shared_miss", None)
             if not shared:
                 self._last_local_scan_at = now
+            scan_sig = (
+                self._scanned_content_signature(scanned)
+                if (shared and cache_hit)
+                else None
+            )
+            with self.lock:
+                has_lifecycle_pending = bool(self._provisional) or bool(self._force_ended)
+            unchanged_shared = (
+                shared
+                and cache_hit
+                and not has_lifecycle_pending
+                and self._last_merged_scan_sig is not None
+                and scan_sig == self._last_merged_scan_sig
+            )
             use_live = (
                 cache_hit
                 and self._last_full_merge_at is not None
-                and (now - self._last_full_merge_at) < self._FULL_MERGE_INTERVAL
+                and (
+                    (now - self._last_full_merge_at) < self._FULL_MERGE_INTERVAL
+                    or unchanged_shared
+                )
                 # Optimistic delete empties memory then clears the tombstone so the
                 # next refresh must re-merge from scan. Live merge ignores ``scanned``
                 # and would leave the sidebar empty forever.
@@ -594,6 +687,11 @@ class SessionStore:
                 self._merge_live_state()
             else:
                 self._merge_scanned(scanned)
+                self._last_merged_scan_sig = (
+                    scan_sig
+                    if scan_sig is not None
+                    else self._scanned_content_signature(scanned)
+                )
                 self._last_full_merge_at = now
             changed = self._sessions_signature() != before
             if changed:
@@ -1964,6 +2062,7 @@ class SessionStore:
             self._cursor_attention_signatures.pop(key, None)
             self._attention_evidence_cache.pop(key, None)
             self._projects = None
+            self._last_merged_scan_sig = None
         runtime_id, separator, session_id = key.partition(":")
         if separator and runtime_id and session_id:
             try:
@@ -2028,6 +2127,7 @@ class SessionStore:
             self.hosted[key] = keepalive_name
             self._force_ended.discard(key)
             self._provisional[key] = session
+            self._last_merged_scan_sig = None
             # 扫描器有时会把同一 list 对象再次 return；若直接在上面 insert，
             # 下一轮 scan 结果会被占位卡污染，same-id 分支误清占位却不退役。
             existing = [
@@ -2086,6 +2186,7 @@ class SessionStore:
             self._cursor_attention_signatures.pop(key, None)
             self._attention_evidence_cache.pop(key, None)
             self._projects = None
+            self._last_merged_scan_sig = None
 
     def mark_hosted(self, key: str, name: str | None) -> dict | None:
         """原子登记/清除托管会话，并同步更新当前扫描快照中的展示字段。
@@ -2096,6 +2197,7 @@ class SessionStore:
         进程尚未退出时下一轮扫描仍可能报 live，靠 `_force_ended` 压住直到确认已死。
         """
         with self.lock:
+            self._last_merged_scan_sig = None
             if name:
                 self.hosted[key] = name
                 self._force_ended.discard(key)
@@ -2173,6 +2275,7 @@ class SessionStore:
         """Refresh title state without rescanning histories; returns changed keys."""
         with self.lock:
             sessions = [s for bucket in self.sessions.values() for s in bucket]
+            prev_cache = self.cache
         # Keep the historical store-level probe as an injection point for
         # tests and explicit invalidation callers.
         if self._cache_file_mtime() != self._cache_mtime:
@@ -2185,10 +2288,13 @@ class SessionStore:
             changed.update(key for key, value in self.search_catalog.titles.items()
                            if before.get(key) != value)
         self.cache = self.title_state.cache
+        cache_changed = (prev_cache is not self.cache) or bool(changed)
         with self.lock:
             for bucket in self.sessions.values():
                 for session in bucket:
                     key = session_key(session)
+                    if not cache_changed and key in self.display_titles:
+                        continue
                     title, needs = titles.resolve_initial_title(session, self.cache)
                     old_title = self.display_titles.get(key)
                     was_generating = key in self.generating

@@ -1025,6 +1025,7 @@ def _load_legacy_sidebar_visible(path: str) -> bool | None:
 
 _DEFAULT_DB: SidebarLayoutDB | None = None
 _DEFAULT_DB_LOCK = threading.Lock()
+_REMEMBERED_IDS_CACHE: tuple[int, str, int, dict[str, frozenset[str]]] | None = None
 
 
 def default_layout_db() -> SidebarLayoutDB:
@@ -1059,7 +1060,21 @@ def pinned_keys_effective() -> set[str] | None:
 
 def remembered_ids_by_runtime() -> dict[str, set[str]]:
     """置顶与分组成员的会话 id，按运行时分组，供扫描 limit 豁免。"""
-    store = default_layout_db().read()
+    global _REMEMBERED_IDS_CACHE
+    db = default_layout_db()
+    path_str = str(db.path)
+    rev = db.read_revision()
+    if rev > 0:
+        with _DEFAULT_DB_LOCK:
+            cached = _REMEMBERED_IDS_CACHE
+            if (
+                cached is not None
+                and cached[0] == id(db)
+                and cached[1] == path_str
+                and cached[2] == rev
+            ):
+                return {rt: set(ids) for rt, ids in cached[3].items()}
+    store = db.read()
     out: dict[str, set[str]] = {}
     keys = set(store.pinned_session_keys)
     for group in store.groups.values():
@@ -1069,15 +1084,20 @@ def remembered_ids_by_runtime() -> dict[str, set[str]]:
         if runtime_id == "unknown" or not session_id:
             continue
         out.setdefault(runtime_id, set()).add(session_id)
+    if store is not db._memory and store.revision > 0:
+        frozen = {rt: frozenset(ids) for rt, ids in out.items()}
+        with _DEFAULT_DB_LOCK:
+            _REMEMBERED_IDS_CACHE = (id(db), path_str, store.revision, frozen)
     return out
 
 
 def reset_default_layout_db() -> None:
     """丢弃进程内共用句柄，供测试切换缓存目录后重新解析路径。"""
-    global _DEFAULT_DB
+    global _DEFAULT_DB, _REMEMBERED_IDS_CACHE
     with _DEFAULT_DB_LOCK:
         db = _DEFAULT_DB
         _DEFAULT_DB = None
+        _REMEMBERED_IDS_CACHE = None
     if db is not None:
         db.close()
 

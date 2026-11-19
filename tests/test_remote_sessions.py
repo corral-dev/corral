@@ -2772,7 +2772,7 @@ class StartupHydrationTests(unittest.TestCase):
             ],
         )
 
-    def test_search_loop_warms_once_then_waits_for_explicit_demand(self) -> None:
+    def test_search_loop_stays_idle_until_demanded_then_refreshes(self) -> None:
         import threading
 
         hub = SessionHub(scan_limit=10)
@@ -2782,8 +2782,10 @@ class StartupHydrationTests(unittest.TestCase):
         prepare_calls = threading.Event()
         prepare_count = 0
         waits: list[float | None] = []
-        wait_entered = threading.Event()
-        wait_release = threading.Event()
+        first_wait = threading.Event()
+        first_release = threading.Event()
+        second_wait = threading.Event()
+        second_release = threading.Event()
 
         def fake_prepare():
             nonlocal prepare_count
@@ -2793,25 +2795,159 @@ class StartupHydrationTests(unittest.TestCase):
 
         def fake_wait(timeout=None):
             waits.append(timeout)
-            wait_entered.set()
-            return wait_release.wait(5)
+            if len(waits) == 1:
+                first_wait.set()
+                first_release.wait(5)
+            else:
+                second_wait.set()
+                second_release.wait(5)
+            return hub._search_refresh.is_set()
 
         index = hub._search_index()
         with (
             mock.patch("corral.schedprio.demote_background"),
             mock.patch.object(hub.store, "prepare_search", side_effect=fake_prepare),
-            mock.patch.object(index, "refresh", return_value=0),
+            mock.patch.object(index, "refresh", return_value=0) as idx_refresh,
             mock.patch.object(hub._search_refresh, "wait", side_effect=fake_wait),
         ):
             worker = threading.Thread(target=hub._search_loop, daemon=True)
             worker.start()
+            self.assertTrue(first_wait.wait(3))
+            self.assertEqual(prepare_count, 0)
+            self.assertEqual(idx_refresh.call_count, 0)
+            self.assertEqual(waits, [None])
+            hub._request_search_refresh(catalog=True)
+            first_release.set()
             self.assertTrue(prepare_calls.wait(3))
-            self.assertTrue(wait_entered.wait(3))
+            self.assertTrue(second_wait.wait(3))
             self.assertEqual(prepare_count, 1)
-            self.assertEqual(waits[-1], remote_sessions._SEARCH_IDLE_RECONCILE)
+            self.assertEqual(idx_refresh.call_count, 1)
+            self.assertEqual(waits, [None, None])
             hub._stop.set()
-            wait_release.set()
+            second_release.set()
             worker.join(5)
+
+    def test_refresh_loop_waits_for_loading_done_before_first_refresh(self) -> None:
+        import threading
+
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(hub.layout_db.close)
+        hub._loading_done.clear()
+        refresh_entered = threading.Event()
+        waited_after_load = False
+
+        def fake_wait(timeout=None):
+            nonlocal waited_after_load
+            waited_after_load = hub._loading_done.is_set()
+            refresh_entered.set()
+            return True
+
+        with (
+            mock.patch("corral.schedprio.demote_background"),
+            mock.patch.object(hub, "_state_loop", return_value=None),
+            mock.patch.object(hub._stop, "wait", side_effect=fake_wait),
+            mock.patch.object(hub.store, "refresh", return_value=False) as refresh_mock,
+        ):
+            worker = threading.Thread(target=hub._refresh_loop, daemon=True)
+            worker.start()
+            import time
+
+            time.sleep(0.05)
+            self.assertFalse(refresh_entered.is_set())
+            self.assertEqual(refresh_mock.call_count, 0)
+            hub._loading_done.set()
+            self.assertTrue(refresh_entered.wait(3))
+            self.assertTrue(waited_after_load)
+            worker.join(5)
+
+    def test_refresh_loop_wakes_search_only_after_recent_explicit_demand(self) -> None:
+        import threading
+
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        hub.layout_db = split_layout.SidebarLayoutDB()
+        self.addCleanup(hub.layout_db.close)
+        clock = [1000.0]
+
+        def run_one_refresh_pass(*, demanded_age: float | None) -> bool:
+            hub._stop.clear()
+            hub._loading_done.set()
+            hub._search_refresh.clear()
+            hub._search_demanded_at = (
+                0.0 if demanded_age is None else clock[0] - demanded_age
+            )
+            step = [0]
+
+            def fake_stop_wait(_timeout=None):
+                step[0] += 1
+                if step[0] == 1:
+                    clock[0] += remote_sessions._REFRESH_RECONCILE + 1.0
+                    return False
+                return True
+
+            with (
+                mock.patch("corral.schedprio.demote_background"),
+                mock.patch("corral.history_watch.memory_pressured", return_value=False),
+                mock.patch.object(hub, "_state_loop", return_value=None),
+                mock.patch.object(hub, "_reclaim_inactive_hosts"),
+                mock.patch.object(hub, "_reconcile_hosted_lifecycle"),
+                mock.patch.object(hub, "_retry_failed_resumes"),
+                mock.patch.object(hub.store, "refresh", return_value=True),
+                mock.patch.object(hub.store, "poll_title_updates", return_value=set()),
+                mock.patch.object(remote_sessions.time, "monotonic", side_effect=lambda: clock[0]),
+                mock.patch.object(hub._stop, "wait", side_effect=fake_stop_wait),
+            ):
+                worker = threading.Thread(target=hub._refresh_loop, daemon=True)
+                worker.start()
+                worker.join(5)
+            return hub._search_refresh.is_set()
+
+        self.assertFalse(run_one_refresh_pass(demanded_age=None))
+        self.assertFalse(run_one_refresh_pass(demanded_age=remote_sessions._SEARCH_ACTIVE_WINDOW + 10.0))
+        self.assertTrue(run_one_refresh_pass(demanded_age=10.0))
+
+    def test_store_refresh_reuses_live_merge_on_unchanged_shared_scan(self) -> None:
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        store = hub.store
+        scanned = {"claude": [_session(sid="steady")]}
+        store.registry.scan_all = lambda *a, **kw: scanned
+        store.registry.last_scan_shared = True
+        store.registry.last_scan_cache_hit_all = True
+        store.load()
+        store._remembered_scan_ids = lambda: {}
+        store._last_full_merge_at = 0.0
+        with (
+            mock.patch.object(store, "_merge_live_state") as live_merge,
+            mock.patch.object(store, "_merge_scanned") as full_merge,
+        ):
+            store.refresh()
+            live_merge.assert_called_once_with()
+            full_merge.assert_not_called()
+
+            # Mutating scanned session metadata must trigger a full merge.
+            scanned["claude"][0]["mtime"] += 5
+            store.refresh()
+            full_merge.assert_called_once_with(scanned)
+
+    def test_poll_title_updates_skips_regex_when_cache_unchanged(self) -> None:
+        from corral import titles
+
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        store = hub.store
+        sess = _session(sid="titled")
+        store.sessions = {"claude": [sess]}
+        store.poll_title_updates()
+        self.assertIn("claude:titled", store.display_titles)
+        with mock.patch.object(
+            titles,
+            "resolve_initial_title",
+            side_effect=AssertionError("should skip unchanged resolution"),
+        ):
+            self.assertEqual(store.poll_title_updates(), set())
 
     def test_retained_snapshot_skips_search_refresh_when_all_keys_found(self) -> None:
         hub = SessionHub(scan_limit=10)

@@ -59,6 +59,8 @@ _PUBLISH_LOCK = threading.Lock()
 _LAST_PUBLISH: dict[str, object] = {"at": 0.0, "limit": 0, "keys": None}
 _META_LOCK = threading.Lock()
 _META_CACHE: tuple[tuple, tuple[float, int]] | None = None
+_CONSUME_LOCK = threading.Lock()
+_CONSUME_CACHE: tuple[tuple, dict[str, Any]] | None = None
 # Most recent consume miss (reason + publisher facts, counts only — never
 # session ids). Misses can occur every few seconds per process, so the events
 # log only gets a periodic reminder per reason; the in-memory record always
@@ -225,6 +227,28 @@ def _meta_signature(path, cohort: str) -> tuple:
     )
 
 
+def _load_cached_payload(path, cohort: str) -> dict[str, Any] | None:
+    """Return the parsed shared index dict when the on-disk file signature matches."""
+    global _CONSUME_CACHE
+    with _CONSUME_LOCK:
+        try:
+            before = _meta_signature(path, cohort)
+            if _CONSUME_CACHE is not None and _CONSUME_CACHE[0] == before:
+                return _CONSUME_CACHE[1]
+            _CONSUME_CACHE = None
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if _meta_signature(path, cohort) != before:
+                return None  # raced publication/torn read: caller falls back or retries
+            if not isinstance(payload, dict):
+                return None
+            _CONSUME_CACHE = before, payload
+            return payload
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            _CONSUME_CACHE = None
+            return None
+
+
 def try_consume(
     limit: int,
     keep_ids_by_runtime: dict[str, set[str]] | None = None,
@@ -235,17 +259,16 @@ def try_consume(
     if not _shared_index_enabled():
         _note_miss("disabled")
         return None
-    try:
-        path = index_path()
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    path = index_path()
+    cohort = provider_cohort()
+    payload = _load_cached_payload(path, cohort)
+    if payload is None:
         _note_miss("unreadable")
         return None
-    if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
+    if payload.get("version") != INDEX_VERSION:
         _note_miss("version")
         return None
-    if payload.get("provider_cohort") != provider_cohort():
+    if payload.get("provider_cohort") != cohort:
         # An obsolete shared worker's snapshot must never be reused by a new
         # provider cohort: fall through to a local scan instead.
         _note_miss("cohort")
@@ -424,24 +447,7 @@ def publish(
         path = index_path()
         if scan_duration_s is not None:
             note_scan_duration(scan_duration_s)
-        duration = (
-            max(0.0, float(scan_duration_s))
-            if scan_duration_s is not None
-            else (last_scan_duration() or _existing_scan_duration(path))
-        )
-        payload = {
-            "version": INDEX_VERSION,
-            "provider_cohort": provider_cohort(),
-            "published_at": time.time(),
-            "limit": int(limit),
-            "scan_duration_s": round(duration, 2),
-            "keep_ids": keep_payload,
-            "uncoverable_keep": uncoverable,
-            "sessions": {
-                runtime_id: [dict(session) for session in bucket]
-                for runtime_id, bucket in scanned.items()
-            },
-        }
+        published_at = None
         with _PUBLISH_LOCK, _publication_lock(path) as acquired:
             if not acquired or _covered_by_fresh_index(limit):
                 return None
@@ -458,6 +464,25 @@ def publish(
                 and last.get("keep_ids") == keep_payload
             ):
                 return
+            duration = (
+                max(0.0, float(scan_duration_s))
+                if scan_duration_s is not None
+                else (last_scan_duration() or _existing_scan_duration(path))
+            )
+            published_at = time.time()
+            payload = {
+                "version": INDEX_VERSION,
+                "provider_cohort": provider_cohort(),
+                "published_at": published_at,
+                "limit": int(limit),
+                "scan_duration_s": round(duration, 2),
+                "keep_ids": keep_payload,
+                "uncoverable_keep": uncoverable,
+                "sessions": {
+                    runtime_id: [dict(session) for session in bucket]
+                    for runtime_id, bucket in scanned.items()
+                },
+            }
             tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
             with open(tmp, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False)
@@ -466,9 +491,14 @@ def publish(
                 at=now_mono, path=str(path), limit=int(limit),
                 keys=fingerprint, keep_ids=keep_payload,
             )
+            global _META_CACHE, _CONSUME_CACHE
+            with _META_LOCK:
+                _META_CACHE = None
+            with _CONSUME_LOCK:
+                _CONSUME_CACHE = None
             _cleanup_stale_tmps(path)
         _cleanup_foreign_indexes(path)
-        return payload["published_at"]
+        return published_at
     except Exception:  # noqa: BLE001 — index is optional acceleration
         return
 

@@ -475,5 +475,47 @@ class RegistrySharedIndexTests(unittest.TestCase):
                 runtime.scan_sessions.assert_called_once()
 
 
+class ScanIndexConsumeCacheTests(unittest.TestCase):
+    def test_try_consume_reuses_decoded_payload_for_unchanged_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            with (
+                mock.patch("corral.scan_index.cache_dir", return_value=cache),
+                mock.patch("corral.scan_index.cache_enabled", return_value=True),
+                mock.patch("corral.scan_index._shared_index_enabled", return_value=True),
+            ):
+                scan_index.publish(
+                    {"claude": [{"source": "claude", "id": "a", "file_mtime": 1, "mtime": 1}]},
+                    limit=200,
+                )
+                original = scan_index.json.load
+                with mock.patch.object(scan_index.json, "load", wraps=original) as decode:
+                    first = scan_index.try_consume(50)
+                    second = scan_index.try_consume(50)
+                    self.assertIsNotNone(first)
+                    self.assertIsNotNone(second)
+                    self.assertEqual(decode.call_count, 1)
+                    # Caller mutations must never poison the cached payload.
+                    first["claude"][0]["keepalive_name"] = "mutated"
+                    third = scan_index.try_consume(50)
+                    self.assertNotIn("keepalive_name", third["claude"][0])
+
+                    # Replacing the index file invalidates the consume cache.
+                    time.sleep(0.01)
+                    scan_index._LAST_PUBLISH.update({"at": 0.0, "path": "", "limit": 0, "keys": None})
+                    scan_index.publish(
+                        {"claude": [{"source": "claude", "id": "b", "file_mtime": 2, "mtime": 2}]},
+                        limit=200,
+                        scan_duration_s=1.0,
+                    )
+                    after_publish = decode.call_count
+                    fourth = scan_index.try_consume(50)
+                    self.assertEqual(fourth["claude"][0]["id"], "b")
+                    self.assertEqual(decode.call_count, after_publish + 1)
+                    fifth = scan_index.try_consume(50)
+                    self.assertEqual(fifth["claude"][0]["id"], "b")
+                    self.assertEqual(decode.call_count, after_publish + 1)
+
+
 if __name__ == "__main__":
     unittest.main()

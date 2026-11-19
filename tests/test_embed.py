@@ -632,11 +632,42 @@ class HostViewRegistryTests(unittest.TestCase):
     def tearDown(self) -> None:
         with embed._VIEWER_LOCK:
             embed._viewer_last_write.clear()
+            embed._close_cached_viewer_conn()
         if self._old is None:
             os.environ.pop("CORRAL_CACHE_DIR", None)
         else:
             os.environ["CORRAL_CACHE_DIR"] = self._old
         self._tmp.cleanup()
+
+    def test_desired_host_size_reuses_persistent_viewer_connection(self) -> None:
+        pid = os.getpid()
+        name = "corral-claude-reuse"
+        embed.desired_host_size(name, f"{pid}:tui", 120, 40, used_at=10.0)
+        with embed._VIEWER_LOCK:
+            conn1 = embed._viewer_conn
+        self.assertIsNotNone(conn1)
+        embed.desired_host_size(name, f"{pid}:tui", 120, 40, used_at=10.0)
+        with embed._VIEWER_LOCK:
+            conn2 = embed._viewer_conn
+        self.assertIs(conn1, conn2)
+        names = embed.live_host_viewer_names()
+        self.assertIsNotNone(names)
+        self.assertIn(name, names)
+        with embed._VIEWER_LOCK:
+            conn3 = embed._viewer_conn
+        self.assertIs(conn1, conn3)
+        embed.desired_host_size(name, f"{pid}:tui", 140, 45, used_at=20.0)
+        with embed._VIEWER_LOCK:
+            conn4 = embed._viewer_conn
+        self.assertIs(conn1, conn4)
+
+        # Invalidating schema readiness must reopen cleanly instead of reusing stale handle.
+        embed._viewer_schema_ready.discard(str(embed._host_viewers_path()))
+        embed.desired_host_size(name, f"{pid}:tui", 150, 45, used_at=30.0)
+        with embed._VIEWER_LOCK:
+            conn5 = embed._viewer_conn
+        self.assertIsNotNone(conn5)
+        self.assertIsNot(conn1, conn5)
 
     def test_desired_host_size_follows_latest_used_viewer(self) -> None:
         pid = os.getpid()

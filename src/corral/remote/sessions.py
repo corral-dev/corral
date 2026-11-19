@@ -62,6 +62,7 @@ _ARRIVAL_MIN_GAP = 1.0
 _LAYOUT_POLL_SECONDS = 1.0
 _SEARCH_IDLE_RECONCILE = 300.0
 _SEARCH_INDEX_MIN_GAP = 15.0
+_SEARCH_ACTIVE_WINDOW = 600.0
 _PHONE_LIST_LIMIT = 80
 # OpenCode drops two interrupt presses that arrive in one read; 0.3 s apart
 # both count, about 1.3 s apart the first has already expired.
@@ -824,6 +825,7 @@ class SessionHub:
         self._stop = threading.Event()
         self._search_refresh = threading.Event()
         self._search_catalog_needed = False
+        self._search_demanded_at = 0.0
         self._loops_started = False
         self._loading_done = threading.Event()
         self._loading_done.set()
@@ -971,13 +973,15 @@ class SessionHub:
         return [session for session in self.store.search_sessions()
                 if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS]
 
-    def _request_search_refresh(self, *, catalog: bool = False) -> None:
+    def _request_search_refresh(self, *, catalog: bool = False, explicit: bool = True) -> None:
         if catalog:
             self._search_catalog_needed = True
+        if explicit:
+            self._search_demanded_at = time.monotonic()
         self._search_refresh.set()
 
     def _search_loop(self) -> None:
-        """Own parsing outside RPC threads; publish only complete index snapshots."""
+        """Own parsing outside RPC threads; stay idle until search is demanded."""
         from corral import observe
         from corral.schedprio import demote_background
 
@@ -987,25 +991,35 @@ class SessionHub:
         if self._stop.is_set():
             return
         index = self._search_index()
-        warmed = False
-        last_catalog_at = 0.0
+        # Preserve warm-start behavior when a synchronous search or request
+        # already warmed the index/event before this thread started; otherwise
+        # do zero catalog/body work until a client actually requests search.
+        run_immediately = (
+            self._search_refresh.is_set()
+            or index.ready
+            or self.store.search_catalog.ready
+        )
         while not self._stop.is_set():
+            if not run_immediately:
+                self._search_refresh.wait()
+                if self._stop.is_set():
+                    return
+            run_immediately = False
             self._search_refresh.clear()
             need_catalog = self._search_catalog_needed
             self._search_catalog_needed = False
-            now = time.monotonic()
-            if not warmed or need_catalog or (now - last_catalog_at >= _SEARCH_IDLE_RECONCILE):
+            if need_catalog or (
+                not self.store.search_catalog.ready and self._search_demanded_at > 0.0
+            ):
                 try:
                     self.store.prepare_search()
                 except Exception as exc:
                     observe.event("search_index_refresh_failed", error=str(exc))
-                last_catalog_at = time.monotonic()
-            try:
-                index.refresh(self.store, self._search_sessions())
-            except Exception as exc:
-                observe.event("search_index_refresh_failed", error=str(exc))
-            warmed = True
-            self._search_refresh.wait(_SEARCH_IDLE_RECONCILE)
+            if self._search_demanded_at > 0.0 or index.ready:
+                try:
+                    index.refresh(self.store, self._search_sessions())
+                except Exception as exc:
+                    observe.event("search_index_refresh_failed", error=str(exc))
 
     def _refresh_loop(self) -> None:
         """Full history scans on this thread; the state probe on its own thread.
@@ -1025,15 +1039,19 @@ class SessionHub:
         state = threading.Thread(target=self._state_loop, daemon=True, name="remote-state")
         state.start()
         demote_background()
-        watcher = self._history_watcher
-        last_scan = time.monotonic()  # start() just loaded
-        last_title_poll = last_scan
-        last_chatter = last_scan
-        last_search_wake = 0.0
-        arrival_seen = self._watcher_arrivals(watcher)
-        arrival_until = 0.0
-        index_stamp = _scan_index_stamp()
         try:
+            while not self._stop.is_set() and not self._loading_done.wait(0.2):
+                pass
+            if self._stop.is_set():
+                return
+            watcher = self._history_watcher
+            last_scan = time.monotonic()  # start() just loaded
+            last_title_poll = last_scan
+            last_chatter = last_scan
+            last_search_wake = 0.0
+            arrival_seen = self._watcher_arrivals(watcher)
+            arrival_until = 0.0
+            index_stamp = _scan_index_stamp()
             while not self._stop.is_set():
                 # Fixed tick: FS events are read via ``watcher.is_set()`` below, so a
                 # write burst cannot spin this loop faster than once per second.
@@ -1081,8 +1099,13 @@ class SessionHub:
                     else:
                         self._note_scan_cost(time.monotonic() - scan_started)
                     last_scan = time.monotonic()
-                    if changed and (last_scan - last_search_wake) >= _SEARCH_INDEX_MIN_GAP:
-                        self._request_search_refresh(catalog=False)
+                    if (
+                        changed
+                        and self._search_demanded_at > 0.0
+                        and (last_scan - self._search_demanded_at) < _SEARCH_ACTIVE_WINDOW
+                        and (last_scan - last_search_wake) >= _SEARCH_INDEX_MIN_GAP
+                    ):
+                        self._request_search_refresh(catalog=False, explicit=False)
                         last_search_wake = last_scan
                     self._reclaim_inactive_hosts()
                     self._reconcile_hosted_lifecycle()

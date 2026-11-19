@@ -489,6 +489,8 @@ def _list_antigravity_processes() -> tuple[set[int], dict[str, int]] | None:
             pid = int(parts[0])
         except ValueError:
             continue
+        if "agy" not in parts[1].lower():
+            continue
         try:
             argv = shlex.split(parts[1])
         except ValueError:
@@ -541,16 +543,23 @@ def _parse_lsof_lock_fds(output: str) -> list[tuple[int, str, str]]:
     return records
 
 
-def _list_lsof_lock_fds(presence_dirs: list[Path]) -> list[tuple[int, str, str]] | None:
+def _list_lsof_lock_fds(
+    presence_dirs: list[Path],
+    *,
+    live_pids: set[int] | None = None,
+) -> list[tuple[int, str, str]] | None:
     """List open regular ``.lock`` file descriptors across existing ``presence/`` directories.
 
     ``None`` means an ``lsof`` probe failed (timeout/OS error) for a directory
     that holds lock files, so the result would be incomplete. A non-zero exit
     with no output is normal (``lsof`` exits 1 when nothing is open).
+
+    When ``live_pids`` is provided, query only those candidate PIDs via
+    ``lsof -p`` instead of walking every process on the host via ``+D``.
     """
     if not presence_dirs or shutil.which("lsof") is None:
         return []
-    records: list[tuple[int, str, str]] = []
+    active_dirs: list[Path] = []
     for presence_dir in presence_dirs:
         if not presence_dir.is_dir():
             continue
@@ -559,8 +568,36 @@ def _list_lsof_lock_fds(presence_dirs: list[Path]) -> list[tuple[int, str, str]]
                 has_locks = any(entry.name.endswith(".lock") for entry in entries)
         except OSError:
             continue
-        if not has_locks:
-            continue
+        if has_locks:
+            active_dirs.append(presence_dir)
+    if not active_dirs:
+        return []
+    records: list[tuple[int, str, str]] = []
+    if live_pids is not None:
+        if not live_pids:
+            return []
+        allowed_dirs = {os.path.abspath(str(d)) for d in active_dirs} | {
+            os.path.realpath(str(d)) for d in active_dirs
+        }
+        pid_arg = ",".join(str(pid) for pid in sorted(live_pids))
+        try:
+            proc = subprocess.run(
+                ["lsof", "-n", "-P", "-F", "pftan", "-p", pid_arg],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=_CALL_TIMEOUT,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.stdout:
+            for pid, access, lock_path in _parse_lsof_lock_fds(proc.stdout):
+                parent = os.path.dirname(lock_path)
+                if parent in allowed_dirs or os.path.realpath(parent) in allowed_dirs:
+                    records.append((pid, access, lock_path))
+        return records
+    for presence_dir in active_dirs:
         try:
             proc = subprocess.run(
                 ["lsof", "-F", "pftan", "+D", str(presence_dir)],
@@ -589,7 +626,7 @@ def _resolve_antigravity_live_pids_checked(
     if not live_pids:
         return {}
     presence_dirs = _antigravity_presence_dirs(sessions=sessions, roots=roots)
-    lock_fds = _list_lsof_lock_fds(presence_dirs)
+    lock_fds = _list_lsof_lock_fds(presence_dirs, live_pids=live_pids)
     if lock_fds is None:
         return None
     resolved: dict[str, int] = {}

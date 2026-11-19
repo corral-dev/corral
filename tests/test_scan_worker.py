@@ -800,5 +800,114 @@ class WorkerBackoffLoopTests(unittest.TestCase):
         self.assertLessEqual(max(gaps), 3.0)
 
 
+class LoadBootstrapTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.cache = Path(self._tmpdir.name)
+        self.patches = [
+            mock.patch("corral.scan_index.cache_dir", return_value=self.cache),
+            mock.patch("corral.scan_index._shared_index_enabled", return_value=True),
+            mock.patch("corral.scan_worker._worker_enabled", return_value=True),
+            mock.patch("corral.cache.cache_dir", return_value=self.cache),
+            mock.patch("corral.scan_worker._remembered_keep_ids", return_value={}),
+        ]
+        for patch in self.patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        from corral import scan_index, scan_worker
+
+        self.scan_index = scan_index
+        self.scan_worker = scan_worker
+        scan_index._LAST_PUBLISH.update(
+            {"at": 0.0, "path": "", "limit": 0, "keys": None}
+        )
+        self.addCleanup(
+            scan_index._LAST_PUBLISH.update,
+            {"at": 0.0, "path": "", "limit": 0, "keys": None},
+        )
+        with scan_index._CONSUME_LOCK:
+            scan_index._CONSUME_CACHE = None
+
+    def test_store_load_waits_for_spawned_worker_index_instead_of_rescanning(self) -> None:
+        import threading
+
+        import corral
+
+        registry = _StubRegistry({"claude": [{"source": "claude", "id": "local", "mtime": 1, "file_mtime": 1}]})
+        published = {"claude": [{"source": "claude", "id": "from-worker", "mtime": 2, "file_mtime": 2}]}
+
+        class _RunningProc:
+            def __init__(self, code=None):
+                self._code = code
+
+            def poll(self):
+                return self._code
+
+        def publish_soon():
+            time.sleep(0.04)
+            self.scan_index.publish(published, limit=200)
+
+        with (
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+            mock.patch.object(self.scan_worker, "ensure_scan_worker", return_value=_RunningProc()),
+            mock.patch.object(corral.SessionStore, "_SCAN_WORKER_BOOTSTRAP_POLL", 0.01),
+            mock.patch.object(corral.SessionStore, "_SCAN_WORKER_BOOTSTRAP_TIMEOUT", 2.0),
+        ):
+            t = threading.Thread(target=publish_soon, daemon=True)
+            t.start()
+            store = corral.SessionStore(limit=50, registry=registry)
+            store._remembered_scan_ids = lambda: {}
+            store.load()
+            t.join(2)
+        self.assertTrue(registry.last_scan_shared)
+        self.assertEqual([s["id"] for s in store.all_sessions()], ["from-worker"])
+
+        # Exited worker falls back immediately without waiting out timeout.
+        with self.scan_index._CONSUME_LOCK:
+            self.scan_index._CONSUME_CACHE = None
+        if self.scan_index.index_path().exists():
+            self.scan_index.index_path().unlink()
+        with (
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+            mock.patch.object(self.scan_worker, "ensure_scan_worker", return_value=_RunningProc(code=1)),
+            mock.patch.object(corral.SessionStore, "_SCAN_WORKER_BOOTSTRAP_TIMEOUT", 5.0),
+        ):
+            store2 = corral.SessionStore(limit=50, registry=registry)
+            store2._remembered_scan_ids = lambda: {}
+            started = time.monotonic()
+            store2.load()
+            self.assertLess(time.monotonic() - started, 1.0)
+        self.assertFalse(registry.last_scan_shared)
+        self.assertEqual([s["id"] for s in store2.all_sessions()], ["local"])
+
+    def test_run_loop_schedules_next_parse_after_initial_foreign_adoption(self) -> None:
+        self.scan_index.publish(
+            {"claude": [{"source": "claude", "id": "foreign", "mtime": 1, "file_mtime": 1}]},
+            limit=200,
+        )
+        fake = _FakeTime(start=1000.0)
+        registry = _AlwaysParseRegistry(lambda: {"claude": []})
+        registry._clock = fake.monotonic
+        with (
+            mock.patch("corral.scan_worker._memory_pressured", return_value=False),
+            mock.patch("corral.scan_worker.provider_drift", return_value=False),
+            mock.patch("corral.scan_worker.time", fake),
+            mock.patch("corral.scan_worker._parse_gap_seconds", return_value=20.0),
+        ):
+            code = self.scan_worker.run_loop(
+                limit=50,
+                interval=2.0,
+                parent_pid=os.getppid(),
+                max_passes=3,
+                registry=registry,
+                watcher=_NullWatcher(),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(registry.parse_at, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -753,6 +753,28 @@ class DedupeKeepaliveNameTests(unittest.TestCase):
         self.assertEqual(host.warmed, ["bbb"])
 
 
+class RememberedIdsCacheTests(_TempLayoutDB):
+    def test_remembered_ids_reuses_snapshot_until_revision_bumps(self) -> None:
+        db = split_layout.default_layout_db()
+        db.toggle_session_pin("claude:first")
+        orig_read = db.read
+        with mock.patch.object(db, "read", wraps=orig_read) as tracked_read:
+            first = split_layout.remembered_ids_by_runtime()
+            second = split_layout.remembered_ids_by_runtime()
+            self.assertEqual(first, {"claude": {"first"}})
+            self.assertEqual(second, {"claude": {"first"}})
+            self.assertEqual(tracked_read.call_count, 1)
+
+            # Mutating returned sets must not pollute the cached snapshot.
+            first["claude"].add("mutated")
+            self.assertEqual(split_layout.remembered_ids_by_runtime(), {"claude": {"first"}})
+            self.assertEqual(tracked_read.call_count, 1)
+
+            db.toggle_session_pin("codex:second")
+            third = split_layout.remembered_ids_by_runtime()
+            self.assertEqual(third, {"claude": {"first"}, "codex": {"second"}})
+            self.assertEqual(tracked_read.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

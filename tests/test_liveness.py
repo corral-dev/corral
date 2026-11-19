@@ -206,6 +206,52 @@ class AntigravityLivenessTests(unittest.TestCase):
                 )
             self.assertEqual([str(d) for d in dirs], [os.path.join(str(root), "presence")])
 
+    def test_list_antigravity_processes_prefilters_non_agy_lines(self) -> None:
+        ps_out = (
+            "  100 /usr/bin/python3 --flag \"unclosed\n"
+            "  200 zsh -l\n"
+            "  300 /usr/local/bin/agy --conversation cid-ok\n"
+        )
+        splits: list[str] = []
+        orig_split = liveness.shlex.split
+
+        def tracked_split(cmd: str):
+            splits.append(cmd)
+            return orig_split(cmd)
+
+        with (
+            mock.patch.object(liveness.subprocess, "check_output", return_value=ps_out.encode()),
+            mock.patch.object(liveness.shlex, "split", side_effect=tracked_split),
+        ):
+            result = liveness._list_antigravity_processes()
+        self.assertEqual(result, ({300}, {"cid-ok": 300}))
+        self.assertEqual(splits, ["/usr/local/bin/agy --conversation cid-ok"])
+
+    def test_list_lsof_lock_fds_targets_live_pids_and_filters_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            presence = root / "presence"
+            presence.mkdir()
+            (presence / "inside.lock").write_text("", encoding="utf-8")
+            other = root / "other"
+            other.mkdir()
+            other_lock = other / "outside.lock"
+            other_lock.write_text("", encoding="utf-8")
+            lsof_stdout = (
+                f"p1111\nf4\nau\ntREG\nn{presence / 'inside.lock'}\n"
+                f"p2222\nf5\nau\ntREG\nn{other_lock}\n"
+            )
+            fake_proc = mock.Mock(stdout=lsof_stdout)
+            with (
+                mock.patch.object(liveness.shutil, "which", return_value="/usr/sbin/lsof"),
+                mock.patch.object(liveness.subprocess, "run", return_value=fake_proc) as run,
+            ):
+                records = liveness._list_lsof_lock_fds([presence], live_pids={2222, 1111})
+            run.assert_called_once()
+            argv = run.call_args[0][0]
+            self.assertEqual(argv, ["lsof", "-n", "-P", "-F", "pftan", "-p", "1111,2222"])
+            self.assertEqual(records, [(1111, "u", str(presence / "inside.lock"))])
+
 
 if __name__ == "__main__":
     unittest.main()
