@@ -6,6 +6,16 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Version 1.0.0 opens the CLI's stable 1.x line. Behavior is unchanged from 0.24.369: this release carries only the version bump.
+
+### 简体中文
+
+- 1.0.0 开启 CLI 的 1.x 稳定版本线。行为与 0.24.369 完全一致，本次发布只包含版本号跃升。
+
 ## 0.24.369
 
 ### English
