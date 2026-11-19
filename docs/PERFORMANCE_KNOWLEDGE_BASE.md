@@ -311,6 +311,22 @@ Adopted design for persistent cold/warm scan cost elimination across shared depe
 3. **Single-scan handoff-wrapper fast path:** `corral.runtime.host_extension` scans `split_handoff_text()` / `peel_handoff_text()` inputs with one compiled regex `_HANDOFF_FAST_HINT_RE` covering all handoff intros, noise prefixes, original-request tags, and leading `Task:` / `任务：` markers, falling back cleanly when matched and preserving exact single-line / multi-line whitespace semantics when unmatched.
 4. **Upstream `SessKit 0.3.12` pin:** Consumes native Rust OpenCode `content_fingerprint`, OpenCode v2 chunked scanning + persisted `versioned_session_meta` + exact v1 `MAX(time_updated)` cutoff pruning, Antigravity L1/L2 metadata + stat-stamped summary/history caching + direct-path `refresh_session`, Pi L2 persistence + lazy `open_file_paths`, Codex `os.scandir` one-stat collection + Codex/Cursor filtered/empty persistence, fast `ListRecordMemo` container copying, and macOS missing-key environ / tracked-live start-time caching.
 
+Measured live validation on this workstation (`limit=200`, `sesskit==0.3.12`, native enabled, persisted SQLite cache populated across 68 Antigravity, 256 Codex, 216 Cursor, 3 Kimi, 348 Pi rows in `session_meta` and 200 OpenCode rows in `versioned_session_meta`):
+
+| Runtime | `0.3.11` sig (ms) | `0.3.12` sig1 / sig2 (ms) | `0.3.11` cold proc (ms) | `0.3.12` cold proc (ms) | `0.3.11` warm (ms) | `0.3.12` warm (ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| `opencode` | 301–384 | 197.46 / 0.48 | 1,985–2,178 | 90.11 | 272–350 | 84.06 |
+| `pi` | 5.5 | 4.93 / 4.11 | 2,849–3,916 | 90.46 | 95–124 | 16.35 |
+| `antigravity` | 2.9 | 2.65 / 2.12 | 839–1,290 | 91.39 | 830–1,299 | 51.81 |
+| `codex` | 23–48 | 45.29 / 14.70 | 85.2 | 26.87 | 79–119 | 19.24 |
+| `cursor` | 15.3 | 14.01 / 12.01 | 17.2 | 12.07 | 14.3 | 11.03 |
+| `claude` | 0.1 | 0.09 / 0.05 | 0.6 | 0.63 | 0.1 | 0.09 |
+| `kimi` | 0.8 | 0.73 / 0.60 | 2.9 | 2.66 | 3.5 | 2.30 |
+| **Sequential sum (7)** | — | 265.17 / 34.08 | 5,779–7,507 | **314.21** | 1,299–1,886 | **184.89** |
+
+- **Parallel `registry.scan_all(200, prefer_shared=False)` wall clock:** `392.2 ms` on a cold-process full scan hitting persisted SQLite metadata; `59.3 ms` on a warm in-process signature hit (`last_scan_cache_hit_all=True`).
+- **Live `com.x0c.corral.remote` steady state (`1017` sessions across active runtimes, measured 44 s apart):** `_serve` averaged `~5.1%` CPU (`+2.24 s` CPU time) at `116 MiB` RSS (down from `135 MiB`), `corral.scan_worker` averaged `~1.9%` CPU (`+0.83 s` CPU time, `0.0–3.7%` sampled) at `118 MiB` RSS (down from `168 MiB`), `events.log` recorded `0` error/warning events out of `63` post-restart events, and daemon `scan_all` completed in `1 ms` on initial load and `15–52 ms` on shared-index refreshes.
+
 ## Lightweight help and cache binding
 
 Help and version queries must not import SessKit parsers or initialize the history cache bridge. The package initializer previously called `_wire_sesskit_cache()` unconditionally, which pulled SessKit's parser package into every command despite the lightweight bootstrap. Keep the binding function available, but invoke it from `corral.scan` package initialization, immediately before the Corral scanner aliases are used. This preserves Corral's cache provider for real scans while keeping help independent of session parsing. Verify both a fresh help process without parser imports and scanner initialization with the existing cache provider attached.
