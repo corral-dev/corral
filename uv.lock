@@ -2,8 +2,10 @@ version = 1
 revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
-    "python_full_version >= '3.11'",
-    "python_full_version < '3.11'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin'",
+    "python_full_version < '3.11' and sys_platform == 'darwin'",
+    "python_full_version < '3.11' and sys_platform != 'darwin'",
 ]
 
 [[package]]
@@ -137,7 +139,8 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-session-control" },
-    { name = "sesskit" },
+    { name = "sesskit", version = "0.3.11", source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" }, marker = "sys_platform == 'darwin'" },
+    { name = "sesskit", version = "0.3.11", source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-py3-none-any.whl" }, marker = "sys_platform != 'darwin'" },
     { name = "textual" },
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -162,7 +165,8 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'remote'", specifier = ">=42" },
     { name = "pillow", marker = "extra == 'remote'", specifier = ">=10" },
     { name = "segno", marker = "extra == 'remote'", specifier = ">=1.6" },
-    { name = "sesskit", url = "https://github.com/x0c/sesskit/releases/download/v0.3.8/sesskit-0.3.8-py3-none-any.whl" },
+    { name = "sesskit", marker = "sys_platform != 'darwin'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-py3-none-any.whl" },
+    { name = "sesskit", marker = "sys_platform == 'darwin'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" },
     { name = "textual", specifier = ">=8.0" },
     { name = "websockets", specifier = ">=13" },
     { name = "zeroconf", marker = "extra == 'remote'", specifier = ">=0.131" },
@@ -458,10 +462,26 @@ wheels = [
 
 [[package]]
 name = "sesskit"
-version = "0.3.8"
-source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.8/sesskit-0.3.8-py3-none-any.whl" }
+version = "0.3.11"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" }
+resolution-markers = [
+    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "python_full_version < '3.11' and sys_platform == 'darwin'",
+]
 wheels = [
-    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.8/sesskit-0.3.8-py3-none-any.whl", hash = "sha256:d171bdba754b2baa6d51c0a787c59c1d44220980fb6cabd816266d220f995783" },
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:ad0998854171b0d73d2f13a721efcf330d9c5976fab9ab1bb86ede02f96c00d3" },
+]
+
+[[package]]
+name = "sesskit"
+version = "0.3.11"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-py3-none-any.whl" }
+resolution-markers = [
+    "python_full_version >= '3.11' and sys_platform != 'darwin'",
+    "python_full_version < '3.11' and sys_platform != 'darwin'",
+]
+wheels = [
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-py3-none-any.whl", hash = "sha256:1f6b4bcabdbf7f6be82e7283546ab7bfd2c96e725a078629c74d1aa0b8f6944f" },
 ]
 
 [[package]]
@@ -504,7 +524,8 @@ name = "websockets"
 version = "16.1.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "python_full_version < '3.11' and sys_platform == 'darwin'",
+    "python_full_version < '3.11' and sys_platform != 'darwin'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/21/f7/bc3a25c5ec26ce62ce487690becc2f3710bbc7b33338f005ad390db0b986/websockets-16.1.1.tar.gz", hash = "sha256:db234eda965dcce15df96bb9709f587cd87d4d52aaf0e80e2f34ec04c7670c57", size = 182204, upload-time = "2026-07-17T22:51:05.858Z" }
 wheels = [
@@ -623,7 +644,8 @@ name = "websockets"
 version = "17.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f7/96/e01084f83a64bcb3a27994bd0cb0db68ff29d9c6707fae37ec19b18ba990/websockets-17.0.1.tar.gz", hash = "sha256:5baa9bc0dfbae8c507e51c8cf1b6d4628086f7a87bbd3a9952bd5f035451f1cc", size = 183298, upload-time = "2026-07-31T11:31:27.665Z" }
 wheels = [
