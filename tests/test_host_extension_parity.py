@@ -90,6 +90,33 @@ class HandoffHelperTests(unittest.TestCase):
         self.assertIn("修复测试失败", peeled)
         self.assertNotIn("You are picking up", peeled)
 
+    def test_fast_path_matches_full_peel_across_plain_and_wrapper_inputs(self) -> None:
+        from corral.runtime import host_extension as hx
+
+        samples = [
+            "",
+            "   ",
+            " \n\t\n ",
+            "Fix the cache invalidation bug in remote server",
+            "  leading and trailing spaces  ",
+            "Line one\n\n   Line two  \nLine three",
+            "Line\u2028break unicode",
+            "Task: something",
+            "  任务：中文标题\n正文",
+            "prefix line\nOriginal working directory: /tmp\nrest",
+            WRAPPER,
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample[:40]):
+                self.assertEqual(peel_handoff_text(sample), peel_handoff_text(sample))
+                # Verify fast path gives identical output to full _peel_wrapper_lines path
+                inherited, digest = split_handoff_text(sample)
+                with mock.patch.object(hx, "_HANDOFF_FAST_HINT_RE", hx.re.compile(r"[\s\S]")):
+                    full_split = split_handoff_text(sample)
+                    full_peel = peel_handoff_text(sample)
+                self.assertEqual((inherited, digest), full_split)
+                self.assertEqual(peel_handoff_text(sample), full_peel)
+
 
 class CodexParityTests(unittest.TestCase):
     def test_managed_claim_marks_live_with_pane_pid(self) -> None:

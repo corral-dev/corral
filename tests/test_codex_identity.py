@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -163,6 +164,44 @@ class CodexClaimTests(unittest.TestCase):
         ):
             liveness.annotate([session])
         self.assertNotIn("keepalive_name", session)
+
+    def test_live_claims_memoizes_unchanged_files_and_skips_dead_realpath(self) -> None:
+        live_tid = "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3b"
+        dead_tid = "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3c"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "sessions"
+            claims = Path(td) / "claims"
+            root.mkdir()
+            claims.mkdir()
+            live_rollout = root / f"rollout-2026-11-19T10-00-00-{live_tid}.jsonl"
+            live_rollout.write_text("{}\n", encoding="utf-8")
+            dead_rollout = root / f"rollout-2026-11-19T10-00-01-{dead_tid}.jsonl"
+            dead_rollout.write_text("{}\n", encoding="utf-8")
+            (claims / "live.json").write_text(
+                json.dumps({"thread_id": live_tid, "rollout_path": str(live_rollout), "pid": os.getpid()}),
+                encoding="utf-8",
+            )
+            (claims / "dead.json").write_text(
+                json.dumps({"thread_id": dead_tid, "rollout_path": str(dead_rollout), "pid": 999999}),
+                encoding="utf-8",
+            )
+            codex_identity._CLAIM_MEMO.clear()
+            with mock.patch.object(codex_identity, "CLAIM_DIR", claims):
+                with mock.patch.object(
+                    codex_identity.json, "load", wraps=json.load
+                ) as jload:
+                    first = codex_identity.live_claims(str(root))
+                    self.assertEqual(first, {live_tid: os.getpid()})
+                    self.assertEqual(jload.call_count, 2)
+                    second = codex_identity.live_claims(str(root))
+                    self.assertEqual(second, {live_tid: os.getpid()})
+                    self.assertEqual(jload.call_count, 2)
+                # Mutating live claim file invalidates memo
+                (claims / "live.json").write_text(
+                    json.dumps({"thread_id": live_tid, "rollout_path": str(dead_rollout), "pid": os.getpid()}),
+                    encoding="utf-8",
+                )
+                self.assertEqual(codex_identity.live_claims(str(root)), {})
 
 
 if __name__ == "__main__":

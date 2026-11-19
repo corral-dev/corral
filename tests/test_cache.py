@@ -185,6 +185,42 @@ class StaleSessionPurgeTests(unittest.TestCase):
         # Hourly throttle: immediate second call is a noop.
         self.assertEqual(self.cache.prune_stale_sessions(), 0)
 
+    def test_versioned_session_meta_round_trip_snapshot_and_purge(self):
+        db = Path(self.temp.name) / "opencode.db"
+        db.write_bytes(b"sqlite-db")
+        payload = {"source": "opencode", "id": "ses_1", "status_tag": "done"}
+        self.cache.begin_scan()
+        try:
+            self.assertIsNone(
+                self.cache.get_versioned_session("opencode", "v2:k1", "v1", source_path=str(db))
+            )
+            self.cache.put_versioned_session(
+                "opencode", "v2:k1", payload, "v1", source_path=str(db),
+            )
+        finally:
+            self.cache.end_scan()
+        self.cache.flush_pending()
+
+        self.cache.begin_scan()
+        try:
+            self.assertEqual(
+                self.cache.get_versioned_session("opencode", "v2:k1", "v1", source_path=str(db)),
+                payload,
+            )
+            self.assertIsNone(
+                self.cache.get_versioned_session("opencode", "v2:k1", "v2", source_path=str(db))
+            )
+        finally:
+            self.cache.end_scan()
+        self.assertGreaterEqual(self.cache.status()["session_count"], 1)
+
+        db.unlink()
+        self.assertIsNone(
+            self.cache.get_versioned_session("opencode", "v2:k1", "v1", source_path=str(db))
+        )
+        PerformanceCache._last_stale_session_purge = 0.0
+        self.assertGreaterEqual(self.cache.prune_stale_sessions(), 1)
+
     def test_purge_failure_degrades_silently(self):
         broken = PerformanceCache(Path(self.temp.name) / "no-such-dir" / "c.sqlite3")
         with mock.patch.object(

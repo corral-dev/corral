@@ -86,6 +86,17 @@ _NOISE_LINE_PREFIXES = (
     "请先读取上述会话历史",
     *_DIGEST_HEADING_MARKERS,
 )
+_LINE_BREAK_RE = re.compile(r"[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
+_HANDOFF_FAST_HINT_RE = re.compile(
+    "|".join(
+        [
+            *(re.escape(m) for m in _HANDOFF_INTRO_MARKERS),
+            *(re.escape(m) for m in _NOISE_LINE_PREFIXES),
+            *(re.escape(m) for m in _ORIGINAL_REQUEST_MARKERS),
+            r"(?:Task|任务)\s*[:：]",
+        ]
+    )
+)
 
 
 def session_id_from_env(env: dict[str, str] | None) -> str:
@@ -183,6 +194,12 @@ def _looks_like_nested_handoff(text: str) -> bool:
     return False
 
 
+def _plain_peel(raw: str) -> str:
+    if not _LINE_BREAK_RE.search(raw):
+        return raw.strip()
+    return "\n".join(s for line in raw.splitlines() if (s := line.strip())).strip()
+
+
 def split_handoff_text(text: str | None) -> tuple[str | None, str]:
     """Return ``(inherited_task, digest)`` from a Corral handoff prompt.
 
@@ -191,7 +208,13 @@ def split_handoff_text(text: str | None) -> tuple[str | None, str]:
     inward so the inner task wins. A payload that was already extracted
     (``Task: …`` plus body, no intro) keeps the inherited task and the body.
     """
-    peeled = _peel_wrapper_lines(str(text or ""))
+    raw = str(text or "")
+    if not raw:
+        return None, ""
+    if _HANDOFF_FAST_HINT_RE.search(raw) is None:
+        return None, _plain_peel(raw)
+
+    peeled = _peel_wrapper_lines(raw)
     if not peeled:
         return None, ""
 
@@ -227,6 +250,9 @@ def peel_handoff_text(text: str | None) -> str:
     raw = str(text or "")
     if not raw:
         return ""
+    if _HANDOFF_FAST_HINT_RE.search(raw) is None:
+        peeled = _plain_peel(raw)
+        return peeled if peeled else raw
     inherited, digest = split_handoff_text(raw)
     if digest or inherited:
         if inherited and digest:

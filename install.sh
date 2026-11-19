@@ -54,9 +54,9 @@ fi
 if [ -z "$SESSKIT_REQ" ]; then
   # Keep in sync with scripts/sesskit_dep.py (curl|bash has no local helper).
   if [ "$(uname -s)" = "Darwin" ]; then
-    SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl#sha256=ad0998854171b0d73d2f13a721efcf330d9c5976fab9ab1bb86ede02f96c00d3"
+    SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.12/sesskit-0.3.12-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl#sha256=1a254e574d283efb7622ea9c42483a2ee882a4241d8feab95b950625f6fb42b1"
   else
-    SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-py3-none-any.whl#sha256=1f6b4bcabdbf7f6be82e7283546ab7bfd2c96e725a078629c74d1aa0b8f6944f"
+    SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.12/sesskit-0.3.12-py3-none-any.whl#sha256=ddef8050ded3cc24f85c988d46be8b2d63d792ac091af148ee83fdfc9d626b4c"
   fi
 fi
 echo "正在安装依赖 sesskit ..."

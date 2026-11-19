@@ -128,11 +128,14 @@ class PerformanceCache:
         self._local = threading.local()
         self._pending_lock = threading.Lock()
         self._pending_sessions: list[tuple] = []
+        self._pending_versioned_sessions: list[tuple] = []
         # 一轮扫描内的元数据快照：runtime -> {path: (dev, ino, size, mtime_ns,
         # parser_version, payload)}。None 表示当前不在扫描期间，走逐条查询老路。
         # 见 begin_scan()／_session_snapshot() 的说明。
         self._snapshot_lock = threading.Lock()
         self._snapshots: dict[str, dict[str, tuple]] | None = None
+        self._versioned_snapshots: dict[str, dict[str, tuple]] | None = None
+        self._source_id_cache: dict[str, tuple[int, int] | None] | None = None
 
     @property
     def path(self) -> Path:
@@ -223,6 +226,17 @@ class PerformanceCache:
                 accessed_at REAL NOT NULL,
                 PRIMARY KEY(runtime, path)
             );
+            CREATE TABLE IF NOT EXISTS versioned_session_meta (
+                runtime TEXT NOT NULL,
+                cache_key TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                dev INTEGER NOT NULL,
+                ino INTEGER NOT NULL,
+                version TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                accessed_at REAL NOT NULL,
+                PRIMARY KEY(runtime, cache_key)
+            );
             CREATE TABLE IF NOT EXISTS conversation (
                 runtime TEXT NOT NULL,
                 session_key TEXT NOT NULL,
@@ -263,10 +277,131 @@ class PerformanceCache:
         """
         with self._snapshot_lock:
             self._snapshots = {}
+            self._versioned_snapshots = {}
+            self._source_id_cache = {}
 
     def end_scan(self) -> None:
         with self._snapshot_lock:
             self._snapshots = None
+            self._versioned_snapshots = None
+            self._source_id_cache = None
+
+    def _source_dev_ino(self, source_path: str | None) -> tuple[int, int] | None:
+        if source_path is None:
+            return (0, 0)
+        with self._snapshot_lock:
+            cache = self._source_id_cache
+            if cache is not None and source_path in cache:
+                return cache[source_path]
+        try:
+            st = os.stat(source_path)
+            ident: tuple[int, int] | None = (st.st_dev, st.st_ino)
+        except OSError:
+            ident = None
+        with self._snapshot_lock:
+            if self._source_id_cache is not None:
+                self._source_id_cache[source_path] = ident
+        return ident
+
+    def _versioned_snapshot(self, runtime: str) -> dict[str, tuple] | None:
+        with self._snapshot_lock:
+            if self._versioned_snapshots is None:
+                return None
+            cached = self._versioned_snapshots.get(runtime)
+            if cached is not None:
+                return cached
+        rows = None
+        with self._connect() as conn:
+            if conn is not None:
+                rows = conn.execute(
+                    "SELECT cache_key, source_path, dev, ino, version, payload "
+                    "FROM versioned_session_meta WHERE runtime=?",
+                    (runtime,),
+                ).fetchall()
+        if rows is None:
+            return None
+        loaded = {row[0]: tuple(row[1:]) for row in rows}
+        with self._snapshot_lock:
+            if self._versioned_snapshots is None:
+                return loaded
+            return self._versioned_snapshots.setdefault(runtime, loaded)
+
+    @staticmethod
+    def _decode_versioned_row(
+        row: tuple | None,
+        source_path: str,
+        src_id: tuple[int, int],
+        version: str,
+    ) -> dict | None:
+        if (
+            row is None
+            or row[0] != source_path
+            or int(row[1]) != src_id[0]
+            or int(row[2]) != src_id[1]
+            or row[3] != version
+        ):
+            return None
+        try:
+            payload = json.loads(row[4])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def get_versioned_session(
+        self,
+        runtime: str,
+        key: str,
+        version: str,
+        *,
+        source_path: str | None = None,
+    ) -> dict | None:
+        src_id = self._source_dev_ino(source_path)
+        if src_id is None:
+            return None
+        expected_src = source_path or ""
+        full_version = provider_cohort() + version
+        snapshot = self._versioned_snapshot(runtime)
+        if snapshot is not None:
+            return self._decode_versioned_row(snapshot.get(key), expected_src, src_id, full_version)
+        with self._connect() as conn:
+            if conn is None:
+                return None
+            row = conn.execute(
+                "SELECT source_path, dev, ino, version, payload "
+                "FROM versioned_session_meta WHERE runtime=? AND cache_key=?",
+                (runtime, key),
+            ).fetchone()
+            return self._decode_versioned_row(row, expected_src, src_id, full_version)
+
+    def put_versioned_session(
+        self,
+        runtime: str,
+        key: str,
+        payload: dict,
+        version: str,
+        *,
+        source_path: str | None = None,
+    ) -> None:
+        src_id = self._source_dev_ino(source_path)
+        if src_id is None:
+            return
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return
+        with self._pending_lock:
+            self._pending_versioned_sessions.append(
+                (
+                    runtime,
+                    key,
+                    source_path or "",
+                    src_id[0],
+                    src_id[1],
+                    provider_cohort() + version,
+                    encoded,
+                    time.time(),
+                )
+            )
 
     def _session_snapshot(self, runtime: str) -> dict[str, tuple] | None:
         """取（必要时建）本轮扫描的元数据快照；不在扫描期间或取数失败时返回 None。"""
@@ -344,17 +479,26 @@ class PerformanceCache:
         """把扫描线程积累的元数据一次事务落盘，避免每条会话各做一次同步提交。"""
         with self._pending_lock:
             pending, self._pending_sessions = self._pending_sessions, []
-        if not pending:
+            pending_v, self._pending_versioned_sessions = self._pending_versioned_sessions, []
+        if not pending and not pending_v:
             return
         with self._connect() as conn:
             if conn is None:
                 return
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_meta "
-                "(runtime,path,dev,ino,size,mtime_ns,parser_version,payload,accessed_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
-                pending,
-            )
+            if pending:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO session_meta "
+                    "(runtime,path,dev,ino,size,mtime_ns,parser_version,payload,accessed_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    pending,
+                )
+            if pending_v:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO versioned_session_meta "
+                    "(runtime,cache_key,source_path,dev,ino,version,payload,accessed_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    pending_v,
+                )
             conn.commit()
         self.prune()
         # Hourly-bounded stale-row purge rides along the per-scan flush so the
@@ -532,6 +676,30 @@ class PerformanceCache:
                     )
                     removed += cursor.rowcount or 0
                     conn.commit()
+                try:
+                    cursor = conn.execute(
+                        "DELETE FROM versioned_session_meta WHERE rowid IN "
+                        "(SELECT rowid FROM versioned_session_meta WHERE version NOT LIKE ? ESCAPE '\\' LIMIT ?)",
+                        (cohort_prefix, self._STALE_SESSION_BATCH),
+                    )
+                    removed += cursor.rowcount or 0
+                    conn.commit()
+                    v_rows = conn.execute(
+                        "SELECT rowid, source_path FROM versioned_session_meta "
+                        "WHERE source_path != '' ORDER BY accessed_at LIMIT ?",
+                        (self._STALE_SESSION_BATCH,),
+                    ).fetchall()
+                    v_dead = [row[0] for row in v_rows if not os.path.exists(row[1])]
+                    if v_dead:
+                        cursor = conn.execute(
+                            f"DELETE FROM versioned_session_meta WHERE rowid IN "
+                            f"({','.join('?' * len(v_dead))})",
+                            v_dead,
+                        )
+                        removed += cursor.rowcount or 0
+                        conn.commit()
+                except sqlite3.OperationalError:
+                    pass
         except (OSError, sqlite3.Error):
             pass
         return removed
@@ -560,7 +728,14 @@ class PerformanceCache:
             pass
         with self._connect(create=False) as conn:
             if conn is not None:
-                result["session_count"] = conn.execute("SELECT count(*) FROM session_meta").fetchone()[0]
+                session_count = conn.execute("SELECT count(*) FROM session_meta").fetchone()[0]
+                try:
+                    session_count += conn.execute(
+                        "SELECT count(*) FROM versioned_session_meta"
+                    ).fetchone()[0]
+                except sqlite3.OperationalError:
+                    pass
+                result["session_count"] = session_count
                 result["conversation_count"] = conn.execute("SELECT count(*) FROM conversation").fetchone()[0]
                 result["search_index_count"] = conn.execute("SELECT count(*) FROM search_entry").fetchone()[0]
         return result
@@ -582,6 +757,10 @@ class PerformanceCache:
             if conn is not None:
                 conn.execute("DELETE FROM conversation")
                 conn.execute("DELETE FROM session_meta")
+                try:
+                    conn.execute("DELETE FROM versioned_session_meta")
+                except sqlite3.OperationalError:
+                    pass
                 conn.execute("DELETE FROM search_entry")
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
