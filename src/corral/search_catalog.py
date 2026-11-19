@@ -45,6 +45,23 @@ class SearchCatalog:
     def find(self, key: str) -> dict | None:
         return self._sessions.get(key)
 
+    def clear(self) -> bool:
+        """Release prepared search metadata; next search rebuilds lazily."""
+        with self._lock, self._publish_lock:
+            had_state = (
+                bool(self._buckets)
+                or bool(self._sessions)
+                or bool(self.titles)
+                or self.ready
+            )
+            self._buckets = {}
+            self._sessions = {}
+            self.titles = {}
+            self.ready = False
+            self.failed = False
+            self._prepared_at = float("-inf")
+            return had_state
+
     def update_titles(self, title_cache: dict) -> None:
         self.titles = {key: resolve_initial_title(session, title_cache)[0]
                        for key, session in self._sessions.items()}

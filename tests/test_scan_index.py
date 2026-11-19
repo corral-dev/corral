@@ -516,6 +516,61 @@ class ScanIndexConsumeCacheTests(unittest.TestCase):
                     self.assertEqual(fifth["claude"][0]["id"], "b")
                     self.assertEqual(decode.call_count, after_publish + 1)
 
+    def test_partial_consume_scans_only_missing_runtime(self) -> None:
+        from corral.runtime.registry import RuntimeRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            with (
+                mock.patch("corral.scan_index.cache_dir", return_value=cache),
+                mock.patch("corral.scan_index.cache_enabled", return_value=True),
+                mock.patch("corral.scan_index._shared_index_enabled", return_value=True),
+            ):
+                scan_index._LAST_PUBLISH.update({"at": 0.0, "path": "", "limit": 0, "keys": None})
+                scan_index.publish(
+                    {
+                        "claude": [{"source": "claude", "id": "c1", "file_mtime": 10, "mtime": 10}],
+                        "codex": [{"source": "codex", "id": "x1", "file_mtime": 10, "mtime": 10}],
+                    },
+                    limit=200,
+                )
+                rt_claude = mock.Mock()
+                rt_claude.id = "claude"
+                rt_claude.scan_signature.return_value = None
+                rt_claude.scan_sessions.side_effect = AssertionError("covered runtime must not scan")
+
+                rt_codex = mock.Mock()
+                rt_codex.id = "codex"
+                rt_codex.scan_signature.return_value = None
+                rt_codex.scan_sessions.return_value = [
+                    {"source": "codex", "id": "x1", "file_mtime": 10, "mtime": 10},
+                    {"source": "codex", "id": "x-pinned", "file_mtime": 5, "mtime": 5},
+                ]
+
+                registry = RuntimeRegistry([rt_claude, rt_codex])
+                scanned = registry.scan_all(
+                    50,
+                    keep_ids_by_runtime={"claude": {"c1"}, "codex": {"x-pinned"}},
+                    prefer_shared=True,
+                )
+                self.assertEqual([s["id"] for s in scanned["claude"]], ["c1"])
+                self.assertEqual([s["id"] for s in scanned["codex"]], ["x1", "x-pinned"])
+                rt_claude.scan_sessions.assert_not_called()
+                rt_codex.scan_sessions.assert_called_once_with(50, keep_ids={"x-pinned"})
+                self.assertEqual(registry.last_scan_shared_miss, "keep_ids")
+
+                # An unscanned runtime (e.g. pinned shell pane) scans zero real runtimes.
+                rt_codex.scan_sessions.reset_mock()
+                rt_codex.scan_sessions.side_effect = AssertionError("covered codex must not scan")
+                scanned2 = registry.scan_all(
+                    50,
+                    keep_ids_by_runtime={"claude": {"c1"}, "shell": {"sh-new"}},
+                    prefer_shared=True,
+                )
+                self.assertEqual([s["id"] for s in scanned2["claude"]], ["c1"])
+                rt_claude.scan_sessions.assert_not_called()
+                rt_codex.scan_sessions.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -149,13 +149,16 @@ class DevEnvironmentTests(unittest.TestCase):
         try:
             table = sesskit_dep.uv_source_table()
             self.assertIn(sesskit_dep.WHEEL_URL, table)
+            self.assertIn(sesskit_dep.MACOS_WHEEL_URL, table)
+            self.assertIn(sesskit_dep.PURE_WHEEL_URL, table)
             pyproject = (scripts_dir.parent / "pyproject.toml").read_text(encoding="utf-8")
             self.assertIn(table.strip(), pyproject)
             self.assertIn(f'"sesskit>={sesskit_dep.VERSION}"', pyproject)
             # curl|bash has no local helper: install.sh's hard-coded fallback
             # stayed on 0.2.0 through two 0.2.1 releases (2026-09-30).
             install_sh = (scripts_dir.parent / "install.sh").read_text(encoding="utf-8")
-            self.assertIn(sesskit_dep.wheel_requirement(), install_sh)
+            self.assertIn(sesskit_dep.wheel_requirement("darwin"), install_sh)
+            self.assertIn(sesskit_dep.wheel_requirement("linux"), install_sh)
         finally:
             sys.path.remove(str(scripts_dir))
 

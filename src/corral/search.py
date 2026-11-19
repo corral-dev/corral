@@ -241,6 +241,14 @@ class ConversationIndex:
         """是否至少完整建过一次索引。"""
         return self._ready
 
+    def clear(self) -> bool:
+        """Release in-memory search entries; persisted SQLite cache stays intact."""
+        with self._refresh_lock:
+            had_state = bool(self._entries) or self._ready
+            self._entries = {}
+            self._ready = False
+            return had_state
+
     @property
     def indexed_count(self) -> int:
         return len(self._entries)

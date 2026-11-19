@@ -17,31 +17,64 @@ import sys
 import urllib.request
 
 # --- single source of truth -------------------------------------------------
-VERSION = "0.3.8"
+VERSION = "0.3.11"
 TAG = f"v{VERSION}"
 REPO = "x0c/sesskit"
-WHEEL_NAME = f"sesskit-{VERSION}-py3-none-any.whl"
+PURE_WHEEL_NAME = f"sesskit-{VERSION}-py3-none-any.whl"
+PURE_WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{PURE_WHEEL_NAME}"
+MACOS_WHEEL_NAME = (
+    f"sesskit-{VERSION}-cp310-abi3-"
+    "macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl"
+)
+MACOS_WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{MACOS_WHEEL_NAME}"
 SDIST_NAME = f"sesskit-{VERSION}.tar.gz"
-WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{WHEEL_NAME}"
 SDIST_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{SDIST_NAME}"
-# sha256 of the published assets (v0.3.8 verified 2026-11-19).
-WHEEL_SHA256 = "d171bdba754b2baa6d51c0a787c59c1d44220980fb6cabd816266d220f995783"
-SDIST_SHA256 = "d600067072803163d462468c68c0c7a613025c26c755769a4337107654aeb240"
+# sha256 of the built/published v0.3.11 assets (verified 2026-11-19).
+PURE_WHEEL_SHA256 = "1f6b4bcabdbf7f6be82e7283546ab7bfd2c96e725a078629c74d1aa0b8f6944f"
+MACOS_WHEEL_SHA256 = "ad0998854171b0d73d2f13a721efcf330d9c5976fab9ab1bb86ede02f96c00d3"
+SDIST_SHA256 = "4f2332e7215af5f3a93160d1929231070f8a71369b5b5fdc97dc29a14553e5b7"
 # Minimum version declared in Corral's pyproject.toml dependencies.
 REQUIRES = f"sesskit>={VERSION}"
 
 
-def wheel_requirement() -> str:
+def _select_wheel(platform_name: str | None = None) -> tuple[str, str, str]:
+    """Return ``(name, url, sha256)`` for ``platform_name`` (default: current OS).
+
+    macOS installs the prebuilt universal2 native wheel so ``sesskit._native``
+    accelerates Codex/OpenCode scanning and lowers Python allocator churn; other
+    platforms keep the universal pure-Python compatibility wheel.
+    """
+    plat = sys.platform if platform_name is None else platform_name
+    if plat == "darwin":
+        return MACOS_WHEEL_NAME, MACOS_WHEEL_URL, MACOS_WHEEL_SHA256
+    return PURE_WHEEL_NAME, PURE_WHEEL_URL, PURE_WHEEL_SHA256
+
+
+WHEEL_NAME, WHEEL_URL, WHEEL_SHA256 = _select_wheel()
+
+
+def wheel_requirement(platform_name: str | None = None) -> str:
     """PEP 508 direct reference with digest for pip."""
-    return f"sesskit @ {WHEEL_URL}#sha256={WHEEL_SHA256}"
+    if platform_name is None:
+        return f"sesskit @ {WHEEL_URL}#sha256={WHEEL_SHA256}"
+    _name, url, sha256 = _select_wheel(platform_name)
+    return f"sesskit @ {url}#sha256={sha256}"
 
 
 def homebrew_resource_block() -> str:
     """Ruby ``resource "sesskit"`` block for the Homebrew formula generator."""
     return (
-        '  resource "sesskit" do\n'
-        f'    url "{WHEEL_URL}"\n'
-        f'    sha256 "{WHEEL_SHA256}"\n'
+        "  on_macos do\n"
+        '    resource "sesskit" do\n'
+        f'      url "{MACOS_WHEEL_URL}"\n'
+        f'      sha256 "{MACOS_WHEEL_SHA256}"\n'
+        "    end\n"
+        "  end\n"
+        "  on_linux do\n"
+        '    resource "sesskit" do\n'
+        f'      url "{PURE_WHEEL_URL}"\n'
+        f'      sha256 "{PURE_WHEEL_SHA256}"\n'
+        "    end\n"
         "  end"
     )
 
@@ -53,7 +86,13 @@ def uv_source_table() -> str:
     ``pyproject.toml`` mirrors the generated block verbatim. uv-only metadata:
     published install paths keep using the plain ``sesskit>=…`` range.
     """
-    return f'[tool.uv.sources]\nsesskit = {{ url = "{WHEEL_URL}" }}\n'
+    return (
+        "[tool.uv.sources]\n"
+        "sesskit = [\n"
+        f'  {{ url = "{MACOS_WHEEL_URL}", marker = "sys_platform == \'darwin\'" }},\n'
+        f'  {{ url = "{PURE_WHEEL_URL}", marker = "sys_platform != \'darwin\'" }},\n'
+        "]\n"
+    )
 
 
 def _sha256_url(url: str) -> str:
@@ -70,13 +109,16 @@ def _sha256_url(url: str) -> str:
 
 def verify_published_digests() -> None:
     """Fail loudly if the Release assets no longer match the pinned digests."""
-    wheel = _sha256_url(WHEEL_URL)
-    sdist = _sha256_url(SDIST_URL)
+    checks = (
+        ("macos wheel", MACOS_WHEEL_URL, MACOS_WHEEL_SHA256),
+        ("pure wheel", PURE_WHEEL_URL, PURE_WHEEL_SHA256),
+        ("sdist", SDIST_URL, SDIST_SHA256),
+    )
     errors: list[str] = []
-    if wheel != WHEEL_SHA256:
-        errors.append(f"wheel sha256 mismatch: got {wheel}, want {WHEEL_SHA256}")
-    if sdist != SDIST_SHA256:
-        errors.append(f"sdist sha256 mismatch: got {sdist}, want {SDIST_SHA256}")
+    for label, url, expected in checks:
+        actual = _sha256_url(url)
+        if actual != expected:
+            errors.append(f"{label} sha256 mismatch: got {actual}, want {expected}")
     if errors:
         raise SystemExit("; ".join(errors))
 

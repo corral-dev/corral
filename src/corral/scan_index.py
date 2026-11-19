@@ -249,52 +249,55 @@ def _load_cached_payload(path, cohort: str) -> dict[str, Any] | None:
             return None
 
 
-def try_consume(
+def _load_valid_snapshot(
     limit: int,
-    keep_ids_by_runtime: dict[str, set[str]] | None = None,
+    max_age: float,
     *,
-    max_age: float = DEFAULT_TTL_SECONDS,
-) -> dict[str, list[dict[str, Any]]] | None:
-    """Return a deep-copy of a fresh covering index, or ``None`` to scan locally."""
+    record_miss: bool = True,
+) -> tuple[dict[str, Any], dict[str, set[str]]] | None:
+    """Validate and return ``(sessions, uncoverable_keep)`` from the shared index."""
+    def _miss(reason: str, **detail: Any) -> None:
+        if record_miss:
+            _note_miss(reason, **detail)
+
     if not _shared_index_enabled():
-        _note_miss("disabled")
+        _miss("disabled")
         return None
     path = index_path()
     cohort = provider_cohort()
     payload = _load_cached_payload(path, cohort)
     if payload is None:
-        _note_miss("unreadable")
+        _miss("unreadable")
         return None
     if payload.get("version") != INDEX_VERSION:
-        _note_miss("version")
+        _miss("version")
         return None
     if payload.get("provider_cohort") != cohort:
         # An obsolete shared worker's snapshot must never be reused by a new
         # provider cohort: fall through to a local scan instead.
-        _note_miss("cohort")
+        _miss("cohort")
         return None
     try:
         published_at = float(payload.get("published_at") or 0)
         published_limit = int(payload.get("limit") or 0)
     except (TypeError, ValueError):
-        _note_miss("version")
+        _miss("version")
         return None
     if published_limit < limit:
-        _note_miss("limit", published_limit=published_limit, need_limit=limit)
+        _miss("limit", published_limit=published_limit, need_limit=limit)
         return None
     age = time.time() - published_at
     window = effective_max_age(max_age, _payload_scan_duration(payload) or None)
     if age < 0 or age > window:
-        _note_miss(
+        _miss(
             "ttl", age_s=round(age, 1), max_age_s=window,
             published_limit=published_limit,
         )
         return None
     sessions = payload.get("sessions")
     if not isinstance(sessions, dict):
-        _note_miss("sessions")
+        _miss("sessions")
         return None
-    keep_ids_by_runtime = keep_ids_by_runtime or {}
     uncoverable_raw = payload.get("uncoverable_keep")
     uncoverable: dict[str, set[str]] = {}
     if isinstance(uncoverable_raw, dict):
@@ -303,6 +306,30 @@ def try_consume(
                 uncoverable[str(runtime_id)] = {
                     str(item) for item in ids if isinstance(item, str)
                 }
+    return sessions, uncoverable
+
+
+def try_consume_partial(
+    limit: int,
+    keep_ids_by_runtime: dict[str, set[str]] | None = None,
+    *,
+    max_age: float = DEFAULT_TTL_SECONDS,
+    record_miss: bool = True,
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]] | None:
+    """Return ``(covered_buckets, missing_keep_runtimes)`` for a fresh snapshot.
+
+    When a fresh shared index covers all runtimes except a subset with newly
+    added ``keep_ids``, callers can reuse ``covered_buckets`` and locally scan
+    only ``missing_keep_runtimes`` instead of running a full multi-runtime scan.
+    Returns ``None`` if the index itself is missing, stale, or incompatible.
+    """
+    loaded = _load_valid_snapshot(limit, max_age, record_miss=record_miss)
+    if loaded is None:
+        return None
+    sessions, uncoverable = loaded
+    keep_ids_by_runtime = keep_ids_by_runtime or {}
+    missing_runtimes: set[str] = set()
+    noted = False
     for runtime_id, keep_ids in keep_ids_by_runtime.items():
         if not keep_ids:
             continue
@@ -324,17 +351,37 @@ def try_consume(
         excused = uncoverable.get(runtime_id) or set()
         missing = (set(keep_ids) - excused) - present
         if missing:
-            _note_miss(
-                "keep_ids", runtime=str(runtime_id), missing_count=len(missing),
-                published_count=len(present),
-            )
-            return None
+            missing_runtimes.add(str(runtime_id))
+            if record_miss and not noted:
+                _note_miss(
+                    "keep_ids", runtime=str(runtime_id), missing_count=len(missing),
+                    published_count=len(present),
+                )
+                noted = True
     narrowed: dict[str, list[dict[str, Any]]] = {}
     for runtime_id, bucket in sessions.items():
-        if not isinstance(bucket, list):
+        if not isinstance(bucket, list) or str(runtime_id) in missing_runtimes:
             continue
         keep_ids = keep_ids_by_runtime.get(runtime_id) or set()
         narrowed[runtime_id] = _narrow_bucket(bucket, limit, keep_ids)
+    return narrowed, missing_runtimes
+
+
+def try_consume(
+    limit: int,
+    keep_ids_by_runtime: dict[str, set[str]] | None = None,
+    *,
+    max_age: float = DEFAULT_TTL_SECONDS,
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Return a deep-copy of a fresh covering index, or ``None`` to scan locally."""
+    partial = try_consume_partial(
+        limit, keep_ids_by_runtime, max_age=max_age, record_miss=True,
+    )
+    if partial is None:
+        return None
+    narrowed, missing_runtimes = partial
+    if missing_runtimes:
+        return None
     return narrowed
 
 

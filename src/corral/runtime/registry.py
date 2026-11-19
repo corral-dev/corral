@@ -124,6 +124,8 @@ class RuntimeRegistry:
         self.last_scan_shared = False
         self.last_scan_shared_miss = None
 
+        covered_shared: dict[str, list[SessionInfo]] | None = None
+        runtimes_to_scan = runtimes
         if prefer_shared:
             shared = scan_index.try_consume(limit, keep_ids_by_runtime)
             if shared is not None:
@@ -135,6 +137,19 @@ class RuntimeRegistry:
             miss_reason = scan_index.last_miss().get("reason")
             if miss_reason not in (None, "", "none"):
                 self.last_scan_shared_miss = str(miss_reason)
+            if miss_reason == "keep_ids":
+                # Reuse all covered runtimes from the fresh shared snapshot and
+                # scan only the runtime(s) missing keep_ids locally. Avoids
+                # triggering a full 6-runtime cold scan inside long-lived hosts
+                # when a single runtime gained a new pin or revealed search key.
+                partial = scan_index.try_consume_partial(
+                    limit, keep_ids_by_runtime, record_miss=False,
+                )
+                if partial is not None:
+                    covered_shared, missing_runtimes = partial
+                    runtimes_to_scan = [
+                        runtime for runtime in runtimes if runtime.id in missing_runtimes
+                    ]
 
         def _copy_sessions(sessions: list[SessionInfo]) -> list[SessionInfo]:
             """缓存与调用方之间隔离可变会话字典，避免界面注入字段反向污染缓存。"""
@@ -174,16 +189,30 @@ class RuntimeRegistry:
         # 扫描期协议收敛在 cache.scan_period（见其 docstring），异常由它吞掉，
         # 派生缓存永远不能影响原始会话扫描结果。
         scan_started = time.monotonic()
-        with scan_period():
-            with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
-                scanned = list(pool.map(_scan_one, runtimes))
-                result = {
-                    runtime.id: sessions
-                    for runtime, (sessions, _hit) in zip(runtimes, scanned, strict=True)
-                }
+        if runtimes_to_scan:
+            with scan_period():
+                with ThreadPoolExecutor(max_workers=max(1, len(runtimes_to_scan))) as pool:
+                    scanned = list(pool.map(_scan_one, runtimes_to_scan))
+        else:
+            scanned = []
+        if covered_shared is not None:
+            result = {
+                runtime.id: list(covered_shared.get(runtime.id) or [])
+                for runtime in runtimes
+            }
+            for runtime, (sessions, _hit) in zip(runtimes_to_scan, scanned, strict=True):
+                result[runtime.id] = sessions
+        else:
+            result = {
+                runtime.id: sessions
+                for runtime, (sessions, _hit) in zip(runtimes_to_scan, scanned, strict=True)
+            }
         scan_elapsed = time.monotonic() - scan_started
         hits = [hit for _sessions, hit in scanned if hit is not None]
-        self.last_scan_cache_hit_all = bool(hits) and all(hits)
+        self.last_scan_cache_hit_all = (
+            True if (covered_shared is not None and not runtimes_to_scan)
+            else (bool(hits) and all(hits))
+        )
         # The duration travels with the snapshot: consumers size the freshness
         # window from it, so a slow scan cannot make its own index look expired.
         scan_index.publish(

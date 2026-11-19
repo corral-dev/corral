@@ -55,10 +55,19 @@ class HomebrewFormulaTest(unittest.TestCase):
 
     def test_dependencies_are_universal_wheels_installed_in_one_batch(self):
         formula = self.formula()
-        resources = formula.split("  def install")[0].split("  resource ")[1:]
-        self.assertEqual(len(resources), 14)
-        for resource in resources:
+        pre_install = formula.split("  def install")[0]
+        top_level_resources = pre_install.split("\n  resource ")[1:]
+        scoped_resources = pre_install.split("\n    resource ")[1:]
+        self.assertEqual(len(top_level_resources), 13)
+        self.assertEqual(len(scoped_resources), 2)
+        for resource in top_level_resources:
             self.assertIn("-py3-none-any.whl", resource)
+            self.assertIn('sha256 "', resource)
+        self.assertIn('  on_macos do\n    resource "sesskit" do\n', pre_install)
+        self.assertIn("macosx_10_12_universal2.whl", pre_install)
+        self.assertIn('  on_linux do\n    resource "sesskit" do\n', pre_install)
+        self.assertIn("-py3-none-any.whl", scoped_resources[1])
+        for resource in scoped_resources:
             self.assertIn('sha256 "', resource)
         self.assertIn('venv.pip_install Dir[wheelhouse/"*.whl"].sort.join("\\n")', formula)
         self.assertNotIn("venv.pip_install resources", formula)

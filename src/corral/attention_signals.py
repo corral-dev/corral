@@ -121,7 +121,13 @@ def _finalize_history_phase(phase: str, live: bool) -> str:
     return phase
 
 
-def _read_jsonl_tail(path: str) -> list[dict]:
+def _iter_jsonl_tail(path: str) -> Iterable[dict]:
+    """Yield decoded JSON objects from a bounded JSONL tail one entry at a time.
+
+    Streaming avoids holding up to 768 decoded multi-MB dicts simultaneously in
+    RAM (screenshots / tool outputs), drastically lowering Malloc Large churn
+    on cold attention inspection.
+    """
     window = _JSONL_TAIL_BYTES
     while True:
         try:
@@ -129,26 +135,30 @@ def _read_jsonl_tail(path: str) -> list[dict]:
             with open(path, "rb") as file:
                 offset = max(0, size - window)
                 file.seek(offset)
-                data = file.read().decode("utf-8", errors="replace")
+                raw = file.read()
         except OSError:
-            return []
+            return
 
-        lines = data.splitlines()
+        lines = raw.splitlines()
+        del raw
         if offset and lines:
             lines = lines[1:]
         if offset == 0 or len(lines) >= _JSONL_TAIL_MIN_ENTRIES or window >= _JSONL_TAIL_MAX_BYTES:
             break
+        del lines
         window = min(window * 4, _JSONL_TAIL_MAX_BYTES)
 
-    entries: list[dict] = []
-    for line in lines[-_JSONL_TAIL_ENTRIES:]:
+    for raw_line in lines[-_JSONL_TAIL_ENTRIES:]:
         try:
-            entry = json.loads(line)
+            entry = json.loads(raw_line.decode("utf-8", errors="replace"))
         except (json.JSONDecodeError, ValueError):
             continue
         if isinstance(entry, dict):
-            entries.append(entry)
-    return entries
+            yield entry
+
+
+def _read_jsonl_tail(path: str) -> list[dict]:
+    return list(_iter_jsonl_tail(path))
 
 
 def _content_parts(entry: dict) -> Iterable[dict]:
@@ -185,17 +195,15 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
     from corral.scan import claude as scan_claude
 
     path = str(session.get("path") or "")
-    entries = _read_jsonl_tail(path)
-    if not entries:
-        return _evidence(observed_at=_stable_observed_at(session, path))
-
     live = session.get("live") is True
     phase = "unknown"
     pending: dict[str, str] = {}
     activity_token = None
     observed_at = _stable_observed_at(session, path)
+    seen_any = False
 
-    for entry in entries:
+    for entry in _iter_jsonl_tail(path):
+        seen_any = True
         entry_type = entry.get("type")
         native = _event_native(entry, "uuid", "id", "timestamp")
         if _is_human_claude_user(entry):
@@ -243,6 +251,8 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
             activity_token = _token("claude", "stop", native) or activity_token
             observed_at = _advance_observed(observed_at, entry.get("timestamp"))
 
+    if not seen_any:
+        return _evidence(observed_at=_stable_observed_at(session, path))
     if pending and live:
         question_token = next(reversed(pending.values()))
         return _evidence(
@@ -424,7 +434,7 @@ def _read_codex_attention_delta(path: str, state: dict) -> list[dict]:
 def _inspect_codex(session: dict) -> AttentionEvidence:
     path = str(session.get("path") or "")
     if session.get("live") is not True:
-        return _inspect_codex_entries(session, _read_jsonl_tail(path), {})
+        return _inspect_codex_entries(session, _iter_jsonl_tail(path), {})
     with _CODEX_ATTENTION_LOCK:
         state = _CODEX_ATTENTION_READERS.setdefault(path, {})
         _CODEX_ATTENTION_READERS.move_to_end(path)
@@ -438,12 +448,12 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
         return _inspect_codex_entries(session, entries, state)
 
 
-def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> AttentionEvidence:
+def _inspect_codex_entries(
+    session: dict, entries: Iterable[dict], state: dict,
+) -> AttentionEvidence:
     from sesskit.parsers.codex import user_message_text
 
     path = str(session.get("path") or "")
-    if not entries and "phase" not in state:
-        return _evidence(observed_at=_stable_observed_at(session, path))
     live = session.get("live") is True
     phase = state.get("phase", "unknown")
     pending: dict[str, str] = state.setdefault("pending", {})
@@ -451,8 +461,10 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
     async_questions: dict[str, list[dict]] = state.setdefault("async_questions", {})
     activity_token = state.get("activity_token")
     observed_at = state.get("observed_at", _stable_observed_at(session, path))
+    seen_any = False
 
     for entry in entries:
+        seen_any = True
         payload = entry.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -555,6 +567,8 @@ def _inspect_codex_entries(session: dict, entries: list[dict], state: dict) -> A
                 payload.get("started_at"),
             )
 
+    if not seen_any and "phase" not in state:
+        return _evidence(observed_at=_stable_observed_at(session, path))
     for call_id in list(async_questions):
         if call_id not in async_pending:
             del async_questions[call_id]
@@ -603,14 +617,6 @@ def _inspect_kimi(session: dict) -> AttentionEvidence:
         before_signature = (before_stat.st_size, before_stat.st_mtime_ns)
     except OSError:
         before_signature = None
-    entries = _read_jsonl_tail(path)
-    try:
-        after_stat = os.stat(path)
-        stable_read = before_signature == (after_stat.st_size, after_stat.st_mtime_ns)
-    except OSError:
-        stable_read = False
-    if not entries:
-        return _evidence(observed_at=_stable_observed_at(session, path))
 
     live = session.get("live") is True
     phase = "unknown"
@@ -619,8 +625,10 @@ def _inspect_kimi(session: dict) -> AttentionEvidence:
     last_structured_type = None
     last_structured_native = None
     observed_at = _stable_observed_at(session, path)
+    seen_any = False
 
-    for entry in entries:
+    for entry in _iter_jsonl_tail(path):
+        seen_any = True
         top_type = entry.get("type")
         event = entry.get("event")
         event = event if isinstance(event, dict) else {}
@@ -659,6 +667,14 @@ def _inspect_kimi(session: dict) -> AttentionEvidence:
                     phase = "working"
                     activity_token = _token("kimi", "assistant", native) or activity_token
 
+    try:
+        after_stat = os.stat(path)
+        stable_read = before_signature == (after_stat.st_size, after_stat.st_mtime_ns)
+    except OSError:
+        stable_read = False
+    if not seen_any:
+        return _evidence(observed_at=_stable_observed_at(session, path))
+
     # step.end 既可能是中间工具步，也可能是本轮末尾。只有它确为尾部最新结构化
     # 事件且读取前后文件签名稳定时，才保守视为整轮停止；mtime 绝不单独产生状态。
     if last_structured_type == "step.end":
@@ -691,17 +707,14 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
     结构化提问证据，读取时忽略。
     """
     path = str(session.get("path") or "")
-    entries = _read_jsonl_tail(path)
-    if not entries:
-        history = _evidence(observed_at=_stable_observed_at(session, path))
-        return _merge_pi_claim_phase(session, history)
-
     live = session.get("live") is True
     phase = "unknown"
     activity_token = None
     observed_at = _stable_observed_at(session, path)
+    seen_any = False
 
-    for entry in entries:
+    for entry in _iter_jsonl_tail(path):
+        seen_any = True
         if entry.get("type") != "message":
             continue
         message = entry.get("message")
@@ -730,6 +743,9 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
             activity_token = _token("pi", "assistant", native) or activity_token
         observed_at = _advance_observed(observed_at, timestamp)
 
+    if not seen_any:
+        history = _evidence(observed_at=_stable_observed_at(session, path))
+        return _merge_pi_claim_phase(session, history)
     phase = _finalize_history_phase(phase, live)
     history = _evidence(phase, activity_token=activity_token, observed_at=observed_at)
     return _merge_pi_claim_phase(session, history)
@@ -1364,10 +1380,7 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
     """Extract Antigravity attention state from transcript JSONL tail + summaries DB."""
     path = str(session.get("path") or "")
     cid = str(session.get("id") or "").strip()
-    entries = _read_jsonl_tail(path) if path else []
     db_row = _antigravity_db_summary(cid, path)
-    if not entries and db_row is None:
-        return _evidence(observed_at=_stable_observed_at(session, path))
 
     live = session.get("live") is True
     phase = "unknown"
@@ -1379,7 +1392,7 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
     pending_async: set[str] = set()
     last_entry: dict | None = None
 
-    for entry in entries:
+    for entry in (_iter_jsonl_tail(path) if path else ()):
         last_entry = entry
         etype = entry.get("type")
         status = str(entry.get("status") or "")
@@ -1483,6 +1496,8 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
             phase = "idle"
             activity_token = _token("antigravity", "error", native) or activity_token
 
+    if last_entry is None and db_row is None:
+        return _evidence(observed_at=_stable_observed_at(session, path))
     killed = bool(db_row["killed"]) if db_row is not None else False
     if pending_question is not None and live and not killed:
         return _evidence(

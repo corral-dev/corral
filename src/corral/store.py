@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 import time
@@ -293,6 +295,7 @@ class SessionStore:
         # 会话扫描签名未变化时复用上轮结构化证据，避免每次后台刷新都重新解析
         # 全部 JSONL/SQLite。值为 (失效签名, evidence)，只保留当前仍存在的会话。
         self._attention_evidence_cache: dict[str, tuple[tuple, AttentionEvidence]] = {}
+        self._attention_evidence_hydrated = False
         self._attention_lock = threading.Lock()
         # Per-session turn probe: key -> (history stamp, refreshed turn fields).
         # Fresher than any full scan of the same bytes; re-applied after merges.
@@ -508,6 +511,65 @@ class SessionStore:
 
     _SCAN_WORKER_BOOTSTRAP_TIMEOUT = 45.0
     _SCAN_WORKER_BOOTSTRAP_POLL = 0.25
+    _KEEP_IDS_WAIT_TIMEOUT = 3.0
+    _KEEP_IDS_WAIT_POLL = 0.2
+
+    def _wait_for_keep_ids_publish(
+        self,
+        keep_ids: dict[str, set[str]],
+        *,
+        timeout: float | None = None,
+    ) -> None:
+        """Briefly wait for a live scan_worker to publish newly pinned keep_ids.
+
+        When sidebar pins/groups change, the off-process scan_worker detects the
+        new ``keep_ids`` on its next 2 s tick and republishes. Waiting briefly
+        before falling back avoids running a local scan inside long-lived hosts.
+        In-memory ``_revealed_search_keys`` are invisible to ``scan_worker``, so
+        misses confined to revealed keys skip the wait and go straight to
+        partial-runtime consume.
+        """
+        if not keep_ids or not self._scan_worker_active():
+            return
+        from corral import scan_index
+
+        partial = scan_index.try_consume_partial(
+            self.limit, keep_ids, record_miss=False,
+        )
+        if partial is None:
+            return
+        _covered, missing_runtimes = partial
+        if not missing_runtimes:
+            return
+        with self.lock:
+            revealed_by_runtime: dict[str, set[str]] = {}
+            for key in self._revealed_search_keys - self._deleted:
+                runtime_id, ident = key.split(":", 1)
+                revealed_by_runtime.setdefault(runtime_id, set()).add(ident)
+        # Only wait if at least one missing runtime has disk-backed keep_ids
+        # that scan_worker can actually observe and publish.
+        has_disk_keep = any(
+            bool(set(keep_ids.get(runtime_id) or ()) - revealed_by_runtime.get(runtime_id, set()))
+            for runtime_id in missing_runtimes
+        )
+        if not has_disk_keep:
+            return
+        last_meta = scan_index.published_meta()
+        limit_s = self._KEEP_IDS_WAIT_TIMEOUT if timeout is None else float(timeout)
+        deadline = time.monotonic() + max(0.0, limit_s)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0 or not self._scan_worker_active():
+                return
+            time.sleep(min(self._KEEP_IDS_WAIT_POLL, remaining))
+            meta = scan_index.published_meta()
+            if meta is not None and meta != last_meta:
+                last_meta = meta
+                rechecked = scan_index.try_consume_partial(
+                    self.limit, keep_ids, record_miss=False,
+                )
+                if rechecked is not None and not rechecked[1]:
+                    return
 
     def _ensure_scan_worker(self):
         """Start the singleton scan worker if none is live (perf-C).
@@ -690,6 +752,8 @@ class SessionStore:
                 proc = self._ensure_scan_worker()
                 if proc is not None and self._wait_for_scan_worker_index(proc, keep_ids):
                     force_local = False
+            else:
+                self._wait_for_keep_ids_publish(keep_ids)
             with self._scan_lock:
                 scanned = self.registry.scan_all(
                     self.limit,
@@ -1045,6 +1109,18 @@ class SessionStore:
                 signature.append((os.path.basename(candidate), None, None))
         return tuple(signature)
 
+    _EVIDENCE_CACHE_VERSION = 1
+
+    @classmethod
+    def _evidence_cache_sig(cls, evidence_signature: tuple) -> str:
+        raw = json.dumps(
+            (cls._EVIDENCE_CACHE_VERSION, evidence_signature),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8", errors="replace")
+        return hashlib.sha256(raw).hexdigest()[:32]
+
     def _reconcile_attention(
         self, sessions: list[dict], *, partial: bool = False,
     ) -> dict[str, AttentionState]:
@@ -1135,15 +1211,52 @@ class SessionStore:
                 else:
                     misses.append((session, evidence_signature))
 
+            hydrate_from_disk = not partial and not self._attention_evidence_hydrated
+            if hydrate_from_disk:
+                self._attention_evidence_hydrated = True
+
+        # Reuse persisted evidence for unchanged non-live sessions on cold
+        # startup / daemon restart so we do not re-parse ~1,000 dead histories.
+        # Live sessions always run inspect_session() directly (keeping stateful
+        # incremental readers and live observer checks fresh), and sessions that
+        # vanish and later reappear in-process re-inspect as before.
+        persisted_hits: dict[str, AttentionEvidence] = {}
+        non_live_sigs: dict[str, str] = {}
+        load_cache = getattr(self.attention_store, "load_evidence_cache", None)
+        if hydrate_from_disk and callable(load_cache):
+            for session, evidence_signature in misses:
+                if not session.get("live"):
+                    non_live_sigs[session_key(session)] = self._evidence_cache_sig(
+                        evidence_signature
+                    )
+            if non_live_sigs:
+                persisted_hits = load_cache(non_live_sigs)
+
+        to_persist: list[tuple[str, str, str, AttentionEvidence]] = []
         for session, evidence_signature in misses:
+            key = session_key(session)
+            cached_evidence = persisted_hits.get(key)
+            if cached_evidence is not None:
+                evidence_by_key[key] = cached_evidence
+                fresh_cache[key] = (evidence_signature, cached_evidence)
+                continue
             try:
                 evidence = inspect_session(session)
             except Exception:
                 # 状态圆点是派生能力，任何运行时格式异常都不能阻断主扫描。
                 continue
-            key = session_key(session)
             evidence_by_key[key] = evidence
             fresh_cache[key] = (evidence_signature, evidence)
+            if not session.get("live"):
+                sig = non_live_sigs.get(key) or self._evidence_cache_sig(evidence_signature)
+                runtime_id = str(session.get("source") or "")
+                session_id = str(session.get("id") or "")
+                if runtime_id and session_id:
+                    to_persist.append((runtime_id, session_id, sig, evidence))
+
+        save_cache = getattr(self.attention_store, "save_evidence_cache", None)
+        if to_persist and callable(save_cache):
+            save_cache(to_persist)
 
         with self._attention_lock:
             if partial:

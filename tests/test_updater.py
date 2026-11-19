@@ -231,6 +231,14 @@ class SesskitPinSyncTests(unittest.TestCase):
             self.assertEqual(
                 updater.sesskit_wheel_requirement(), sesskit_dep.wheel_requirement()
             )
+            self.assertEqual(
+                updater.sesskit_wheel_requirement("darwin"),
+                sesskit_dep.wheel_requirement("darwin"),
+            )
+            self.assertEqual(
+                updater.sesskit_wheel_requirement("linux"),
+                sesskit_dep.wheel_requirement("linux"),
+            )
         finally:
             _sys.path.remove(scripts)
             _sys.modules.pop("sesskit_dep", None)

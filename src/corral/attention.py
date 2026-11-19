@@ -163,6 +163,20 @@ class AttentionStore:
             );
             CREATE INDEX IF NOT EXISTS session_views_viewed
             ON session_views(viewed_at);
+            CREATE TABLE IF NOT EXISTS attention_evidence_cache (
+                runtime_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                sig TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                activity_token TEXT,
+                question_token TEXT,
+                observed_at REAL NOT NULL,
+                source TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(runtime_id, session_id)
+            );
+            CREATE INDEX IF NOT EXISTS attention_evidence_cache_updated
+            ON attention_evidence_cache(updated_at);
             """
         )
         conn.execute(
@@ -732,8 +746,97 @@ class AttentionStore:
                 "DELETE FROM session_attention WHERE runtime_id=? AND session_id=?",
                 (str(runtime_id), str(session_id)),
             )
+            conn.execute(
+                "DELETE FROM attention_evidence_cache WHERE runtime_id=? AND session_id=?",
+                (str(runtime_id), str(session_id)),
+            )
             conn.commit()
         except (OSError, sqlite3.Error) as error:
+            conn.rollback()
+            self._report_degraded(error)
+        finally:
+            conn.close()
+
+    def load_evidence_cache(
+        self, sigs_by_key: Mapping[str, str],
+    ) -> dict[str, AttentionEvidence]:
+        """Return persisted non-live evidence entries whose signature still matches."""
+        if not sigs_by_key:
+            return {}
+        conn = self._open()
+        if conn is None:
+            return {}
+        hits: dict[str, AttentionEvidence] = {}
+        try:
+            rows = conn.execute(
+                "SELECT runtime_id,session_id,sig,phase,activity_token,"
+                "question_token,observed_at,source FROM attention_evidence_cache"
+            ).fetchall()
+            for row in rows:
+                key = f"{row['runtime_id']}:{row['session_id']}"
+                want_sig = sigs_by_key.get(key)
+                if want_sig is None or row["sig"] != want_sig:
+                    continue
+                phase = str(row["phase"])
+                source = str(row["source"])
+                if phase not in {"working", "waiting", "idle", "unknown"}:
+                    continue
+                if source not in {"history", "observer"}:
+                    continue
+                hits[key] = AttentionEvidence(
+                    phase=phase,  # type: ignore[arg-type]
+                    activity_token=_clean_token(row["activity_token"]),
+                    question_token=_clean_token(row["question_token"]),
+                    observed_at=float(row["observed_at"]),
+                    source=source,  # type: ignore[arg-type]
+                )
+            return hits
+        except (OSError, sqlite3.Error, KeyError, TypeError, ValueError) as error:
+            self._report_degraded(error)
+            return {}
+        finally:
+            conn.close()
+
+    def save_evidence_cache(
+        self,
+        entries: Sequence[tuple[str, str, str, AttentionEvidence]],
+    ) -> None:
+        """Persist non-live attention evidence so restarts skip re-parsing cold histories."""
+        if not entries:
+            return
+        conn = self._open()
+        if conn is None:
+            return
+        now = time.time()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany(
+                "INSERT INTO attention_evidence_cache "
+                "(runtime_id,session_id,sig,phase,activity_token,question_token,"
+                "observed_at,source,updated_at) VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(runtime_id,session_id) DO UPDATE SET "
+                "sig=excluded.sig, phase=excluded.phase, "
+                "activity_token=excluded.activity_token, "
+                "question_token=excluded.question_token, "
+                "observed_at=excluded.observed_at, source=excluded.source, "
+                "updated_at=excluded.updated_at",
+                [
+                    (
+                        str(runtime_id),
+                        str(session_id),
+                        str(sig),
+                        evidence.phase,
+                        _clean_token(evidence.activity_token),
+                        _clean_token(evidence.question_token),
+                        float(evidence.observed_at),
+                        evidence.source,
+                        now,
+                    )
+                    for runtime_id, session_id, sig, evidence in entries
+                ],
+            )
+            conn.commit()
+        except (OSError, sqlite3.Error, ValueError) as error:
             conn.rollback()
             self._report_degraded(error)
         finally:
@@ -793,9 +896,14 @@ class AttentionStore:
         if conn is None:
             return 0
         try:
+            cutoff = time.time() - max(0.0, float(max_age_seconds))
             cursor = conn.execute(
                 "DELETE FROM session_attention WHERE updated_at < ?",
-                (time.time() - max(0.0, float(max_age_seconds)),),
+                (cutoff,),
+            )
+            conn.execute(
+                "DELETE FROM attention_evidence_cache WHERE updated_at < ?",
+                (cutoff,),
             )
             conn.commit()
             return max(0, cursor.rowcount)

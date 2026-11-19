@@ -53,7 +53,11 @@ elif command -v python3 >/dev/null 2>&1; then
 fi
 if [ -z "$SESSKIT_REQ" ]; then
   # Keep in sync with scripts/sesskit_dep.py (curl|bash has no local helper).
-  SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.8/sesskit-0.3.8-py3-none-any.whl#sha256=d171bdba754b2baa6d51c0a787c59c1d44220980fb6cabd816266d220f995783"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl#sha256=ad0998854171b0d73d2f13a721efcf330d9c5976fab9ab1bb86ede02f96c00d3"
+  else
+    SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.11/sesskit-0.3.11-py3-none-any.whl#sha256=1f6b4bcabdbf7f6be82e7283546ab7bfd2c96e725a078629c74d1aa0b8f6944f"
+  fi
 fi
 echo "正在安装依赖 sesskit ..."
 python3 -m pip install --user --upgrade "$SESSKIT_REQ"

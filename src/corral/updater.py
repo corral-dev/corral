@@ -371,17 +371,35 @@ def is_updatable(channel: Channel | None = None) -> bool:
 # Linux 更新实踩）。唯一权威是 scripts/sesskit_dep.py；updater 随包发到用户
 # 机器、手边没有 scripts/，只能在这里镜像 pin。升级 SessKit 时两处同步改，
 # 并同步 install.sh 的 curl|bash 硬编码 fallback。
-_SESSKIT_VERSION = "0.3.8"
-_SESSKIT_WHEEL_NAME = f"sesskit-{_SESSKIT_VERSION}-py3-none-any.whl"
-_SESSKIT_WHEEL_SHA256 = "d171bdba754b2baa6d51c0a787c59c1d44220980fb6cabd816266d220f995783"
-_SESSKIT_WHEEL_URL = (
-    f"https://github.com/x0c/sesskit/releases/download/v{_SESSKIT_VERSION}/{_SESSKIT_WHEEL_NAME}"
+_SESSKIT_VERSION = "0.3.11"
+_SESSKIT_PURE_WHEEL_NAME = f"sesskit-{_SESSKIT_VERSION}-py3-none-any.whl"
+_SESSKIT_PURE_WHEEL_SHA256 = "1f6b4bcabdbf7f6be82e7283546ab7bfd2c96e725a078629c74d1aa0b8f6944f"
+_SESSKIT_MACOS_WHEEL_NAME = (
+    f"sesskit-{_SESSKIT_VERSION}-cp310-abi3-"
+    "macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl"
 )
+_SESSKIT_MACOS_WHEEL_SHA256 = "ad0998854171b0d73d2f13a721efcf330d9c5976fab9ab1bb86ede02f96c00d3"
 
 
-def sesskit_wheel_requirement() -> str:
+def _select_sesskit_wheel(platform_name: str | None = None) -> tuple[str, str, str]:
+    plat = sys.platform if platform_name is None else platform_name
+    if plat == "darwin":
+        name, sha = _SESSKIT_MACOS_WHEEL_NAME, _SESSKIT_MACOS_WHEEL_SHA256
+    else:
+        name, sha = _SESSKIT_PURE_WHEEL_NAME, _SESSKIT_PURE_WHEEL_SHA256
+    url = f"https://github.com/x0c/sesskit/releases/download/v{_SESSKIT_VERSION}/{name}"
+    return name, url, sha
+
+
+_SESSKIT_WHEEL_NAME, _SESSKIT_WHEEL_URL, _SESSKIT_WHEEL_SHA256 = _select_sesskit_wheel()
+
+
+def sesskit_wheel_requirement(platform_name: str | None = None) -> str:
     """pip 可直接安装的 SessKit 直链（含 digest，与 sesskit_dep.py 同源）。"""
-    return f"sesskit @ {_SESSKIT_WHEEL_URL}#sha256={_SESSKIT_WHEEL_SHA256}"
+    if platform_name is None:
+        return f"sesskit @ {_SESSKIT_WHEEL_URL}#sha256={_SESSKIT_WHEEL_SHA256}"
+    _name, url, sha = _select_sesskit_wheel(platform_name)
+    return f"sesskit @ {url}#sha256={sha}"
 
 
 def _ensure_sesskit_wheel() -> str | None:

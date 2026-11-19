@@ -357,6 +357,43 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.assertIs(self.store.find_session("claude:one"), held)
         self.assertFalse(changed)
 
+    def test_persisted_attention_evidence_cache_reused_across_store_restart(self) -> None:
+        """A restarted store skips inspect_session for unchanged non-live sessions."""
+        session = _session("codex", "cold1", live=False, mtime=10.0)
+        evidence = AttentionEvidence(phase="idle", activity_token="tok-1", observed_at=10.0)
+        with mock.patch("corral.store.inspect_session", return_value=evidence) as inspect_first:
+            self.store._merge_scanned({"codex": [dict(session)]})
+        self.assertEqual(inspect_first.call_count, 1)
+
+        restarted = SessionStore(50, _Registry(), self.attention)
+        with mock.patch("corral.store.inspect_session", side_effect=AssertionError("should reuse persisted cache")):
+            restarted._merge_scanned({"codex": [dict(session)]})
+        self.assertEqual(restarted.attention_for("codex:cold1").activity_token, "tok-1")
+
+        # Changing file mtime or becoming live invalidates the persisted entry.
+        updated = _session("codex", "cold1", live=False, mtime=20.0)
+        new_evidence = AttentionEvidence(phase="idle", activity_token="tok-2", observed_at=20.0)
+        with mock.patch("corral.store.inspect_session", return_value=new_evidence) as inspect_changed:
+            restarted._merge_scanned({"codex": [updated]})
+        self.assertEqual(inspect_changed.call_count, 1)
+        self.assertEqual(restarted.attention_for("codex:cold1").kind, "unread")
+
+        live_session = _session("codex", "cold1", live=True, mtime=20.0)
+        with mock.patch(
+            "corral.store.inspect_session",
+            return_value=AttentionEvidence(phase="working", observed_at=21.0),
+        ) as inspect_live:
+            restarted._merge_scanned({"codex": [live_session]})
+        self.assertEqual(inspect_live.call_count, 1)
+        self.assertEqual(restarted.attention_for("codex:cold1").kind, "working")
+
+        # remove_session clears cached evidence too.
+        self.attention.remove_session("codex", "cold1")
+        fresh = SessionStore(50, _Registry(), self.attention)
+        with mock.patch("corral.store.inspect_session", return_value=new_evidence) as inspect_after_rm:
+            fresh._merge_scanned({"codex": [updated]})
+        self.assertEqual(inspect_after_rm.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

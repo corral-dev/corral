@@ -119,4 +119,67 @@ Mac warm panes are costed by their whole retained payload (text, full tool bodie
 - The open TUI process predates the 0.2.21 provider cohort and keeps working with full-scan fallback until relaunched; no user TUI or agent session was killed. The remote service and scanner were restarted onto the new code; clients reconnected over the local transport.
 - Two obsolete review supervisors on the Suzhou host were reconciled after exact process/run identity, missing native history, empty review project directories and the absent keepalive socket were re-verified: SIGTERM to PIDs 277898/280535 released 2.26 GiB of used RAM and 487 MiB of swap. Their run rows remain untouched/recoverable; no database or other process was edited.
 
+## Round 2: background daemon footprint & native scanner acceleration (2026-11-19)
+
+### Measured baseline (Corral 1.0.0, SessKit 0.3.8 pure wheel, Python 3.14.10, macOS ARM64)
+
+Live `vmmap --summary` physical-footprint sampling on the steady-state background pair (zero online remote clients) measured:
+
+- `corral remote _serve`: `312.0–393.5 MiB` `phys_footprint` (peak `552.4–749.6 MiB`, RSS `~502 MiB`), dominated by `Malloc Small` (`139.8–182.3 MiB`), `Untagged` pymalloc arenas (`111.8–129.8 MiB`), and `Malloc Large (empty)` (`46.6–51.1 MiB`).
+- `corral.scan_worker --limit 200`: `198.8–261.5 MiB` `phys_footprint` (peak `432.9–630.8 MiB`, RSS `~421 MiB`), dominated by `Malloc Small` (`124.7 MiB`), `Malloc Large (empty)` (`104.9 MiB`), and `Untagged` (`48.1 MiB`).
+- Combined steady-state background pair: `573.5–627 MiB` `phys_footprint` (`>1.0–1.38 GiB` combined peak).
+
+Isolated read-only probes against local native histories identified five primary root causes:
+
+1. **SessKit Pi `_ENTRY_CACHE` retained full tool payloads and cached cold historical files**: `_compact_entry()` copied `message["content"]` verbatim for all roles (including multi-MB `toolResult` stdout, `toolCall` arguments, `thinking` blocks, and base64 images) while list-record building only needs user text, assistant text, and assistant-output presence. `scan_sessions(200)` also admitted every historical JSONL into the 64 MiB / 64-file cache and read whole files into memory before splitting lines. On local history, `pi.scan_sessions(200)` retained `91.8 MiB` traced allocations (`290.7 MiB` `phys_footprint`), dropping to `110.8 MiB` immediately after clearing `_ENTRY_CACHE`.
+2. **macOS installed pure-Python SessKit instead of the published native `universal2` wheel**: `scripts/sesskit_dep.py` and `updater.py` pinned `py3-none-any.whl`, leaving `sesskit._native` unavailable (`native_available() == False`). Consequently `codex.scan_sessions(200)` fell back to pure-Python JSONL scanning and `count_loops_many`, raising `phys_footprint` from `23.4 MiB` to `151.5 MiB` and leaving `91.6 MiB` of `Malloc Large (empty)` deferred-reclaim pages.
+3. **`corral remote _serve` fell back to full 6-runtime in-process scans on transient `keep_ids` misses**: Observed live in `events.log` (`scan_index_miss reason=keep_ids runtime=antigravity missing_count=1` → full `scan_all` inside `corral remote _serve`), permanently imprinting multi-runtime scan high-water memory onto the long-lived daemon.
+4. **No idle reclamation for search index / zero-client remote state, and no high-water self-recycle for `scan_worker`**: `ConversationIndex` (`~26 MiB` traced / `~89 MiB` `phys_footprint` on 1,018 cached rows) stayed resident indefinitely after `_SEARCH_ACTIVE_WINDOW` (600 s) expired; idle `_transcripts` kept up to 64 MiB even with zero connected clients; and `scan_worker` retained cold-scan allocator high-water pages indefinitely (`malloc_zone_pressure_relief` does not force macOS `Deferred Reclaim` empty large regions back immediately).
+5. **Cold-start attention inspection re-parsed ~1,000 unchanged dead histories inside `corral remote _serve` and TUI**: Even when `SessionStore.load()` consumed the shared `scan-index` in `0 ms` (`44.8 MiB`), `_reconcile_attention()` had only an in-memory evidence cache and called `inspect_session()` on every listed session. `_read_jsonl_tail()` read up to `8 MiB` per file and materialized up to `768` decoded dicts simultaneously (`codex` `+86.7 MiB`, `pi` `+47.4 MiB`, `antigravity` `+12.5 MiB`), spiking a fresh `corral remote _serve` from `44.8 MiB` straight to `225–236 MiB` before any client connected.
+
+### Ownership and contracts (Round 2)
+
+1. **SessKit Pi entry projection & streaming + native Rust loop streaming (`SessKit` v0.3.11)**:
+   - `_compact_entry()` projects only list-builder fields: precomputed user text, assistant text, and assistant-output flag; drops raw `content` from all cached messages (especially `toolResult` / `toolCall` / `thinking`). Both raw entries (`read_entries()`) and compacted entries remain 100% semantically identical in `_build_session_info_from_entries()` and `count_loops_from_branch()`.
+   - Full reads in `_read_incremental_entries()` stream line-by-line instead of reading whole-file bytes + splitting all lines in memory.
+   - Tightened defaults (`_ENTRY_CACHE_MAX_BYTES = 8 MiB`, `_ENTRY_CACHE_MAX_FILES = 16`); `scan_sessions()` only admits recently modified files (within 15 minutes) or already-cached files, while `refresh_session()` continues caching hot polled sessions.
+   - `crates/sesskit-stats/src/loops.rs` streams JSONL files line-by-line via `BufReader` (64 KiB buffer, shrinking buffers > 256 KiB after oversized lines) instead of calling `std::fs::read()` across all Rayon threads (which previously caused `414.4 MiB Malloc Large (empty)` / `455.9 MiB` footprint on `codex.scan_sessions(200)`), and `crates/sesskit-stats/src/opencode_list.rs` borrows SQLite column `&str` directly via `row.get_ref()`.
+   - `src/sesskit/parsers/claude.py` (and `crates/sesskit-stats/src/claude.rs`) preserves non-empty `<command-args>` inside leading `<command-name>/...</command-name>` wrappers without `<command-message>` (fixing a regression from `d7d6c77` while keeping isolated `<command-args>` in prose untouched and emitting no spurious `SkillInvocation`).
+2. **Platform-aware SessKit native wheel pin (`Corral/cli`)**:
+   - `scripts/sesskit_dep.py`, `src/corral/updater.py`, `pyproject.toml` (`[tool.uv.sources]` with `sys_platform` markers), `install.sh`, and Homebrew resource generation select the pinned macOS `universal2` native wheel on `darwin` and the pinned `py3-none-any` wheel elsewhere, with SHA-256 verification for every published artifact.
+3. **Scanner isolation & worker self-recycling (`Corral/cli`)**:
+   - When `scan_worker` is active and `scan_index.try_consume()` misses only on `keep_ids`, `SessionStore.refresh()` briefly waits (up to ~3 s) for `scan_worker` (which already watches `keep_ids` changes) to republish. If a subset of runtimes still misses (e.g. in-memory `_revealed_search_keys`), `SessionStore` / `RuntimeRegistry` consumes the covered runtimes from the fresh shared snapshot and scans only the missing runtime(s) locally rather than triggering a full 6-runtime scan.
+   - `corral.scan_worker` measures its own `phys_footprint` (`proc_pid_rusage` v4 on macOS, `/proc/self/statm` fallback on Linux). After publishing a fresh snapshot, if uptime ≥ 120 s and `phys_footprint` exceeds the configured ceiling (`128 MiB` default, `CORRAL_SCAN_WORKER_MAX_MB` / `SC_SCAN_WORKER_MAX_MB`, `0` disables), it logs `scan_worker_memory_recycle`, removes its heartbeat file so the next refresh cleanly respawns a fresh worker while hitting the just-published snapshot, and exits cleanly.
+4. **Remote idle reclamation (`Corral/cli`)**:
+   - `ConversationIndex` and `SearchCatalog` expose explicit `clear()` methods. When `_SEARCH_ACTIVE_WINDOW` (600 s) elapses without search demand, `SessionHub` evicts both and resets demand state so the next search rebuilds lazily from SQLite cache.
+   - When zero remote clients have active watchers (`sessions`, `conversations`, `terminals`, `screens`) continuously for 5 minutes, `SessionHub` releases all idle transcript readers (bypassing the 4 MiB floor), trims `_transcripts` to `8 MiB` / 4 entries, clears `store.conversations`, and runs `gc.collect()`. Actively watched sessions and open conversations remain untouched.
+5. **Persisted non-live attention evidence cache & streaming JSONL tail inspection (`Corral/cli`)**:
+   - `AttentionStore` (`session-attention.sqlite3`) persists an `attention_evidence_cache` table keyed by `(runtime_id, session_id)` and a versioned SHA-256 of `SessionStore`'s exact `evidence_signature` (source, path, mtime, file_mtime, size_bytes, live=False, runtime-specific signature). `SessionStore._reconcile_attention()` reuses matching persisted evidence for non-live sessions on cold startup/restart without re-reading unchanged histories; live sessions and any changed signature always call `inspect_session()` directly.
+   - `attention_signals.py` streams tail JSONL entries one decoded dict at a time (`_iter_jsonl_tail()`) and drops the raw tail buffer before iterating so cold misses never retain 768 decoded multi-MB dicts simultaneously.
+
+### Measured results (Round 2, 2026-11-19, Corral 1.0.0 + SessKit 0.3.11 native `universal2`, Python 3.14.10, macOS ARM64)
+
+**Isolated real-history probes** (each measured in a fresh Python process against local histories; not summed as whole-process savings):
+
+- `pi.scan_sessions(limit=200)`: `290.7 MiB` steady (`345.0 MiB` peak, `91.8 MiB` traced retained, `_ENTRY_CACHE` 28 files / `64.9 MiB`) → **`30.0 MiB` steady & peak** (`0.98–1.02 MiB` traced retained, 200/200 differential parity, 0 mismatches).
+- `codex.scan_sessions(limit=200)`: pure-Python `145.9–151.5 MiB` / `4,844 ms`; unstreamed native `std::fs::read` in Rayon `455.9 MiB` (`414.4 MiB Malloc Large (empty)`) / `572 ms` → **streamed native `146.5 MiB` / `864 ms`** (`count_loops_many` alone `63.7 MiB`, 5.6× faster than pure Python without the +310 MiB Rayon buffer regression).
+- `opencode.scan_sessions(limit=200)`: pure-Python `228.7 MiB` / `5,975 ms`, owned-String native `173.0 MiB` → **borrowed-`&str` native `145.3 MiB`**.
+- `SessionStore.load()` (`limit=200`, `shared_index=True`, 1,017 sessions): `202.4 MiB` / `~2,000 ms` before → **`100.1 MiB` / `1,669 ms`** on first cold start (empty attention evidence cache, streaming `_iter_jsonl_tail`) → **`54.6 MiB` / `279 ms`** on warm restarts (persisted `attention_evidence_cache`).
+- First-screen `registry.scan_all(50)` on installed pipx Python: **`11.3 ms`** (`shared_index=True`, 251 sessions).
+
+**Live whole-process `vmmap --summary` on the installed background pair** (zero online remote clients, Relay online, LAN + mDNS on, 1,017 sessions, 4+ minutes post-restart; `tmux -L corral-keepalive` untouched):
+
+| Process | Before steady `phys_footprint` | After steady `phys_footprint` | Before peak | After peak |
+|---|---|---|---|---|
+| `corral remote _serve` | `312.0–393.5 MiB` | **`72.0 MiB`** (`-77%` to `-82%`) | `549.5–749.6 MiB` | **`123.8 MiB`** (`-77%` to `-83%`) |
+| `corral.scan_worker` | `198.8–261.5 MiB` | **`82.8 MiB`** (`-58%` to `-68%`) | `432.9–630.8 MiB` | **`203.9 MiB`** (`-53%` to `-68%`) |
+| **Combined pair** | **`573.5–627.0 MiB`** | **`154.8 MiB`** (`-73%` to `-75%`) | **`>1.0–1.38 GiB`** | **`327.7 MiB`** (`-67%` to `-76%`) |
+
+**Verification & residual limits:**
+
+- `SessKit` v0.3.11 (`36bdb15`, tag `v0.3.11`): Ruff clean, `cargo test --locked` + `sesskit-stats` 25/25 + `cargo clippy --all-targets -- -D warnings` (0 warnings), `publish.py check-dist` passed on both `universal2` and `py3-none-any` wheels + `tar.gz`, pytest native `1,250 passed, 4 skipped, 54 subtests passed` and pure `1,210 passed, 44 skipped, 54 subtests passed`.
+- `Corral/cli`: Ruff clean, full `scripts/ci-test.py` first-pass green **`3,460 / 3,460`** (3 skipped, 0 failures, 0 retries, 0 warnings, `coverage_ok=True`).
+- Residual peaks: cold scanning multi-GB native histories (e.g. `~1.8 GiB` `opencode.db`, Codex sessions with multi-MB screenshot lines) still briefly peaks `scan_worker` around `~204 MiB` before macOS reclaims deferred-reclaim pages (and `scan_worker` self-recycles if steady footprint stays `≥ 128 MiB` after 120 s uptime). Actively watched multi-MB conversations remain bounded by the existing 64 MiB active transcript cap and trim down to 8 MiB / 4 entries after 5 minutes with zero connected clients.
+- Note on `malloc_zone_pressure_relief(NULL, 0)`: measured on macOS ARM64; does not reclaim `Malloc Large (empty)` deferred-reclaim regions immediately, confirming process isolation + self-recycling in `scan_worker` as the reliable containment mechanism.
+
 <!-- 该文档整理/压缩于 2026-11-15 -->

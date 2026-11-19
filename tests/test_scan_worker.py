@@ -960,6 +960,122 @@ class LoadBootstrapTests(unittest.TestCase):
             [],
         )
 
+    def test_memory_recycle_exits_after_publish_and_removes_heartbeat(self) -> None:
+        fake = _FakeTime(start=1000.0)
+        buckets = {"claude": [{"source": "claude", "id": "fresh", "mtime": 10, "file_mtime": 10}]}
+        registry = _AlwaysParseRegistry(lambda: buckets)
+        registry._clock = fake.monotonic
+        events: list[tuple[str, dict]] = []
+
+        def fake_event(name: str, **kwargs) -> None:
+            events.append((name, kwargs))
+
+        with (
+            mock.patch("corral.scan_worker._memory_pressured", return_value=False),
+            mock.patch("corral.scan_worker.provider_drift", return_value=False),
+            mock.patch("corral.scan_worker.time", fake),
+            mock.patch("corral.scan_worker.RECYCLE_MIN_UPTIME_SECONDS", 0.0),
+            mock.patch("corral.scan_worker._recycle_footprint_limit_bytes", return_value=64 * 1024 * 1024),
+            mock.patch("corral.scan_worker._process_footprint_bytes", return_value=140 * 1024 * 1024),
+            mock.patch("corral.observe.event", side_effect=fake_event),
+        ):
+            code = self.scan_worker.run_loop(
+                limit=50,
+                interval=2.0,
+                parent_pid=os.getppid(),
+                max_passes=5,
+                registry=registry,
+                watcher=_NullWatcher(),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(registry.parse_at), 1)
+        self.assertTrue(any(name == "scan_worker_memory_recycle" for name, _ in events))
+        heartbeat_path, _lock_path = self.scan_worker._paths()
+        self.assertFalse(heartbeat_path.exists())
+        # Published snapshot stays valid for consumers immediately after recycle.
+        got = self.scan_index.try_consume(50, {})
+        self.assertIsNotNone(got)
+        assert got is not None
+        self.assertEqual([s["id"] for s in got["claude"]], ["fresh"])
+
+    def test_memory_recycle_respects_zero_env_and_uptime_guard(self) -> None:
+        with mock.patch.dict(os.environ, {"CORRAL_SCAN_WORKER_MAX_MB": "0"}):
+            self.assertEqual(self.scan_worker._recycle_footprint_limit_bytes(), 0)
+            recycle, _fp, limit_b = self.scan_worker._should_recycle_memory(0.0, 9999.0)
+            self.assertFalse(recycle)
+            self.assertEqual(limit_b, 0)
+        with (
+            mock.patch("corral.scan_worker._recycle_footprint_limit_bytes", return_value=1024),
+            mock.patch("corral.scan_worker._process_footprint_bytes", return_value=999_999_999),
+        ):
+            recycle_young, _, _ = self.scan_worker._should_recycle_memory(100.0, 110.0)
+            self.assertFalse(recycle_young)
+            recycle_mature, fp, _ = self.scan_worker._should_recycle_memory(
+                100.0, 100.0 + self.scan_worker.RECYCLE_MIN_UPTIME_SECONDS + 1.0,
+            )
+            self.assertTrue(recycle_mature)
+            self.assertEqual(fp, 999_999_999)
+
+    def test_store_refresh_waits_for_worker_on_disk_keep_ids_miss(self) -> None:
+        import threading
+
+        import corral
+
+        self.scan_index.publish(
+            {"claude": [{"source": "claude", "id": "a", "mtime": 10, "file_mtime": 10}]},
+            limit=200,
+        )
+        registry = _StubRegistry({"claude": [{"source": "claude", "id": "local", "mtime": 1, "file_mtime": 1}]})
+        with (
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+            mock.patch.object(self.scan_worker, "ensure_scan_worker", return_value=None),
+        ):
+            store = corral.SessionStore(limit=50, registry=registry)
+            store._remembered_scan_ids = lambda: {"claude": {"a"}}
+            store.load()
+
+        def worker_republishes_pin():
+            time.sleep(0.04)
+            self.scan_index._LAST_PUBLISH.update({"at": 0.0, "path": "", "limit": 0, "keys": None})
+            self.scan_index.publish(
+                {
+                    "claude": [
+                        {"source": "claude", "id": "a", "mtime": 10, "file_mtime": 10},
+                        {"source": "claude", "id": "new-pin", "mtime": 5, "file_mtime": 5},
+                    ]
+                },
+                limit=200,
+                keep_ids_by_runtime={"claude": {"a", "new-pin"}},
+                scan_duration_s=1.0,
+            )
+
+        store._remembered_scan_ids = lambda: {"claude": {"a", "new-pin"}}
+        with (
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+            mock.patch.object(self.scan_worker, "is_active", return_value=True),
+            mock.patch.object(corral.SessionStore, "_KEEP_IDS_WAIT_POLL", 0.01),
+            mock.patch.object(corral.SessionStore, "_KEEP_IDS_WAIT_TIMEOUT", 1.0),
+        ):
+            t = threading.Thread(target=worker_republishes_pin, daemon=True)
+            t.start()
+            store.refresh()
+            t.join(2)
+        self.assertTrue(registry.last_scan_shared)
+        self.assertEqual(sorted(s["id"] for s in store.all_sessions()), ["a", "new-pin"])
+
+        # Revealed-only keep_ids skip the wait immediately (worker cannot see them).
+        store._revealed_search_keys.add("claude:revealed-only")
+        store._remembered_scan_ids = lambda: {"claude": {"a", "new-pin", "revealed-only"}}
+        started = time.monotonic()
+        with (
+            mock.patch.object(self.scan_worker, "is_active", return_value=True),
+            mock.patch.object(corral.SessionStore, "_KEEP_IDS_WAIT_TIMEOUT", 5.0),
+        ):
+            store._wait_for_keep_ids_publish({"claude": {"revealed-only"}})
+        self.assertLess(time.monotonic() - started, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

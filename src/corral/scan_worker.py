@@ -20,6 +20,7 @@ broken UI.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import re
@@ -76,9 +77,124 @@ LOCK_FILENAME = "scan-worker.lock"
 # check (2026-10-25 freeze).
 WORKER_MODULE_MARKER = "corral.scan_worker"
 REAP_TERM_TIMEOUT_SECONDS = 2.0
+# High-water physical footprint ceiling (bytes) for self-recycling. Cold scans
+# of multi-GB native histories can leave allocator/deferred-reclaim pages
+# pinned indefinitely; after publishing a fresh snapshot, exiting cleanly
+# returns those pages to the OS while consumers keep hitting the just-published
+# snapshot and respawn a lean worker on the next cycle. Override with
+# CORRAL_SCAN_WORKER_MAX_MB (0 disables).
+RECYCLE_FOOTPRINT_BYTES = 128 * 1024 * 1024
+RECYCLE_MIN_UPTIME_SECONDS = 120.0
 
 _ENSURE_LOCK = threading.Lock()
 _LAST_SPAWN_MONO = 0.0
+_LIBPROC = None
+
+
+def _recycle_footprint_limit_bytes() -> int:
+    """Configured high-water ceiling in bytes; 0 disables recycling."""
+    try:
+        from corral.legacy_names import getenv
+
+        raw = (getenv("SCAN_WORKER_MAX_MB", "") or "").strip()
+    except Exception:  # noqa: BLE001 — fall back to default ceiling
+        raw = ""
+    if not raw:
+        return RECYCLE_FOOTPRINT_BYTES
+    try:
+        mb = float(raw)
+    except ValueError:
+        return RECYCLE_FOOTPRINT_BYTES
+    if mb <= 0:
+        return 0
+    return int(mb * 1024 * 1024)
+
+
+def _process_footprint_bytes() -> int:
+    """Current process physical footprint in bytes (0 when unavailable)."""
+    global _LIBPROC
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+
+            class _RusageInfoV4(ctypes.Structure):
+                _fields_ = [
+                    ("ri_uuid", ctypes.c_uint8 * 16),
+                    ("ri_user_time", ctypes.c_uint64),
+                    ("ri_system_time", ctypes.c_uint64),
+                    ("ri_pkg_idle_wkups", ctypes.c_uint64),
+                    ("ri_interrupt_wkups", ctypes.c_uint64),
+                    ("ri_pageins", ctypes.c_uint64),
+                    ("ri_wired_size", ctypes.c_uint64),
+                    ("ri_resident_size", ctypes.c_uint64),
+                    ("ri_phys_footprint", ctypes.c_uint64),
+                    ("ri_proc_start_abstime", ctypes.c_uint64),
+                    ("ri_proc_exit_abstime", ctypes.c_uint64),
+                    ("ri_child_user_time", ctypes.c_uint64),
+                    ("ri_child_system_time", ctypes.c_uint64),
+                    ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+                    ("ri_child_interrupt_wkups", ctypes.c_uint64),
+                    ("ri_child_pageins", ctypes.c_uint64),
+                    ("ri_child_elapsed_abstime", ctypes.c_uint64),
+                    ("ri_diskio_bytesread", ctypes.c_uint64),
+                    ("ri_diskio_byteswritten", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_default", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_maintenance", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_background", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_utility", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_legacy", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_user_initiated", ctypes.c_uint64),
+                    ("ri_cpu_time_qos_user_interactive", ctypes.c_uint64),
+                    ("ri_billed_system_time", ctypes.c_uint64),
+                    ("ri_serviced_system_time", ctypes.c_uint64),
+                    ("ri_logical_writes", ctypes.c_uint64),
+                    ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
+                    ("ri_instructions", ctypes.c_uint64),
+                    ("ri_cycles", ctypes.c_uint64),
+                    ("ri_billed_energy", ctypes.c_uint64),
+                    ("ri_serviced_energy", ctypes.c_uint64),
+                    ("ri_interval_max_phys_footprint", ctypes.c_uint64),
+                    ("ri_runnable_time", ctypes.c_uint64),
+                ]
+
+            if _LIBPROC is None:
+                _LIBPROC = ctypes.CDLL("libproc.dylib")
+            info = _RusageInfoV4()
+            if _LIBPROC.proc_pid_rusage(os.getpid(), 4, ctypes.byref(info)) == 0:
+                return int(info.ri_phys_footprint)
+        except Exception:  # noqa: BLE001 — measurement is best-effort
+            return 0
+        return 0
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/self/statm", encoding="ascii") as handle:
+                fields = handle.read().split()
+            if len(fields) >= 2:
+                return int(fields[1]) * int(os.sysconf("SC_PAGE_SIZE"))
+        except Exception:  # noqa: BLE001 — measurement is best-effort
+            return 0
+    return 0
+
+
+def _remove_own_heartbeat() -> None:
+    """Remove heartbeat file only if it still names this process."""
+    try:
+        heartbeat_path, _lock_path = _paths()
+        payload = _read_heartbeat()
+        if payload is not None and int(payload.get("pid") or 0) == os.getpid():
+            heartbeat_path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001 — cleanup is best-effort
+        pass
+
+
+def _should_recycle_memory(started_mono: float, now_mono: float) -> tuple[bool, int, int]:
+    """Return ``(should_recycle, footprint_bytes, limit_bytes)``."""
+    limit_bytes = _recycle_footprint_limit_bytes()
+    if limit_bytes <= 0 or (now_mono - started_mono) < RECYCLE_MIN_UPTIME_SECONDS:
+        return False, 0, limit_bytes
+    gc.collect()
+    footprint = _process_footprint_bytes()
+    return footprint >= limit_bytes, footprint, limit_bytes
 
 
 def _worker_enabled() -> bool:
@@ -659,7 +775,8 @@ def run_loop(
     last_keeps_frozen = None
     next_parse_at = 0.0  # first pass always parses
     our_publish_wall = 0.0
-    last_event_mono = time.monotonic()  # quiet measured from worker start
+    started_mono = time.monotonic()
+    last_event_mono = started_mono  # quiet measured from worker start
     last_action_mono = 0.0
     last_heartbeat_mono = 0.0
     pressured = False
@@ -805,6 +922,25 @@ def run_loop(
                         next_parse_at = last_action_mono + _parse_gap_seconds(
                             streak, floor, pressured
                         )
+                        recycle, footprint_bytes, limit_bytes = _should_recycle_memory(
+                            started_mono, last_action_mono,
+                        )
+                        if recycle:
+                            try:
+                                from corral import observe
+
+                                observe.event(
+                                    "scan_worker_memory_recycle",
+                                    footprint_mb=round(footprint_bytes / 1048576, 1),
+                                    limit_mb=round(limit_bytes / 1048576, 1),
+                                    uptime_s=round(last_action_mono - started_mono, 1),
+                                    passes=passes + 1,
+                                    worker_pid=os.getpid(),
+                                )
+                            except Exception:  # noqa: BLE001 — recycle regardless
+                                pass
+                            _remove_own_heartbeat()
+                            return 0
             else:
                 # Skip the parse; keep the index fresh for consumers without
                 # overwriting a fresher foreign publish.

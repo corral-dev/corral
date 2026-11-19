@@ -739,5 +739,67 @@ class GlobalReadAdmissionTests(unittest.TestCase):
         self.assertTrue(self._wait_response(5)["ok"])
 
 
+class RemoteIdleReclamationTests(_HubFixture):
+    def test_idle_search_index_and_catalog_evict_after_active_window(self) -> None:
+        index = self.hub._search_index()
+        index._ready = True
+        index._entries = {"claude:a": object()}  # type: ignore[assignment]
+        self.hub.store.search_catalog.ready = True
+        self.hub.store.search_catalog._sessions = {"claude:a": {"id": "a"}}
+        self.hub.store.search_catalog.titles = {"claude:a": "A"}
+        self.hub._search_demanded_at = 100.0
+
+        # Still inside the active window: keep everything resident.
+        self.assertFalse(
+            self.hub._maybe_evict_idle_search(100.0 + remote_sessions._SEARCH_ACTIVE_WINDOW - 1.0)
+        )
+        self.assertTrue(index.ready)
+        self.assertTrue(self.hub.store.search_catalog.ready)
+
+        # Past _SEARCH_ACTIVE_WINDOW: evict both index and catalog cleanly.
+        self.assertTrue(
+            self.hub._maybe_evict_idle_search(100.0 + remote_sessions._SEARCH_ACTIVE_WINDOW + 1.0)
+        )
+        self.assertFalse(index.ready)
+        self.assertEqual(index.indexed_count, 0)
+        self.assertFalse(self.hub.store.search_catalog.ready)
+        self.assertEqual(self.hub.store.search_catalog.sessions(), [])
+        self.assertEqual(self.hub._search_demanded_at, 0.0)
+
+    def test_idle_zero_clients_trims_readers_transcripts_and_conversations(self) -> None:
+        # Populate 6 small transcripts (each below the normal 4 MiB reader floor).
+        for idx in range(6):
+            sid = f"idle-{idx}"
+            path = Path(self._tmp.name) / f"{sid}.jsonl"
+            _write_claude(path, [f"hello {idx} " + ("x" * 200)])
+            self.sessions[f"claude:{sid}"] = _session(sid, path)
+            self.hub.message_page(f"claude:{sid}")
+        self.hub.store.conversations["claude:idle-0"] = ("v1", [])
+        self.assertEqual(len(self.hub._transcripts), 6)
+        self.assertEqual(len(self.hub.store.conversations), 1)
+
+        # Active client watcher prevents idle reclamation.
+        self.hub._sessions_watchers = 1
+        self.hub._tick_idle_reclamation(1000.0)
+        self.hub._tick_idle_reclamation(1000.0 + remote_sessions._IDLE_NO_CLIENTS_SECONDS + 10.0)
+        self.assertEqual(len(self.hub._transcripts), 6)
+        self.assertEqual(len(self.hub.store.conversations), 1)
+
+        # Last client disconnects: record idle start, then trim after idle window.
+        self.hub._sessions_watchers = 0
+        self.hub._tick_idle_reclamation(2000.0)
+        self.assertEqual(len(self.hub._transcripts), 6)
+        self.hub._tick_idle_reclamation(2000.0 + remote_sessions._IDLE_NO_CLIENTS_SECONDS - 1.0)
+        self.assertEqual(len(self.hub._transcripts), 6)
+
+        self.hub._tick_idle_reclamation(2000.0 + remote_sessions._IDLE_NO_CLIENTS_SECONDS + 1.0)
+        self.assertLessEqual(
+            len(self.hub._transcripts), remote_sessions._IDLE_NO_CLIENTS_TRANSCRIPTS
+        )
+        self.assertEqual(len(self.hub.store.conversations), 0)
+        for transcript in self.hub._transcripts.values():
+            self.assertFalse(transcript.reader.has_cached_reader_state())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import fcntl
+import gc
 import hashlib
 import json
 import os
@@ -93,6 +94,12 @@ _MAX_IN_MEMORY_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 # Ending the last watcher releases reconstructible heavyweight reader state
 # only above this weight; small warm sessions keep their fast reopen path.
 _IDLE_READER_RELEASE_BYTES = 4 * 1024 * 1024
+# When zero clients have any active watchers continuously for this window,
+# aggressively release idle reader state, tighten the inactive transcript cap,
+# and clear SessionStore's plain-conversation LRU.
+_IDLE_NO_CLIENTS_SECONDS = 300.0
+_IDLE_NO_CLIENTS_TRANSCRIPTS = 4
+_IDLE_NO_CLIENTS_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
 # New session keys that first appear already terminal still notify if this fresh.
 _STATUS_NOTIFY_FRESH_SECONDS = 300.0
@@ -826,6 +833,8 @@ class SessionHub:
         self._search_refresh = threading.Event()
         self._search_catalog_needed = False
         self._search_demanded_at = 0.0
+        self._clients_idle_since: float | None = None
+        self._idle_trimmed = False
         self._loops_started = False
         self._loading_done = threading.Event()
         self._loading_done.set()
@@ -974,11 +983,109 @@ class SessionHub:
                 if str(session.get("source") or "") in ACTIVE_RUNTIME_IDS]
 
     def _request_search_refresh(self, *, catalog: bool = False, explicit: bool = True) -> None:
-        if catalog:
-            self._search_catalog_needed = True
-        if explicit:
-            self._search_demanded_at = time.monotonic()
+        with self._lock:
+            if catalog:
+                self._search_catalog_needed = True
+            if explicit:
+                self._search_demanded_at = time.monotonic()
         self._search_refresh.set()
+
+    def _has_active_clients(self) -> bool:
+        with self._lock:
+            if self._sessions_watchers > 0 or self._layout_watchers > 0:
+                return True
+            if any(watch.watchers > 0 for watch in self._conversations.values()):
+                return True
+            if any(viewers for _stream, viewers in self._terminals.values()):
+                return True
+            if any(watch.watchers > 0 for watch in self._screens.values()):
+                return True
+            return False
+
+    def _maybe_evict_idle_search(self, now: float) -> bool:
+        """Evict in-memory search index & catalog once search demand ages out."""
+        with self._lock:
+            demanded_at = self._search_demanded_at
+            if demanded_at <= 0.0 or (now - demanded_at) < _SEARCH_ACTIVE_WINDOW:
+                return False
+            index = getattr(self, "_fulltext_index", None)
+            self._search_demanded_at = 0.0
+            self._search_catalog_needed = False
+        cleared_index = index.clear() if index is not None else False
+        cleared_catalog = self.store.search_catalog.clear()
+        if cleared_index or cleared_catalog:
+            gc.collect()
+            try:
+                from corral import observe
+
+                observe.event(
+                    "remote_search_index_evicted",
+                    index_cleared=cleared_index,
+                    catalog_cleared=cleared_catalog,
+                )
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _trim_idle_client_memory(self) -> bool:
+        """Release reconstructible caches after a sustained zero-client idle stretch."""
+        with self._lock:
+            watched = self._watched_transcript_keys_locked()
+            inactive_keys = [key for key in self._transcripts if key not in watched]
+            before_transcripts = len(self._transcripts)
+            before_bytes = sum(item.bytes_estimate for item in self._transcripts.values())
+        released_readers = 0
+        for key in inactive_keys:
+            if self._release_idle_reader(key, min_bytes=0, trim=False):
+                released_readers += 1
+        self._trim_transcripts(
+            max_count=_IDLE_NO_CLIENTS_TRANSCRIPTS,
+            max_bytes=_IDLE_NO_CLIENTS_TRANSCRIPT_BYTES,
+            keep_newest=False,
+        )
+        conv_before = len(self.store.conversations)
+        if conv_before:
+            self.store.conversations.clear()
+        with self._lock:
+            after_transcripts = len(self._transcripts)
+            after_bytes = sum(item.bytes_estimate for item in self._transcripts.values())
+        changed = (
+            released_readers > 0
+            or after_transcripts < before_transcripts
+            or after_bytes < before_bytes
+            or conv_before > 0
+        )
+        if changed:
+            gc.collect()
+            try:
+                from corral import observe
+
+                observe.event(
+                    "remote_idle_memory_trimmed",
+                    released_readers=released_readers,
+                    transcripts_before=before_transcripts,
+                    transcripts_after=after_transcripts,
+                    bytes_before=before_bytes,
+                    bytes_after=after_bytes,
+                    conversations_cleared=conv_before,
+                )
+            except Exception:
+                pass
+        return changed
+
+    def _tick_idle_reclamation(self, now: float) -> None:
+        self._maybe_evict_idle_search(now)
+        if self._has_active_clients():
+            self._clients_idle_since = None
+            self._idle_trimmed = False
+            return
+        if self._clients_idle_since is None:
+            self._clients_idle_since = now
+            return
+        if not self._idle_trimmed and (now - self._clients_idle_since) >= _IDLE_NO_CLIENTS_SECONDS:
+            self._idle_trimmed = True
+            self._trim_idle_client_memory()
 
     def _search_loop(self) -> None:
         """Own parsing outside RPC threads; stay idle until search is demanded."""
@@ -1117,6 +1224,7 @@ class SessionHub:
                 if now - last_chatter >= 60:
                     self._check_chatter()
                     last_chatter = now
+                self._tick_idle_reclamation(now)
                 if changed or title_keys:
                     with self._scan_results_lock:
                         self._scan_changed = self._scan_changed or changed
@@ -1814,20 +1922,29 @@ class SessionHub:
             self._transcripts[transcript.key] = transcript
         self._trim_transcripts()
 
-    def _trim_transcripts(self) -> None:
+    def _trim_transcripts(
+        self,
+        *,
+        max_count: int | None = None,
+        max_bytes: int | None = None,
+        keep_newest: bool = True,
+    ) -> None:
         """Byte/count eviction of inactive transcripts, oldest use first.
 
         Eviction drops the whole entry. Python reference counting frees it
         once any in-flight caller is done, so a concurrent ``message_page``
         keeps its local transcript intact; nobody observes a half-cleared
-        reader cursor. The single newest candidate is retained even when it
-        alone exceeds the byte budget, because a page/tool detail request
-        still needs it and reconstructing it on every call would thrash.
+        reader cursor. When ``keep_newest`` is True (active use), the single
+        newest candidate is retained even when it alone exceeds the byte budget,
+        because a page/tool detail request still needs it and reconstructing it
+        on every call would thrash.
         """
+        count_limit = _MAX_IN_MEMORY_TRANSCRIPTS if max_count is None else int(max_count)
+        bytes_limit = _MAX_IN_MEMORY_TRANSCRIPT_BYTES if max_bytes is None else int(max_bytes)
         with self._lock:
             total = sum(item.bytes_estimate for item in self._transcripts.values())
-            count_over = len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS
-            bytes_over = total > _MAX_IN_MEMORY_TRANSCRIPT_BYTES
+            count_over = len(self._transcripts) > count_limit
+            bytes_over = total > bytes_limit
             if not count_over and not bytes_over:
                 return
             watched = self._watched_transcript_keys_locked()
@@ -1839,11 +1956,12 @@ class SessionHub:
                 ),
                 key=lambda pair: pair[1].last_used,
             )
+            min_remaining = 1 if keep_newest else 0
             while candidates and (
-                len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS
-                or total > _MAX_IN_MEMORY_TRANSCRIPT_BYTES
+                len(self._transcripts) > count_limit
+                or total > bytes_limit
             ):
-                if len(candidates) <= 1:
+                if len(candidates) <= min_remaining:
                     break
                 key, item = candidates.pop(0)
                 if self._transcripts.get(key) is not item:
@@ -1851,37 +1969,46 @@ class SessionHub:
                 self._transcripts.pop(key, None)
                 total -= item.bytes_estimate
 
-    def _release_idle_reader(self, key: str) -> None:
+    def _release_idle_reader(
+        self,
+        key: str,
+        *,
+        min_bytes: int | None = None,
+        trim: bool = True,
+    ) -> bool:
         """Drop heavyweight reader state once a session has no watcher left.
 
         The keyed lock check is non-blocking: if a poll/page/userPrompts walk
         is in flight, release is skipped rather than delaying the control
         channel or interrupting cursor work.
         """
+        threshold = _IDLE_READER_RELEASE_BYTES if min_bytes is None else int(min_bytes)
+        released = False
         with self._transcript_locks.hold_if_idle(key) as acquired:
             if not acquired:
-                return
+                return False
             with self._lock:
                 transcript = self._transcripts.get(key)
                 if transcript is None:
-                    return
+                    return False
                 if any(
                     watch.watchers > 0 and watch.reader is transcript.reader
                     for watch in self._conversations.values()
                 ):
-                    return
+                    return False
             reader = transcript.reader
             if not reader.has_cached_reader_state():
-                return
-            if richmsg.estimate_reader_bytes(reader, transcript.messages) < (
-                _IDLE_READER_RELEASE_BYTES
-            ):
-                return
+                return False
+            if richmsg.estimate_reader_bytes(reader, transcript.messages) < threshold:
+                return False
             reader.release_cached_state()
             transcript.bytes_estimate = richmsg.estimate_transcript_bytes(
                 transcript.messages, transcript.reader
             )
-        self._trim_transcripts()
+            released = True
+        if trim:
+            self._trim_transcripts()
+        return released
 
     def _persist_transcript(self, transcript: _Transcript) -> None:
         runtime = str(transcript.reader.session.get("source") or "")
