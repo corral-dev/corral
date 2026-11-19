@@ -2242,27 +2242,52 @@ class SessionHub:
         *,
         seq: int,
         ref: str,
+        via: list[str] | tuple[str, ...] | None = None,
         offset: int = 0,
         max_bytes: int | None = None,
     ) -> dict:
-        """Bounded slice of a regular file referenced in message ``seq``."""
+        """Bounded slice of a regular file referenced in message ``seq`` or a hop chain."""
         from corral.remote import media
 
         session = self.require_session(key)
         reference = media.normalize_ref(ref)
+        chain: list[str] = []
+        if via is not None:
+            for raw_hop in via:
+                if not isinstance(raw_hop, str):
+                    raise ActionError("not_found", t("remote.err.file_not_found"))
+                hop = media.normalize_ref(raw_hop)
+                if not hop:
+                    raise ActionError("not_found", t("remote.err.file_not_found"))
+                chain.append(hop)
+            if len(chain) > media.MAX_FILE_CHAIN_DEPTH:
+                raise ActionError("not_found", t("remote.err.file_not_found"))
+
         transcript = self._ensure_transcript(session)
         target = next((item for item in transcript.messages if item.seq == seq), None)
         if target is None:
             self._fill_earlier(transcript, seq + 1, 1)
             target = next((item for item in transcript.messages if item.seq == seq), None)
-        text = (target.text or "") if target is not None else ""
-        candidates = media.containment_candidates(reference)
-        if target is None or not candidates or not any(item in text for item in candidates):
+        if target is None:
             raise ActionError("not_found", t("remote.err.file_not_found"))
+
+        current_text = target.text or ""
+        base_cwd: str | None = str(session.get("cwd") or "") or None
         try:
+            for hop in chain:
+                hop_candidates = media.containment_candidates(hop)
+                if not hop_candidates or not any(item in current_text for item in hop_candidates):
+                    raise ActionError("not_found", t("remote.err.file_not_found"))
+                hop_path = media.resolve_local_file(hop, base_cwd)
+                current_text = media.read_chain_document_text(hop_path)
+                base_cwd = str(hop_path.parent)
+
+            candidates = media.containment_candidates(reference)
+            if not candidates or not any(item in current_text for item in candidates):
+                raise ActionError("not_found", t("remote.err.file_not_found"))
             return media.read_file_slice(
                 reference,
-                cwd=str(session.get("cwd") or ""),
+                cwd=base_cwd,
                 offset=offset,
                 max_bytes=max_bytes,
             )

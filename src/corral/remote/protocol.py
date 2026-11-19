@@ -247,7 +247,7 @@ M_SESSION_UNWATCH = "session.unwatch"
 M_SESSION_MARK_READ = "session.markRead"
 # Read-only: {key, seq, ref, max_px?, quality?} → bounded preview of an image that message cites.
 M_MEDIA_IMAGE = "media.image"
-# Read-only: {key, seq, ref, offset?, max_bytes?} → bounded file slice referenced by message.
+# Read-only: {key, seq, ref, via?, offset?, max_bytes?} → bounded file slice referenced by message or hop chain.
 M_MEDIA_FILE = "media.file"
 
 M_SCREEN_WATCH = "screen.watch"

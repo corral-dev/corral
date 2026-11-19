@@ -336,6 +336,82 @@ class HubFileDownloadTests(unittest.TestCase):
         self.assertIn(protocol.M_MEDIA_FILE, service._DATA_PAYLOAD_METHODS)
         self.assertIn(protocol.M_MEDIA_FILE, service._HANDLERS)
 
+    def test_multi_layer_via_chain_resolves_relative_to_parent_and_guards_containment(self) -> None:
+        import base64
+
+        docs = self.subdir / "nested"
+        docs.mkdir()
+        guide = docs / "GUIDE.md"
+        leaf = self.subdir / "SPEC.txt"
+        self.markdown_file.write_text(
+            "# Root\n\nSee [Guide](folder/nested/GUIDE.md#intro).\n",
+            encoding="utf-8",
+        )
+        guide.write_text(
+            "# Guide\n\nInspect [Spec](../SPEC.txt:12).\n",
+            encoding="utf-8",
+        )
+        leaf.write_text("Layer 3 leaf content\n", encoding="utf-8")
+
+        seq = self._seq()
+        hop0 = self.markdown_file.as_uri() + "#L10-L20"
+        with mock.patch.object(self.hub, "require_session", return_value=self.session):
+            # Layer 2 resolves relative to self.root (`folder/nested/GUIDE.md`).
+            layer2 = self.hub.file_slice(
+                "claude:files",
+                seq=seq,
+                ref="folder/nested/GUIDE.md#intro",
+                via=[hop0],
+            )
+            self.assertEqual(layer2["name"], "GUIDE.md")
+
+            # Layer 3 resolves `../SPEC.txt` relative to `folder/nested/` (not session cwd).
+            layer3 = self.hub.file_slice(
+                "claude:files",
+                seq=seq,
+                ref="../SPEC.txt:12",
+                via=[hop0, "folder/nested/GUIDE.md#intro"],
+            )
+            self.assertEqual(layer3["name"], "SPEC.txt")
+            self.assertEqual(
+                base64.b64decode(layer3["data"]).decode("utf-8"),
+                "Layer 3 leaf content\n",
+            )
+
+            # Containment breaks if target is not linked in the last hop.
+            secret = self.root / "secret.txt"
+            secret.write_text("secret", encoding="utf-8")
+            with self.assertRaises(ActionError) as unlinked:
+                self.hub.file_slice(
+                    "claude:files",
+                    seq=seq,
+                    ref=str(secret),
+                    via=[hop0, "folder/nested/GUIDE.md"],
+                )
+            self.assertEqual(unlinked.exception.code, "not_found")
+
+            # Over-deep chains are rejected cleanly.
+            with mock.patch.object(media, "MAX_FILE_CHAIN_DEPTH", 1):
+                with self.assertRaises(ActionError) as too_deep:
+                    self.hub.file_slice(
+                        "claude:files",
+                        seq=seq,
+                        ref="../SPEC.txt",
+                        via=[hop0, "folder/nested/GUIDE.md"],
+                    )
+                self.assertEqual(too_deep.exception.code, "not_found")
+
+            # Binary file cannot act as an intermediate hop.
+            with self.assertRaises(ActionError) as binary_hop:
+                self.hub.file_slice(
+                    "claude:files",
+                    seq=seq,
+                    ref="../SPEC.txt",
+                    via=["chunked.bin"],
+                )
+            self.assertEqual(binary_hop.exception.code, "not_found")
+
+
 
 if __name__ == "__main__":
     unittest.main()

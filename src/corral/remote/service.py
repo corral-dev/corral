@@ -1419,10 +1419,14 @@ class RemoteService:
         )
 
     def _media_file(self, connection: Connection, params: dict):
+        via = params.get("via")
+        if via is not None and (not isinstance(via, list) or not all(isinstance(item, str) for item in via)):
+            raise ActionError(protocol.E_USAGE, t("remote.err.file_not_found"))
         return self.hub.file_slice(
             _key(params),
             seq=_int_param(params, "seq", 0, max_value=10_000_000),
             ref=str(params.get("ref") or ""),
+            via=via,
             offset=_int_param(params, "offset", 0, max_value=100_000_000),
             max_bytes=_optional_int_param(params, "max_bytes", max_value=10_000_000),
         )

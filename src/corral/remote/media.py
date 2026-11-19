@@ -308,6 +308,8 @@ def _sips_size(sips: str, path: Path) -> tuple[int, int]:
 # --- Linked file downloads (media.file) -----------------------------------
 
 MAX_FILE_BYTES = 20 * 1024 * 1024
+MAX_CHAIN_HOP_BYTES = 4 * 1024 * 1024
+MAX_FILE_CHAIN_DEPTH = 16
 DEFAULT_FILE_SLICE_BYTES = 1_572_864
 MAX_FILE_SLICE_BYTES = 2_097_152
 
@@ -414,6 +416,25 @@ def resolve_local_file(ref: str, cwd: str | None) -> Path:
     if not resolved.is_file():
         raise FileError("unavailable")
     return resolved
+
+
+def read_chain_document_text(path: Path) -> str:
+    """Decode an intermediate document hop's text for link-containment checks."""
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise FileError("not_found") from exc
+    if int(stat.st_size) > MAX_CHAIN_HOP_BYTES:
+        raise FileError("unavailable", "too_large")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise FileError("not_found") from exc
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    if b"\x00" in raw[:4096]:
+        raise FileError("unavailable", "binary_hop")
+    return raw.decode("utf-8", errors="replace")
 
 
 def guess_file_mime(path: Path, sample: bytes = b"") -> str:
