@@ -19,6 +19,13 @@ read only this page. Open another guide only when a phase failure names it.
   `uv sync --frozen`, so a pin missing from CI turns `main` red and stalls the release
   workflow's `require-tests` job without failing any release lane (2026-11-16,
   `agent-session-control` 0.1.3).
+- Versions below 1.0 jump straight to 1.0.0 (owner, 2026-11-19): select those components and pass
+  `--bump major`, which takes each of them to `1.0.0` in one step. A component already at 1.0 or
+  above keeps its normal step and stays unpublished when only the 0.x components are being
+  raised, because a version milestone changes no code of its own.
+- Version-only milestone release: `plan` recommends nothing by design because no product commits
+  exist. Write notes that state behavior is unchanged from the current version, commit only the
+  changelogs, then `start --components <list> --bump major`.
 - Per-release evidence (logs, receipts, checksums, screenshots) stays in the release workspace.
   Guides record only durable findings.
 - iPhone delivery succeeds once the AppShelf upload is verified. If direct installation fails,
@@ -109,7 +116,13 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
   succeeded, so the exempted copy reaches a tag only through a new release: restate the
   pending notes under `## Unreleased` and replace the unpublished version's section with one
   `Not published. Its changes ship in <next>.` line.
-- Network or notarization interruption: `resume` reuses confirmed artifacts and receipts. Reconcile an unknown external outcome against the target first; do not assume every backend offers exactly-once publication. In particular, the shared AppShelf guide documents that an upload retry without a confirmed receipt can create a duplicate shelf release.
+- Network or notarization interruption: `resume` reuses confirmed artifacts and receipts. Reconcile an unknown external outcome against the target first; do not assume every backend offers exactly-once publication.
+- `mac.publish` read timeout after upload (2026-11-19): the anonymous digest check of an already
+  uploaded asset (`download()` in `publish_public_release`) read-timed out, so the release existed
+  with every asset while the latest flag, feeds, source release and Homebrew Cask stayed undone.
+  Compare the release's asset digests with the workspace artifacts, then `resume`: an existing
+  release and its matching assets are re-verified instead of recreated, no duplicate appears, and
+  the remaining steps complete. In particular, the shared AppShelf guide documents that an upload retry without a confirmed receipt can create a duplicate shelf release.
 
 ## Private configuration
 
