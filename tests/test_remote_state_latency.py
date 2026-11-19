@@ -36,7 +36,23 @@ class ArrivalDetectionTests(unittest.TestCase):
         self.assertTrue(is_session_arrival_path("/h/.claude/projects/p/abc.jsonl"))
         self.assertTrue(is_session_arrival_path("/h/.codex/sessions/2026/10/05/rollout-x.jsonl"))
         self.assertTrue(is_session_arrival_path("/h/.cursor/chats/a/b/store.db"))
+        self.assertTrue(
+            is_session_arrival_path(
+                "/h/.gemini/antigravity-cli/brain/cid-1/.system_generated/logs/transcript_full.jsonl"
+            )
+        )
         self.assertFalse(is_session_arrival_path("/h/.claude/projects/p/abc/subagents/agent-1.jsonl"))
+        self.assertFalse(
+            is_session_arrival_path(
+                "/h/.gemini/antigravity-cli/brain/cid-1/.system_generated/logs/chunks/transcript/00000004.jsonl"
+            )
+        )
+        self.assertFalse(
+            is_session_arrival_path(
+                "/h/.gemini/antigravity-cli/brain/cid-1/.system_generated/logs/chunks/transcript_full/00000007.jsonl"
+            )
+        )
+        self.assertFalse(is_session_arrival_path("/h/.gemini/antigravity-cli/history.jsonl"))
         self.assertFalse(is_session_arrival_path("/h/.cursor/chats/a/b/store.db-wal"))
         self.assertFalse(is_session_arrival_path("/h/.pi/agent/claims/x.json"))
         self.assertFalse(is_session_arrival_path(""))

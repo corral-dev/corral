@@ -205,6 +205,13 @@ class ClaimReaderTests(unittest.TestCase):
             self.assertEqual(phases["sess-i"]["phase"], "idle")
             self.assertNotIn("sess-e", phases)
 
+            # Warm second read reuses _CLAIM_MEMO without calling _copy_claim.
+            with mock.patch.object(
+                pi_identity, "_copy_claim", side_effect=AssertionError("should not copy claims"),
+            ):
+                warm_phases = pi_identity.live_agent_phases(td, now=now)
+            self.assertEqual(warm_phases, phases)
+
     def test_instance_env_pairs_shape(self) -> None:
         pairs = pi_identity.instance_env_pairs("abc", "/root")
         self.assertEqual(pairs[0], "-e")

@@ -2949,6 +2949,66 @@ class StartupHydrationTests(unittest.TestCase):
         ):
             self.assertEqual(store.poll_title_updates(), set())
 
+    def test_antigravity_db_signature_is_per_session_and_falls_back_to_stat(self) -> None:
+        from corral import store as store_module
+        from corral.scan import antigravity as scan_antigravity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ag-root"
+            db = root / "conversation_summaries.db"
+            wal = root / "conversation_summaries.db-wal"
+            (root / "brain" / "sess-a" / ".system_generated" / "logs").mkdir(parents=True)
+            (root / "brain" / "sess-b" / ".system_generated" / "logs").mkdir(parents=True)
+            db.write_bytes(b"db-1")
+            wal.write_bytes(b"wal-1")
+            sess_a = {
+                "source": "antigravity",
+                "id": "sess-a",
+                "path": str(root / "brain" / "sess-a" / ".system_generated" / "logs" / "transcript_full.jsonl"),
+            }
+            sess_b = {
+                "source": "antigravity",
+                "id": "sess-b",
+                "path": str(root / "brain" / "sess-b" / ".system_generated" / "logs" / "transcript_full.jsonl"),
+            }
+            summaries = {
+                "sess-a": {
+                    "root": str(root),
+                    "last_modified_time": "2026-11-19T10:00:00Z",
+                    "status": "CASCADE_RUN_STATUS_RUNNING",
+                    "step_count": 5,
+                    "not_fully_idle": True,
+                    "killed": False,
+                    "last_user_input_time": "2026-11-19T09:59:50Z",
+                },
+                "sess-b": {
+                    "root": str(root),
+                    "last_modified_time": "2026-11-19T08:00:00Z",
+                    "status": "CASCADE_RUN_STATUS_IDLE",
+                    "step_count": 10,
+                    "not_fully_idle": False,
+                    "killed": False,
+                    "last_user_input_time": "2026-11-19T07:59:00Z",
+                },
+            }
+            with mock.patch.object(scan_antigravity, "_read_all_summaries", return_value=summaries):
+                sig_a1 = store_module._antigravity_db_signature(sess_a, memo={})
+                sig_b1 = store_module._antigravity_db_signature(sess_b, memo={})
+                # Shared WAL grows, but only sess-a's summary row changed.
+                wal.write_bytes(b"wal-2-bigger")
+                summaries["sess-a"]["step_count"] = 6
+                sig_a2 = store_module._antigravity_db_signature(sess_a, memo={})
+                sig_b2 = store_module._antigravity_db_signature(sess_b, memo={})
+                self.assertNotEqual(sig_a1, sig_a2)
+                self.assertEqual(sig_b1, sig_b2)
+
+            # Empty summaries fall back to raw DB+WAL stat signatures.
+            with mock.patch.object(scan_antigravity, "_read_all_summaries", return_value={}):
+                fallback_1 = store_module._antigravity_db_signature(sess_b, memo={})
+                wal.write_bytes(b"wal-3-even-bigger")
+                fallback_2 = store_module._antigravity_db_signature(sess_b, memo={})
+                self.assertNotEqual(fallback_1, fallback_2)
+
     def test_retained_snapshot_skips_search_refresh_when_all_keys_found(self) -> None:
         hub = SessionHub(scan_limit=10)
         self.addCleanup(hub.stop)

@@ -908,6 +908,58 @@ class LoadBootstrapTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(registry.parse_at, [])
 
+    def test_store_refresh_forced_local_waits_for_spawned_worker_index(self) -> None:
+        import threading
+
+        import corral
+
+        registry = _StubRegistry({"claude": [{"source": "claude", "id": "local", "mtime": 1, "file_mtime": 1}]})
+        published = {"claude": [{"source": "claude", "id": "worker-fresh", "mtime": 2, "file_mtime": 2}]}
+
+        class _RunningProc:
+            def poll(self):
+                return None
+
+        with (
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+            mock.patch.object(self.scan_worker, "ensure_scan_worker", return_value=None),
+        ):
+            store = corral.SessionStore(limit=50, registry=registry)
+            store._remembered_scan_ids = lambda: {}
+            store.load()
+
+        def publish_soon():
+            time.sleep(0.04)
+            self.scan_index._LAST_PUBLISH.update({"at": 0.0, "path": "", "limit": 0, "keys": None})
+            self.scan_index.publish(published, limit=200, scan_duration_s=1.0)
+
+        store._last_local_scan_at = time.monotonic() - store._FULL_MERGE_INTERVAL - 1
+        with self.scan_index._CONSUME_LOCK:
+            self.scan_index._CONSUME_CACHE = None
+        if self.scan_index.index_path().exists():
+            self.scan_index.index_path().unlink()
+
+        with (
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+            mock.patch.object(self.scan_worker, "is_active", return_value=False),
+            mock.patch.object(self.scan_worker, "ensure_scan_worker", return_value=_RunningProc()),
+            mock.patch.object(corral.SessionStore, "_SCAN_WORKER_BOOTSTRAP_POLL", 0.01),
+            mock.patch.object(corral.SessionStore, "_SCAN_WORKER_BOOTSTRAP_TIMEOUT", 2.0),
+        ):
+            t = threading.Thread(target=publish_soon, daemon=True)
+            t.start()
+            before_calls = len(registry.calls)
+            store.refresh()
+            t.join(2)
+        self.assertTrue(registry.last_scan_shared)
+        self.assertEqual([s["id"] for s in store.all_sessions()], ["worker-fresh"])
+        self.assertEqual(
+            [c for c in registry.calls[before_calls:] if not c["prefer_shared"]],
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

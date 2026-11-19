@@ -39,9 +39,11 @@ def is_session_arrival_path(path: str) -> bool:
     if not path:
         return False
     normalized = path.replace("\\", "/")
-    if "/subagents/" in normalized:
+    if "/subagents/" in normalized or "/chunks/" in normalized:
         return False
     name = normalized.rsplit("/", 1)[-1]
+    if name == "history.jsonl":
+        return False
     return name.endswith(".jsonl") or name == "store.db"
 
 

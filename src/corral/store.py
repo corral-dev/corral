@@ -123,27 +123,81 @@ def _opencode_db_signature(session: dict, *, memo: dict | None = None) -> tuple:
     return result
 
 
+_AG_SUMMARIES_LOCK = threading.Lock()
+_AG_SUMMARIES_CACHE: dict[str, tuple[tuple, dict[str, dict], set[str], object]] = {}
+
+
 def _antigravity_db_signature(session: dict, *, memo: dict | None = None) -> tuple:
-    """Stat of Antigravity's `conversation_summaries.db` and its WAL (no SQL)."""
+    """Per-session Antigravity summary stamp, keyed from cached DB summary rows."""
     root = liveness._antigravity_root_from_path(session.get("path"))
     if root is None:
         return ()
     db = str(root / "conversation_summaries.db")
-    if memo is not None:
-        key = ("antigravity", db)
-        if key in memo:
-            return memo[key]
-    signature = []
-    for candidate in (db, f"{db}-wal"):
+    file_key = ("antigravity_file", db)
+    if memo is not None and file_key in memo:
+        file_sig = memo[file_key]
+    else:
+        signature = []
+        for candidate in (db, f"{db}-wal"):
+            try:
+                info = os.stat(candidate)
+            except OSError:
+                info = None
+            signature.append((info.st_size, info.st_mtime_ns) if info is not None else None)
+        file_sig = tuple(signature)
+        if memo is not None:
+            memo[file_key] = file_sig
+    from corral.scan import antigravity as scan_antigravity
+
+    reader = scan_antigravity._read_all_summaries
+    rows_key = ("antigravity_rows", db)
+    cached_rows = memo.get(rows_key) if memo is not None else None
+    if cached_rows is None and file_sig != (None, None):
+        with _AG_SUMMARIES_LOCK:
+            entry = _AG_SUMMARIES_CACHE.get(db)
+            if entry is not None and entry[0] == file_sig and entry[3] is reader:
+                cached_rows = (entry[1], entry[2])
+    if cached_rows is None:
         try:
-            info = os.stat(candidate)
+            summaries = reader()
+        except Exception:
+            summaries = {}
+        if not isinstance(summaries, dict):
+            summaries = {}
+        roots_present: set[str] = set()
+        for row in summaries.values():
+            if isinstance(row, dict) and row.get("root"):
+                try:
+                    roots_present.add(os.path.realpath(str(row["root"])))
+                except OSError:
+                    pass
+        cached_rows = (summaries, roots_present)
+        if memo is not None:
+            memo[rows_key] = cached_rows
+        if file_sig != (None, None):
+            with _AG_SUMMARIES_LOCK:
+                _AG_SUMMARIES_CACHE[db] = (file_sig, summaries, roots_present, reader)
+    summaries, roots_present = cached_rows
+    if summaries:
+        try:
+            root_real = os.path.realpath(str(root))
         except OSError:
-            info = None
-        signature.append((info.st_size, info.st_mtime_ns) if info is not None else None)
-    result = tuple(signature)
-    if memo is not None:
-        memo[("antigravity", db)] = result
-    return result
+            root_real = str(root)
+        if root_real in roots_present or not roots_present:
+            cid = str(session.get("id") or "")
+            row = summaries.get(cid)
+            if isinstance(row, dict):
+                return (
+                    "row",
+                    row.get("last_modified_time"),
+                    row.get("status"),
+                    row.get("step_count"),
+                    bool(row.get("not_fully_idle")),
+                    bool(row.get("killed")),
+                    row.get("last_user_input_time"),
+                )
+            return ("absent", cid)
+    return file_sig
 
 
 # Fields the per-session turn probe owns between full scans (status follows
@@ -629,11 +683,13 @@ class SessionStore:
                 self._last_local_scan_at is None
                 or (now - self._last_local_scan_at) >= self._FULL_MERGE_INTERVAL
             ) and not self._scan_worker_active()
-            if force_local:
-                # Opportunistically (re)start a dead worker; rate-limited and
-                # cheap when one is already live.
-                self._ensure_scan_worker()
             keep_ids = self._remembered_scan_ids()
+            if force_local:
+                # Opportunistically (re)start a dead worker; if a new child was
+                # spawned, let it finish the cold scan instead of duplicating it.
+                proc = self._ensure_scan_worker()
+                if proc is not None and self._wait_for_scan_worker_index(proc, keep_ids):
+                    force_local = False
             with self._scan_lock:
                 scanned = self.registry.scan_all(
                     self.limit,

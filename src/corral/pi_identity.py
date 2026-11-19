@@ -229,15 +229,15 @@ class _ClaimMemo:
         with self._lock:
             return self._bytes
 
-    def get(self, key: _ClaimKey, stamp: _ClaimStamp) -> dict | None:
+    def get(self, key: _ClaimKey, stamp: _ClaimStamp, *, copy: bool = True) -> dict | None:
         with self._lock:
             entry = self._entries.get(key)
             if entry is None or entry[0] != stamp:
                 return None
             self._entries.move_to_end(key)
             claim = entry[1]
-        # Copy outside the lock; the retained dictionary is never handed out.
-        return _copy_claim(claim)
+        # Copy outside the lock unless a read-only caller opts out.
+        return _copy_claim(claim) if copy else claim
 
     def put(self, key: _ClaimKey, stamp: _ClaimStamp, claim: dict, cost: int) -> None:
         if cost > self._max_bytes:
@@ -291,15 +291,21 @@ def _parse_claim(raw: bytes) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _read_cached_claim(path: str, key: _ClaimKey) -> dict | None:
+def _read_cached_claim(
+    path: str,
+    key: _ClaimKey,
+    *,
+    copy: bool = True,
+    stat_result: os.stat_result | None = None,
+) -> dict | None:
     """Stat-gated read: unchanged sources skip open and JSON decode."""
     try:
-        current = os.stat(path)
+        current = stat_result if stat_result is not None else os.stat(path)
     except OSError:
         _CLAIM_MEMO.drop(key)
         return None
     stamp = _claim_stamp(current)
-    cached = _CLAIM_MEMO.get(key, stamp)
+    cached = _CLAIM_MEMO.get(key, stamp, copy=copy)
     if cached is not None:
         return cached
 
@@ -325,7 +331,7 @@ def _read_cached_claim(path: str, key: _ClaimKey) -> dict | None:
     # initial stat and open, this is the newer identity and the next call will
     # simply miss again if another replacement has happened.
     _CLAIM_MEMO.put(key, after, claim, _claim_value_bytes(claim))
-    return _copy_claim(claim)
+    return _copy_claim(claim) if copy else claim
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -414,7 +420,7 @@ def ensure_extension_installed(root: str | os.PathLike[str] | None = None) -> di
     return {"status": "installed", "path": str(entry), "version": EXTENSION_VERSION}
 
 
-def read_claims(root: str | os.PathLike[str] | None = None) -> list[dict]:
+def read_claims(root: str | os.PathLike[str] | None = None, *, copy: bool = True) -> list[dict]:
     """读取全部 claim 文件；损坏/半写的文件直接跳过（原子写保证极少出现）。
 
     Unchanged files are served from an exact-source parse memo (root identity +
@@ -427,7 +433,8 @@ def read_claims(root: str | os.PathLike[str] | None = None) -> list[dict]:
         info = os.stat(directory)
         if not stat.S_ISDIR(info.st_mode):
             return []
-        names = os.listdir(directory)
+        with os.scandir(directory) as scanner:
+            entries = list(scanner)
     except OSError:
         return []
     try:
@@ -437,11 +444,19 @@ def read_claims(root: str | os.PathLike[str] | None = None) -> list[dict]:
     root: _ClaimRoot = (root_path, info.st_dev, info.st_ino)
     claims: list[dict] = []
     present: set[str] = set()
-    for name in names:
+    for entry in entries:
+        name = entry.name
         if not name.endswith(".json") or name.startswith("."):
             continue
         present.add(name)
-        claim = _read_cached_claim(os.path.join(directory, name), (*root, name))
+        try:
+            entry_stat = entry.stat()
+        except OSError:
+            _CLAIM_MEMO.drop((*root, name))
+            continue
+        claim = _read_cached_claim(
+            entry.path, (*root, name), copy=copy, stat_result=entry_stat,
+        )
         if claim is not None:
             claims.append(claim)
     # A listing failure returned above without pruning, so a transient error
@@ -595,7 +610,7 @@ def live_agent_phases(
     if now is None:
         now = datetime.now(timezone.utc)
     out: dict[str, dict[str, str]] = {}
-    for claim in read_claims(root):
+    for claim in read_claims(root, copy=False):
         if not claim_is_live(claim, now):
             continue
         session_id = str(claim.get("sessionId") or "").strip()
