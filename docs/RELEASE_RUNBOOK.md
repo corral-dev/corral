@@ -23,6 +23,15 @@ read only this page. Open another guide only when a phase failure names it.
   `--bump major`, which takes each of them to `1.0.0` in one step. A component already at 1.0 or
   above keeps its normal step and stays unpublished when only the 0.x components are being
   raised, because a version milestone changes no code of its own.
+- **Coupled CLI & Mac versions and release order (owner, 2026-11-20):** `cli` and `mac` share one
+  synchronized `X.Y.Z` version line; `ios` stays independent (`1.0.221+`). Whenever either `cli` or
+  `mac` has product changes (or their current versions differ), `plan` recommends **both** at the
+  same synchronized next version (`max(cli, mac)` plus the highest requested step). If one side has
+  zero product commits and no manual `## Unreleased` entry, `start` automatically prepends
+  bilingual version-sync notes for that partner; any block or `Release: hold` on either side holds
+  both. `start` automatically couples `cli` and `mac` whenever either is selected (`--components ios`
+  remains iPhone-only), and `mac.publish` waits for `cli.verify` to succeed before publishing Mac
+  assets and Homebrew Cask so Mac clients always find the matching CLI version already published.
 - Version-only milestone release: `plan` recommends nothing by design because no product commits
   exist. Write notes that state behavior is unchanged from the current version, commit only the
   changelogs, then `start --components <list> --bump major`.

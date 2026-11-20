@@ -36,8 +36,32 @@ def build_main_parser() -> argparse.ArgumentParser:
 
 
 def build_update_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
+    """Build the argument parser for ``corral update``."""
+    parser = argparse.ArgumentParser(
         prog="corral update",
         description=t("cli.help.update_description"),
         epilog=t("cli.help.update_epilog"),
     )
+    parser.add_argument(
+        "--version",
+        dest="target_version",
+        help=t("cli.help.update_version"),
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help=t("cli.help.update_status"),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_mode",
+        help=t("cli.help.update_json"),
+    )
+    parser.add_argument(
+        "--no-mac",
+        action="store_true",
+        dest="no_mac",
+        help=t("cli.help.update_no_mac"),
+    )
+    return parser

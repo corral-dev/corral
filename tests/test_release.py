@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("release_tool", ROOT / "scripts" / "release.py")
@@ -195,6 +196,181 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(view["phases"], {"cli.gate": "succeeded 1m05s", "cli.build": "failed 1m00s"})
         self.assertEqual(view["failed"], [{"phase": "cli.build", "reason": "1 new warning(s)", "excerpt": ["x"]}])
         self.assertEqual(view["next"], "fix the cause, then resume")
+
+
+class CoupledReleaseTests(unittest.TestCase):
+    def _args(self, components: str | None = None, bump: str | None = None):
+        return type("Args", (), {"components": components, "bump": bump})()
+
+    def test_sync_next_version_picks_highest_base_and_step(self) -> None:
+        self.assertEqual(release.sync_next_version("1.0.0", "1.0.2", "patch", "minor"), "1.1.0")
+        self.assertEqual(release.sync_next_version("1.2.0", "1.0.0", "major", "patch"), "2.0.0")
+        self.assertEqual(
+            release.sync_next_version("1.0.5", "1.0.3", "patch", "patch", explicit_step="major"),
+            "2.0.0",
+        )
+
+    def test_plan_couples_cli_and_mac_with_auto_sync_and_leaves_ios_independent(self) -> None:
+        plans = {
+            "cli": {
+                "current": "1.0.0", "next": "1.0.1", "product_files": 2,
+                "notes": "ready", "commits": ["a"], "recommended": True,
+            },
+            "mac": {
+                "current": "1.0.0", "next": "1.0.1", "product_files": 0,
+                "notes": "missing", "commits": [], "recommended": False,
+            },
+            "ios": {
+                "current": "1.0.221", "next": "1.0.222", "product_files": 0,
+                "notes": "missing", "commits": [], "recommended": False,
+            },
+        }
+        apple_vers = {"mac": ("1.0.0", 193), "ios": ("1.0.221", 230)}
+        with mock.patch.object(release, "unreleased", side_effect=[
+            {"notes": "ready", "step": "minor", "hold": None, "body": "ok"},
+            {"notes": "missing", "step": "patch", "hold": None, "body": ""},
+        ]), \
+             mock.patch.object(release, "apple_versions", return_value=apple_vers), \
+             mock.patch.object(release, "cli_version", return_value="1.0.0"), \
+             mock.patch.object(release, "published", return_value="1.0.0"), \
+             mock.patch.object(release, "component_plan", side_effect=lambda c, *a: dict(plans[c])), \
+             mock.patch.object(release, "git", return_value=""), \
+             mock.patch.object(release, "latest_state", return_value=None):
+            report = release.plan()
+        self.assertEqual(report["recommended"], ["cli", "mac"])
+        self.assertEqual(report["components"]["cli"]["next"], "1.1.0")
+        self.assertEqual(report["components"]["mac"]["next"], "1.1.0")
+        self.assertEqual(report["components"]["mac"]["notes"], "auto_sync")
+        self.assertTrue(report["components"]["mac"]["sync_only"])
+        self.assertEqual(report["components"]["ios"]["next"], "1.0.222")
+        self.assertFalse(report["components"]["ios"]["recommended"])
+
+    def test_plan_hold_on_either_side_blocks_both_coupled_components(self) -> None:
+        plans = {
+            "cli": {
+                "current": "1.0.0", "next": "1.0.1", "product_files": 2,
+                "notes": "ready", "commits": ["a"], "recommended": True,
+            },
+            "mac": {
+                "current": "1.0.0", "next": "1.0.1", "product_files": 1,
+                "notes": "ready", "commits": ["b"], "hold": "waiting", "recommended": False,
+            },
+            "ios": {
+                "current": "1.0.221", "next": "1.0.222", "product_files": 0,
+                "notes": "missing", "commits": [], "recommended": False,
+            },
+        }
+        apple_vers = {"mac": ("1.0.0", 193), "ios": ("1.0.221", 230)}
+        with mock.patch.object(release, "unreleased", side_effect=[
+            {"notes": "ready", "step": "patch", "hold": None, "body": "ok"},
+            {"notes": "ready", "step": "patch", "hold": "waiting", "body": "ok"},
+        ]), \
+             mock.patch.object(release, "apple_versions", return_value=apple_vers), \
+             mock.patch.object(release, "cli_version", return_value="1.0.0"), \
+             mock.patch.object(release, "published", return_value="1.0.0"), \
+             mock.patch.object(release, "component_plan", side_effect=lambda c, *a: dict(plans[c])), \
+             mock.patch.object(release, "git", return_value=""), \
+             mock.patch.object(release, "latest_state", return_value=None):
+            report = release.plan()
+        self.assertEqual(report["recommended"], [])
+        self.assertEqual(report["components"]["cli"]["coupled_blocked"], "coupled with mac (hold: waiting)")
+
+    def test_start_couples_cli_and_mac_and_keeps_ios_only(self) -> None:
+        fake_plan = {
+            "blockers": [],
+            "recommended": ["cli", "mac"],
+            "components": {
+                "cli": {"current": "1.0.0", "next": "1.0.1", "product_files": 0, "notes": "missing"},
+                "mac": {"current": "1.0.0", "next": "1.0.1", "product_files": 1, "notes": "ready"},
+                "ios": {"current": "1.0.221", "next": "1.0.222", "product_files": 1, "notes": "ready"},
+            },
+        }
+        apple_vers = {"mac": ("1.0.0", 193), "ios": ("1.0.221", 230)}
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(release, "RELEASES", Path(tmp)), \
+                 mock.patch.object(
+                     release.time, "strftime", side_effect=["20261120-000001", "20261120-000002"],
+                 ), \
+                 mock.patch.object(release, "plan", return_value=json.loads(json.dumps(fake_plan))), \
+                 mock.patch.object(release, "apple_versions", return_value=apple_vers), \
+                 mock.patch.object(release, "unreleased", side_effect=[
+                     {"notes": "missing", "step": "patch", "hold": None, "body": ""},
+                     {"notes": "ready", "step": "patch", "hold": None, "body": "mac fix"},
+                 ]), \
+                 mock.patch.object(release, "prepare_clone", return_value="deadbeef"), \
+                 mock.patch.object(release, "taskboard"), \
+                 mock.patch.object(release, "spawn_drivers"):
+                view = release.start(self._args("mac"), rehearse=False)
+            state_files = list(Path(tmp).glob("*/state.json"))
+            self.assertEqual(len(state_files), 1)
+            state = json.loads(state_files[0].read_text())
+            self.assertEqual(state["components"], ["cli", "mac"])
+            self.assertTrue(state["versions"]["cli"].get("sync_only"))
+            self.assertEqual(view["versions"]["cli"], "1.0.1")
+            self.assertEqual(view["versions"]["mac"], "1.0.1")
+
+            with mock.patch.object(release, "RELEASES", Path(tmp)), \
+                 mock.patch.object(release.time, "strftime", side_effect=["20261120-000003"]), \
+                 mock.patch.object(release, "plan", return_value=json.loads(json.dumps(fake_plan))), \
+                 mock.patch.object(release, "apple_versions", return_value=apple_vers), \
+                 mock.patch.object(release, "unreleased", side_effect=[
+                     {"notes": "missing", "step": "patch", "hold": None, "body": ""},
+                     {"notes": "ready", "step": "patch", "hold": None, "body": "ios fix"},
+                 ]), \
+                 mock.patch.object(release, "prepare_clone", return_value="deadbeef"), \
+                 mock.patch.object(release, "taskboard"), \
+                 mock.patch.object(release, "spawn_drivers"):
+                ios_view = release.start(self._args("ios"), rehearse=False)
+            self.assertEqual(list(ios_view["versions"]), ["ios"])
+
+    def test_bump_prepends_sync_only_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cli_repo = root / "cli"
+            mac_repo = root / "apple"
+            ws = root / "ws"
+            cli_repo.mkdir()
+            mac_repo.mkdir()
+            ws.mkdir()
+            (cli_repo / "pyproject.toml").write_text('version = "1.0.0"\n')
+            (cli_repo / "CHANGELOG.md").write_text("# Changelog\n\n## 1.0.0\n\n### English\n\n- Old.\n")
+            (mac_repo / "project.yml").write_text(PROJECT.replace("0.3.156", "1.0.0"))
+            (mac_repo / "CHANGELOG.md").write_text("# Changelog\n\n## Mac 1.0.0 (160)\n\n### English\n\n- Old.\n")
+            cli_vers = {"cli": {"from": "1.0.0", "to": "1.0.1", "sync_only": True}}
+            mac_vers = {"mac": {"from": "1.0.0", "to": "1.0.1", "build": 161, "sync_only": True}}
+            with mock.patch.object(release, "bump_cli_files", return_value=["pyproject.toml"]), \
+                 mock.patch.object(release, "git") as git_mock:
+                release.bump(cli_repo, cli_vers, ws, rehearse=False)
+                release.bump(mac_repo, mac_vers, ws, rehearse=False)
+            self.assertIn("Synchronized version 1.0.1 with Corral Mac", (cli_repo / "CHANGELOG.md").read_text())
+            self.assertIn("与 Corral Mac 同步发布 1.0.1 版本", (ws / "cli-notes.md").read_text())
+            self.assertIn("Synchronized version 1.0.1 with Corral CLI", (mac_repo / "CHANGELOG.md").read_text())
+            self.assertEqual(git_mock.call_count, 2)
+
+    def test_wait_for_cli_verify_passes_and_fails_fast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            ctx = object.__new__(release.Context)
+            ctx.workspace = ws
+            release.write_state(ws, {
+                "workspace": str(ws),
+                "phases": {
+                    "cli.verify": {"lane": "cli", "status": "succeeded"},
+                    "mac.publish": {"lane": "mac", "status": "running"},
+                },
+            })
+            release.wait_for_cli_verify(ctx, poll_interval=0.0, timeout=0.1)
+
+            release.write_state(ws, {
+                "workspace": str(ws),
+                "phases": {
+                    "cli.build": {"lane": "cli", "status": "failed"},
+                    "cli.verify": {"lane": "cli", "status": "pending"},
+                    "mac.publish": {"lane": "mac", "status": "running"},
+                },
+            })
+            with self.assertRaises(release.Failure):
+                release.wait_for_cli_verify(ctx, poll_interval=0.0, timeout=0.1)
 
 
 if __name__ == "__main__":

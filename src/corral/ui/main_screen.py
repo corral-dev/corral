@@ -2571,6 +2571,7 @@ class MainScreen(
         if self.embed_ok:
             self._split_area().remove_by_keepalive(keepalive_name)
         await self._rebuild_list()
+        self.notify(t("modal.kill_done", title=title))
 
     @work
     async def action_delete_session(self) -> None:

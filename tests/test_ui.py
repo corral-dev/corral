@@ -10310,24 +10310,27 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
-                await pilot.press("down")
-                list_view = app.screen.query_one(SessionListView)
-                card = list_view._session_cards()[0]
-                # 托管运行中也不再整行染绿，关注状态只由圆点表达。
-                self.assertFalse(
-                    any("#3F9A6A" in str(span.style) for span in card.render().spans),
-                )
-                app.screen.action_kill_keepalive()
-                await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
-                self.assertIsInstance(app.screen, ConfirmModal)
-                await pilot.press("q")
-                await pilot.pause(delay=0.2)
-                # 确认后立刻应是已结束；标题生命周期前后都保持统一基础色。
-                card = list_view._session_cards()[0]
-                self.assertFalse(
-                    any("#3F9A6A" in str(span.style) for span in card.render().spans),
-                )
+                with mock.patch.object(app.screen, "notify") as notify_mock:
+                    await pilot.press("down")
+                    list_view = app.screen.query_one(SessionListView)
+                    card = list_view._session_cards()[0]
+                    # 托管运行中也不再整行染绿，关注状态只由圆点表达。
+                    self.assertFalse(
+                        any("#3F9A6A" in str(span.style) for span in card.render().spans),
+                    )
+                    app.screen.action_kill_keepalive()
+                    await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
+                    self.assertIsInstance(app.screen, ConfirmModal)
+                    await pilot.press("q")
+                    await pilot.pause(delay=0.2)
+                    # 确认后立刻应是已结束；标题生命周期前后都保持统一基础色。
+                    card = list_view._session_cards()[0]
+                    self.assertFalse(
+                        any("#3F9A6A" in str(span.style) for span in card.render().spans),
+                    )
         kill_mock.assert_called_once_with("corral-claude-fake")
+        notify_mock.assert_called_once()
+        self.assertIn("会话0", notify_mock.call_args.args[0])
         current = store.find_session("claude:s0")
         self.assertIsNotNone(current)
         self.assertNotIn("keepalive_name", current)

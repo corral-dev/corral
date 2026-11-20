@@ -568,6 +568,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Restarted {title}",
         "zh": "已重启 {title}",
     },
+    "modal.kill_done": {
+        "en": "Ended {title}",
+        "zh": "已结束 {title}",
+    },
     "modal.restart_failed": {
         "en": "Could not restart session: {error}",
         "zh": "无法重启会话：{error}",
@@ -776,6 +780,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "update.cli_updated": {
         "en": "Updated to v{version}. Restarting corral…",
         "zh": "已更新到 v{version}，正在重启 corral…",
+    },
+    "update.mac_synced": {
+        "en": "Synchronized Corral.app to v{version}.",
+        "zh": "已将 Corral.app 同步升级到 v{version}。",
+    },
+    "update.mac_not_published": {
+        "en": "Corral.app v{version} is not published yet; skipping Mac sync.",
+        "zh": "Corral.app v{version} 尚未发布，跳过 Mac 客户端同步。",
+    },
+    "update.mac_sync_failed": {
+        "en": "Could not sync Corral.app to v{version}: {reason}",
+        "zh": "未能将 Corral.app 同步升级到 v{version}：{reason}",
     },
     # 会话占位标题（TUI 侧栏）
     "session.title.new": {
@@ -1860,6 +1876,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "cli.help.update_epilog": {
         "en": "Run corral update to check and install. Source checkouts are updated through Git.",
         "zh": "运行 corral update 检查并安装更新。源码检出请通过 Git 更新。",
+    },
+    "cli.help.update_version": {
+        "en": "Install a specific release version instead of querying latest",
+        "zh": "安装指定版本号，而不自动查询最新版",
+    },
+    "cli.help.update_status": {
+        "en": "Inspect CLI channel, version, and local Mac app sync status without updating",
+        "zh": "只读查看 CLI 渠道、版本和本机 Mac 客户端同步状态",
+    },
+    "cli.help.update_json": {
+        "en": "Print machine-readable JSON output for update or --status",
+        "zh": "为 update 或 --status 输出机器可读的 JSON",
+    },
+    "cli.help.update_no_mac": {
+        "en": "Skip syncing /Applications/Corral.app after updating the CLI",
+        "zh": "更新 CLI 后不自动同步 /Applications/Corral.app",
     },
     "cli.help.limit": {
         "en": "Maximum sessions scanned per runtime in default mode (default: 50)",

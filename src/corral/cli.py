@@ -47,7 +47,7 @@ def _restart_process() -> None:
 
 
 def _finish_self_update(request: updater.RestartRequest) -> bool:
-    """界面退出后执行升级；成功时用新安装自动替换当前进程。"""
+    """界面退出后执行升级；成功时重启过期服务、同步 Mac 客户端并替换当前进程。"""
     from corral.i18n import t
 
     print(t("update.cli_updating", version=request.latest))
@@ -61,6 +61,11 @@ def _finish_self_update(request: updater.RestartRequest) -> bool:
         observe.debug("self_update_output", output=output)
         print(t("update.cli_failed"), file=sys.stderr)
         return False
+    updater.restart_remote_after_update(request.latest)
+    if os.environ.get("CORRAL_UPDATE_NO_MAC") != "1":
+        mac_note = updater.sync_mac_app(request.latest)
+        if mac_note:
+            print(mac_note)
     print(t("update.cli_updated", version=request.latest))
     _restart_process()
     return True
@@ -458,8 +463,15 @@ def main() -> None:
 
     # `corral update`：手动触发客户端自动更新，不放进只读的 agent_api。
     if len(sys.argv) > 1 and sys.argv[1] == "update":
-        build_update_parser().parse_args(sys.argv[2:])
-        sys.exit(updater.cli_update())
+        args = build_update_parser().parse_args(sys.argv[2:])
+        sys.exit(
+            updater.cli_update(
+                target_version=args.target_version,
+                status_only=args.status,
+                json_mode=args.json_mode,
+                sync_mac=not args.no_mac,
+            )
+        )
 
     # `corral claude …` / `corral codex …`（可选前置 --no-keepalive）是直启透传子命令，同样整体
     # 绕开下面的 TUI/--json 旧参数 parser；分发探测此处只需运行时 ID 集合。

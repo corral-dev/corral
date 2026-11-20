@@ -38,6 +38,8 @@ RESOURCE_WAIT_SECONDS = 3600
 EXCERPT_LINES = 20
 
 COMPONENTS = ("cli", "mac", "ios")
+COUPLED_COMPONENTS = ("cli", "mac")
+STEP_RANK = {"patch": 0, "minor": 1, "major": 2}
 PRODUCT_PATHS = {
     "cli": ("src/", "rust/", "pyproject.toml", "Cargo.toml", "Cargo.lock", "uv.lock", "install.sh"),
     "mac": ("Shared/", "macOS/", "Configuration/", "project.yml", "Package.swift"),
@@ -92,6 +94,10 @@ def excerpt(log: Path, limit: int = EXCERPT_LINES) -> list[str]:
 
 # ---------- versions and notes (pure helpers) ----------
 
+def version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
 def next_version(version: str, step: str) -> str:
     major, minor, patch = (int(part) for part in version.split("."))
     if step == "major":
@@ -99,6 +105,22 @@ def next_version(version: str, step: str) -> str:
     if step == "minor":
         return f"{major}.{minor + 1}.0"
     return f"{major}.{minor}.{patch + 1}"
+
+
+def sync_next_version(cli_current: str, mac_current: str, cli_step: str, mac_step: str,
+                      explicit_step: str | None = None) -> str:
+    base = max((cli_current, mac_current), key=version_tuple)
+    step = explicit_step if explicit_step else max((cli_step, mac_step), key=lambda s: STEP_RANK.get(s, 0))
+    return next_version(base, step)
+
+
+def sync_release_notes(version: str, previous: str, partner_label: str) -> str:
+    return (
+        f"## Unreleased\n\n### English\n\n"
+        f"- Synchronized version {version} with {partner_label} (previously {previous}); no standalone code changes.\n\n"
+        f"### 简体中文\n\n"
+        f"- 与 {partner_label} 同步发布 {version} 版本（上一版本为 {previous}），本端无独立代码改动。\n\n"
+    )
 
 
 def cli_version(repo: Path) -> str:
@@ -320,6 +342,13 @@ def plan() -> dict:
         "ios": component_plan("ios", APPLE, apple["ios"][0], f'MARKETING_VERSION: "{apple["ios"][0]}"',
                               "project.yml", apple_notes, None),
     }
+    synced_next = sync_next_version(current, apple["mac"][0], cli_notes["step"], apple_notes["step"])
+    components["cli"]["next"] = synced_next
+    components["mac"]["next"] = synced_next
+    version_mismatch = version_tuple(current) != version_tuple(apple["mac"][0])
+    if version_mismatch:
+        components["cli"]["version_mismatch"] = True
+        components["mac"]["version_mismatch"] = True
     blockers = []
     # Uncommitted release files would be overwritten by the bump; block only the affected components.
     for repo, names, owners in ((CLI, [*CLI_VERSION_FILES, "CHANGELOG.md"], ("cli",)),
@@ -328,6 +357,35 @@ def plan() -> dict:
         for component in owners if dirty else ():
             components[component]["blocked"] = f"uncommitted {' '.join(dirty)} in {repo.name}"
             components[component]["recommended"] = False
+    # CLI and Mac share one synchronized version line; either side blocks or triggers both.
+    cli_info, mac_info = components["cli"], components["mac"]
+    if cli_info.get("blocked") or cli_info.get("hold") or mac_info.get("blocked") or mac_info.get("hold"):
+        if cli_info.get("blocked") or cli_info.get("hold"):
+            reason = cli_info.get("blocked") or f"hold: {cli_info['hold']}"
+            mac_info["coupled_blocked"] = f"coupled with cli ({reason})"
+        if mac_info.get("blocked") or mac_info.get("hold"):
+            reason = mac_info.get("blocked") or f"hold: {mac_info['hold']}"
+            cli_info["coupled_blocked"] = f"coupled with mac ({reason})"
+        cli_info["recommended"] = False
+        mac_info["recommended"] = False
+    elif cli_info["product_files"] > 0 or mac_info["product_files"] > 0 or version_mismatch:
+        for info, partner in ((cli_info, "mac"), (mac_info, "cli")):
+            if info["product_files"] == 0 and info["notes"] == "missing":
+                info["notes"] = "auto_sync"
+                info["sync_only"] = True
+                info["sync_with"] = partner
+        cli_ready = cli_info["notes"] in ("ready", "auto_sync")
+        mac_ready = mac_info["notes"] in ("ready", "auto_sync")
+        if cli_ready and mac_ready:
+            cli_info["recommended"] = True
+            mac_info["recommended"] = True
+        else:
+            if not cli_ready:
+                mac_info["coupled_blocked"] = "coupled with cli (notes missing)"
+            if not mac_ready:
+                cli_info["coupled_blocked"] = "coupled with mac (notes missing)"
+            cli_info["recommended"] = False
+            mac_info["recommended"] = False
     active = latest_state()
     if active and active["status"] == "running" and driver_alive(active):
         blockers.append(f"release {active['id']} is still running")
@@ -430,9 +488,19 @@ def start(args, rehearse: bool) -> dict:
     selected = args.components.split(",") if args.components else report["recommended"]
     if not selected or any(c not in COMPONENTS for c in selected):
         raise Failure("choose components from cli, mac, ios; plan recommends none", hint="run plan")
+    if ("cli" in selected) ^ ("mac" in selected):
+        selected = [c for c in COMPONENTS if c in set(selected) | set(COUPLED_COMPONENTS)]
+    if "cli" in selected:
+        for comp, partner in (("cli", "mac"), ("mac", "cli")):
+            info = report["components"][comp]
+            partner_info = report["components"][partner]
+            if info["notes"] == "missing" and info["product_files"] == 0 and partner_info["notes"] == "ready":
+                info["notes"] = "auto_sync"
+                info["sync_only"] = True
+                info["sync_with"] = partner
     for component in selected:
         info = report["components"][component]
-        if not rehearse and info["notes"] != "ready":
+        if not rehearse and info["notes"] not in ("ready", "auto_sync"):
             raise Failure(f"{component}: write bilingual ## Unreleased notes first", hint="see RELEASE_RUNBOOK")
         if not rehearse and info.get("blocked"):
             raise Failure(f"{component}: {info['blocked']}", hint="wait for that work to be committed")
@@ -443,11 +511,26 @@ def start(args, rehearse: bool) -> dict:
     workspace.mkdir(parents=True)
     step = args.bump
     project = apple_versions((APPLE / "project.yml").read_text())
+    cli_notes = unreleased((CLI / "CHANGELOG.md").read_text())
+    apple_notes = unreleased((APPLE / "CHANGELOG.md").read_text())
+    synced_to = None
+    if "cli" in selected:
+        synced_to = sync_next_version(
+            report["components"]["cli"]["current"],
+            report["components"]["mac"]["current"],
+            cli_notes["step"],
+            apple_notes["step"],
+            explicit_step=step,
+        )
     versions = {}
     for component in selected:
         info = report["components"][component]
-        new = next_version(info["current"], step) if step else info["next"]
+        new = synced_to if component in COUPLED_COMPONENTS else (
+            next_version(info["current"], step) if step else info["next"]
+        )
         versions[component] = {"from": info["current"], "to": new}
+        if info.get("sync_only"):
+            versions[component]["sync_only"] = True
         if component in project:
             versions[component]["build"] = project[component][1] + 1
     clones = {}
@@ -493,13 +576,25 @@ def prepare_clone(repo: Path, clone: Path, versions: dict, rehearse: bool, works
 REHEARSAL_NOTES = "## Unreleased\n\n### English\n\n- Rehearsal build.\n\n### 简体中文\n\n- 演练构建。\n\n"
 
 
+def _prepend_unreleased_notes(changelog: Path, snippet: str) -> None:
+    text = changelog.read_text()
+    first = re.search(r"^## ", text, re.M)
+    if first:
+        changelog.write_text(text[:first.start()] + snippet + text[first.start():])
+    else:
+        changelog.write_text(text.rstrip() + "\n\n" + snippet)
+
+
 def bump(repo: Path, versions: dict, workspace: Path, *, rehearse: bool) -> None:
     changelog = repo / "CHANGELOG.md"
     if rehearse and unreleased(changelog.read_text())["notes"] != "ready":
-        text = changelog.read_text()
-        first = re.search(r"^## ", text, re.M)
-        changelog.write_text(text[:first.start()] + REHEARSAL_NOTES + text[first.start():] if first else text)
+        _prepend_unreleased_notes(changelog, REHEARSAL_NOTES)
     if (repo / "pyproject.toml").exists():
+        if not rehearse and unreleased(changelog.read_text())["notes"] != "ready" and versions["cli"].get("sync_only"):
+            _prepend_unreleased_notes(
+                changelog,
+                sync_release_notes(versions["cli"]["to"], versions["cli"]["from"], "Corral Mac"),
+            )
         old, new = versions["cli"]["from"], versions["cli"]["to"]
         files = bump_cli_files(repo, old, new)
         notes = unreleased(changelog.read_text())["body"]
@@ -507,6 +602,12 @@ def bump(repo: Path, versions: dict, workspace: Path, *, rehearse: bool) -> None
         (workspace / "cli-notes.md").write_text(notes)
         message = f"release: v{new}"
     else:
+        if (not rehearse and unreleased(changelog.read_text())["notes"] != "ready"
+                and "mac" in versions and versions["mac"].get("sync_only") and "ios" not in versions):
+            _prepend_unreleased_notes(
+                changelog,
+                sync_release_notes(versions["mac"]["to"], versions["mac"]["from"], "Corral CLI"),
+            )
         targets = {c: (v["to"], v["build"]) for c, v in versions.items() if c in ("mac", "ios")}
         project = repo / "project.yml"
         project.write_text(bump_apple_project(project.read_text(), targets))
@@ -889,7 +990,36 @@ def phase_mac_install(ctx: Context) -> str:
     return f"installed {version} ({build}); host connection not confirmed"
 
 
+def wait_for_cli_verify(ctx: Context, *, poll_interval: float = 5.0, timeout: float = 7200.0) -> None:
+    """Ensure CLI publication is verified on GitHub & Homebrew before Mac publishes."""
+    cli_verify = read_state(ctx.workspace)["phases"].get("cli.verify")
+    if not cli_verify or cli_verify["status"] == "skipped":
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        state = read_state(ctx.workspace)
+        verify_status = (state["phases"].get("cli.verify") or {}).get("status")
+        if verify_status == "succeeded":
+            update_phase(ctx.workspace, "mac.publish", note=None)
+            return
+        cli_failed = [
+            name for name, phase in state["phases"].items()
+            if phase.get("lane") == "cli" and phase.get("status") == "failed"
+        ]
+        if cli_failed or not lane_alive(state, "cli"):
+            raise Failure(
+                f"CLI lane stopped before cli.verify completed ({', '.join(cli_failed) or verify_status})",
+                hint="fix CLI lane, then resume",
+            )
+        if time.monotonic() >= deadline:
+            raise Failure("timed out waiting for cli.verify", hint="check CLI lane and resume")
+        update_phase(ctx.workspace, "mac.publish", note="waiting for cli.verify")
+        if poll_interval > 0:
+            time.sleep(poll_interval)
+
+
 def phase_mac_publish(ctx: Context) -> str:
+    wait_for_cli_verify(ctx)
     receipt_dir = ctx.workspace / "mac"
     ctx.workflow("mac.publish", ctx.apple, ["python3", "scripts/publish-mac-release.py", "--publish-prepared",
                                             str(receipt_dir)], resource="corral-mac-publication", timeout=7200)

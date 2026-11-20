@@ -42,7 +42,7 @@ corral
 
 Use the full tap name: `brew install corral` installs an unrelated project. Homebrew installs Python and tmux for you.
 
-Upgrade with `brew update && brew upgrade x0c/tap/corral`. The formula uses prebuilt wheels for Corral and its Python dependencies.
+Upgrade with `brew update && brew upgrade x0c/tap/corral` (or `corral update` for interactive self-updates). The formula uses prebuilt wheels for Corral and its Python dependencies. When the signed Mac app is installed in `/Applications/Corral.app`, `corral update` also keeps it synchronized with the CLI version (pass `--no-mac` to skip).
 
 <details>
 <summary>Without Homebrew</summary>
@@ -146,7 +146,7 @@ The native app shows the same sessions as the terminal: read conversations side 
 - **Mac:** download the [signed app](https://github.com/corral-dev/corral-apple/releases/latest) (macOS 26+). It updates itself.
 - **iPhone:** [build from source](https://github.com/corral-dev/corral-apple#iphone) with Xcode. A public App Store or TestFlight download is not available yet.
 
-Installing the CLI does not install the app. With the app installed, run this on the machine hosting your agents:
+Installing the CLI does not install the app. Conversely, installing the Mac app installs or updates the matching CLI version automatically (editable source checkouts are never overwritten). With the app installed, run this on the machine hosting your agents:
 
 ```bash
 corral remote pair

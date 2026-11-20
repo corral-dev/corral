@@ -8,14 +8,18 @@ None/False，绝不能让检查或升级本身的故障拖死 TUI 或后台线�
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import platform
+import plistlib
 import re
 import shutil
 import site
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -27,6 +31,10 @@ from corral.legacy_names import cache_dir as product_cache_dir
 REPO = "corral-dev/corral"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 TAG_RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
+MAC_PUBLIC_REPO = "corral-dev/corral-apple"
+MAC_TAG_RELEASE_URL = f"https://api.github.com/repos/{MAC_PUBLIC_REPO}/releases/tags/mac-v{{version}}"
+MAC_APP_PATH = "/Applications/Corral.app"
+MAC_BUNDLE_ID = "com.x0c.corral"
 _FETCH_TIMEOUT = 3.0  # 秒；慢网络/无网不能拖住后台 worker
 _ASSET_TIMEOUT = 8.0  # 秒；查 Release 资产列表比查最新版稍宽松，但仍不能挂住升级
 
@@ -129,6 +137,9 @@ def detect_channel() -> Channel:
     pkg_dir = os.path.dirname(os.path.abspath(corral.__file__))
     if any(marker in pkg_dir for marker in _BREW_MARKERS):
         return "brew"
+    checkout = find_checkout_root(pkg_dir)
+    if checkout is not None and is_loaded_from_checkout(checkout):
+        return "dev"
     if _is_pipx_install(pkg_dir):
         return "pipx"
     site_dirs = [os.path.abspath(p) for p in _site_packages_dirs()]
@@ -307,7 +318,8 @@ def install_report(cwd: str | None = None) -> dict:
     root = find_checkout_root(cwd)
     pkg = package_file()
     channel = detect_channel()
-    from_checkout = is_loaded_from_checkout(root) if root else False
+    loaded_root = root or find_checkout_root(os.path.dirname(pkg))
+    from_checkout = is_loaded_from_checkout(loaded_root) if loaded_root else False
     editable_like = channel == "dev" or from_checkout
     warning = stale_source_warning(cwd)
     hints: list[str] = []
@@ -393,6 +405,15 @@ def _select_sesskit_wheel(platform_name: str | None = None) -> tuple[str, str, s
 
 _SESSKIT_WHEEL_NAME, _SESSKIT_WHEEL_URL, _SESSKIT_WHEEL_SHA256 = _select_sesskit_wheel()
 
+# ---- agent-session-control 预装：同样尚未上 PyPI，权威是 scripts/control_dep.py ----
+_CONTROL_VERSION = "0.1.4"
+_CONTROL_WHEEL_NAME = f"agent_session_control-{_CONTROL_VERSION}-py3-none-any.whl"
+_CONTROL_WHEEL_URL = (
+    f"https://github.com/x0c/agent-session-control/releases/download/"
+    f"v{_CONTROL_VERSION}/{_CONTROL_WHEEL_NAME}"
+)
+_CONTROL_WHEEL_SHA256 = "780062cff852f6adef82c94a7057f7d95c8d8cd8768e1e96a1bfa4c9b8ea2392"
+
 
 def sesskit_wheel_requirement(platform_name: str | None = None) -> str:
     """pip 可直接安装的 SessKit 直链（含 digest，与 sesskit_dep.py 同源）。"""
@@ -402,29 +423,26 @@ def sesskit_wheel_requirement(platform_name: str | None = None) -> str:
     return f"sesskit @ {url}#sha256={sha}"
 
 
-def _ensure_sesskit_wheel() -> str | None:
-    """把 pin 住的 SessKit wheel 取到本地缓存并校验 digest，返回文件路径。
+def control_wheel_requirement() -> str:
+    """Return the pinned direct URL + SHA-256 requirement for agent-session-control."""
+    return f"agent-session-control @ {_CONTROL_WHEEL_URL}#sha256={_CONTROL_WHEEL_SHA256}"
 
-    给更新子进程当 `PIP_FIND_LINKS` 用：pipx 1.0.0 会把 `--pip-args` 的值按
-    空格拆散，`sesskit @ <url>` 这类带空格的直链传进去会被切碎（2026-09-30
-    实踩 `@` 被当成独立 requirement），而本地路径无空格、两种拆分都安全。
-    任何失败（无网、校验不对）一律返回 None，由调用方降级为旧行为，绝不抛异常。
-    """
-    import hashlib
 
+def _download_verified_wheel(filename: str, url: str, sha256: str) -> str | None:
+    """Download a pinned wheel into CACHE_DIR after verifying its SHA-256 digest."""
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        dest = os.path.join(CACHE_DIR, _SESSKIT_WHEEL_NAME)
+        dest = os.path.join(CACHE_DIR, filename)
         if os.path.isfile(dest):
             with open(dest, "rb") as fh:
-                if hashlib.sha256(fh.read()).hexdigest() == _SESSKIT_WHEEL_SHA256:
+                if hashlib.sha256(fh.read()).hexdigest() == sha256:
                     return dest
         req = urllib.request.Request(
-            _SESSKIT_WHEEL_URL, headers={"User-Agent": "corral-updater"}
+            url, headers={"User-Agent": "corral-updater"}
         )
         with urllib.request.urlopen(req, timeout=_ASSET_TIMEOUT) as resp:
             data = resp.read()
-        if hashlib.sha256(data).hexdigest() != _SESSKIT_WHEEL_SHA256:
+        if hashlib.sha256(data).hexdigest() != sha256:
             return None
         tmp_path = dest + f".tmp.{os.getpid()}"
         try:
@@ -440,6 +458,22 @@ def _ensure_sesskit_wheel() -> str | None:
         return dest
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         return None
+
+
+def _ensure_sesskit_wheel() -> str | None:
+    """把 pin 住的 SessKit wheel 取到本地缓存并校验 digest，返回文件路径。
+
+    给更新子进程当 `PIP_FIND_LINKS` 用：pipx 1.0.0 会把 `--pip-args` 的值按
+    空格拆散，`sesskit @ <url>` 这类带空格的直链传进去会被切碎（2026-09-30
+    实踩 `@` 被当成独立 requirement），而本地路径无空格、两种拆分都安全。
+    任何失败（无网、校验不对）一律返回 None，由调用方降级为旧行为，绝不抛异常。
+    """
+    return _download_verified_wheel(_SESSKIT_WHEEL_NAME, _SESSKIT_WHEEL_URL, _SESSKIT_WHEEL_SHA256)
+
+
+def _ensure_control_wheel() -> str | None:
+    """Download and verify the pinned agent-session-control wheel into CACHE_DIR."""
+    return _download_verified_wheel(_CONTROL_WHEEL_NAME, _CONTROL_WHEEL_URL, _CONTROL_WHEEL_SHA256)
 
 def _wheel_patterns(version: str) -> list[re.Pattern]:
     """按当前系统 / 架构给出候选包名正则，越靠前越优先。"""
@@ -511,9 +545,9 @@ def update_command(
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
         if _is_user_site(pkg_dir):
             cmd.append("--user")
-        # SessKit 不在 PyPI：同一条 pip 命令里把直链一起带上，pip 用直链满足
-        # `sesskit>=…`，不再去 PyPI 找（2026-09-30 v0.24.237 更新实踩）。
-        cmd += [sesskit_wheel_requirement(), target]
+        # SessKit 与 agent-session-control 不在 PyPI：同一条 pip 命令里把直链一起带上，
+        # pip 用直链满足依赖，不再去 PyPI 找（2026-09-30 v0.24.237 更新实踩）。
+        cmd += [control_wheel_requirement(), sesskit_wheel_requirement(), target]
         return cmd
     return None
 
@@ -590,6 +624,7 @@ def prepare_stage(latest_tag: str, channel: Channel | None = None) -> str | None
         if _download_to_cache(target, filename) is None:
             return None
     _ensure_sesskit_wheel()
+    _ensure_control_wheel()
     return dest
 
 
@@ -662,14 +697,12 @@ def run_update(latest_tag: str, channel: Channel | None = None, *, spec: str | N
     if channel == "brew":
         env.pop("HOMEBREW_NO_AUTO_UPDATE", None)
     if channel in ("pipx", "pip") and "PIP_FIND_LINKS" not in env:
-        # SessKit 不在 PyPI：给 pip 系更新指一条本地 find-links，让内部 pip
-        # 用缓存 wheel 满足 `sesskit>=…`（pipx 通道不能用 --pip-args 传直链，
-        # 见 update_command 注释；2026-09-30 本机已用该办法从 0.24.232 升到
-        # 0.24.238）。取不到缓存就降级为旧行为，错误自然冒出。用户显式设过的
-        # PIP_FIND_LINKS 优先，不覆盖。
-        wheel = _ensure_sesskit_wheel()
-        if wheel:
-            env["PIP_FIND_LINKS"] = os.path.dirname(wheel)
+        # SessKit 与 agent-session-control 不在 PyPI：给 pip 系更新指一条本地 find-links，
+        # 让内部 pip 用缓存 wheel 满足依赖。取不到缓存就降级为旧行为，错误自然冒出。
+        # 用户显式设过的 PIP_FIND_LINKS 优先，不覆盖。
+        wheels = [path for path in (_ensure_sesskit_wheel(), _ensure_control_wheel()) if path]
+        if wheels:
+            env["PIP_FIND_LINKS"] = os.path.dirname(wheels[0])
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=300, env=env,
@@ -680,8 +713,23 @@ def run_update(latest_tag: str, channel: Channel | None = None, *, spec: str | N
     if result.returncode != 0:
         return False, output
     if channel == "brew":
+        target_ver = _version_tuple(latest_tag)
         installed = _brew_installed_version()
-        if installed is not None and installed < _version_tuple(latest_tag):
+        if installed is not None and installed < target_ver:
+            try:
+                subprocess.run(
+                    ["brew", "update"], capture_output=True, text=True, timeout=120, env=env,
+                )
+                retry = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=300, env=env,
+                )
+                extra = ((retry.stdout or "") + (retry.stderr or "")).strip()
+                if extra:
+                    output = (output + "\n" + extra).strip()[-4000:]
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            installed = _brew_installed_version()
+        if installed is not None and installed < target_ver:
             hint = "brew 未升级到最新版本，本地配方可能过期。请手动执行：brew update && brew upgrade x0c/tap/corral"
             return False, (output + "\n" + hint).strip()
     return True, output
@@ -730,33 +778,426 @@ def mark_dismissed(version: str) -> None:
     _save_state({"dismissed_version": version, "dismissed_date": _today()})
 
 
+# ---- Mac 客户端同步与守护进程重启 ----
+
+def _parse_codesign_metadata(output: str) -> tuple[str | None, bool]:
+    team_id: str | None = None
+    has_dev_id = False
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith("TeamIdentifier="):
+            candidate = line.split("=", 1)[1].strip()
+            if candidate and candidate != "not set":
+                team_id = candidate
+        elif line.startswith("Authority=") and "Developer ID Application" in line:
+            has_dev_id = True
+    return team_id, has_dev_id
+
+
+def _read_app_plist(app_path: str) -> dict | None:
+    plist_path = os.path.join(app_path, "Contents", "Info.plist")
+    if not os.path.isfile(plist_path):
+        return None
+    try:
+        with open(plist_path, "rb") as fh:
+            data = plistlib.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+
+
+def detect_installed_mac_app(app_path: str = MAC_APP_PATH) -> dict | None:
+    """Return metadata for the official Developer ID ``/Applications/Corral.app``, if present."""
+    if sys.platform != "darwin":
+        return None
+    plist = _read_app_plist(app_path)
+    if not plist or plist.get("CFBundleIdentifier") != MAC_BUNDLE_ID:
+        return None
+    version = str(plist.get("CFBundleShortVersionString") or "").strip()
+    build = str(plist.get("CFBundleVersion") or "").strip()
+    if not version or not build:
+        return None
+    try:
+        sig = subprocess.run(
+            ["codesign", "-dv", "--verbose=2", app_path],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if sig.returncode != 0:
+        return None
+    team_id, has_dev_id = _parse_codesign_metadata((sig.stdout or "") + "\n" + (sig.stderr or ""))
+    if not has_dev_id or not team_id:
+        return None
+    channel = "direct"
+    if shutil.which("brew"):
+        try:
+            cask = subprocess.run(
+                ["brew", "list", "--cask", "--versions", "corral-mac"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if cask.returncode == 0 and (cask.stdout or "").strip():
+                channel = "brew_cask"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return {
+        "path": app_path,
+        "version": version,
+        "build": build,
+        "team_id": team_id,
+        "channel": channel,
+    }
+
+
+def _resolve_updated_corral_command(channel: Channel) -> list[str]:
+    if channel in ("pip", "pipx"):
+        candidate = os.path.join(os.path.dirname(stable_interpreter()), "corral")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return [candidate]
+    found = shutil.which("corral")
+    if found:
+        return [found]
+    return [stable_interpreter(), "-m", "corral"]
+
+
+def restart_remote_after_update(
+    target_version: str | None = None, channel: Channel | None = None
+) -> bool:
+    """Restart a running wanted ``corral remote`` daemon after an in-place upgrade."""
+    try:
+        from corral.remote import autostart as remote_autostart
+        from corral.remote import cli as remote_cli
+        from corral.remote import config as remote_config
+    except ImportError:
+        return False
+
+    try:
+        if not remote_autostart.autostart_allowed():
+            return False
+        running = remote_config.read_pid()
+        if not running or not remote_config.load_state().wanted:
+            return False
+        snapshot = remote_config.read_status_snapshot() or {}
+        host_version = str(snapshot.get("version") or "0")
+        if target_version and not is_newer(target_version, _version_tuple(host_version)):
+            return False
+        cmd = _resolve_updated_corral_command(channel or detect_channel())
+        res = subprocess.run(
+            [*cmd, "remote", "on", "--force", "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res.returncode == 0:
+            return True
+        return bool(remote_cli.restart_if_outdated())
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError):
+        return False
+
+
+def _mac_app_pids(app_path: str) -> list[int]:
+    prefix = os.path.abspath(app_path) + "/Contents/MacOS/"
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "pid=,comm="], capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    pids: list[int] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, comm = parts
+        if comm.startswith(prefix) and pid_text.isdigit():
+            pids.append(int(pid_text))
+    return pids
+
+
+def _verify_staged_mac_app(
+    app_dir: str, expected_team_id: str, expected_version: str, min_build: int
+) -> tuple[bool, str]:
+    try:
+        strict = subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", app_dir],
+            capture_output=True, text=True, timeout=30,
+        )
+        if strict.returncode != 0:
+            return False, "codesign verification failed"
+        sig = subprocess.run(
+            ["codesign", "-dv", "--verbose=2", app_dir],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if sig.returncode != 0:
+        return False, "codesign metadata unavailable"
+    team_id, has_dev_id = _parse_codesign_metadata((sig.stdout or "") + "\n" + (sig.stderr or ""))
+    if not has_dev_id or team_id != expected_team_id:
+        return False, "signing team mismatch"
+    plist = _read_app_plist(app_dir)
+    if not plist or plist.get("CFBundleIdentifier") != MAC_BUNDLE_ID:
+        return False, "bundle identifier mismatch"
+    if str(plist.get("CFBundleShortVersionString") or "") != expected_version:
+        return False, "bundle version mismatch"
+    try:
+        if int(str(plist.get("CFBundleVersion") or "0")) < min_build:
+            return False, "bundle build older than installed"
+    except ValueError:
+        return False, "invalid bundle build number"
+    return True, ""
+
+
+def _fetch_mac_zip_asset(version: str) -> tuple[str, str | None] | None:
+    try:
+        req = urllib.request.Request(
+            MAC_TAG_RELEASE_URL.format(version=version),
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "corral-updater"},
+        )
+        with urllib.request.urlopen(req, timeout=_ASSET_TIMEOUT) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
+        return None
+    expected_name = f"Corral-{version}.zip"
+    for asset in payload.get("assets") or []:
+        if str(asset.get("name") or "") == expected_name and asset.get("browser_download_url"):
+            digest = asset.get("digest")
+            sha = str(digest).split(":", 1)[1] if isinstance(digest, str) and digest.startswith("sha256:") else None
+            return str(asset["browser_download_url"]), sha
+    return None
+
+
+def _relaunch_mac_app(app_path: str) -> None:
+    try:
+        subprocess.Popen(["open", app_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def sync_mac_app(target_version: str) -> str | None:
+    """Upgrade an older official ``/Applications/Corral.app`` to match ``target_version``."""
+    from corral.i18n import t
+
+    if sys.platform != "darwin" or os.environ.get("CORRAL_UPDATE_NO_MAC") == "1":
+        return None
+    target = target_version.strip().lstrip("vV")
+    installed = detect_installed_mac_app()
+    if not installed or _version_tuple(installed["version"]) >= _version_tuple(target):
+        return None
+
+    was_running = bool(_mac_app_pids(installed["path"]))
+    if installed["channel"] == "brew_cask" and shutil.which("brew"):
+        env = os.environ.copy()
+        env.pop("HOMEBREW_NO_AUTO_UPDATE", None)
+        try:
+            subprocess.run(["brew", "update"], capture_output=True, text=True, timeout=120, env=env)
+            subprocess.run(
+                ["brew", "upgrade", "--cask", "--greedy", "x0c/tap/corral-mac"],
+                capture_output=True, text=True, timeout=300, env=env,
+            )
+            after = detect_installed_mac_app(installed["path"])
+            if after and _version_tuple(after["version"]) >= _version_tuple(target):
+                if was_running:
+                    _relaunch_mac_app(installed["path"])
+                return t("update.mac_synced", version=after["version"])
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    asset = _fetch_mac_zip_asset(target)
+    if asset is None:
+        return t("update.mac_not_published", version=target)
+    url, expected_sha = asset
+    parent_dir = os.path.dirname(installed["path"])
+    if not (os.access(parent_dir, os.W_OK) and os.access(installed["path"], os.W_OK)):
+        return t("update.mac_sync_failed", version=target, reason="permission denied")
+
+    try:
+        with tempfile.TemporaryDirectory(dir=parent_dir, prefix=".corral-sync-") as tmp_dir:
+            zip_path = os.path.join(tmp_dir, f"Corral-{target}.zip")
+            req = urllib.request.Request(url, headers={"User-Agent": "corral-updater"})
+            with urllib.request.urlopen(req, timeout=_PREFETCH_TIMEOUT) as resp:
+                data = resp.read()
+            if not data or (expected_sha and hashlib.sha256(data).hexdigest() != expected_sha):
+                return t("update.mac_sync_failed", version=target, reason="download checksum mismatch")
+            with open(zip_path, "wb") as fh:
+                fh.write(data)
+            extract_dir = os.path.join(tmp_dir, "extract")
+            os.makedirs(extract_dir, exist_ok=True)
+            ditto = subprocess.run(
+                ["ditto", "-x", "-k", zip_path, extract_dir],
+                capture_output=True, text=True, timeout=120,
+            )
+            if ditto.returncode != 0:
+                return t("update.mac_sync_failed", version=target, reason="archive extract failed")
+            staged_app = os.path.join(extract_dir, "Corral.app")
+            if not os.path.isdir(staged_app):
+                return t("update.mac_sync_failed", version=target, reason="Corral.app missing in zip")
+            try:
+                min_build = int(installed["build"])
+            except ValueError:
+                min_build = 0
+            ok, reason = _verify_staged_mac_app(staged_app, installed["team_id"], target, min_build)
+            if not ok:
+                return t("update.mac_sync_failed", version=target, reason=reason)
+
+            pids = _mac_app_pids(installed["path"])
+            for pid in pids:
+                try:
+                    os.kill(pid, 15)
+                except OSError:
+                    pass
+            if pids:
+                for _ in range(20):
+                    if not _mac_app_pids(installed["path"]):
+                        break
+                    time.sleep(0.1)
+            backup = os.path.join(parent_dir, f".Corral.app.backup.{os.getpid()}")
+            if os.path.exists(backup):
+                shutil.rmtree(backup, ignore_errors=True)
+            os.replace(installed["path"], backup)
+            try:
+                shutil.move(staged_app, installed["path"])
+            except Exception as exc:  # noqa: BLE001 - restore working bundle on swap failure
+                if not os.path.exists(installed["path"]) and os.path.exists(backup):
+                    os.replace(backup, installed["path"])
+                return t("update.mac_sync_failed", version=target, reason=str(exc))
+            shutil.rmtree(backup, ignore_errors=True)
+            if was_running:
+                _relaunch_mac_app(installed["path"])
+            return t("update.mac_synced", version=target)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return t("update.mac_sync_failed", version=target, reason=str(exc))
+
+
+def update_status() -> dict:
+    """Collect read-only CLI install and macOS client sync status."""
+    report = install_report()
+    return {
+        "cli": {
+            "version": ".".join(map(str, current_version())),
+            "channel": report["channel"],
+            "updatable": is_updatable(report["channel"]),
+            "editable_like": report["editable_like"],
+            "package_file": report["package_file"],
+        },
+        "mac_app": detect_installed_mac_app(),
+        "brew_available": shutil.which("brew") is not None,
+    }
+
+
 # ---- `corral update` 终端子命令 ----
 
-def cli_update() -> int:
-    """人读输出的终端手动升级入口，返回进程退出码。"""
+def _emit_cli_update_json(payload: dict) -> None:
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def cli_update(
+    target_version: str | None = None,
+    *,
+    status_only: bool = False,
+    json_mode: bool = False,
+    sync_mac: bool = True,
+) -> int:
+    """终端手动升级与状态查询入口，返回进程退出码。"""
     from corral.i18n import t
+
+    if status_only:
+        status = update_status()
+        if json_mode:
+            _emit_cli_update_json({"ok": True, **status})
+        else:
+            cli_info = status["cli"]
+            print(f"CLI: v{cli_info['version']} ({cli_info['channel']})")
+            mac_info = status.get("mac_app")
+            if mac_info:
+                print(f"Mac: v{mac_info['version']} ({mac_info['channel']})")
+            else:
+                print("Mac: not installed")
+        return 0
 
     channel = detect_channel()
     if not is_updatable(channel):
-        print(t("update.cli_dev_hint", repo=REPO))
+        msg = t("update.cli_dev_hint", repo=REPO)
+        if json_mode:
+            _emit_cli_update_json({"ok": False, "code": "dev_install", "channel": channel, "message": msg})
+        else:
+            print(msg)
         return 1
 
-    latest = fetch_latest()
-    if latest is None:
-        print(t("update.cli_check_failed"))
+    latest = target_version.strip().lstrip("vV") if target_version else fetch_latest()
+    if not latest:
+        msg = t("update.cli_check_failed")
+        if json_mode:
+            _emit_cli_update_json({"ok": False, "code": "check_failed", "channel": channel, "message": msg})
+        else:
+            print(msg)
         return 1
 
     current = current_version()
+    current_str = ".".join(map(str, current))
     if not is_newer(latest, current):
-        print(t("update.cli_latest", version=".".join(map(str, current))))
+        mac_note = None
+        if sync_mac and os.environ.get("CORRAL_UPDATE_NO_MAC") != "1":
+            sync_target = latest if target_version is None else current_str
+            mac_note = sync_mac_app(sync_target)
+        msg = t("update.cli_latest", version=current_str)
+        if json_mode:
+            _emit_cli_update_json({
+                "ok": True,
+                "version": current_str,
+                "target": latest,
+                "channel": channel,
+                "changed": False,
+                "mac_sync": mac_note,
+                "message": msg,
+            })
+        else:
+            print(msg)
+            if mac_note:
+                print(mac_note)
         return 0
 
-    print(t("update.cli_updating", version=latest))
+    if not json_mode:
+        print(t("update.cli_updating", version=latest))
     ok, output = run_update(latest, channel)
-    if output:
-        print(output)
     if not ok:
-        print(t("update.cli_failed"))
+        msg = t("update.cli_failed")
+        if json_mode:
+            _emit_cli_update_json({
+                "ok": False,
+                "code": "update_failed",
+                "version": current_str,
+                "target": latest,
+                "channel": channel,
+                "output": output,
+                "message": msg,
+            })
+        else:
+            if output:
+                print(output)
+            print(msg)
         return 1
-    print(t("update.cli_updated", version=latest))
+
+    remote_restarted = restart_remote_after_update(latest, channel=channel)
+    mac_note = None
+    if sync_mac and os.environ.get("CORRAL_UPDATE_NO_MAC") != "1":
+        mac_note = sync_mac_app(latest)
+    msg = t("update.cli_updated", version=latest)
+    if json_mode:
+        _emit_cli_update_json({
+            "ok": True,
+            "version": latest,
+            "channel": channel,
+            "changed": True,
+            "remote_restarted": remote_restarted,
+            "mac_sync": mac_note,
+            "output": output,
+            "message": msg,
+        })
+    else:
+        if output:
+            print(output)
+        if mac_note:
+            print(mac_note)
+        print(msg)
     return 0

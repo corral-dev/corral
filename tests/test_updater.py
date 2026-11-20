@@ -97,6 +97,27 @@ class ChannelDetectionTests(unittest.TestCase):
              self._with_pkg_file("/home/u/.local/share/pipx/venvs/corral/lib/python3.12/site-packages/corral"):
             self.assertEqual(updater.detect_channel(), "pipx")
 
+    def test_detects_dev_for_editable_pipx_checkout_from_unrelated_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            venv = os.path.join(td, "pipx_venv")
+            os.makedirs(venv)
+            with open(os.path.join(venv, "pipx_metadata.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            repo = os.path.join(td, "cli")
+            src = os.path.join(repo, "src", "corral")
+            os.makedirs(src)
+            with open(os.path.join(repo, "pyproject.toml"), "w", encoding="utf-8") as fh:
+                fh.write('[project]\nname = "corral"\nversion = "1.0.0"\n')
+            with open(os.path.join(src, "__init__.py"), "w", encoding="utf-8") as fh:
+                fh.write("__version__ = '1.0.0'\n")
+            with mock.patch.object(updater.sys, "prefix", venv), \
+                 self._with_pkg_file(src):
+                self.assertEqual(updater.detect_channel(), "dev")
+                report = updater.install_report(cwd="/")
+                self.assertEqual(report["channel"], "dev")
+                self.assertTrue(report["loaded_from_checkout"])
+                self.assertTrue(report["editable_like"])
+
     def test_install_report_includes_paths(self) -> None:
         report = updater.install_report()
         self.assertIn("version", report)
@@ -143,13 +164,18 @@ class ChannelDetectionTests(unittest.TestCase):
         self.assertNotIn("--pip-args", cmd)
 
     def test_update_command_carries_sesskit_direct_url(self) -> None:
-        # pip 通道把 SessKit 直链（含 digest）与目标放在同一条命令里，不依赖 PyPI
+        # pip 通道把 agent-session-control 与 SessKit 直链（含 digest）与目标放在同一条命令里，不依赖 PyPI
         req = updater.sesskit_wheel_requirement()
+        ctrl_req = updater.control_wheel_requirement()
         self.assertTrue(req.startswith("sesskit @ https://github.com/x0c/sesskit/"))
         self.assertIn("#sha256=", req)
+        self.assertTrue(ctrl_req.startswith("agent-session-control @ https://github.com/x0c/agent-session-control/"))
+        self.assertIn("#sha256=", ctrl_req)
         pip_cmd = updater.update_command("0.21.0", "pip", spec="WHEEL_URL")
         assert pip_cmd is not None
         self.assertIn(req, pip_cmd)
+        self.assertIn(ctrl_req, pip_cmd)
+        self.assertEqual(pip_cmd[-3:], [ctrl_req, req, "WHEEL_URL"])
 
     def test_update_command_dev_returns_none(self) -> None:
         self.assertIsNone(updater.update_command("0.21.0", "dev"))
@@ -244,6 +270,28 @@ class SesskitPinSyncTests(unittest.TestCase):
             _sys.modules.pop("sesskit_dep", None)
 
 
+class ControlPinSyncTests(unittest.TestCase):
+    """updater 里的 agent-session-control 镜像 pin 与 install.sh 兜底必须与 scripts/control_dep.py 一致。"""
+
+    def test_updater_and_install_sh_match_control_dep(self) -> None:
+        import pathlib
+        import sys as _sys
+
+        root = pathlib.Path(__file__).resolve().parent.parent
+        scripts = str(root / "scripts")
+        _sys.path.insert(0, scripts)
+        try:
+            import control_dep
+
+            self.assertEqual(updater._CONTROL_VERSION, control_dep.VERSION)
+            self.assertEqual(updater.control_wheel_requirement(), control_dep.wheel_requirement())
+            install_sh = (root / "install.sh").read_text(encoding="utf-8")
+            self.assertIn(control_dep.wheel_requirement(), install_sh)
+        finally:
+            _sys.path.remove(scripts)
+            _sys.modules.pop("control_dep", None)
+
+
 class EnsureSesskitWheelTests(unittest.TestCase):
     """_ensure_sesskit_wheel：下载 + digest 校验，任何失败返回 None 且不抛异常."""
 
@@ -320,6 +368,23 @@ class RunUpdateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("brew update", out)
 
+    def test_brew_retries_with_brew_update_and_succeeds_when_version_advances(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return self._completed(0, "upgraded")
+
+        with mock.patch.object(updater.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(updater, "_brew_installed_version", side_effect=[(0, 20, 0), (0, 21, 0)]):
+            ok, _ = updater.run_update("0.21.0", "brew")
+        self.assertTrue(ok)
+        self.assertEqual(calls, [
+            ["brew", "upgrade", "x0c/tap/corral"],
+            ["brew", "update"],
+            ["brew", "upgrade", "x0c/tap/corral"],
+        ])
+
     def test_brew_clears_no_auto_update_env(self) -> None:
         captured = {}
 
@@ -367,11 +432,15 @@ class RunUpdateTests(unittest.TestCase):
                  updater, "_ensure_sesskit_wheel",
                  return_value="/tmp/cached/sesskit-0.2.2-py3-none-any.whl",
              ), \
+             mock.patch.object(
+                 updater, "_ensure_control_wheel",
+                 return_value="/tmp/cached/agent_session_control-0.1.4-py3-none-any.whl",
+             ), \
              mock.patch.object(updater.subprocess, "run", side_effect=fake_run):
             ok, _ = updater.run_update("0.21.0", "pipx")
         self.assertTrue(ok)
         self.assertEqual(captured["cmd"], ["/usr/local/bin/pipx", "install", "--force", "WHEEL_URL"])
-        # SessKit 预装走 PIP_FIND_LINKS（不用 --pip-args，见上）
+        # SessKit 与 control wheel 预装走 PIP_FIND_LINKS（不用 --pip-args，见上）
         self.assertEqual(captured["env"].get("PIP_FIND_LINKS"), "/tmp/cached")
 
     def test_pipx_respects_existing_pip_find_links(self) -> None:
@@ -399,6 +468,7 @@ class RunUpdateTests(unittest.TestCase):
                      side_effect=AssertionError("must use staged spec"),
                  ), \
                  mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
+                 mock.patch.object(updater, "_ensure_control_wheel", return_value=None), \
                  mock.patch.object(
                      updater.subprocess, "run",
                      return_value=self._completed(0, "ok"),
@@ -414,6 +484,7 @@ class RunUpdateTests(unittest.TestCase):
         with mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
              mock.patch.object(updater, "install_spec", return_value="WHEEL_URL") as spec, \
              mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
+             mock.patch.object(updater, "_ensure_control_wheel", return_value=None), \
              mock.patch.object(
                  updater.subprocess, "run", return_value=self._completed(0, "ok"),
              ):
@@ -450,6 +521,7 @@ class PrepareStageTests(unittest.TestCase):
              mock.patch.object(updater, "CACHE_DIR", td), \
              mock.patch.object(updater, "install_spec", return_value=self._URL), \
              mock.patch.object(updater, "_ensure_sesskit_wheel", return_value=None), \
+             mock.patch.object(updater, "_ensure_control_wheel", return_value=None), \
              self._urlopen_with(payload, content_length=str(len(payload))):
             staged = updater.prepare_stage("0.21.0", "pip")
             self.assertIsNotNone(staged)
@@ -462,6 +534,7 @@ class PrepareStageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
              mock.patch.object(updater, "CACHE_DIR", td), \
              mock.patch.object(updater, "install_spec", return_value=self._URL), \
+             mock.patch.object(updater, "_ensure_control_wheel", return_value=None) as ensure_ctrl, \
              mock.patch.object(updater, "_ensure_sesskit_wheel") as ensure:
             name = self._URL.rsplit("/", 1)[-1]
             with open(os.path.join(td, name), "wb") as fh:
@@ -473,6 +546,7 @@ class PrepareStageTests(unittest.TestCase):
                 staged = updater.prepare_stage("0.21.0", "pipx")
         self.assertEqual(staged, os.path.join(td, name))
         ensure.assert_called_once()
+        ensure_ctrl.assert_called_once()
 
     def test_source_fallback_is_not_staged(self) -> None:
         with mock.patch.object(
@@ -617,63 +691,228 @@ class DismissStateTests(unittest.TestCase):
 
 
 class CliUpdateTests(unittest.TestCase):
-    """`corral update` 终端子命令：三条主路径（dev 无法自动升级 / 已是最新 /
-    有新版本并成功升级），全部走 stdout 断言，不发真实网络请求。"""
+    """`corral update` 终端子命令：dev 提示 / 已是最新 / 指定版本升级 / status JSON / Mac 同步."""
 
-    def _capture(self, **patches) -> tuple[int, str]:
+    def _capture(self, *args, **kwargs) -> tuple[int, str]:
         import io
         from contextlib import redirect_stdout
 
+        patches = {
+            "sync_mac_app": lambda version: None,
+            "restart_remote_after_update": lambda version, channel=None: False,
+        }
+        patches.update(kwargs.pop("patches", {}))
         buf = io.StringIO()
         with mock.patch.multiple(updater, **patches), redirect_stdout(buf):
-            code = updater.cli_update()
+            code = updater.cli_update(*args, **kwargs)
         return code, buf.getvalue()
 
     def test_dev_channel_prints_manual_hint_and_exits_nonzero(self) -> None:
-        code, out = self._capture(detect_channel=lambda: "dev")
+        code, out = self._capture(patches={"detect_channel": lambda: "dev"})
         self.assertEqual(code, 1)
         self.assertIn("corral-dev/corral", out)
 
     def test_network_failure_prints_check_failed_and_exits_nonzero(self) -> None:
-        code, out = self._capture(
-            detect_channel=lambda: "pip",
-            is_updatable=lambda channel=None: True,
-            fetch_latest=lambda timeout=3.0: None,
-        )
+        code, out = self._capture(patches={
+            "detect_channel": lambda: "pip",
+            "is_updatable": lambda channel=None: True,
+            "fetch_latest": lambda timeout=3.0: None,
+        })
         self.assertEqual(code, 1)
 
     def test_already_latest_prints_message_and_exits_zero(self) -> None:
-        code, out = self._capture(
-            detect_channel=lambda: "pip",
-            is_updatable=lambda channel=None: True,
-            fetch_latest=lambda timeout=3.0: "0.1.0",
-            current_version=lambda: (9, 9, 9),
-        )
+        code, out = self._capture(patches={
+            "detect_channel": lambda: "pip",
+            "is_updatable": lambda channel=None: True,
+            "fetch_latest": lambda timeout=3.0: "0.1.0",
+            "current_version": lambda: (9, 9, 9),
+        })
         self.assertEqual(code, 0)
         self.assertIn("9.9.9", out)
 
     def test_newer_version_runs_update_and_reports_success(self) -> None:
-        code, out = self._capture(
-            detect_channel=lambda: "pip",
-            is_updatable=lambda channel=None: True,
-            fetch_latest=lambda timeout=3.0: "9.9.9",
-            current_version=lambda: (0, 1, 0),
-            run_update=lambda latest, channel=None: (True, "install ok"),
-        )
+        code, out = self._capture(patches={
+            "detect_channel": lambda: "pip",
+            "is_updatable": lambda channel=None: True,
+            "fetch_latest": lambda timeout=3.0: "9.9.9",
+            "current_version": lambda: (0, 1, 0),
+            "run_update": lambda latest, channel=None: (True, "install ok"),
+        })
         self.assertEqual(code, 0)
         self.assertIn("9.9.9", out)
         self.assertIn("install ok", out)
 
     def test_newer_version_update_failure_exits_nonzero(self) -> None:
-        code, out = self._capture(
-            detect_channel=lambda: "pip",
-            is_updatable=lambda channel=None: True,
-            fetch_latest=lambda timeout=3.0: "9.9.9",
-            current_version=lambda: (0, 1, 0),
-            run_update=lambda latest, channel=None: (False, "boom"),
-        )
+        code, out = self._capture(patches={
+            "detect_channel": lambda: "pip",
+            "is_updatable": lambda channel=None: True,
+            "fetch_latest": lambda timeout=3.0: "9.9.9",
+            "current_version": lambda: (0, 1, 0),
+            "run_update": lambda latest, channel=None: (False, "boom"),
+        })
         self.assertEqual(code, 1)
         self.assertIn("boom", out)
+
+    def test_status_json_outputs_cli_and_mac_info_without_network(self) -> None:
+        fake_report = {
+            "channel": "pipx",
+            "editable_like": False,
+            "package_file": "/pipx/corral/__init__.py",
+        }
+        fake_mac = {
+            "path": "/Applications/Corral.app",
+            "version": "1.0.0",
+            "build": "193",
+            "team_id": "TEAM123",
+            "channel": "direct",
+        }
+        with mock.patch.object(updater.urllib.request, "urlopen", side_effect=AssertionError("offline")), \
+             mock.patch.object(updater, "install_report", return_value=fake_report), \
+             mock.patch.object(updater, "current_version", return_value=(1, 0, 1)), \
+             mock.patch.object(updater, "detect_installed_mac_app", return_value=fake_mac), \
+             mock.patch.object(updater.shutil, "which", return_value="/opt/homebrew/bin/brew"):
+            code, out = self._capture(status_only=True, json_mode=True)
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["cli"]["version"], "1.0.1")
+        self.assertEqual(payload["mac_app"]["version"], "1.0.0")
+        self.assertTrue(payload["brew_available"])
+
+    def test_version_and_no_mac_flags_control_target_and_sync(self) -> None:
+        synced: list[str] = []
+        code, out = self._capture(
+            target_version="v1.2.3",
+            json_mode=True,
+            sync_mac=False,
+            patches={
+                "detect_channel": lambda: "pipx",
+                "is_updatable": lambda channel=None: True,
+                "fetch_latest": lambda timeout=3.0: (_ for _ in ()).throw(AssertionError("skip fetch")),
+                "current_version": lambda: (1, 0, 0),
+                "run_update": lambda latest, channel=None: (True, f"updated {latest}"),
+                "sync_mac_app": lambda ver: synced.append(ver) or "synced",
+                "restart_remote_after_update": lambda ver, channel=None: True,
+            },
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(synced, [])
+        payload = json.loads(out)
+        self.assertEqual(payload["version"], "1.2.3")
+        self.assertTrue(payload["remote_restarted"])
+        self.assertIsNone(payload["mac_sync"])
+
+        code2, out2 = self._capture(
+            target_version="1.2.3",
+            json_mode=True,
+            sync_mac=True,
+            patches={
+                "detect_channel": lambda: "pipx",
+                "is_updatable": lambda channel=None: True,
+                "current_version": lambda: (1, 0, 0),
+                "run_update": lambda latest, channel=None: (True, "ok"),
+                "sync_mac_app": lambda ver: synced.append(ver) or "mac synced",
+                "restart_remote_after_update": lambda ver, channel=None: False,
+            },
+        )
+        self.assertEqual(code2, 0)
+        self.assertEqual(synced, ["1.2.3"])
+        self.assertEqual(json.loads(out2)["mac_sync"], "mac synced")
+
+
+class MacAppSyncTests(unittest.TestCase):
+    def test_detect_installed_mac_app_requires_dev_id_and_team_id(self) -> None:
+        plist = {
+            "CFBundleIdentifier": updater.MAC_BUNDLE_ID,
+            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": "193",
+        }
+        good_sig = "Authority=Developer ID Application: Example\nTeamIdentifier=TEAM42\n"
+        adhoc_sig = "Signature=adhoc\nTeamIdentifier=not set\n"
+        with mock.patch.object(updater.sys, "platform", "darwin"), \
+             mock.patch.object(updater, "_read_app_plist", return_value=plist), \
+             mock.patch.object(updater.shutil, "which", return_value=None):
+            with mock.patch.object(
+                updater.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0, "", good_sig),
+            ):
+                info = updater.detect_installed_mac_app()
+            self.assertEqual(info["version"], "1.0.0")
+            self.assertEqual(info["team_id"], "TEAM42")
+            with mock.patch.object(
+                updater.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0, "", adhoc_sig),
+            ):
+                self.assertIsNone(updater.detect_installed_mac_app())
+
+    def test_mac_app_pids_ignores_derived_data_copies(self) -> None:
+        ps_out = (
+            "101 /Applications/Corral.app/Contents/MacOS/Corral\n"
+            "202 /Users/dev/DerivedData/Corral.app/Contents/MacOS/Corral\n"
+        )
+        with mock.patch.object(
+            updater.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, ps_out, ""),
+        ):
+            self.assertEqual(updater._mac_app_pids("/Applications/Corral.app"), [101])
+
+    def test_sync_mac_app_direct_zip_atomic_swap_and_relaunch(self) -> None:
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Corral.app/Contents/Info.plist", b"placeholder")
+        zip_bytes = buf.getvalue()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = os.path.join(tmp, "Corral.app")
+            os.makedirs(os.path.join(app_dir, "Contents"))
+            installed = {
+                "path": app_dir,
+                "version": "1.0.0",
+                "build": "193",
+                "team_id": "TEAM42",
+                "channel": "direct",
+            }
+            seen: list[str] = []
+
+            class _Resp:
+                def __init__(self, body: bytes):
+                    self._body = body
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self):
+                    return self._body
+
+            def fake_ditto(cmd, **kwargs):
+                seen.append("ditto")
+                extract_dir = cmd[-1]
+                os.makedirs(os.path.join(extract_dir, "Corral.app", "Contents", "MacOS"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with mock.patch.object(updater.sys, "platform", "darwin"), \
+                 mock.patch.dict(updater.os.environ, {}, clear=False), \
+                 mock.patch.object(updater, "detect_installed_mac_app", return_value=installed), \
+                 mock.patch.object(updater, "_mac_app_pids", return_value=[]), \
+                 mock.patch.object(
+                     updater, "_fetch_mac_zip_asset",
+                     return_value=("https://example.test/Corral-1.0.1.zip", None),
+                 ), \
+                 mock.patch.object(updater.urllib.request, "urlopen", return_value=_Resp(zip_bytes)), \
+                 mock.patch.object(updater.subprocess, "run", side_effect=fake_ditto), \
+                 mock.patch.object(updater, "_verify_staged_mac_app", return_value=(True, "")):
+                updater.os.environ.pop("CORRAL_UPDATE_NO_MAC", None)
+                msg = updater.sync_mac_app("1.0.1")
+            self.assertIsNotNone(msg)
+            self.assertIn("1.0.1", msg)
+            self.assertEqual(seen, ["ditto"])
+            self.assertTrue(os.path.isdir(os.path.join(app_dir, "Contents", "MacOS")))
 
 
 

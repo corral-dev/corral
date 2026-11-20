@@ -42,10 +42,49 @@ class FinishSelfUpdateTests(unittest.TestCase):
             return True, "ok"
 
         with mock.patch.object(cli.updater, "run_update", side_effect=run_update), \
+             mock.patch.object(cli.updater, "restart_remote_after_update", return_value=False), \
+             mock.patch.object(cli.updater, "sync_mac_app", return_value=None), \
              mock.patch.object(cli, "_restart_process", side_effect=lambda: order.append("重启")), \
              mock.patch.object(cli.observe, "event"):
             self.assertTrue(cli._finish_self_update(request))
         self.assertEqual(order, ["更新", "重启"])
+
+    def test_successful_update_syncs_mac_and_restarts_remote(self) -> None:
+        request = updater.RestartRequest("1.0.5", "pipx")
+        calls: list[str] = []
+
+        def run_update(latest, channel, spec=None):
+            calls.append("update")
+            return True, "ok"
+
+        def restart_remote(version):
+            calls.append(f"remote:{version}")
+            return True
+
+        def sync_mac(version):
+            calls.append(f"mac:{version}")
+            return "synced"
+
+        with mock.patch.dict(cli.os.environ, {}, clear=False), \
+             mock.patch.object(cli.updater, "run_update", side_effect=run_update), \
+             mock.patch.object(cli.updater, "restart_remote_after_update", side_effect=restart_remote), \
+             mock.patch.object(cli.updater, "sync_mac_app", side_effect=sync_mac), \
+             mock.patch.object(cli, "_restart_process", side_effect=lambda: calls.append("exec")), \
+             mock.patch.object(cli.observe, "event"):
+            cli.os.environ.pop("CORRAL_UPDATE_NO_MAC", None)
+            self.assertTrue(cli._finish_self_update(request))
+        self.assertEqual(calls, ["update", "remote:1.0.5", "mac:1.0.5", "exec"])
+
+    def test_no_mac_env_skips_mac_sync_in_finish_self_update(self) -> None:
+        request = updater.RestartRequest("1.0.5", "pipx")
+        with mock.patch.dict(cli.os.environ, {"CORRAL_UPDATE_NO_MAC": "1"}, clear=False), \
+             mock.patch.object(cli.updater, "run_update", return_value=(True, "ok")), \
+             mock.patch.object(cli.updater, "restart_remote_after_update", return_value=False), \
+             mock.patch.object(cli.updater, "sync_mac_app") as sync_mac, \
+             mock.patch.object(cli, "_restart_process"), \
+             mock.patch.object(cli.observe, "event"):
+            self.assertTrue(cli._finish_self_update(request))
+        sync_mac.assert_not_called()
 
     def test_failed_update_does_not_restart(self) -> None:
         request = updater.RestartRequest("9.9.9", "pip")

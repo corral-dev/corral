@@ -60,10 +60,17 @@ def main() -> None:
     if argv[:1] == ["update"]:
         from corral.cli_help import build_update_parser
 
-        build_update_parser().parse_args(argv[1:])
+        args = build_update_parser().parse_args(argv[1:])
         from corral.updater import cli_update
 
-        raise SystemExit(cli_update())
+        raise SystemExit(
+            cli_update(
+                target_version=args.target_version,
+                status_only=args.status,
+                json_mode=args.json_mode,
+                sync_mac=not args.no_mac,
+            )
+        )
     if argv[:1] == ["remote"]:
         # 手机端接力的常驻服务与配对命令：不进 TUI，也不碰只读接口。
         from corral.remote.cli import main as remote_main

@@ -42,7 +42,7 @@ corral
 
 请使用完整名称：`brew install corral` 会安装另一个不相关的项目。Homebrew 会一并安装 Python 和 tmux。
 
-升级使用 `brew update && brew upgrade x0c/tap/corral`。配方使用 Corral 和 Python 依赖的预编译 wheel，减少安装时的本地构建。
+升级使用 `brew update && brew upgrade x0c/tap/corral`（交互式自更新可执行 `corral update`）。配方使用 Corral 和 Python 依赖的预编译 wheel，减少安装时的本地构建。若本机已安装 `/Applications/Corral.app`，`corral update` 还会同步更新桌面端到同版本（可用 `--no-mac` 跳过）。
 
 <details>
 <summary>不使用 Homebrew</summary>
@@ -146,7 +146,7 @@ corral flex --month  # 或 --all、--png week.png
 - **Mac：** 下载[签名版应用](https://github.com/corral-dev/corral-apple/releases/latest)（需要 macOS 26 及以上），之后会自动更新。
 - **iPhone：** 使用 Xcode [从源码构建](https://github.com/corral-dev/corral-apple/blob/main/README.zh-CN.md)。目前尚无公开的 App Store 或 TestFlight 下载。
 
-安装命令行工具不会同时安装应用。装好应用后，在运行助手的开发机上执行：
+安装命令行工具不会同时安装应用；而安装或更新 Mac 客户端时，会自动安装并同步匹配的 Corral CLI（源码/开发版安装不会被覆盖）。装好应用后，在运行助手的开发机上执行：
 
 ```bash
 corral remote pair
