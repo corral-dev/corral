@@ -139,14 +139,159 @@ def _next(run_id: str) -> list[str]:
             f"{exe} run events {run_id} --after 0"]
 
 
+DELIVERY_MEANINGS = {
+    "accepted": "accepted locally and queued; NOT yet sent to the target session",
+    "dispatching": "preparing target terminal and composing input",
+    "input_submitted": "typed into target terminal; waiting for native history confirmation",
+    "native_recorded": "confirmed recorded in the target session's native history",
+    "rejected": "rejected before any input was sent to the target session",
+    "uncertain": "delivery outcome could not be confirmed; inspect native history before retrying",
+    "unknown": "delivery outcome could not be confirmed; inspect native history before retrying",
+}
+
+_STALLED_BLOCKER_SECONDS = 300.0
+
+
+def _run_queue_diagnostics(store: RunStore, record: dict, *, sup_alive: bool, compact: bool) -> dict:
+    run_id = record["run_id"]
+    delivery = record.get("delivery")
+    execution = record.get("execution")
+    settled = execution in SETTLED
+    on_busy = record.get("on_busy")
+    queue_timeout = record.get("queue_timeout")
+    if (on_busy is None or queue_timeout is None) and (not settled or not compact) and store.exists():
+        try:
+            spec = (store.get(run_id, private=True)).get("spec") or {}
+            if on_busy is None:
+                on_busy = spec.get("on_busy")
+            if queue_timeout is None:
+                queue_timeout = spec.get("queue_timeout")
+        except Exception:  # noqa: BLE001 - read projection best effort
+            pass
+    queue_timeout_val = int(queue_timeout) if queue_timeout is not None else None
+    now = time.time()
+    queue_expires_at: float | None = None
+    queue_remaining_s: float | None = None
+    blocked_by: dict | None = None
+    if not settled and delivery == "accepted" and execution == "queued":
+        if queue_timeout_val and queue_timeout_val > 0 and record.get("created_at") is not None:
+            queue_expires_at = float(record["created_at"]) + float(queue_timeout_val)
+            queue_remaining_s = round(max(0.0, queue_expires_at - now), 1)
+        target_ref = str(record.get("session_ref") or "")
+        if target_ref and not target_ref.startswith("run:") and store.exists():
+            try:
+                pending = store.for_target(target_ref)
+            except ControlError:
+                pending = []
+            if pending and pending[0]["run_id"] != run_id:
+                blocker = pending[0]
+                b_id = blocker["run_id"]
+                b_created = blocker.get("created_at")
+                b_updated = blocker.get("updated_at")
+                blocked_by = {
+                    "run_id": b_id,
+                    "delivery": blocker.get("delivery"),
+                    "execution": blocker.get("execution"),
+                    "attribution": blocker.get("attribution"),
+                    "supervisor_alive": _supervisor_alive(store, b_id),
+                    "age_s": round(max(0.0, now - float(b_created)), 1) if b_created is not None else None,
+                    "idle_s": round(max(0.0, now - float(b_updated)), 1) if b_updated is not None else None,
+                }
+    queue_reason = (
+        (record.get("queue_reason") or ("earlier_run_on_session" if blocked_by else None))
+        if execution == "queued"
+        else None
+    )
+    queued_behind = (
+        (record.get("queued_behind") or (blocked_by["run_id"] if blocked_by else None))
+        if execution == "queued"
+        else None
+    )
+    warnings: list[dict] = []
+    if not settled:
+        if record.get("attribution") == "mixed":
+            warnings.append(
+                {
+                    "code": "mixed_attribution_active",
+                    "message": (
+                        f"Foreign input mixed into {run_id}; wait for completion or run "
+                        f"`{_bin()} run recover {run_id}` if stalled."
+                    ),
+                }
+            )
+        if blocked_by:
+            b_id = blocked_by["run_id"]
+            if blocked_by.get("attribution") == "mixed":
+                warnings.append(
+                    {
+                        "code": "blocked_by_mixed_attribution",
+                        "blocker_run_id": b_id,
+                        "message": f"Queued behind {b_id}, whose bound turn has mixed attribution.",
+                    }
+                )
+            if not blocked_by.get("supervisor_alive"):
+                warnings.append(
+                    {
+                        "code": "blocked_by_dead_supervisor",
+                        "blocker_run_id": b_id,
+                        "message": f"Queued behind {b_id}, whose supervisor is not running; inspect/recover {b_id}.",
+                    }
+                )
+            idle_s = blocked_by.get("idle_s")
+            if idle_s is not None and idle_s >= _STALLED_BLOCKER_SECONDS:
+                warnings.append(
+                    {
+                        "code": "blocked_by_stalled_run",
+                        "blocker_run_id": b_id,
+                        "idle_s": idle_s,
+                        "message": f"Queued behind {b_id}, which has had no status update for {int(idle_s)}s.",
+                    }
+                )
+        if queue_remaining_s == 0.0 and queue_timeout_val and queue_timeout_val > 0:
+            warnings.append(
+                {
+                    "code": "queue_timeout_elapsed",
+                    "message": "Queue timeout elapsed while queued; the run will settle as queue_expired.",
+                }
+            )
+        if not sup_alive and (
+            delivery != "accepted"
+            or (
+                not blocked_by
+                and record.get("created_at") is not None
+                and (now - float(record["created_at"])) > 10.0
+            )
+        ):
+            warnings.append(
+                {
+                    "code": "supervisor_not_running",
+                    "message": f"No live supervisor owns {run_id}; run `{_bin()} run recover {run_id}`.",
+                }
+            )
+    return {
+        "on_busy": on_busy,
+        "queue_timeout": queue_timeout_val,
+        "queue_expires_at": queue_expires_at,
+        "queue_remaining_s": queue_remaining_s,
+        "blocked_by": blocked_by,
+        "queue_reason": queue_reason,
+        "queued_behind": queued_behind,
+        "warnings": warnings,
+    }
+
+
 def public_run(store: RunStore, record: dict, *, compact: bool = False) -> dict:
     """The stable run view; heartbeat freshness and lock ownership are reported separately."""
     run_id = record["run_id"]
     sup = record.get("supervisor") or None
+    sup_alive = _supervisor_alive(store, run_id) if record.get("execution") not in SETTLED else False
+    diag = _run_queue_diagnostics(store, record, sup_alive=sup_alive, compact=compact)
     view = {
         "run_id": run_id, "version": record["version"], "mode": record.get("mode"),
         "runtime": record.get("runtime"), "session_ref": record.get("session_ref"),
-        "cwd": record.get("cwd"), "delivery": record.get("delivery"), "execution": record.get("execution"),
+        "cwd": record.get("cwd"), "delivery": record.get("delivery"),
+        "delivery_meaning": DELIVERY_MEANINGS.get(str(record.get("delivery") or ""), ""),
+        "execution": record.get("execution"),
         "acceptance": record.get("acceptance", "unverified"), "settled": record.get("execution") in SETTLED,
         "questions": record.get("questions") or [], "error": record.get("error"),
         "requested_model": record.get("requested_model"), "observed_model": record.get("observed_model"),
@@ -156,15 +301,22 @@ def public_run(store: RunStore, record: dict, *, compact: bool = False) -> dict:
         "hop": record.get("hop"), "reply_consumed": record.get("reply_consumed", False),
         "report_back": record.get("report_back"),
         "model_check": record.get("model_check"), "finality": record.get("finality"),
-        "queue_reason": record.get("queue_reason") if record.get("execution") == "queued" else None,
-        "queued_behind": record.get("queued_behind") if record.get("execution") == "queued" else None,
+        "on_busy": diag["on_busy"],
+        "queue_timeout": diag["queue_timeout"],
+        "queue_expires_at": diag["queue_expires_at"],
+        "queue_remaining_s": diag["queue_remaining_s"],
+        "queue_reason": diag["queue_reason"],
+        "queued_behind": diag["queued_behind"],
+        "blocked_by": diag["blocked_by"],
         "created_at": record.get("created_at"), "updated_at": record.get("updated_at"),
         "supervisor": {
-            "alive": _supervisor_alive(store, run_id) if record.get("execution") not in SETTLED else False,
+            "alive": sup_alive,
             "pid": sup.get("pid") if sup else None,
             "heartbeat_at": sup.get("heartbeat_at") if sup else None,
         },
     }
+    if diag["warnings"]:
+        view["warnings"] = diag["warnings"]
     if not compact:
         messages = store.messages(run_id)
         view["messages"] = messages[-20:]
@@ -339,17 +491,59 @@ def _guard_capacity(store: RunStore, spec: dict | None = None) -> None:
         )
 
 
-def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, args, target: dict | None) -> dict:
+def _admit(
+    store: RunStore,
+    actor: str,
+    key: str,
+    spec: dict,
+    initial: dict,
+    args,
+    target: dict | None,
+    *,
+    warnings: list[dict] | None = None,
+) -> dict:
     existing = store.find(key)
     if getattr(args, "dry_run", False):
         if existing is not None and existing.pop("_digest") != digest(spec):
             raise ControlError("idempotency_conflict", "This idempotency key already identifies a different request.",
                                EXIT_CONFLICT)
         planned = existing or {"run_id": None, "version": None, **initial}
-        return _ok({"status": "existing" if existing else "planned", "dry_run": True,
-                    "run": {k: planned.get(k) for k in ("run_id", "version", "mode", "runtime", "session_ref", "cwd",
-                                                         "delivery", "execution", "requested_model", "from_agent")},
-                    "target": target, "launch": spec.get("launch_preview")})
+        dry_target = dict(target) if isinstance(target, dict) else target
+        if isinstance(dry_target, dict) and dry_target.get("session_ref") and store.exists():
+            try:
+                dry_target["active_runs"] = [
+                    public_run(store, r, compact=True) for r in store.for_target(dry_target["session_ref"])
+                ]
+            except ControlError:
+                dry_target["active_runs"] = []
+        preview = {
+            k: planned.get(k)
+            for k in (
+                "run_id",
+                "version",
+                "mode",
+                "runtime",
+                "session_ref",
+                "cwd",
+                "delivery",
+                "execution",
+                "requested_model",
+                "from_agent",
+                "on_busy",
+                "queue_timeout",
+            )
+        }
+        preview["delivery_meaning"] = DELIVERY_MEANINGS.get(str(preview.get("delivery") or "accepted"), "")
+        dry_data: dict = {
+            "status": "existing" if existing else "planned",
+            "dry_run": True,
+            "run": preview,
+            "target": dry_target,
+            "launch": spec.get("launch_preview"),
+        }
+        if warnings:
+            dry_data["warnings"] = list(warnings)
+        return _ok(dry_data)
     needs_spawn = False
     if existing is None:
         # Capacity and intent creation are one cross-process admission step;
@@ -372,6 +566,10 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
                 _apply_lineage(store, key, spec, initial)
             _guard_capacity(store, spec)
             if spec.get("mode") == "submit" and spec.get("session_ref"):
+                earlier = store.for_target(spec["session_ref"])
+                if earlier:
+                    initial["queue_reason"] = "earlier_run_on_session"
+                    initial["queued_behind"] = earlier[0]["run_id"]
                 # The target owner makes its final empty-queue check under the
                 # same handoff lock. A new record therefore either joins the
                 # current owner or reliably starts the next one — never slips
@@ -388,11 +586,31 @@ def _admit(store: RunStore, actor: str, key: str, spec: dict, initial: dict, arg
     if record["execution"] not in SETTLED and (needs_spawn or not _supervisor_alive(store, record["run_id"])):
         confirmed = _spawn_supervisor(store, record["run_id"])
     view = public_run(store, store.get(record["run_id"]))
-    data = {"status": "created" if created else "existing", "dry_run": False, "run": view, "target": target,
-            "next_commands": _next(record["run_id"])}
+    data: dict = {
+        "status": "created" if created else "existing",
+        "dry_run": False,
+        "run": view,
+        "target": target,
+        "next_commands": _next(record["run_id"]),
+    }
+    if view.get("delivery") == "accepted" and view.get("mode") == "submit":
+        data["delivery_note"] = (
+            "Accepted locally and queued (not yet delivered to target). "
+            f"Confirm delivery with: {_bin()} run wait {record['run_id']} --until delivered"
+        )
+    out_warnings = list(warnings or [])
     if not confirmed:
-        data["warnings"] = [f"Supervisor heartbeat not seen within {_SUPERVISOR_CONFIRM:.0f}s; "
-                            f"check {_bin()} run status {record['run_id']}."]
+        out_warnings.append(
+            {
+                "code": "supervisor_unconfirmed",
+                "message": (
+                    f"Supervisor heartbeat not seen within {_SUPERVISOR_CONFIRM:.0f}s; "
+                    f"check {_bin()} run status {record['run_id']}."
+                ),
+            }
+        )
+    if out_warnings:
+        data["warnings"] = out_warnings
     return _ok(data)
 
 
@@ -435,11 +653,25 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
                 f"Peer A2A runs must use a bounded --queue-timeout (1-{MAX_A2A_QUEUE_TIMEOUT}s).",
                 EXIT_USAGE,
             )
+    raw_timeout = int(args.queue_timeout)
     effective_timeout = (
-        min(int(args.queue_timeout), MAX_A2A_QUEUE_TIMEOUT)
+        min(raw_timeout, MAX_A2A_QUEUE_TIMEOUT)
         if a2a
-        else max(0, int(args.queue_timeout))
+        else max(0, raw_timeout)
     )
+    warnings: list[dict] = []
+    if a2a and raw_timeout > MAX_A2A_QUEUE_TIMEOUT:
+        warnings.append(
+            {
+                "code": "queue_timeout_clamped",
+                "requested": raw_timeout,
+                "effective": effective_timeout,
+                "message": (
+                    f"Peer A2A caps --queue-timeout at {MAX_A2A_QUEUE_TIMEOUT}s "
+                    f"(requested {raw_timeout}s; effective {effective_timeout}s)."
+                ),
+            }
+        )
     send_text = build_agent_text(prompt, from_agent=from_agent, no_footer=no_footer, report_back=report_back,
                                  unattributed=explicit_none)
     existing = store.find(key)
@@ -458,7 +690,7 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
             spec.pop("report_back", None)
         # Reconcile immutable input before consulting a target that may now be
         # hosted, missing or executing. A retry is not a fresh authorization.
-        return _admit(store, admit_actor, key, spec, saved, args, None)
+        return _admit(store, admit_actor, key, spec, saved, args, None, warnings=warnings)
     session = session or resolve_target(registry, args.target)
     target = target_payload(session)
     mode, reason = control_capability(session)
@@ -518,12 +750,13 @@ def cmd_submit(args, registry, *, session: dict | None = None) -> dict:
                "session_ref": target["session_ref"],
                "cwd": target["cwd"], "history_path": target["history_path"], "delivery": "accepted",
                "execution": "queued", "acceptance": "unverified", "requested_model": None,
+               "on_busy": args.on_busy, "queue_timeout": effective_timeout,
                "task_ref": spec["task_ref"], "target_control": mode}
     if from_agent is not None:
         initial["from_agent"] = from_agent
     if a2a:
         initial["a2a"] = True
-    return _admit(store, admit_actor, key, spec, initial, args, target)
+    return _admit(store, admit_actor, key, spec, initial, args, target, warnings=warnings)
 
 
 _PROTECTED_DIRS = ("", "Desktop", "Documents")
@@ -589,6 +822,7 @@ def cmd_create(args, registry) -> dict:
             "launch_preview": {"argv": list(plan.argv), "cwd": plan.cwd}}
     initial = {"mode": "create", "runtime": runtime.id, "session_ref": None, "cwd": cwd, "delivery": "accepted",
                "execution": "queued", "acceptance": "unverified", "requested_model": model,
+               "on_busy": "steer", "queue_timeout": 0,
                "model_evidence": "pending" if model else "runtime_default", "task_ref": spec["task_ref"]}
     if from_agent is not None:
         spec["from_agent"] = initial["from_agent"] = from_agent
@@ -725,7 +959,72 @@ def cmd_answer(args, registry) -> dict:
 
 
 def cmd_interrupt(args, registry) -> dict:
-    return _enqueue(args, {"action": "interrupt"})
+    store = RunStore()
+    store.get(args.run_id)
+    if not args.if_version:
+        raise ControlError(
+            "confirmation_required",
+            "Pass --if-version from a fresh run status.",
+            EXIT_USAGE,
+            next_commands=[f"{_bin()} run status {args.run_id}"],
+        )
+    message, updated, created = store.cancel_queued(
+        args.run_id, caller_identity()["actor"], _key(args), args.if_version
+    )
+    if updated.get("execution") in SETTLED:
+        from corral import control_worker
+
+        try:
+            control_worker.report_back(store, args.run_id, registry=registry)
+        except Exception:  # noqa: BLE001 - report-back suppression never fails cancellation
+            pass
+        return _ok(
+            {
+                "status": "created" if created else "existing",
+                "message": message,
+                "run": public_run(store, store.get(args.run_id)),
+                "next_commands": [f"{_bin()} run status {args.run_id}"],
+            }
+        )
+    if not _supervisor_alive(store, args.run_id):
+        raise ControlError(
+            "supervisor_lost",
+            "The message is queued but no supervisor owns this run.",
+            EXIT_CONFLICT,
+            details={"message": message},
+            next_commands=[f"{_bin()} run recover {args.run_id}"],
+        )
+    return _ok(
+        {
+            "status": "created" if created else "existing",
+            "message": message,
+            "run": public_run(store, store.get(args.run_id)),
+            "next_commands": _next(args.run_id),
+        }
+    )
+
+
+def cmd_withdraw(args, registry) -> dict:
+    store = RunStore()
+    store.get(args.run_id)
+    if not args.if_version:
+        raise ControlError(
+            "confirmation_required",
+            "Pass --if-version from a fresh run status.",
+            EXIT_USAGE,
+            next_commands=[f"{_bin()} run status {args.run_id}"],
+        )
+    message, updated = store.withdraw_message(
+        args.run_id, args.message_id, caller_identity()["actor"], args.if_version
+    )
+    return _ok(
+        {
+            "status": "withdrawn",
+            "message": message,
+            "run": public_run(store, store.get(updated["run_id"])),
+            "next_commands": _next(args.run_id),
+        }
+    )
 
 
 def cmd_recover(args, registry) -> dict:
@@ -773,11 +1072,22 @@ def cmd_events(args, registry) -> dict:
 
 def _actionable(store: RunStore, record: dict, until: str) -> str | None:
     execution = record.get("execution")
+    delivery = record.get("delivery")
     if execution in SETTLED:
         return execution
+    if until == "delivered":
+        if delivery == "native_recorded":
+            return "delivered"
+        if delivery == "rejected":
+            return "rejected"
+        if delivery in {"uncertain", "unknown"}:
+            return "delivery_uncertain"
+        if not _supervisor_alive(store, record["run_id"]):
+            return "supervisor_lost"
+        return None
     if until == "settled":
         return None
-    if record.get("delivery") == "rejected":
+    if delivery == "rejected":
         return "rejected"
     if any(m["state"] == "unknown" for m in store.messages(record["run_id"])):
         return "delivery_uncertain"
@@ -983,7 +1293,8 @@ HANDLERS = {
     "a2a pause": cmd_a2a_pause, "a2a resume": cmd_a2a_resume,
     "run submit": cmd_submit, "run create": cmd_create, "run status": cmd_status, "run events": cmd_events,
     "run wait": cmd_wait, "run result": cmd_result, "run message": cmd_message, "run answer": cmd_answer,
-    "run interrupt": cmd_interrupt, "run list": cmd_list, "run recover": cmd_recover, "send": cmd_send,
+    "run interrupt": cmd_interrupt, "run withdraw": cmd_withdraw,
+    "run list": cmd_list, "run recover": cmd_recover, "send": cmd_send,
 }
 
 

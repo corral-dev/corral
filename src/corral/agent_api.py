@@ -1505,8 +1505,8 @@ COMMANDS = [
             {"flags": ["--prompt-file"], "kwargs": {"help": "Read the brief from a UTF-8 file, or - for piped stdin"}},
             {"flags": ["--if-version"], "kwargs": {"help": "target.version from a fresh --dry-run of this exact target"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "queue", "help": "Busy target: queue until idle (default), steer into the active turn, or reject"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued brief may wait for a busy target before expiring undispatched (0 = no limit)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--on-busy"], "kwargs": {"choices": ["queue", "steer", "reject"], "default": "queue", "help": "Busy target: queue until idle (default), steer into the active turn (disallowed for peer A2A -> steer_not_allowed), or reject"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--queue-timeout"], "kwargs": {"type": int, "default": 3600, "help": "Seconds a queued brief may wait before expiring undispatched (default 3600, 0 = no limit for owner runs; peer A2A requires >0 and is capped at 120s)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--allow-concurrent"], "kwargs": {"action": "store_true", "help": "Allow another unsettled run with the same brief on this session"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--reply-to"], "kwargs": {"help": "Consume one parent run's reply grant and link this submission into its chain"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--new-chain"], "kwargs": {"action": "store_true", "help": "Start a new chain instead of consuming a matching reply grant"}},  # noqa: E501 - COMMANDS 数据表
@@ -1520,9 +1520,16 @@ COMMANDS = [
             "run_id": "Durable handle for this delegation; keep it across restarts",
             "version": "Run version token for --if-version on message/answer/interrupt",
             "delivery": "accepted / dispatching / input_submitted / native_recorded / rejected / unknown",
+            "delivery_meaning": "Human-readable explanation of delivery (accepted = queued locally, not delivered yet)",
             "execution": "queued / starting / running / waiting_input / completed / failed / interrupted / unknown",
             "acceptance": "Always unverified: completed means the turn ended, not that the work is correct",
             "settled": "true once execution is completed/failed/interrupted/unknown",
+            "on_busy": "Effective busy policy (queue / steer / reject)",
+            "queue_timeout": "Effective queue timeout in seconds (peer A2A is capped at 120s)",
+            "queue_expires_at": "Unix timestamp when a queued run expires undispatched (null if settled or no limit)",
+            "queue_remaining_s": "Seconds left before queue expiry while accepted/queued",
+            "blocked_by": "Earliest unsettled run ahead of a queued run (run_id, delivery, execution, attribution, supervisor_alive, age_s, idle_s)",  # noqa: E501 - COMMANDS 数据表
+            "warnings": "Structured warnings when queue timeout is clamped or an active/blocking run looks stalled/mixed",  # noqa: E501 - COMMANDS 数据表
             "questions": "Pending native questions (request_id, question_id, options) while waiting_input",
             "requested_model": "Model passed to run create; null inherits the runtime default",
             "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
@@ -1533,7 +1540,8 @@ COMMANDS = [
             "model_check": "match / alias_match / mismatch / unobserved after the first turn (run create --model)",
             "finality": "native (runtime recorded completion) or inferred (quiet history/screen and no working signal)",
             "supervisor": "Detached owner process: alive / pid / heartbeat_at",
-            "target": "Resolved target with control mode (hosted / resume / external / create) and version",
+            "target": "Resolved target with control mode (hosted / resume / external / create), version, and active_runs",  # noqa: E501 - COMMANDS 数据表
+            "delivery_note": "On live submit while accepted, points to run wait --until delivered",
         },
     },
     {
@@ -1555,11 +1563,18 @@ COMMANDS = [
         ],
         "fields": {
             "run_id": "Durable handle for this delegation; keep it across restarts",
-            "version": "Run version token for --if-version on message/answer/interrupt",
+            "version": "Run version token for --if-version on message/answer/interrupt/withdraw",
             "delivery": "accepted / dispatching / input_submitted / native_recorded / rejected / unknown",
+            "delivery_meaning": "Human-readable explanation of delivery (accepted = queued locally, not delivered yet)",
             "execution": "queued / starting / running / waiting_input / completed / failed / interrupted / unknown",
             "acceptance": "Always unverified: completed means the turn ended, not that the work is correct",
             "settled": "true once execution is completed/failed/interrupted/unknown",
+            "on_busy": "Effective busy policy (queue / steer / reject)",
+            "queue_timeout": "Effective queue timeout in seconds (0 = unlimited; peer A2A is capped at 120s)",
+            "queue_expires_at": "Unix timestamp when a queued run expires undispatched (null if settled or no limit)",
+            "queue_remaining_s": "Seconds left before queue expiry while accepted/queued",
+            "blocked_by": "Earliest unsettled run ahead of a queued run (run_id, delivery, execution, attribution, supervisor_alive, age_s, idle_s)",  # noqa: E501 - COMMANDS 数据表
+            "warnings": "Structured warnings when stalled, mixed-attribution, dead supervisor, or past queue_timeout",  # noqa: E501 - COMMANDS 数据表
             "questions": "Pending native questions (request_id, question_id, options) while waiting_input",
             "requested_model": "Model passed to run create; null inherits the runtime default",
             "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
@@ -1580,11 +1595,18 @@ COMMANDS = [
         ],
         "fields": {
             "run_id": "Durable handle for this delegation; keep it across restarts",
-            "version": "Run version token for --if-version on message/answer/interrupt",
+            "version": "Run version token for --if-version on message/answer/interrupt/withdraw",
             "delivery": "accepted / dispatching / input_submitted / native_recorded / rejected / unknown",
+            "delivery_meaning": "Human-readable explanation of delivery (accepted = queued locally, not delivered yet)",
             "execution": "queued / starting / running / waiting_input / completed / failed / interrupted / unknown",
             "acceptance": "Always unverified: completed means the turn ended, not that the work is correct",
             "settled": "true once execution is completed/failed/interrupted/unknown",
+            "on_busy": "Effective busy policy (queue / steer / reject)",
+            "queue_timeout": "Effective queue timeout in seconds (0 = unlimited; peer A2A is capped at 120s)",
+            "queue_expires_at": "Unix timestamp when a queued run expires undispatched (null if settled or no limit)",
+            "queue_remaining_s": "Seconds left before queue expiry while accepted/queued",
+            "blocked_by": "Earliest unsettled run ahead of a queued run (run_id, delivery, execution, attribution, supervisor_alive, age_s, idle_s)",  # noqa: E501 - COMMANDS 数据表
+            "warnings": "Structured warnings when stalled, mixed-attribution, dead supervisor, or past queue_timeout",  # noqa: E501 - COMMANDS 数据表
             "questions": "Pending native questions (request_id, question_id, options) while waiting_input",
             "requested_model": "Model passed to run create; null inherits the runtime default",
             "observed_model": "Model recorded in native usage evidence; null when the runtime does not record it",
@@ -1609,12 +1631,12 @@ COMMANDS = [
     },
     {
         "name": "run wait",
-        "help": "Block up to --timeout seconds until any listed run settles, needs input, or loses its supervisor",
+        "help": "Block up to --timeout seconds until any listed run settles, delivers, needs input, or loses its supervisor",  # noqa: E501 - COMMANDS 数据表
         "risk": "read",
         "args": [
             {"flags": ["run_ids"], "kwargs": {"nargs": "+", "help": "One or more run ids"}},
             {"flags": ["--timeout"], "kwargs": {"type": int, "default": 60, "help": "Seconds (max 600); exit 6 on deadline, the work keeps running"}},  # noqa: E501 - COMMANDS 数据表
-            {"flags": ["--until"], "kwargs": {"choices": ["actionable", "settled"], "default": "actionable", "help": "actionable also returns on waiting_input/rejected/supervisor_stopped"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--until"], "kwargs": {"choices": ["actionable", "settled", "delivered"], "default": "actionable", "help": "actionable returns on settle/waiting_input/rejected/supervisor_lost; delivered returns once native_recorded or rejected"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {"ready": "run_id -> reason it became actionable", "runs": "Compact run views"},
@@ -1661,7 +1683,7 @@ COMMANDS = [
     },
     {
         "name": "run interrupt",
-        "help": "Interrupt this run's active turn (or cancel it before dispatch); never other sessions",
+        "help": "Interrupt this run's active turn (or cancel it synchronously while accepted/queued); never other sessions",  # noqa: E501 - COMMANDS 数据表
         "risk": "write_local",
         "args": [
             {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
@@ -1669,7 +1691,19 @@ COMMANDS = [
             {"flags": ["--idempotency-key"], "kwargs": {"required": True, "help": "Stable key for this intended write; an identical retry returns the original object, a different payload conflicts"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
-        "fields": {"message": "message_id / action / state"},
+        "fields": {"message": "message_id / action / state (applied immediately if queued, else queued)"},
+    },
+    {
+        "name": "run withdraw",
+        "help": "Withdraw a still-queued control or follow-up message before dispatch",
+        "risk": "write_local",
+        "args": [
+            {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
+            {"flags": ["--message-id"], "kwargs": {"required": True, "help": "Queued message id to withdraw"}},
+            {"flags": ["--if-version"], "kwargs": {"help": "Run version from a fresh run status"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
+        ],
+        "fields": {"status": "withdrawn", "message": "message_id / action / state=withdrawn", "run": "Updated run snapshot"},  # noqa: E501 - COMMANDS 数据表
     },
     {
         "name": "run list",

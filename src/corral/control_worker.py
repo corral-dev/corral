@@ -50,6 +50,7 @@ from corral.control_store import SETTLED, ControlError, RunStore
 
 _BUSY_POLL = 3.0
 _BIND_REFRESH = 3.0
+_SWEEP_INTERVAL = 5.0
 # Corral-exact no-usable-history budget (default 150s). The shared runner
 # receives a strictly larger budget (below) so the engine owns both the
 # never-bound (native_binding_missing) and the bound-but-missing
@@ -115,12 +116,41 @@ def _screen_hash(name: str | None) -> str | None:
     return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest() if text is not None else None
 
 
+def _fresh_session_for_phase(session: dict) -> dict:
+    """Refresh live Pi extension claim phase so admit() loops do not read a frozen dict."""
+    if not isinstance(session, dict) or session.get("source") != "pi":
+        return session
+    sid = str(session.get("id") or "").strip()
+    if not sid:
+        return session
+    try:
+        from corral import pi_identity
+
+        live = pi_identity.live_agent_phases()
+    except Exception:  # noqa: BLE001 - best-effort live refresh only
+        return session
+    info = live.get(sid)
+    if isinstance(info, dict):
+        updated = dict(session)
+        updated["agent_phase"] = info.get("phase")
+        updated["agent_phase_event"] = info.get("event")
+        updated["agent_phase_at"] = info.get("at")
+        return updated
+    if session.get("agent_phase_at") or session.get("agent_phase_event"):
+        updated = dict(session)
+        updated.pop("agent_phase", None)
+        updated.pop("agent_phase_at", None)
+        updated.pop("agent_phase_event", None)
+        return updated
+    return session
+
+
 def _phase(session: dict) -> str:
     """Corral's own working/waiting evidence; unknown never blocks settlement."""
     try:
         from corral.attention_signals import inspect_session
 
-        return str(inspect_session(session).phase or "unknown")
+        return str(inspect_session(_fresh_session_for_phase(session)).phase or "unknown")
     except Exception:  # noqa: BLE001 - a broken probe must not wedge supervision
         return "unknown"
 
@@ -286,6 +316,113 @@ def _earlier_runs(store: RunStore, run_id: str, target: str) -> bool:
     return _blocking_run(store, run_id, target) is not None
 
 
+def _sweep_queued_on_target(store: RunStore, target: str, head_run_id: str) -> None:
+    """Maintain downstream queued runs while the head supervisor owns ``target``.
+
+    Keeps ``queue_reason`` / ``queued_behind`` visible, expires runs whose
+    ``queue_timeout`` has elapsed, and fails fast behind ``waiting_input`` or
+    for runs declaring ``on_busy="reject"``.
+    """
+    if not target or target.startswith("run:"):
+        return
+    try:
+        head = store.get(head_run_id, private=True)
+        pending = store.for_target(target)
+    except Exception:  # noqa: BLE001 - best-effort maintenance behind active head
+        return
+    if head.get("execution") in SETTLED:
+        return
+    head_waiting = head.get("execution") == "waiting_input"
+    for item in pending:
+        rid = item.get("run_id")
+        if not rid or rid == head_run_id:
+            continue
+        try:
+            rec = store.get(rid, private=True)
+        except ControlError:
+            continue
+        if rec.get("delivery") != "accepted" or rec.get("execution") in SETTLED:
+            continue
+        spec = rec.get("spec") or {}
+        paused = _a2a_spec(spec) and store.a2a_paused()
+        settled_now = False
+        if not paused:
+            if expired(spec, rec):
+                try:
+                    store.update(
+                        rid,
+                        {
+                            "delivery": "rejected",
+                            "execution": "failed",
+                            "queue_reason": "earlier_run_on_session",
+                            "queued_behind": head_run_id,
+                            "error": {
+                                "code": "queue_expired",
+                                "message": "the target stayed busy past the queue timeout; nothing was sent",
+                            },
+                        },
+                    )
+                    settled_now = True
+                except ControlError:
+                    pass
+            elif spec.get("on_busy") == "reject":
+                try:
+                    store.update(
+                        rid,
+                        {
+                            "delivery": "rejected",
+                            "execution": "failed",
+                            "error": {
+                                "code": "target_busy",
+                                "message": f"another run ({head_run_id}) is already active on this session",
+                            },
+                        },
+                    )
+                    settled_now = True
+                except ControlError:
+                    pass
+            elif head_waiting:
+                try:
+                    store.update(
+                        rid,
+                        {
+                            "delivery": "rejected",
+                            "execution": "failed",
+                            "queue_reason": "earlier_run_on_session",
+                            "queued_behind": head_run_id,
+                            "error": {
+                                "code": "target_waiting_input",
+                                "message": f"an earlier run ({head_run_id}) waits on input; answer it first",
+                            },
+                        },
+                    )
+                    settled_now = True
+                except ControlError:
+                    pass
+        if settled_now:
+            try:
+                report_back(store, rid)
+            except Exception:  # noqa: BLE001 - report suppression must never affect head run
+                pass
+            continue
+        if (
+            rec.get("queue_reason") != "earlier_run_on_session"
+            or rec.get("queued_behind") != head_run_id
+            or rec.get("execution") != "queued"
+        ):
+            try:
+                store.update(
+                    rid,
+                    {
+                        "execution": "queued",
+                        "queue_reason": "earlier_run_on_session",
+                        "queued_behind": head_run_id,
+                    },
+                )
+            except ControlError:
+                pass
+
+
 def _settle_crash(store: RunStore, run_id: str, exc: BaseException) -> None:
     current = store.get(run_id)
     if current["execution"] in SETTLED:
@@ -447,9 +584,20 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             "last_follow": time.monotonic(),
             "started": time.monotonic(),
         },
+        "last_sweep": 0.0,
         # Only a pane that existed before this run can hold residue or a human draft.
         "composer_guard": spec.get("mode") != "create" and record.get("target_control") == "hosted",
     }
+
+    def _maybe_sweep_target() -> None:
+        if spec.get("mode") != "submit":
+            return
+        now = time.monotonic()
+        if now - state["last_sweep"] < _SWEEP_INTERVAL:
+            return
+        state["last_sweep"] = now
+        target_ref = state["binding"].get("session_ref") or spec.get("session_ref") or ""
+        _sweep_queued_on_target(store, target_ref, run_id)
 
     def resolve_target(session_ref: str) -> dict:
         from corral.control import resolve_target as _host_resolve
@@ -465,6 +613,7 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
         return mapping
 
     def target_busy(session: dict) -> bool:
+        _maybe_sweep_target()
         return bool(session.get("live")) and _phase(session) == "working"
 
     # waiting_input semantics (coordinator contract; verified against the
@@ -520,7 +669,24 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             # Pause is a delivery gate, not a failed turn: an in-flight target
             # lock may have been acquired already, but no peer input is typed
             # until the owner resumes the channel.
+            last_hb = 0.0
             while store.a2a_paused():
+                now_mono = time.monotonic()
+                if now_mono - last_hb >= 5.0:
+                    last_hb = now_mono
+                    try:
+                        store.heartbeat(run_id)
+                    except Exception:  # noqa: BLE001 - pause heartbeat best effort
+                        pass
+                try:
+                    for item in store.pending_messages(run_id):
+                        if (item.get("body") or {}).get("action") == "interrupt":
+                            store.message_state(item["id"], "applied", "cancelled while A2A was paused")
+                            raise CertainFailure("cancelled", "Interrupted before dispatch while A2A was paused.")
+                except CertainFailure:
+                    raise
+                except Exception:  # noqa: BLE001 - pause message probe best effort
+                    pass
                 time.sleep(0.2)
         key = state["binding"].get("session_ref") or session_ref
         try:
@@ -708,6 +874,7 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
                 return ({"recorded": False}, False, "ready")
         elif observation.get("recorded"):
             obs["unavailable_since"] = None
+        _maybe_sweep_target()
         return (observation, False, "ready")
 
     def close_observation(handle: str) -> None:
@@ -1118,8 +1285,14 @@ def _supervise(run_id: str) -> int:
                     raise ControlError("queue_expired", "An earlier run kept the session past --queue-timeout.")
                 blocker = _blocking_run(store, run_id, target)
                 if blocker is None:
+                    _sweep_queued_on_target(store, target, run_id)
                     break
                 store.heartbeat(run_id)
+                try:
+                    if store.get(run_id).get("delivery") == "accepted":
+                        SupervisorRunner(store, run_id, hooks, marker_namespace="Corral").process_messages(None)
+                except Exception:  # noqa: BLE001 - best-effort message processing while queued
+                    pass
                 current = store.get(run_id)
                 if current["execution"] in SETTLED:
                     return 0

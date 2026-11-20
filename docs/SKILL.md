@@ -338,9 +338,16 @@ sessions are resumed; hosted sessions receive input in their current terminal.
 Alternatively, `run create --runtime <id> --cwd <absolute-project>` starts a fresh
 session with an optional `--model`. OpenCode rejects explicit model selection.
 
-Use `run status`, bounded `run wait`, cursor-based `run events` and `run result`
-to observe the same durable operation. `run message`, `run answer` and
-`run interrupt` require its current version and a message idempotency key. Unknown
+Use `run status`, bounded `run wait` (`--until actionable|settled|delivered`),
+cursor-based `run events` and `run result` to observe the same durable operation.
+`delivery: accepted` means queued locally (not sent yet); use `run wait <run_id>
+--until delivered` before reporting delivery. `run status` exposes
+`delivery_meaning`, effective `on_busy` / `queue_timeout` / `queue_remaining_s`,
+`blocked_by`, and non-fatal `warnings` (for example `mixed_attribution_active`,
+`blocked_by_mixed_attribution`, or `blocked_by_stalled_run`). `run message`,
+`run answer`, `run interrupt` and `run withdraw` require the run's current
+version (`run interrupt` cancels `accepted`/`queued` runs synchronously;
+`run withdraw` cancels a still-`queued` control/follow-up message). Unknown
 delivery must be reconciled, never blindly resubmitted; `run recover` restarts
 monitoring without retyping uncertain input. `completed` proves the correlated
 agent turn ended; repository tests and acceptance remain independent evidence.

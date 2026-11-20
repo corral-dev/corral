@@ -7,7 +7,7 @@ paths mirror the generated fields verbatim once the coordinator publishes the
 versioned immutable artifact.
 
 Status: the upstream artifact is published as a versioned GitHub Release
-wheel (v0.1.3, x0c/agent-session-control). The pin below is the single
+wheel (v0.1.4, x0c/agent-session-control). The pin below is the single
 source of truth; `pyproject.toml` and the install paths mirror the
 generated fields verbatim. A relative path / PYTHONPATH / editable
 install is development only and never the final consumer dependency.
@@ -31,16 +31,16 @@ import sys
 import urllib.request
 
 # --- single source of truth -------------------------------------------------
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 PACKAGE = "agent-session-control"
 # No published artifact yet (private source repo only). The coordinator
 # publishes the versioned wheel, then fills URL + sha256 here.
 WHEEL_URL: str | None = (
     "https://github.com/x0c/agent-session-control/releases/download/"
-    "v0.1.3/agent_session_control-0.1.3-py3-none-any.whl"
+    "v0.1.4/agent_session_control-0.1.4-py3-none-any.whl"
 )
 WHEEL_SHA256: str | None = (
-    "ba77b96108e4e0ee1f0a90978a4f415e7980340e97fb5e3cd156a47a4a1c4742"
+    "780062cff852f6adef82c94a7057f7d95c8d8cd8768e1e96a1bfa4c9b8ea2392"
 )
 REQUIRES = f"{PACKAGE}>={VERSION}"
 # Requires-Python of the published wheel (from its metadata; pip reports

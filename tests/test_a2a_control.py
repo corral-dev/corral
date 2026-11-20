@@ -349,6 +349,195 @@ class A2AControlTests(unittest.TestCase):
         self.assertEqual(settled["execution"], "failed")
         self.assertEqual(settled["error"]["code"], "target_busy")
 
+    def test_peer_a2a_queue_timeout_clamping_warns_and_exposes_effective_timeout(self):
+        session = {
+            "source": "claude",
+            "id": "target",
+            "cwd": self.tmp.name,
+            "path": str(Path(self.tmp.name) / "h.jsonl"),
+        }
+        version = control_cli.target_payload(session)["version"]
+        with (
+            mock.patch.object(control_cli, "resolve_target", return_value=session),
+            mock.patch.object(control_cli, "_spawn_supervisor", return_value=True),
+            mock.patch.object(control_cli, "_supervisor_alive", return_value=True),
+        ):
+            dry = control_cli.cmd_submit(
+                SimpleNamespace(
+                    target="claude:target",
+                    prompt="brief",
+                    prompt_file=None,
+                    idempotency_key="clamp-dry",
+                    if_version=None,
+                    on_busy="queue",
+                    queue_timeout=3600,
+                    allow_concurrent=False,
+                    task_ref=None,
+                    dry_run=True,
+                    from_agent="pi:ae93a9bf",
+                    no_reply_footer=False,
+                    report_back=False,
+                ),
+                None,
+            )["data"]
+            self.assertEqual(dry["run"]["queue_timeout"], 120)
+            self.assertEqual(dry["warnings"][0]["code"], "queue_timeout_clamped")
+            self.assertEqual(dry["warnings"][0]["requested"], 3600)
+            self.assertEqual(dry["warnings"][0]["effective"], 120)
+
+            live = control_cli.cmd_submit(
+                SimpleNamespace(
+                    target="claude:target",
+                    prompt="brief",
+                    prompt_file=None,
+                    idempotency_key="clamp-live",
+                    if_version=version,
+                    on_busy="queue",
+                    queue_timeout=3600,
+                    allow_concurrent=False,
+                    task_ref=None,
+                    dry_run=False,
+                    from_agent="pi:ae93a9bf",
+                    no_reply_footer=False,
+                    report_back=False,
+                ),
+                None,
+            )["data"]
+            self.assertEqual(live["warnings"][0]["code"], "queue_timeout_clamped")
+            self.assertEqual(live["run"]["queue_timeout"], 120)
+            self.assertGreater(live["run"]["queue_remaining_s"], 0)
+            self.assertIn("--until delivered", live["delivery_note"])
+            self.assertIn("NOT yet sent", live["run"]["delivery_meaning"])
+
+    def test_run_status_projects_blocked_by_and_mixed_warning(self):
+        blocker = self._run("blocker")
+        self.store.update(
+            blocker["run_id"],
+            {"delivery": "native_recorded", "execution": "running", "attribution": "mixed"},
+        )
+        with self.store.connection(write=True) as conn:
+            conn.execute(
+                "UPDATE runs SET data = json_set(data, '$.updated_at', json_extract(data, '$.updated_at') - 400) "
+                "WHERE id = ?",
+                (blocker["run_id"],),
+            )
+        queued = self._run("queued-second")
+        with mock.patch.object(control_cli, "_supervisor_alive", return_value=False):
+            data = control_cli.cmd_status(
+                SimpleNamespace(run_ids=[blocker["run_id"], queued["run_id"]], compact=False),
+                None,
+            )["data"]
+        by_id = {r["run_id"]: r for r in data["runs"]}
+        b_view = by_id[blocker["run_id"]]
+        q_view = by_id[queued["run_id"]]
+        self.assertIn("mixed_attribution_active", {w["code"] for w in b_view.get("warnings", [])})
+        self.assertEqual(q_view["queue_reason"], "earlier_run_on_session")
+        self.assertEqual(q_view["queued_behind"], blocker["run_id"])
+        self.assertEqual(q_view["blocked_by"]["run_id"], blocker["run_id"])
+        self.assertEqual(q_view["blocked_by"]["attribution"], "mixed")
+        self.assertGreaterEqual(q_view["blocked_by"]["idle_s"], 395.0)
+        self.assertFalse(q_view["blocked_by"]["supervisor_alive"])
+        q_codes = {w["code"] for w in q_view.get("warnings", [])}
+        self.assertTrue(
+            {"blocked_by_mixed_attribution", "blocked_by_dead_supervisor", "blocked_by_stalled_run"} <= q_codes
+        )
+
+    def test_queued_run_interrupt_cancels_immediately_without_supervisor(self):
+        queued = self._run("cancel-now")
+        with mock.patch.object(control_cli, "_supervisor_alive", return_value=False):
+            out = control_cli.cmd_interrupt(
+                SimpleNamespace(
+                    run_id=queued["run_id"],
+                    if_version=queued["version"],
+                    idempotency_key="int-now",
+                    compact=False,
+                ),
+                None,
+            )["data"]
+        self.assertEqual(out["status"], "created")
+        self.assertEqual(out["message"]["state"], "applied")
+        self.assertEqual(out["run"]["delivery"], "rejected")
+        self.assertEqual(out["run"]["execution"], "interrupted")
+        self.assertEqual(out["run"]["error"]["code"], "cancelled")
+
+    def test_run_withdraw_cancels_queued_control_message(self):
+        run = self._run("withdrawable")
+        self.store.update(run["run_id"], {"delivery": "native_recorded", "execution": "running"})
+        ver = self.store.get(run["run_id"])["version"]
+        with mock.patch.object(control_cli, "_supervisor_alive", return_value=True):
+            sent = control_cli.cmd_message(
+                SimpleNamespace(
+                    run_id=run["run_id"],
+                    prompt="extra direction",
+                    prompt_file=None,
+                    if_version=ver,
+                    idempotency_key="msg-w1",
+                    from_agent=None,
+                    no_reply_footer=True,
+                ),
+                None,
+            )["data"]
+            msg_id = sent["message"]["message_id"]
+            withdrawn = control_cli.cmd_withdraw(
+                SimpleNamespace(
+                    run_id=run["run_id"],
+                    message_id=msg_id,
+                    if_version=sent["run"]["version"],
+                    compact=False,
+                ),
+                None,
+            )["data"]
+        self.assertEqual(withdrawn["status"], "withdrawn")
+        self.assertEqual(withdrawn["message"]["state"], "withdrawn")
+        done = self.store.update(run["run_id"], {"execution": "completed"}, settled_messages={"initial"})
+        self.assertEqual(done["execution"], "completed")
+
+        run2 = self._run("submitted-msg")
+        self.store.update(run2["run_id"], {"delivery": "native_recorded", "execution": "running"})
+        msg2, _ = self.store.enqueue(
+            run2["run_id"],
+            "pi:storm",
+            "msg-w2",
+            {"action": "steer", "prompt": "hi"},
+            self.store.get(run2["run_id"])["version"],
+        )
+        self.store.message_state(msg2["message_id"], "input_submitted")
+        with self.assertRaises(ControlError) as caught:
+            control_cli.cmd_withdraw(
+                SimpleNamespace(
+                    run_id=run2["run_id"],
+                    message_id=msg2["message_id"],
+                    if_version=self.store.get(run2["run_id"])["version"],
+                    compact=False,
+                ),
+                None,
+            )
+        self.assertEqual(caught.exception.code, "message_not_queued")
+
+    def test_run_wait_until_delivered_returns_on_native_recorded_and_rejected(self):
+        run = self._run("wait-delivered")
+        with mock.patch.object(control_cli, "_supervisor_alive", return_value=True):
+            self.assertIsNone(control_cli._actionable(self.store, self.store.get(run["run_id"]), "delivered"))
+            self.store.update(run["run_id"], {"delivery": "input_submitted", "execution": "running"})
+            self.assertIsNone(control_cli._actionable(self.store, self.store.get(run["run_id"]), "delivered"))
+            self.store.update(run["run_id"], {"delivery": "native_recorded", "execution": "running"})
+            out = control_cli.cmd_wait(
+                SimpleNamespace(run_ids=[run["run_id"]], timeout=1, until="delivered"),
+                None,
+            )["data"]
+            self.assertEqual(out["ready"][run["run_id"]], "delivered")
+
+        run2 = self._run("wait-rejected")
+        self.store.update(
+            run2["run_id"],
+            {"delivery": "rejected", "execution": "failed", "error": {"code": "target_busy", "message": "busy"}},
+        )
+        out2 = control_cli.cmd_wait(
+            SimpleNamespace(run_ids=[run2["run_id"]], timeout=1, until="delivered"),
+            None,
+        )["data"]
+        self.assertEqual(out2["ready"][run2["run_id"]], "failed")
+
     @staticmethod
     def _run_spec(sender, target):
         return {"mode": "submit", "runtime": "claude", "session_ref": target,

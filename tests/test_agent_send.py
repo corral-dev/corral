@@ -523,6 +523,26 @@ class DescribeSyncTests(unittest.TestCase):
                 if "--from-agent" in arg["flags"]:
                     self.assertNotIn("choices", arg["kwargs"], name)
 
+    def test_describe_reflects_peer_a2a_limits_and_withdraw_command(self):
+        submit_spec = self._spec("run submit")
+        busy_arg = next(a for a in submit_spec["args"] if "--on-busy" in a["flags"])
+        timeout_arg = next(a for a in submit_spec["args"] if "--queue-timeout" in a["flags"])
+        self.assertIn("steer_not_allowed", busy_arg["kwargs"]["help"])
+        self.assertIn("120s", timeout_arg["kwargs"]["help"])
+        wait_spec = self._spec("run wait")
+        until_arg = next(a for a in wait_spec["args"] if "--until" in a["flags"])
+        self.assertEqual(until_arg["kwargs"]["choices"], ["actionable", "settled", "delivered"])
+        withdraw_spec = self._spec("run withdraw")
+        w_flags = [f for arg in withdraw_spec["args"] for f in arg["flags"]]
+        self.assertIn("--message-id", w_flags)
+        self.assertIn("--if-version", w_flags)
+        parsed = agent_api.build_parser().parse_args(
+            ["run", "withdraw", "run_1", "--message-id", "msg_1", "--if-version", "v1"]
+        )
+        self.assertEqual((parsed.run_id, parsed.message_id, parsed.if_version), ("run_1", "msg_1", "v1"))
+        parsed_wait = agent_api.build_parser().parse_args(["run", "wait", "run_1", "--until", "delivered"])
+        self.assertEqual(parsed_wait.until, "delivered")
+
 
 if __name__ == "__main__":
     unittest.main()

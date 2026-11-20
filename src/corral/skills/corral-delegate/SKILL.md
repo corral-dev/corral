@@ -56,31 +56,44 @@ KEY="review-$(date +%Y%m%d)-<short-topic>"     # stable for this intended delega
 
 - Dry-run writes nothing and starts nothing; it returns `target.control`
   (`hosted` = reuse its terminal, `resume` = Corral resumes it, `external` =
-  another terminal owns it: wait, never force it) and `target.version`.
+  another terminal owns it: wait, never force it), `target.version`, and any
+  currently active runs on `target.active_runs`.
 - Keep `run.run_id` and `$KEY`. Retrying with the same key returns the same run
   (`status: existing`) - it never sends twice. A different brief needs a new key.
-- A busy target is queued until idle (`--on-busy queue`); `steer` types into the
-  active turn, `reject` fails instead.
+- Owner submits default to `--on-busy queue` (`queue` waits until idle, `steer`
+  types into the active turn, `reject` fails instead) with `--queue-timeout
+  3600` (`0 = no limit`).
+- **Peer A2A limits on `run submit` / `send`**: when called by an active agent
+  (or with `--from-agent`), `--on-busy steer` is forbidden (`steer_not_allowed`;
+  use `queue` or `reject`), and `--queue-timeout` must be positive and is
+  capped at `1..120` seconds (clamped values emit `warnings[].code =
+  queue_timeout_clamped` on `--dry-run` and `submit`).
 
 ## 4. Observe
 
 ```bash
-"$CORRAL" run wait <run_id> --timeout 300          # returns on settle / question / problem
-"$CORRAL" run events <run_id> --after <cursor>     # progress since your last cursor
-"$CORRAL" run status <run_id>                      # snapshot (also accepts several ids)
+"$CORRAL" run wait <run_id> --until delivered --timeout 120   # returns once typed+recorded or rejected
+"$CORRAL" run wait <run_id> --timeout 300                     # returns on settle / question / problem
+"$CORRAL" run events <run_id> --after <cursor>                # progress since your last cursor
+"$CORRAL" run status <run_id>                                 # snapshot (also accepts several ids)
 ```
 
+- `delivery: accepted` means queued locally — **not delivered to the target
+  yet**. Wait with `run wait <run_id> --until delivered` before reporting
+  delivery; `native_recorded` proves the target session received it.
 - `wait` exit 6 (`wait_timeout`) only ends your wait; the target keeps working.
   Wait again or read events. `ready` says why it returned.
 - `delivery`: accepted -> dispatching -> input_submitted -> native_recorded.
   `delivery: unknown` means the brief may or may not have been typed: observe,
   never resubmit. `rejected` means nothing was sent (read `error`).
 - `execution`: queued / starting / running / waiting_input / completed / failed /
-  interrupted / unknown. `supervisor.alive: false` on an unsettled run, or
+  interrupted / unknown. On queued runs, check `blocked_by`, `queue_timeout`,
+  `queue_remaining_s`, and `warnings` (such as `blocked_by_mixed_attribution` or
+  `blocked_by_stalled_run`). `supervisor.alive: false` on an unsettled run, or
   `ready: supervisor_lost`: run `"$CORRAL" run recover <run_id>` (never re-sends).
 - Lost the run id after a restart? `run list --target <runtime>:<id>`.
 
-## 5. Questions and steering
+## 5. Questions, steering, cancellation, and withdrawal
 
 While `execution` is `waiting_input`, `questions[]` lists the native question:
 
@@ -92,7 +105,10 @@ While `execution` is `waiting_input`, `questions[]` lists the native question:
 
 Extra direction for an active run: `run message <run_id> --prompt-file more.md
 --if-version <run.version> --idempotency-key "$KEY-m1"` (rejected while a question
-is pending). Stop it: `run interrupt <run_id> --if-version <v> --idempotency-key "$KEY-stop"`.
+is pending). Stop it: `run interrupt <run_id> --if-version <v> --idempotency-key "$KEY-stop"`
+(cancels immediately if still `accepted`/`queued`; otherwise queues a turn
+interrupt). Withdraw an unapplied queued control/follow-up message before it is
+dispatched: `run withdraw <run_id> --message-id <msg_id> --if-version <v>`.
 A `conflict` error means the run changed: read `run status` and retry with its
 new `version`.
 

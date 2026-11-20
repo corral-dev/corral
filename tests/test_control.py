@@ -951,6 +951,143 @@ class SupervisorReviewTests(unittest.TestCase):
         self.assertEqual(record["queued_behind"], blocker_id)
         self.assertEqual(hub.sent, [])
 
+    def test_sweep_queued_on_target_expires_and_fails_fast_behind_head(self):
+        path = self._history()
+        Path(path).write_text("")
+        session = self._session(path)
+        head_id = self._submit("k-head", session)
+        self.store.update(head_id, {"delivery": "native_recorded", "execution": "running"})
+
+        def _make_queued(key: str, *, on_busy="queue", queue_timeout=120, report_back=False):
+            spec = {
+                "mode": "submit",
+                "runtime": "claude",
+                "session_ref": f"claude:{session['id']}",
+                "cwd": self.project,
+                "history_path": path,
+                "prompt": key,
+                "on_busy": on_busy,
+                "queue_timeout": queue_timeout,
+                "from_agent": "pi:sender",
+                "a2a": True,
+                "report_back": report_back,
+                "caller": {"actor": "pi:sender"},
+            }
+            initial = {
+                "mode": "submit",
+                "runtime": "claude",
+                "session_ref": spec["session_ref"],
+                "cwd": self.project,
+                "history_path": path,
+                "delivery": "accepted",
+                "execution": "queued",
+                "from_agent": "pi:sender",
+                "a2a": True,
+            }
+            return self.store.create("pi:sender", key, spec, initial)[0]["run_id"]
+
+        r_exp = _make_queued("k-exp", queue_timeout=1, report_back=True)
+        with self.store.connection(write=True) as conn:
+            conn.execute(
+                "UPDATE runs SET created_at = created_at - 30, "
+                "data = json_set(data, '$.created_at', json_extract(data, '$.created_at') - 30) WHERE id = ?",
+                (r_exp,),
+            )
+        r_rej = _make_queued("k-rej", on_busy="reject")
+        r_wait = _make_queued("k-wait", on_busy="queue", queue_timeout=120)
+
+        with mock.patch.object(control_cli, "cmd_send") as send:
+            control_worker._sweep_queued_on_target(self.store, f"claude:{session['id']}", head_id)
+        send.assert_not_called()
+
+        exp_rec = self.store.get(r_exp)
+        self.assertEqual(exp_rec["delivery"], "rejected")
+        self.assertEqual(exp_rec["execution"], "failed")
+        self.assertEqual(exp_rec["error"]["code"], "queue_expired")
+        self.assertEqual(exp_rec["report_back"], {"state": "suppressed", "reason": "queue_expired"})
+
+        rej_rec = self.store.get(r_rej)
+        self.assertEqual(rej_rec["delivery"], "rejected")
+        self.assertEqual(rej_rec["error"]["code"], "target_busy")
+
+        wait_rec = self.store.get(r_wait)
+        self.assertEqual(wait_rec["execution"], "queued")
+        self.assertEqual(wait_rec["queue_reason"], "earlier_run_on_session")
+        self.assertEqual(wait_rec["queued_behind"], head_id)
+
+        self.store.update(head_id, {"execution": "waiting_input"})
+        control_worker._sweep_queued_on_target(self.store, f"claude:{session['id']}", head_id)
+        wait_after = self.store.get(r_wait)
+        self.assertEqual(wait_after["delivery"], "rejected")
+        self.assertEqual(wait_after["execution"], "failed")
+        self.assertEqual(wait_after["error"]["code"], "target_waiting_input")
+
+    def test_fresh_session_for_phase_refreshes_pi_claim_phase(self):
+        from datetime import datetime, timezone
+
+        from corral import attention_signals, pi_identity
+
+        hist = Path(self.tmp.name) / "pi.jsonl"
+        _write_fixture_rows(
+            str(hist),
+            [
+                {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}},
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "stopReason": "stop",
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                },
+            ],
+        )
+        claims = Path(self.tmp.name) / "claims"
+        claims.mkdir()
+        claim_file = claims / "inst-1.json"
+
+        def write_claim(phase_val: str):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            claim_file.write_text(
+                json.dumps(
+                    {
+                        "protocolVersion": pi_identity.CLAIM_PROTOCOL,
+                        "instanceId": "inst-1",
+                        "sessionId": "pi-1",
+                        "pid": os.getpid(),
+                        "state": "active",
+                        "updatedAt": now_iso,
+                        "agentPhase": phase_val,
+                        "agentPhaseEvent": "turn_start" if phase_val == "working" else "agent_end",
+                        "agentPhaseAt": now_iso,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        write_claim("working")
+        frozen = {
+            "source": "pi",
+            "id": "pi-1",
+            "live": True,
+            "path": str(hist),
+            "agent_phase": "working",
+            "agent_phase_event": "turn_start",
+            "agent_phase_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with (
+            mock.patch.object(pi_identity, "claims_dir", return_value=claims),
+            mock.patch.object(attention_signals, "inspect_session", side_effect=attention_signals._inspect_pi),
+        ):
+            self.assertEqual(control_worker._phase(frozen), "working")
+            write_claim("idle")
+            self.assertEqual(control_worker._phase(frozen), "idle")
+            claim_file.unlink()
+            pi_identity._CLAIM_MEMO.clear()
+            self.assertEqual(control_worker._phase(frozen), "idle")
+            synth = {"source": "pi", "id": "pi-synth", "live": True, "path": str(hist), "agent_phase": "working"}
+            self.assertEqual(control_worker._fresh_session_for_phase(synth), synth)
+
     def _old_turn(self, path):
         _write_fixture_rows(
             path,

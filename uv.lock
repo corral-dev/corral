@@ -10,10 +10,10 @@ resolution-markers = [
 
 [[package]]
 name = "agent-session-control"
-version = "0.1.3"
-source = { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.3/agent_session_control-0.1.3-py3-none-any.whl" }
+version = "0.1.4"
+source = { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.4/agent_session_control-0.1.4-py3-none-any.whl" }
 wheels = [
-    { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.3/agent_session_control-0.1.3-py3-none-any.whl", hash = "sha256:ba77b96108e4e0ee1f0a90978a4f415e7980340e97fb5e3cd156a47a4a1c4742" },
+    { url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.4/agent_session_control-0.1.4-py3-none-any.whl", hash = "sha256:780062cff852f6adef82c94a7057f7d95c8d8cd8768e1e96a1bfa4c9b8ea2392" },
 ]
 
 [package.metadata]
@@ -161,7 +161,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-session-control", url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.3/agent_session_control-0.1.3-py3-none-any.whl" },
+    { name = "agent-session-control", url = "https://github.com/x0c/agent-session-control/releases/download/v0.1.4/agent_session_control-0.1.4-py3-none-any.whl" },
     { name = "cryptography", marker = "extra == 'remote'", specifier = ">=42" },
     { name = "pillow", marker = "extra == 'remote'", specifier = ">=10" },
     { name = "segno", marker = "extra == 'remote'", specifier = ">=1.6" },
