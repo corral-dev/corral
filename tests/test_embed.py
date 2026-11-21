@@ -911,6 +911,31 @@ class ImagePasteTests(unittest.TestCase):
         heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00" + b"\x00" * 64
         self.assertIsNone(embed._convert_to_jpeg_via_pillow(heic))
 
+    def test_sanitize_pasted_filename_and_save_file_and_paste_path(self):
+        self.assertEqual(embed._sanitize_pasted_filename("../../My Report (1).pdf"), "My_Report_1.pdf")
+        self.assertEqual(embed._sanitize_pasted_filename("../\x00.."), "attachment")
+        self.assertEqual(embed._sanitize_pasted_filename("设计方案.md"), "设计方案.md")
+        tmp_root = tempfile.mkdtemp()
+        pasted: list[tuple[str, str]] = []
+        try:
+            with mock.patch.object(
+                embed.subprocess,
+                "check_output",
+                return_value=(tmp_root + "\n").encode(),
+            ), mock.patch.object(embed, "paste", side_effect=lambda name, text: pasted.append((name, text)) or True):
+                path = embed.save_file_and_paste_path("s", "My Report (1).pdf", b"%PDF-1.4\nhello")
+            self.assertIsNotNone(path)
+            assert path is not None
+            self.assertTrue(path.startswith(os.path.join(tmp_root, ".corral-pastes", "paste-")))
+            self.assertTrue(path.endswith("-My_Report_1.pdf"))
+            self.assertEqual(pasted, [("s", path + " ")])
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"%PDF-1.4\nhello")
+            self.assertIsNone(embed.save_file_and_paste_path("s", "empty.txt", b""))
+            self.assertIsNone(embed.save_file_and_paste_path("s", "big.bin", b"x" * (embed._MAX_FILE_PASTE_BYTES + 1)))
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
 
 class ChannelPoolTests(unittest.TestCase):
     """控制通道按会话名池化：多分屏可同时存活，关一格不影响另一格。"""

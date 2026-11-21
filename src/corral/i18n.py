@@ -2017,6 +2017,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "The image could not be saved on the development machine",
         "zh": "图片没能保存到开发机上",
     },
+    "remote.err.no_file": {
+        "en": "No file data",
+        "zh": "没有文件数据",
+    },
+    "remote.err.file_incomplete": {
+        "en": "The file upload was incomplete or corrupted",
+        "zh": "文件传输不完整或已损坏",
+    },
+    "remote.err.file_paste_too_large": {
+        "en": "This file exceeds the 20 MB attachment limit",
+        "zh": "这个文件超过 20 MB 附件上限",
+    },
+    "remote.err.file_save_failed": {
+        "en": "The file could not be saved on the development machine",
+        "zh": "文件没能保存到开发机上",
+    },
     "remote.question.stale": {
         "en": "This question was already answered or replaced",
         "zh": "这道问题已经回答过或已被新问题替换",

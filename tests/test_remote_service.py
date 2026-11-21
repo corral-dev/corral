@@ -107,6 +107,10 @@ class FakeHub:
         self._record("send_image", key, len(image_bytes))
         return "/tmp/paste.jpg"
 
+    def send_file(self, key: str, filename: str, file_bytes: bytes) -> str:
+        self._record("send_file", key, filename, len(file_bytes))
+        return f"/tmp/paste-{filename}"
+
     def projects(self):
         return [
             {
@@ -924,6 +928,86 @@ class RemoteServiceTests(unittest.TestCase):
             self.service._dispatch_event(protocol.CH_SESSIONS, {"sessions": []})
             self.service._dispatch_event(protocol.CH_SESSIONS, {"sessions": []})
             self.assertEqual(rec.call_count, 1)
+
+    def test_input_file_single_chunk_and_chunked_and_readonly_rejection(self):
+        import base64
+
+        full_conn = self._paired(mode="full")
+        hello = self._call(full_conn, protocol.M_HELLO, {"want_command_receipts": True})
+        self.assertTrue(hello["ok"])
+        self.assertTrue(hello["d"]["capabilities"][protocol.CAPABILITY_INPUT_FILE])
+
+        # Single-shot upload with receipt
+        single = self._call(
+            full_conn,
+            protocol.M_INPUT_FILE,
+            {
+                "key": "codex:1",
+                "filename": "notes.md",
+                "data": base64.b64encode(b"# hello\n").decode(),
+                "command_id": "cmd-file-1",
+            },
+        )
+        self.assertTrue(single["ok"])
+        self.assertEqual(single["d"]["status"], "delivered")
+        self.assertEqual(single["d"]["path"], "/tmp/paste-notes.md")
+
+        # Chunked upload (2 chunks)
+        p1 = self._call(
+            full_conn,
+            protocol.M_INPUT_FILE,
+            {
+                "key": "codex:1",
+                "filename": "archive.zip",
+                "data": base64.b64encode(b"PK\x03\x04").decode(),
+                "upload_id": "up-1",
+                "chunk_index": 0,
+                "chunk_count": 2,
+            },
+        )
+        self.assertTrue(p1["ok"])
+        self.assertEqual(p1["d"]["status"], "partial")
+        p2 = self._call(
+            full_conn,
+            protocol.M_INPUT_FILE,
+            {
+                "key": "codex:1",
+                "filename": "archive.zip",
+                "data": base64.b64encode(b"payload").decode(),
+                "upload_id": "up-1",
+                "chunk_index": 1,
+                "chunk_count": 2,
+                "command_id": "cmd-file-2",
+            },
+        )
+        self.assertTrue(p2["ok"])
+        self.assertEqual(p2["d"]["status"], "delivered")
+        self.assertEqual(p2["d"]["path"], "/tmp/paste-archive.zip")
+        self.assertIn(("send_file", ("codex:1", "archive.zip", 11)), self.hub.calls)
+
+        # Malformed chunk indices return usage_error cleanly
+        bad_chunk = self._call(
+            full_conn,
+            protocol.M_INPUT_FILE,
+            {
+                "key": "codex:1",
+                "filename": "x.txt",
+                "data": base64.b64encode(b"hi").decode(),
+                "chunk_count": "not-an-int",
+            },
+        )
+        self.assertFalse(bad_chunk["ok"])
+        self.assertEqual(bad_chunk["e"]["code"], protocol.E_USAGE)
+
+        # Readonly pairing rejects input.file
+        ro_conn = self._paired(mode="readonly")
+        denied = self._call(
+            ro_conn,
+            protocol.M_INPUT_FILE,
+            {"key": "codex:1", "filename": "x.txt", "data": base64.b64encode(b"hi").decode()},
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["e"]["code"], protocol.E_UNAUTHORIZED)
 
 
 class PairingWindowTests(unittest.TestCase):

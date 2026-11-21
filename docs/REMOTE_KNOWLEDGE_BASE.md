@@ -700,3 +700,7 @@ Physical acceptance against the installed host: the same iPhone 1.0.177 (187) co
 ## Session list `loop_count` wire field (2026-11-19)
 
 `session_payload` forwards optional `loop_count: int | None` (non-negative integer when SessKit provides it, else `None`), and `_window_version` includes it so Apple clients refresh rows when new agent loops finish. Older hosts omitting `loop_count` remain backward-compatible (`SessionSummary.loopCount == nil`).
+
+## Arbitrary file paste upload `input.file` (2026-11-21)
+
+Hosts advertise `capabilities.input_file = true` in `hello` and accept `input.file` (`session_key`, `filename`, `data` base64 chunk, optional `upload_id` / `chunk_index` / `chunk_count`, optional `command_id` for `command_receipts` idempotency). Single-shot uploads omit chunk indices (`chunk_count == 1`), and multi-chunk uploads up to 20 MiB decoded bytes buffer chunks server-side under `(connection_id, upload_id)` until the final chunk arrives, then execute `_run_receipted_input` and `SessionHub.send_file(key, filename, file_bytes)` -> `embed.save_file_and_paste_path(name, filename, file_bytes)`. Filenames are sanitized via `os.path.basename`, control characters stripped, fallback `"attachment"` when empty or dot-only, stored as unique `<base_dir>/paste-<id>-<sanitized_name>` inside `<cwd>/.corral-pastes/` (or `$TMPDIR/corral-pastes/`), and pasted cleanly into the active pane (with a trailing space so typed text never glues onto the file path). Read-only pairings and clients lacking `input_file` fail cleanly without corrupting input state.

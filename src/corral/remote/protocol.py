@@ -209,6 +209,8 @@ CAPABILITY_TRANSIENT_NOTIFY = "transient_notify"
 CAPABILITY_MEDIA_IMAGE = "media_image"
 # Message-linked files are downloaded in bounded slices through media.file.
 CAPABILITY_MEDIA_FILE = "media_file"
+# Client-pasted arbitrary files are uploaded (single-shot or chunked) via input.file.
+CAPABILITY_INPUT_FILE = "input_file"
 # Host supports session.restart (remote access to the desktop advanced-restart).
 # Advertised only with the implementation; old hosts lack the method entirely.
 CAPABILITY_SESSION_RESTART = "session_restart"
@@ -258,6 +260,7 @@ M_SCREEN_RESIZE = "screen.resize"
 M_INPUT_TEXT = "input.text"
 M_INPUT_KEYS = "input.keys"
 M_INPUT_IMAGE = "input.image"
+M_INPUT_FILE = "input.file"
 # Answer the pending native agent question: {key, request_id, answers:[{question_id, selected:[option_id], text}]}
 # → {status: delivered|stale|unavailable, detail?}. Never falls back to input.text.
 M_INPUT_QUESTION = "input.question"

@@ -3811,6 +3811,20 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.image_save_failed"))
         return path
 
+    def send_file(self, key: str, filename: str, file_bytes: bytes) -> str:
+        """Write an arbitrary attachment to the host paste dir and inject its path."""
+        if not file_bytes:
+            raise ActionError("usage_error", t("remote.err.no_file"))
+        if len(file_bytes) > embed._MAX_FILE_PASTE_BYTES:
+            raise ActionError("usage_error", t("remote.err.file_paste_too_large"))
+        name = self._keepalive_name(key, resume_if_needed=True)
+        if cause := _blocked_input_cause(embed.capture(name, 0, 0)):
+            raise ActionError("unavailable", cause)
+        path = embed.save_file_and_paste_path(name, filename, file_bytes)
+        if not path:
+            raise ActionError("unavailable", t("remote.err.file_save_failed"))
+        return path
+
     def send_turn(
         self,
         key: str,

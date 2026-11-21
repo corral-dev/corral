@@ -78,6 +78,17 @@ def digest_for_image(*, key: str, image_bytes: bytes) -> str:
     )
 
 
+def digest_for_file(*, key: str, filename: str, file_bytes: bytes) -> str:
+    return canonical_digest(
+        {
+            "m": "input.file",
+            "key": key,
+            "filename": filename,
+            "file_sha256": hashlib.sha256(file_bytes).hexdigest(),
+        }
+    )
+
+
 def _safe_segment(value: str) -> str:
     cleaned = _SAFE_ID_RE.sub("_", value.strip())[:120]
     return cleaned or "x"

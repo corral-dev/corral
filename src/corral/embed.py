@@ -1239,6 +1239,7 @@ _IMAGE_PASTE_DIR = ".corral-pastes"
 # 远程网页终端场景下恶意/异常超大粘贴不能拖垮磁盘与内存；浏览器侧也会先压缩。
 _MAX_IMAGE_PASTE_BYTES = 8 * 1024 * 1024
 _MAX_IMAGE_B64_CHARS = (_MAX_IMAGE_PASTE_BYTES * 4) // 3 + 8
+_MAX_FILE_PASTE_BYTES = 20 * 1024 * 1024
 
 
 def _image_suffix(image_bytes: bytes) -> str | None:
@@ -1400,6 +1401,63 @@ def _pane_cwd(name: str) -> str | None:
         return None
 
 
+def _paste_base_dir(name: str) -> str:
+    cwd = _pane_cwd(name)
+    return (
+        os.path.join(cwd, _IMAGE_PASTE_DIR)
+        if cwd
+        else os.path.join(tempfile.gettempdir(), "corral-pastes")
+    )
+
+
+def _write_paste_and_inject(
+    name: str,
+    payload: bytes,
+    *,
+    prefix: str = "paste-",
+    suffix: str = "",
+    trailing_space: bool = False,
+) -> str | None:
+    base_dir = _paste_base_dir(name)
+    try:
+        os.makedirs(base_dir, exist_ok=True)
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=base_dir)
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+    except OSError:
+        return None
+    text = f"{path} " if trailing_space else path
+    if not paste(name, text):
+        return None
+    return path
+
+
+def _sanitize_pasted_filename(filename: str) -> str:
+    """Normalize an untrusted attachment filename into a safe single-token basename."""
+    normalized = (filename or "").replace("\\", "/")
+    raw = os.path.basename(normalized)
+    cleaned_chars: list[str] = []
+    for ch in raw:
+        if ord(ch) < 32 or ord(ch) == 127:
+            continue
+        if ch.isspace() or ch in "/\\:'\"`$;&|<>()*?[]{}":
+            cleaned_chars.append("_")
+        else:
+            cleaned_chars.append(ch)
+    collapsed = re.sub(r"_+", "_", "".join(cleaned_chars)).strip("._-")
+    if not collapsed or collapsed in {".", ".."}:
+        return "attachment"
+    stem, ext = os.path.splitext(collapsed)
+    if ext:
+        clean_stem = stem.strip("._-") or "attachment"
+        clean_ext = "." + ext.lstrip("._-") if ext.lstrip("._-") else ""
+        if clean_ext and len(clean_stem) + len(clean_ext) > 120:
+            max_stem = max(1, 120 - len(clean_ext))
+            return clean_stem[:max_stem] + clean_ext
+        return (clean_stem + clean_ext)[:120]
+    return collapsed[:120]
+
+
 def save_image_and_paste_path(name: str, image_bytes: bytes) -> str | None:
     """把粘贴来的图片落盘为临时文件，再把绝对路径经 `paste()` 送进托管 pane，
     让 Claude Code / Codex 等按路径读图（OpenCode TUI 会把有效图片路径自动
@@ -1422,21 +1480,21 @@ def save_image_and_paste_path(name: str, image_bytes: bytes) -> str | None:
             return None
         image_bytes = converted
         suffix = ".jpg"
-    cwd = _pane_cwd(name)
-    base_dir = (
-        os.path.join(cwd, _IMAGE_PASTE_DIR) if cwd
-        else os.path.join(tempfile.gettempdir(), "corral-pastes")
+    return _write_paste_and_inject(name, image_bytes, prefix="paste-", suffix=suffix)
+
+
+def save_file_and_paste_path(name: str, filename: str, file_bytes: bytes) -> str | None:
+    """Write an arbitrary pasted attachment under the pane paste dir and inject its path."""
+    if not file_bytes or len(file_bytes) > _MAX_FILE_PASTE_BYTES:
+        return None
+    safe_name = _sanitize_pasted_filename(filename)
+    return _write_paste_and_inject(
+        name,
+        file_bytes,
+        prefix="paste-",
+        suffix=f"-{safe_name}",
+        trailing_space=True,
     )
-    try:
-        os.makedirs(base_dir, exist_ok=True)
-        fd, path = tempfile.mkstemp(prefix="paste-", suffix=suffix, dir=base_dir)
-        with os.fdopen(fd, "wb") as f:
-            f.write(image_bytes)
-    except OSError:
-        return None
-    if not paste(name, path):
-        return None
-    return path
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ from corral.remote.command_receipts import (
     STATUS_DISPATCHING,
     CommandReceiptStore,
     digest_for_creation,
+    digest_for_file,
     digest_for_image,
     digest_for_keys,
     digest_for_text,
@@ -353,6 +354,8 @@ class RemoteService:
         self._input_targets: set[str] = set()
         self._input_lock = threading.Lock()
         self._input_target_free = threading.Condition(self._input_lock)
+        self._file_uploads_lock = threading.Lock()
+        self._file_uploads: dict[tuple[int, str], dict] = {}
         self._last_reconcile_at = float("-inf")
 
     # -- 状态同步 ---------------------------------------------------------
@@ -554,6 +557,11 @@ class RemoteService:
             connection.channels.clear()
         for channel in channels:
             self._release_channel(channel, connection)
+        conn_id = id(connection)
+        with self._file_uploads_lock:
+            stale_uploads = [k for k in self._file_uploads if k[0] == conn_id]
+            for k in stale_uploads:
+                self._file_uploads.pop(k, None)
         if data_hook is not None:
             try:
                 data_hook()
@@ -1284,6 +1292,7 @@ class RemoteService:
                 protocol.CAPABILITY_TRANSIENT_NOTIFY: True,
                 protocol.CAPABILITY_MEDIA_IMAGE: True,
                 protocol.CAPABILITY_MEDIA_FILE: True,
+                protocol.CAPABILITY_INPUT_FILE: True,
                 protocol.CAPABILITY_SESSION_RESTART: True,
                 protocol.CAPABILITY_SESSION_INTERRUPT: True,
                 protocol.CAPABILITY_SESSION_CREATE_RECEIPTS: True,
@@ -1699,6 +1708,35 @@ class RemoteService:
             params.get("answers"),
         )
 
+    def _finish_receipted_paste(
+        self,
+        connection: Connection,
+        params: dict,
+        *,
+        method: str,
+        target_key: str,
+        digest: str,
+        send_fn,
+    ):
+        if not connection.command_receipts:
+            return {"path": send_fn()}
+        path_box: dict[str, str] = {}
+
+        def _send() -> None:
+            path_box["path"] = send_fn()
+
+        receipt = self._run_receipted_input(
+            connection,
+            params,
+            method=method,
+            target_key=target_key,
+            digest=digest,
+            side_effect=_send,
+        )
+        if "path" in path_box:
+            receipt = {**receipt, "path": path_box["path"]}
+        return receipt
+
     def _input_image(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
@@ -1715,25 +1753,102 @@ class RemoteService:
         if not raw:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_image"))
         session_key = _key(params)
-        if not connection.command_receipts:
-            return {"path": self.hub.send_image(session_key, raw)}
-        digest = digest_for_image(key=session_key, image_bytes=raw)
-        path_box: dict[str, str] = {}
-
-        def _send() -> None:
-            path_box["path"] = self.hub.send_image(session_key, raw)
-
-        receipt = self._run_receipted_input(
+        return self._finish_receipted_paste(
             connection,
             params,
             method=protocol.M_INPUT_IMAGE,
             target_key=session_key,
-            digest=digest,
-            side_effect=_send,
+            digest=digest_for_image(key=session_key, image_bytes=raw),
+            send_fn=lambda: self.hub.send_image(session_key, raw),
         )
-        if "path" in path_box:
-            receipt = {**receipt, "path": path_box["path"]}
-        return receipt
+
+    def _input_file(self, connection: Connection, params: dict):
+        import base64
+        import binascii
+
+        session_key = _key(params)
+        filename = str(params.get("filename") or "").strip() or "attachment"
+        encoded = str(params.get("data") or "").strip()
+        if not encoded:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_file"))
+        try:
+            chunk = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ActionError(protocol.E_USAGE, t("remote.err.file_incomplete")) from exc
+        if not chunk:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_file"))
+
+        max_bytes = 20 * 1024 * 1024
+        try:
+            chunk_count = int(params.get("chunk_count") or 1)
+            chunk_index = int(params.get("chunk_index") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ActionError(protocol.E_USAGE, t("remote.err.file_incomplete")) from exc
+        if chunk_count < 1 or chunk_count > 32 or chunk_index < 0 or chunk_index >= chunk_count:
+            raise ActionError(protocol.E_USAGE, t("remote.err.file_incomplete"))
+
+        if chunk_count == 1:
+            raw = chunk
+            effective_name = filename
+        else:
+            upload_id = str(params.get("upload_id") or "").strip()
+            if not upload_id:
+                raise ActionError(protocol.E_USAGE, t("remote.err.file_incomplete"))
+            now = time.monotonic()
+            conn_id = id(connection)
+            slot = (conn_id, upload_id)
+            with self._file_uploads_lock:
+                expired = [
+                    k for k, entry in self._file_uploads.items()
+                    if now - float(entry["updated_at"]) > 300.0
+                ]
+                for k in expired:
+                    self._file_uploads.pop(k, None)
+                entry = self._file_uploads.get(slot)
+                if entry is None:
+                    active_for_conn = sum(1 for k in self._file_uploads if k[0] == conn_id)
+                    if active_for_conn >= 8:
+                        raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+                    entry = {
+                        "key": session_key,
+                        "filename": filename,
+                        "chunk_count": chunk_count,
+                        "chunks": {},
+                        "total_bytes": 0,
+                        "updated_at": now,
+                    }
+                    self._file_uploads[slot] = entry
+                elif entry["chunk_count"] != chunk_count or entry["key"] != session_key:
+                    self._file_uploads.pop(slot, None)
+                    raise ActionError(protocol.E_USAGE, t("remote.err.file_incomplete"))
+
+                chunks: dict[int, bytes] = entry["chunks"]
+                prev = chunks.get(chunk_index)
+                new_total = int(entry["total_bytes"]) - (len(prev) if prev is not None else 0) + len(chunk)
+                if new_total > max_bytes:
+                    self._file_uploads.pop(slot, None)
+                    raise ActionError(protocol.E_USAGE, t("remote.err.file_paste_too_large"))
+                chunks[chunk_index] = chunk
+                entry["total_bytes"] = new_total
+                entry["updated_at"] = now
+                if len(chunks) < chunk_count:
+                    return {"status": "partial", "received": len(chunks), "chunk_count": chunk_count}
+                raw = b"".join(chunks[i] for i in range(chunk_count))
+                effective_name = str(entry["filename"])
+                self._file_uploads.pop(slot, None)
+
+        if len(raw) > max_bytes:
+            raise ActionError(protocol.E_USAGE, t("remote.err.file_paste_too_large"))
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        return self._finish_receipted_paste(
+            connection,
+            params,
+            method=protocol.M_INPUT_FILE,
+            target_key=session_key,
+            digest=digest_for_file(key=session_key, filename=effective_name, file_bytes=raw),
+            send_fn=lambda: self.hub.send_file(session_key, effective_name, raw),
+        )
 
     def _command_status(self, connection: Connection, params: dict):
         command_id = str(params.get("command_id") or "").strip()
@@ -2186,6 +2301,7 @@ _HANDLERS = {
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,
+    protocol.M_INPUT_FILE: RemoteService._input_file,
     protocol.M_INPUT_QUESTION: RemoteService._input_question,
     protocol.M_COMMAND_STATUS: RemoteService._command_status,
     protocol.M_SESSION_NEW: RemoteService._session_new,

@@ -85,6 +85,10 @@ class FakeHub:
         self._record("send_image", key, len(image_bytes))
         return "/tmp/paste.jpg"
 
+    def send_file(self, key: str, filename: str, file_bytes: bytes) -> str:
+        self._record("send_file", key, filename, len(file_bytes))
+        return f"/tmp/paste-{filename}"
+
     def projects(self):
         return [
             {
@@ -277,8 +281,20 @@ class RemoteActionTests(unittest.TestCase):
         )
         self.assertTrue(image["ok"])
         self.assertEqual(image["d"]["path"], "/tmp/paste.jpg")
+        file_reply = self._call(
+            connection,
+            protocol.M_INPUT_FILE,
+            {
+                "key": "codex:abc",
+                "filename": "spec.pdf",
+                "data": base64.b64encode(b"%PDF-1.4").decode(),
+            },
+        )
+        self.assertTrue(file_reply["ok"])
+        self.assertEqual(file_reply["d"]["path"], "/tmp/paste-spec.pdf")
         self.assertIn(("send_text", ("codex:abc", "你好", True)), self.hub.calls)
         self.assertIn(("send_image", ("codex:abc", 7)), self.hub.calls)
+        self.assertIn(("send_file", ("codex:abc", "spec.pdf", 8)), self.hub.calls)
 
     def test_projects_and_runtimes_list(self) -> None:
         connection = self._pair()
