@@ -6,6 +6,8 @@ docs/REMOTE_KNOWLEDGE_BASE.md "Native agent questions"):
 
 - Claude Code ``AskUserQuestion`` and Codex ``request_user_input``: drive the
   hosted TUI picker with keys (digits pick, the last row takes typed text).
+- Antigravity CLI ``ask_question`` (1.5.14): drive the hosted TUI picker with
+  ``Up``/``Down``, ``Space`` toggles, ``Write-in...`` paste, and ``Enter``.
 - Codex ``request_user_input_async`` (0.159.2): the ``delivery=async``
   AgentMessage panel has no picker; answer with the native
   ``<send_user_message_question_reply>`` envelope (questionItemId per
@@ -28,7 +30,7 @@ from corral import embed
 from corral.i18n import t
 from corral.remote import richmsg
 
-KEY_RUNTIMES = frozenset({"claude", "codex"})
+KEY_RUNTIMES = frozenset({"claude", "codex", "antigravity"})
 ANSWERABLE_RUNTIMES = KEY_RUNTIMES | {"opencode"}
 
 _ASYNC_TOOL = "request_user_input_async"
@@ -48,13 +50,31 @@ _PICKER_MARKERS = {
     "claude": ("Enter to select", "Ready to submit your answers?"),
     # Not "None of the above": the answered history cell can repeat that label.
     "codex": ("to submit answer", "to submit all"),
+    "antigravity": (
+        "enter Select · esc Skip",
+        "enter Submit · esc Skip",
+        "enter Submit All · esc Skip",
+        "enter Write-in · esc Skip",
+        "enter Submit · esc Back",
+        "enter Submit All · esc Back",
+    ),
 }
+_AG_WRITE_IN_MARKERS = (
+    "enter Submit · esc Back",
+    "enter Submit All · esc Back",
+)
 
 # Claude multi-select picker rows (2.1.296): ``❯ 1. [✔] Label`` per option and
 # ``N. [ ] Type something``, then ``Submit`` and ``Chat about this``.
 _CHECK_ROW_RE = re.compile(r"^\s*(❯)?\s*(\d+)\.\s+\[(.)\]")
 _SUBMIT_ROW_RE = re.compile(r"^\s*(❯)?\s*Submit\s*$")
 _CHAT_ROW_RE = re.compile(r"^\s*(❯)?\s*\d+\.\s+Chat about this\b")
+
+# Antigravity picker (1.5.14): ``Question 1/2: ...``, ``> 1. [x] Label`` or
+# ``> 1. Label``, and ``N. Write-in...`` / ``N. ✓ Preview``.
+_AG_QUESTION_HEADER_RE = re.compile(r"^\s*Question\s+(\d+)/(\d+):\s*", re.MULTILINE)
+_AG_MULTI_ROW_RE = re.compile(r"^\s*(>)?\s*(\d+)\.\s+\[([xX ])\]")
+_AG_ROW_RE = re.compile(r"^\s*(>)?\s*(\d+)\.\s+(.*)$")
 
 
 class QuestionOutcome(Exception):
@@ -170,8 +190,95 @@ def _validated_answers(questions: list[dict], raw: object) -> dict[str, tuple[li
 
 
 def footer_shows_picker(line: str) -> bool:
-    """True when one footer line belongs to an open Claude or Codex picker."""
-    return any(marker in line for markers in _PICKER_MARKERS.values() for marker in markers)
+    """True when one footer line belongs to an open Claude, Codex, or Antigravity picker."""
+    compact = _SPACE_RE.sub(" ", line)
+    return any(
+        marker in line or marker in compact
+        for markers in _PICKER_MARKERS.values()
+        for marker in markers
+    )
+
+
+def antigravity_question_index(screen: str) -> tuple[int, int] | None:
+    """Return 0-based ``(current, total)`` from ``Question cur/total:``."""
+    matches = list(_AG_QUESTION_HEADER_RE.finditer(screen))
+    if not matches:
+        return None
+    last = matches[-1]
+    cur, total = int(last.group(1)), int(last.group(2))
+    if 1 <= cur <= total:
+        return cur - 1, total
+    return None
+
+
+def _antigravity_write_in_open(screen: str) -> bool:
+    compact = _SPACE_RE.sub(" ", screen)
+    return any(marker in screen or marker in compact for marker in _AG_WRITE_IN_MARKERS)
+
+
+def antigravity_screen_state(
+    screen: str, count: int, *, multi_select: bool
+) -> tuple[frozenset[int], int, bool] | None:
+    """(ticked option positions, cursor row, has_write_in) of an open Antigravity picker.
+
+    Rows count from 0: ``0..count-1`` are options, ``count`` is ``Write-in...``
+    (or ``✓ <preview>`` when a custom answer was already confirmed). Returns
+    ``None`` when the screen does not show all ``count + 1`` rows with a cursor.
+    """
+    lines = screen.splitlines()
+    headers = [i for i, line in enumerate(lines) if _AG_QUESTION_HEADER_RE.match(line)]
+    if headers:
+        tail = lines[headers[-1] + 1 :]
+    else:
+        row_re = _AG_MULTI_ROW_RE if multi_select else _AG_ROW_RE
+        starts = [
+            i
+            for i, line in enumerate(lines)
+            if (m := row_re.match(line)) and m.group(2) == "1"
+        ]
+        if not starts:
+            return None
+        tail = lines[starts[-1] :]
+    ticked: set[int] = set()
+    seen: set[int] = set()
+    cursor: int | None = None
+    has_write_in = False
+    for line in tail:
+        stripped = line.strip()
+        if (
+            stripped.startswith("Your answer:")
+            or "↑/↓ Navigate" in line
+            or footer_shows_picker(line)
+        ):
+            break
+        if multi_select:
+            if match := _AG_MULTI_ROW_RE.match(line):
+                row = int(match.group(2)) - 1
+                if 0 <= row < count:
+                    seen.add(row)
+                    if match.group(3).strip():
+                        ticked.add(row)
+                    if match.group(1):
+                        cursor = row
+            elif match := _AG_ROW_RE.match(line):
+                num = int(match.group(2))
+                if num == count + 1:
+                    seen.add(count)
+                    has_write_in = match.group(3).strip().startswith("✓")
+                    if match.group(1):
+                        cursor = count
+        else:
+            if match := _AG_ROW_RE.match(line):
+                row = int(match.group(2)) - 1
+                if 0 <= row <= count:
+                    seen.add(row)
+                    if match.group(1):
+                        cursor = row
+                    if row == count:
+                        has_write_in = match.group(3).strip().startswith("✓")
+    if cursor is None or len(seen) != count + 1:
+        return None
+    return frozenset(ticked), cursor, has_write_in
 
 
 def claude_checklist(screen: str, count: int) -> tuple[frozenset[int], int] | None:
@@ -258,6 +365,61 @@ def _claude_needs_review(questions: list[dict]) -> bool:
     return len(questions) > 1 or any(q.get("multi_select") for q in questions)
 
 
+def _antigravity_question_steps(
+    question: dict, answer: tuple[list[int], str], screen: str = ""
+) -> list[tuple[str, str]]:
+    """Keys for one Antigravity ``ask_question`` page.
+
+    Verified on ``agy 1.5.14`` in tmux: cursor ``>`` starts at row 0 and clamps
+    without wrapping; ``Space`` toggles ``[ ]``/``[x]`` in multi-select without
+    moving the cursor; ``Enter`` on ``Write-in...`` (row ``count``) opens
+    ``Your answer:``; ``Enter`` on a single-select option or inside write-in (or
+    anywhere ``< count`` on multi-select) submits the question and advances, or
+    submits all on the final question.
+    """
+    options = question.get("option_details") or []
+    count = len(options)
+    picked, raw_text = answer
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    multi = bool(question.get("multi_select"))
+    state = antigravity_screen_state(screen, count, multi_select=multi) if screen else None
+    ticked, cursor, has_write_in = state or (frozenset(), 0, False)
+    if multi:
+        steps: list[tuple[str, str]] = []
+        for row in sorted(set(picked) ^ ticked):
+            steps += _cursor_moves(cursor, row)
+            steps.append(("key", "Space"))
+            cursor = row
+        if text:
+            steps += _cursor_moves(cursor, count)
+            steps.append(("key", "Enter"))
+            if has_write_in:
+                steps += [("key", "C-e"), ("key", "C-u")]
+            steps += [("paste", text), ("key", "Enter")]
+            return steps
+        if has_write_in:
+            steps += _cursor_moves(cursor, count)
+            steps += [("key", "Enter"), ("key", "C-e"), ("key", "C-u"), ("key", "Enter")]
+            return steps
+        if cursor >= count and count > 0:
+            steps += _cursor_moves(cursor, count - 1)
+        steps.append(("key", "Enter"))
+        return steps
+    if text:
+        labels = {int(o["id"]): str(o.get("label") or "") for o in options}
+        typed = f"{labels[picked[0]]} — {text}" if picked else text
+        steps = _cursor_moves(cursor, count)
+        steps.append(("key", "Enter"))
+        if has_write_in:
+            steps += [("key", "C-e"), ("key", "C-u")]
+        steps += [("paste", typed), ("key", "Enter")]
+        return steps
+    target = picked[0]
+    if screen and state is None and target < 9:
+        return [("key", str(target + 1))]
+    return _cursor_moves(cursor, target) + [("key", "Enter")]
+
+
 def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[str, str]]:
     """Ordered ``("key", tmux_key)`` / ``("paste", text)`` steps for one picker.
 
@@ -268,6 +430,7 @@ def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[s
     commits. Codex 0.158 (tui
     request_user_input source): a digit commits; ``Down`` to "None of the above"
     + Enter opens notes; Tab on an option opens its note; Enter submits notes.
+    Antigravity 1.5.14: ``Up``/``Down`` + ``Enter`` / ``Space`` / ``Write-in...``.
     """
     steps: list[tuple[str, str]] = []
     for question in questions:
@@ -276,6 +439,9 @@ def key_plan(runtime: str, questions: list[dict], answers: dict) -> list[tuple[s
         picked, text = answers[str(question.get("question_id"))]
         if runtime == "claude":
             steps += _claude_question_steps(question, (picked, text))
+            continue
+        if runtime == "antigravity":
+            steps += _antigravity_question_steps(question, (picked, text))
             continue
         if runtime == "codex":
             if picked and text:
@@ -340,7 +506,9 @@ def _answer_async(pane: str, questions: list[dict], answers: dict) -> None:
 
 def _answer_with_keys(runtime: str, name: str, questions: list[dict], answers: dict) -> None:
     screen = _pane_text(name)
-    if not _picker_visible(runtime, screen) or not _question_on_screen(questions, screen):
+    if not _picker_visible(runtime, screen) or not _question_on_screen(
+        questions, screen, runtime=runtime
+    ):
         raise QuestionOutcome("unavailable", t("remote.question.not_on_screen"))
     sent_any = False
 
@@ -363,6 +531,43 @@ def _answer_with_keys(runtime: str, name: str, questions: list[dict], answers: d
             send(_claude_question_steps(question, answers[str(question.get("question_id"))], screen))
         if _claude_needs_review(questions):
             send([("key", "1")])  # "Submit answers" on the review tab
+    elif runtime == "antigravity":
+        if _antigravity_write_in_open(screen):
+            send([("key", "Escape")])
+            screen = _pane_text(name)
+        pos = antigravity_question_index(screen)
+        if pos is not None and pos[0] > 0:
+            send([("key", "Left")] * pos[0])
+            deadline = time.monotonic() + 1.5
+            screen = _pane_text(name)
+            while True:
+                cur = antigravity_question_index(screen)
+                if cur is None or cur[0] == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    raise QuestionOutcome("unavailable", t("remote.question.partial"))
+                time.sleep(0.1)
+                screen = _pane_text(name)
+        for index, question in enumerate(questions):
+            if index > 0:
+                deadline = time.monotonic() + 1.5
+                screen = _pane_text(name)
+                while True:
+                    cur = antigravity_question_index(screen)
+                    if cur is None or cur[0] == index:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise QuestionOutcome("unavailable", t("remote.question.partial"))
+                    time.sleep(0.1)
+                    screen = _pane_text(name)
+                if _antigravity_write_in_open(screen):
+                    send([("key", "Escape")])
+                    screen = _pane_text(name)
+            send(
+                _antigravity_question_steps(
+                    question, answers[str(question.get("question_id"))], screen
+                )
+            )
     else:
         send(key_plan(runtime, questions, answers))
     deadline = time.monotonic() + _SETTLE_TIMEOUT
@@ -378,13 +583,25 @@ def _pane_text(name: str) -> str:
 
 
 def _picker_visible(runtime: str, screen: str) -> bool:
-    return any(marker in screen for marker in _PICKER_MARKERS.get(runtime, ()))
+    compact = _SPACE_RE.sub(" ", screen)
+    return any(
+        marker in screen or marker in compact
+        for marker in _PICKER_MARKERS.get(runtime, ())
+    )
 
 
-def _question_on_screen(questions: list[dict], screen: str) -> bool:
-    """The first question's prompt (or first option) must be the picker on screen."""
+def _question_on_screen(questions: list[dict], screen: str, *, runtime: str = "") -> bool:
+    """The active question's prompt (or first option) must be the picker on screen."""
     flat = _SPACE_RE.sub("", screen)
-    first = questions[0]
+    target_index = 0
+    if runtime == "antigravity":
+        pos = antigravity_question_index(screen)
+        if pos is not None:
+            cur_idx, total = pos
+            if total != len(questions) or not 0 <= cur_idx < len(questions):
+                return False
+            target_index = cur_idx
+    first = questions[target_index]
     probes = [str(first.get("prompt") or "")]
     probes += [str(o.get("label") or "") for o in (first.get("option_details") or [])[:1]]
     for probe in probes:

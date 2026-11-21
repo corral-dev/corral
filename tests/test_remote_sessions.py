@@ -3039,6 +3039,42 @@ class StartupHydrationTests(unittest.TestCase):
         session["loop_count"] = -5
         self.assertIsNone(hub.session_payload(session)["loop_count"])
 
+    def test_blocked_input_cause_detects_antigravity_question_picker_and_wrapped_footer(self) -> None:
+        normal = (
+            "Question 1/1: Pick one\n"
+            "> 1. A\n  2. Write-in...\n"
+            "  ↑/↓ Navigate · enter Select · esc Skip\n"
+        )
+        wrapped = (
+            "Question 1/2: Pick one\n"
+            "> 1. [ ] A\n  2. Write-in...\n"
+            "  ↑/↓ Navigate · ← Back · space Toggle · enter\n"
+            "  Submit All · esc Skip\n"
+        )
+        write_in = (
+            "Question 1/1: Pick one\n"
+            "  Your answer:\n"
+            "  enter Submit · esc Back\n"
+        )
+        for screen in (normal, wrapped, write_in):
+            self.assertEqual(
+                remote_sessions._blocked_input_cause(screen),
+                remote_sessions.t("remote.err.question_open"),
+            )
+
+    def test_answer_question_wakes_state_loop_on_delivery(self) -> None:
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        session = _session(source="antigravity", sid="ag-q")
+        session["keepalive_name"] = "pane-ag"
+        hub.store.sessions = {"antigravity": [session]}
+        hub._state_wake.clear()
+        with mock.patch.object(hub, "prompts", return_value=[{"request_id": "r1"}]), \
+                mock.patch.object(remote_sessions.questions, "answer", return_value={"status": "delivered"}):
+            res = hub.answer_question("antigravity:ag-q", "r1", [])
+        self.assertEqual(res, {"status": "delivered"})
+        self.assertTrue(hub._state_wake.is_set())
+
 
 if __name__ == "__main__":
 

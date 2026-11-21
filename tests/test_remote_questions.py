@@ -1342,5 +1342,312 @@ class NativeReplyCacheInvalidationTests(unittest.TestCase):
                 self.assertEqual(richmsg.pending_prompts_from_messages(reparsed), [])
 
 
+def _ag_ask_rows(questions_input: list[dict], *, answered: bool = False) -> list[dict]:
+    rows = [
+        {
+            "step_index": 1,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "created_at": "2026-11-22T00:00:00Z",
+            "content": "<user_request>hello</user_request>",
+        },
+        {
+            "step_index": 2,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "created_at": "2026-11-22T00:00:01Z",
+            "content": "Before asking",
+            "tool_calls": [
+                {
+                    "name": "ask_question",
+                    "args": json.dumps({"questions": questions_input}, ensure_ascii=False),
+                }
+            ],
+        },
+    ]
+    if answered:
+        rows.append(
+            {
+                "step_index": 3,
+                "source": "SYSTEM",
+                "type": "GENERIC",
+                "status": "DONE",
+                "created_at": "2026-11-22T00:00:05Z",
+                "content": "A1: Red",
+            }
+        )
+    return rows
+
+
+class AntigravityQuestionTests(unittest.TestCase):
+    Q1 = {
+        "question": "Pick a color",
+        "options": ["Red", "Blue"],
+        "is_multi_select": False,
+    }
+    Q2 = {
+        "question": "Pick pets",
+        "options": ["Cat", "Dog", "Fish"],
+        "is_multi_select": True,
+    }
+
+    def _prompts(self, questions_input: list[dict], *, answered: bool = False) -> list[dict]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "transcript_full.jsonl"
+            _write_jsonl(path, _ag_ask_rows(questions_input, answered=answered))
+            session = {"source": "antigravity", "path": str(path), "id": "ag1", "live": True}
+            return questions.pending_prompts(session, richmsg.RichReader(session).read_all())
+
+    def test_pending_prompts_include_allow_custom_and_blocks_input(self) -> None:
+        prompts = self._prompts([self.Q1, self.Q2])
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual([p["question_id"] for p in prompts], ["0", "1"])
+        self.assertEqual(len({p["request_id"] for p in prompts}), 1)
+        self.assertTrue(all(p["allow_custom"] for p in prompts))
+        self.assertTrue(all(p["blocks_input"] for p in prompts))
+        self.assertFalse(prompts[0]["multi_select"])
+        self.assertTrue(prompts[1]["multi_select"])
+        self.assertEqual([o["label"] for o in prompts[0]["option_details"]], ["Red", "Blue"])
+
+        self.assertEqual(self._prompts([self.Q1, self.Q2], answered=True), [])
+
+    def test_screen_parsers_single_multi_write_in_and_wrapped_footer(self) -> None:
+        single = (
+            "Question\n"
+            "────────────────────────\n"
+            "Question 1/2: Pick a color\n\n"
+            "  1. (Recommended) Red\n"
+            "> 2. ✓ Blue\n"
+            "  3. Write-in...\n\n"
+            "  ↑/↓ Navigate · → Next · enter Select · esc Skip\n"
+        )
+        self.assertEqual(questions.antigravity_question_index(single), (0, 2))
+        self.assertEqual(
+            questions.antigravity_screen_state(single, 2, multi_select=False),
+            (frozenset(), 1, False),
+        )
+        self.assertTrue(questions._picker_visible("antigravity", single))
+
+        multi = (
+            "Question 2/2: Pick pets\n\n"
+            "  1. [x] (Recommended) Cat\n"
+            "  2. [ ] Dog\n"
+            "  3. [x] Fish\n"
+            "> 4. ✓ Hamster\n\n"
+            "  ↑/↓ Navigate · ← Back · space Toggle · enter\n"
+            "  Write-in · esc Skip\n"
+        )
+        self.assertEqual(questions.antigravity_question_index(multi), (1, 2))
+        self.assertEqual(
+            questions.antigravity_screen_state(multi, 3, multi_select=True),
+            (frozenset({0, 2}), 3, True),
+        )
+        self.assertTrue(questions._picker_visible("antigravity", multi))
+        self.assertTrue(
+            questions.footer_shows_picker(
+                "  ↑/↓ Navigate · ← Back · space Toggle · enter\n  Write-in · esc Skip\n"
+            )
+        )
+
+    def test_key_plan_covers_single_multi_custom_and_many_options(self) -> None:
+        many_opts = {"question": "Pick number", "options": [f"Opt{i}" for i in range(1, 11)], "is_multi_select": False}
+        prompts = richmsg.prompt_entries(
+            request_id="ag_r",
+            name="ask_question",
+            questions=_meta(
+                {"question": "Single", "options": ["Red", "Blue"]},
+                {"question": "Combo", "options": ["Red", "Blue"]},
+                {"question": "Free", "options": ["Red", "Blue"]},
+                {"question": "Multi", "multiSelect": True, "options": ["Cat", "Dog", "Fish"]},
+                {"question": "MultiText", "multiSelect": True, "options": ["Cat", "Dog"]},
+                many_opts,
+            ),
+        )
+        answers = questions._validated_answers(
+            prompts,
+            [
+                {"question_id": "0", "selected": ["1"], "text": ""},
+                {"question_id": "1", "selected": ["0"], "text": "more detail"},
+                {"question_id": "2", "selected": [], "text": "custom\nline2"},
+                {"question_id": "3", "selected": ["0", "2"], "text": ""},
+                {"question_id": "4", "selected": ["1"], "text": "Hamster"},
+                {"question_id": "5", "selected": ["9"], "text": ""},
+            ],
+        )
+        self.assertEqual(
+            questions.key_plan("antigravity", prompts, answers),
+            [
+                ("key", "Down"), ("key", "Enter"),
+                ("key", "Down"), ("key", "Down"), ("key", "Enter"), ("paste", "Red — more detail"), ("key", "Enter"),
+                ("key", "Down"), ("key", "Down"), ("key", "Enter"), ("paste", "custom\nline2"), ("key", "Enter"),
+                ("key", "Space"), ("key", "Down"), ("key", "Down"), ("key", "Space"), ("key", "Enter"),
+                ("key", "Down"), ("key", "Space"), ("key", "Down"),
+                ("key", "Enter"), ("paste", "Hamster"), ("key", "Enter"),
+                *[("key", "Down")] * 9, ("key", "Enter"),
+            ],
+        )
+
+    def test_live_screen_steps_preserve_ticks_leave_write_in_and_clear_stale(self) -> None:
+        prompts = richmsg.prompt_entries(
+            request_id="ag_r",
+            name="ask_question",
+            questions=_meta(
+                {"question": "Pick pets", "multiSelect": True, "options": ["Cat", "Dog", "Fish"]},
+                {"question": "Pick color", "options": ["Red", "Blue"]},
+            ),
+        )
+        multi_on_writein = (
+            "Question 1/2: Pick pets\n\n"
+            "  1. [x] Cat\n"
+            "  2. [ ] Dog\n"
+            "  3. [ ] Fish\n"
+            "> 4. Write-in...\n"
+            "  ↑/↓ Navigate · → Next · space Toggle · enter Write-in · esc Skip\n"
+        )
+        ans_keep_cat = questions._validated_answers(
+            prompts[:1], [{"question_id": "0", "selected": ["0"], "text": ""}]
+        )
+        # Must move off Write-in... before Enter so it submits instead of opening Your answer:.
+        self.assertEqual(
+            questions._antigravity_question_steps(prompts[0], ans_keep_cat["0"], multi_on_writein),
+            [("key", "Up"), ("key", "Enter")],
+        )
+
+        multi_stale_writein = (
+            "Question 1/2: Pick pets\n\n"
+            "  1. [x] Cat\n"
+            "  2. [ ] Dog\n"
+            "  3. [ ] Fish\n"
+            "> 4. ✓ OldNote\n"
+            "  ↑/↓ Navigate · → Next · space Toggle · enter Write-in · esc Skip\n"
+        )
+        self.assertEqual(
+            questions._antigravity_question_steps(prompts[0], ans_keep_cat["0"], multi_stale_writein),
+            [("key", "Enter"), ("key", "C-e"), ("key", "C-u"), ("key", "Enter")],
+        )
+
+        ans_new_note = questions._validated_answers(
+            prompts[:1], [{"question_id": "0", "selected": ["0"], "text": "NewNote"}]
+        )
+        self.assertEqual(
+            questions._antigravity_question_steps(prompts[0], ans_new_note["0"], multi_stale_writein),
+            [("key", "Enter"), ("key", "C-e"), ("key", "C-u"), ("paste", "NewNote"), ("key", "Enter")],
+        )
+
+        # Unreadable single-select screen falls back to digit key without assuming cursor=0.
+        ans_blue = questions._validated_answers(
+            prompts[1:], [{"question_id": "1", "selected": ["1"], "text": ""}]
+        )
+        self.assertEqual(
+            questions._antigravity_question_steps(prompts[1], ans_blue["1"], "Question 2/2: Pick color\n"),
+            [("key", "2")],
+        )
+
+    def test_answer_with_keys_rejects_mismatched_question_count(self) -> None:
+        prompts = richmsg.prompt_entries(
+            request_id="ag_r",
+            name="ask_question",
+            questions=_meta(
+                {"question": "Pick color", "options": ["Red", "Blue"]},
+                {"question": "Pick pets", "multiSelect": True, "options": ["Cat", "Dog"]},
+            ),
+        )
+        wrong_total = (
+            "Question 1/3: Pick color\n"
+            "> 1. Red\n  2. Blue\n  3. Write-in...\n"
+            "  ↑/↓ Navigate · → Next · enter Select · esc Skip\n"
+        )
+        with mock.patch.object(questions.embed, "capture", return_value=wrong_total), \
+                mock.patch.object(questions.embed, "send_key") as send_key:
+            result = questions.answer(
+                {"source": "antigravity", "id": "ag1"},
+                prompts,
+                "ag_r",
+                [
+                    {"question_id": "0", "selected": ["0"], "text": ""},
+                    {"question_id": "1", "selected": ["0"], "text": ""},
+                ],
+                pane_name=lambda: "pane-ag",
+            )
+        self.assertEqual(result["status"], "unavailable")
+        send_key.assert_not_called()
+
+    def test_answer_with_keys_exits_writein_rewinds_and_submits(self) -> None:
+        prompts = richmsg.prompt_entries(
+            request_id="ag_r",
+            name="ask_question",
+            questions=_meta(
+                {"question": "Pick color", "options": ["Red", "Blue"]},
+                {"question": "Pick pets", "multiSelect": True, "options": ["Cat", "Dog"]},
+            ),
+        )
+        q2_writein = (
+            "Question 2/2: Pick pets\n"
+            "  1. [ ] Cat\n  2. [ ] Dog\n> 3. Write-in...\n\n"
+            "  Your answer:\n\n"
+            "  enter Submit All · esc Back\n"
+        )
+        q2_list = (
+            "Question 2/2: Pick pets\n"
+            "  1. [ ] Cat\n  2. [ ] Dog\n> 3. Write-in...\n"
+            "  ↑/↓ Navigate · ← Back · space Toggle · enter Write-in · esc Skip\n"
+        )
+        q1_list = (
+            "Question 1/2: Pick color\n"
+            "> 1. Red\n  2. Blue\n  3. Write-in...\n"
+            "  ↑/↓ Navigate · → Next · enter Select · esc Skip\n"
+        )
+        done = "> Accept-edits mode: file edits auto-approved\n"
+        screens = iter([q2_writein, q2_list, q1_list, q2_list, done])
+        with mock.patch.object(questions.embed, "capture", side_effect=lambda *a, **k: next(screens, done)), \
+                mock.patch.object(questions.embed, "send_key", return_value=True) as send_key, \
+                mock.patch.object(questions.embed, "paste", return_value=True) as paste, \
+                mock.patch.object(questions.time, "sleep"):
+            result = questions.answer(
+                {"source": "antigravity", "id": "ag1"},
+                prompts,
+                "ag_r",
+                [
+                    {"question_id": "0", "selected": ["1"], "text": ""},
+                    {"question_id": "1", "selected": ["0"], "text": "Hamster"},
+                ],
+                pane_name=lambda: "pane-ag",
+            )
+        self.assertEqual(result, {"status": "delivered"})
+        self.assertEqual(
+            [c.args[1] for c in send_key.call_args_list],
+            ["Escape", "Left", "Down", "Enter", "Up", "Up", "Space", "Down", "Down", "Enter", "Enter"],
+        )
+        paste.assert_called_once_with("pane-ag", "Hamster")
+
+    def test_answer_with_keys_returns_partial_when_picker_remains_open(self) -> None:
+        prompts = richmsg.prompt_entries(
+            request_id="ag_r",
+            name="ask_question",
+            questions=_meta({"question": "Pick color", "options": ["Red", "Blue"]}),
+        )
+        q1_list = (
+            "Question 1/1: Pick color\n"
+            "> 1. Red\n  2. Blue\n  3. Write-in...\n"
+            "  ↑/↓ Navigate · enter Select · esc Skip\n"
+        )
+        ticks = iter([0.0, 0.0, 1.0, 5.0])
+        with mock.patch.object(questions.embed, "capture", return_value=q1_list), \
+                mock.patch.object(questions.embed, "send_key", return_value=True), \
+                mock.patch.object(questions.time, "monotonic", side_effect=lambda: next(ticks, 10.0)), \
+                mock.patch.object(questions.time, "sleep"):
+            result = questions.answer(
+                {"source": "antigravity", "id": "ag1"},
+                prompts,
+                "ag_r",
+                [{"question_id": "0", "selected": ["0"], "text": ""}],
+                pane_name=lambda: "pane-ag",
+            )
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("open", result["detail"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -312,13 +312,16 @@ def _pane_shows_blocking_dialog(plain: str) -> bool:
 
 
 def _pane_shows_question_picker(plain: str) -> bool:
-    """True when the footer is an open question picker (Claude, Codex).
+    """True when the footer is an open question picker (Claude, Codex, Antigravity).
 
     The picker drops pasted text and Enter ticks or picks the row under the
     cursor, so a chat message would vanish and corrupt the pending answer.
     """
     lines = [line for line in plain.splitlines() if line.strip()]
-    return any(questions.footer_shows_picker(line) for line in lines[-_DIALOG_FOOTER_LINES:])
+    tail = lines[-_DIALOG_FOOTER_LINES:]
+    if any(questions.footer_shows_picker(line) for line in tail):
+        return True
+    return bool(tail) and questions.footer_shows_picker(" ".join(line.strip() for line in tail))
 
 
 def _blocked_input_cause(raw: str | None) -> str | None:
@@ -2602,13 +2605,16 @@ class SessionHub:
     def answer_question(self, key: str, request_id: str, answers: object) -> dict:
         """Finish the pending native question; never falls back to a chat turn."""
         session = self.require_session(key)
-        return questions.answer(
+        result = questions.answer(
             session,
             self.prompts(key),
             request_id,
             answers,
             pane_name=lambda: self._keepalive_name(key),
         )
+        if result.get("status") == "delivered":
+            self._state_wake.set()
+        return result
 
     def projects(self) -> list[dict]:
         # path/name 与 iOS NewSessionSheet 对齐；cwd/label 保留给桌面侧同一套项目列表语义。
