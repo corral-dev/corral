@@ -26,42 +26,39 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 退出码：`0` 成功、`1` 一般失败（含未预料的 `internal_error`）、`2` 用法错误（参数不对，含未知 `--fields`）、`3` 会话不存在、`5` 会话标识有歧义。
 不要只看 stdout 是否有内容来判断成功，检查退出码或 `ok` 字段。
 
-## 安装与探针（CLI 缺失时不要停下问人）
+## 直接调用与缺失安装（无需每次先探针）
 
-调任何子命令前先确认入口与能力。`corral` 不在 PATH 上时，按下面可信源装到用户目录后继续原任务（用户要这个能力即已授权用户目录安装；`sudo`/系统目录/覆盖已装版本仍需显式授权）：
+查询命令直接执行 `corral ...` 即可，**不要在普通查询前每次都跑 `command -v corral`、`--version`、`describe` 或 `diagnose`**，也不要在每条 shell 命令里重复 `CORRAL_BIN="$(command -v corral)"`。
+
+仅当 `corral` 不在 PATH、报错缺少预期参数，或明确处于 `Corral` 源码开发排查多副本冲突时，再做定位/安装/诊断（用户要这个能力即已授权用户目录安装；`sudo`/系统目录/覆盖已装版本仍需显式授权）：
 
 - 可信源：`github.com/corral-dev/corral`（`corral` 不在 PyPI，无 `pipx install corral`）。安装渠道三选一：`brew install x0c/tap/corral`、`curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash`、源码树内 `bash cli/scripts/dev-install.sh`（editable，供开发）。
-- 装完先钉绝对路径并验能力（之后全会话只用该绝对路径；`next_commands` 给的即是）：
-
-```bash
-CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
-"$CORRAL_BIN" describe >/dev/null && echo describe-ok
-"$CORRAL_BIN" diagnose | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['ok']; print('diagnose-ok', d['data']['version'])"
-```
-
-- `diagnose` 的 `package_file` / `install_channel` / `stale_source_warning` 告诉你当前跑的是哪份拷贝；源码树里开发却加载了别处副本时会有告警，以告警为准换入口。
-- `diagnose` 的 `keepalive_server` 报告保活 tmux server 的调度档（`priority`、`interactive_job`、`clamped`）。`clamped: true` 表示托管助手整体被 macOS 限流（新会话起得慢、同样的活比 Corral 外慢数倍）；只能重启一次 server 解决，见 `docs/MAINTAINER_GUIDE.md`「Keepalive server scheduling class」。
-- 源码树 editable 安装用于维护和开发，不会替代环境准备。跑耗时检查前先用 `python3 scripts/dev_env.py check --repo .` 确认就绪（未就绪时跑 `python3 scripts/dev_env.py prepare --repo .`；只诊断用 `doctor --repo . --json`，命令经 `run --repo . -- <cmd>` 走 checkout `.venv`），再按 [测试环境指南](TEST_ENVIRONMENT_GUIDE.md)（`python3 scripts/acceptance.py --json`，只演练用 `--dry-run`）做隔离验收；focused acceptance 不代替完整 UI/终端及干净安装门禁。安装/依赖失败应先按环境问题处理，不要误判成会话查询结果为空。
+- 仅在刚安装完、或怀疑 PATH 上存在多份旧副本时，用 `corral diagnose` 检查 `package_file` / `install_channel` / `stale_source_warning` 与 `keepalive_server`（`clamped: true` 表示保活 tmux server 被 macOS 限流，需重启一次 server，见 `docs/MAINTAINER_GUIDE.md`「Keepalive server scheduling class」）。
+- 源码树开发测试前用 `python3 scripts/dev_env.py check --repo .` 确认就绪（未就绪时 `prepare`），隔离验收见 [测试环境指南](TEST_ENVIRONMENT_GUIDE.md)。安装/依赖失败应按环境问题处理，不要误判成会话查询结果为空。
 
 ## 命令
 
 公开运行时仅 Claude Code、Codex、OpenCode、Cursor、Pi 和 Antigravity；Kimi 兼容实现 dormant，不在公开入口中展示。
 
-跑 `corral --help` 查看全部公开命令；`corral <command> --help` 查看具体用法。
-跑 `corral describe` 获取会话数据命令的机器可读参数说明（与实现同源，不会漂移）；
-`corral describe <command>` 看单个命令的完整参数和输出字段。
+跑 `corral --help` 查看全部公开命令；`corral describe [command]` 看机器可读参数和输出字段（与实现同源）。
 
 | 命令 | 用途 |
 | --- | --- |
-| `corral list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--keepalive] [--fields a,b] [--fresh]` | 结构化列出会话 |
-| `corral search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--keepalive] [--fields a,b]` | 按主题找会话 |
-| `corral show <会话> [--messages N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 对话内容 |
-| `corral share <会话> [--out 路径] [--compact]` | 导出含 thinking / 工具调用的统一 transcript，给其他 Agent 做元认知 |
+| `corral list [--since T] [--until T] [--runtime R] [--limit N] [--top N] [--format json\|tsv] [--compact] [--status S] [--cwd 子串] [--live] [--keepalive] [--fields a,b] [--out 路径] [--fresh]` | 结构化列出会话（浏览近期会话优先 `--since 7d --format tsv`，零截断、无需 Python 二次解析） |
+| `corral search <关键词...> [--any] [--since T] [--until T] [--deep] [--scope conversation\|activity] [--project 路径] [--runtime R] [--limit N] [--top N] [--format json\|tsv] [--compact] [--live] [--keepalive] [--fields a,b] [--out 路径] [--fresh]` | 按主题或工具调用找会话（默认复用共享索引；`--any` 为 OR 匹配） |
+| `corral show <会话> [--messages/--last N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 纯文本对话内容 |
+| `corral share <会话> [--events 类型,...] [--grep 子串] [--tail N] [--out 路径] [--compact]` | 导出或按事件类型/关键词过滤统一 transcript（含 `tool_call`/`tool_result`/`thinking`） |
 | `corral export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话，合并为一个 JSON |
+| `corral peers [--project 路径] [--recent H] [--top N] [--format json\|tsv] [--compact]` | 发现并行运行的其他 Agent 会话（优先 `--format tsv` 避免截断） |
 | `corral context <会话>` | 生成接续该会话所需的上下文数据包 |
 | `corral plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
 | `corral describe [command]` | 查看命令 / 参数 / 输出字段说明 |
-| `corral diagnose` | 只读诊断：当前及上一段 events/embed-error 日志、stacks.log、`last_error`、截图目录、tmux、保活 server 调度档（`keepalive_server`）、TCC 身份归因（`tcc_identity`，macOS 弹窗署名问题先看它）、配色自检和**安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
+| `corral diagnose` | 只读诊断：日志、`last_error`、tmux、`keepalive_server`、`tcc_identity` 与安装路径；不启动 TUI |
+
+> **低摩擦要点**：
+> - 浏览/筛选会话优先 `--format tsv`（每行一条 `runtime:id\ttime\tstatus\tattention\tcwd\ttitle`，几十条也不会被工具截断，且可直接复制 `ref` 给 `show`/`share`/`send`）；只有需要结构化字段时才用 `--compact` / `--fields`。
+> - `--compact` 的默认字段集不含 `time`、`cwd`、`pid`；需要这些字段时请显式传 `--fields` 或直接用 `--format tsv`。
+> - `corral share` 的 `data.events[]` 核心字段为 `type`（`user_message` / `assistant_message` / `thinking` / `tool_call` / `tool_result`）、`name`（工具名）、`input`（入参）、`output`（结果）、`status`（`ok`/`error`）、`text`（正文）。查工具调用优先直接用 `--events tool_call,tool_result --grep <词> --tail 30`，不必先整份落盘再手写脚本。
 
 
 ### 会话标识（`<会话>` 参数）
@@ -338,9 +335,16 @@ sessions are resumed; hosted sessions receive input in their current terminal.
 Alternatively, `run create --runtime <id> --cwd <absolute-project>` starts a fresh
 session with an optional `--model`. OpenCode rejects explicit model selection.
 
-Use `run status`, bounded `run wait`, cursor-based `run events` and `run result`
-to observe the same durable operation. `run message`, `run answer` and
-`run interrupt` require its current version and a message idempotency key. Unknown
+Use `run status`, bounded `run wait` (`--until actionable|settled|delivered`),
+cursor-based `run events` and `run result` to observe the same durable operation.
+`delivery: accepted` means queued locally (not sent yet); use `run wait <run_id>
+--until delivered` before reporting delivery. `run status` exposes
+`delivery_meaning`, effective `on_busy` / `queue_timeout` / `queue_remaining_s`,
+`blocked_by`, and non-fatal `warnings` (for example `mixed_attribution_active`,
+`blocked_by_mixed_attribution`, or `blocked_by_stalled_run`). `run message`,
+`run answer`, `run interrupt` and `run withdraw` require the run's current
+version (`run interrupt` cancels `accepted`/`queued` runs synchronously;
+`run withdraw` cancels a still-`queued` control/follow-up message). Unknown
 delivery must be reconciled, never blindly resubmitted; `run recover` restarts
 monitoring without retyping uncertain input. `completed` proves the correlated
 agent turn ended; repository tests and acceptance remain independent evidence.

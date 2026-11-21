@@ -106,6 +106,64 @@ def _print_envelope(payload: dict, compact: bool = False) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _tsv_cell(value) -> str:
+    return str(value if value is not None else "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _print_tsv(command: str, data: dict) -> None:
+    """Compact tab-separated summary for list/search/peers (low-token, avoids stdout truncation)."""
+    if command == "peers":
+        print("ref\tstate\treachable\tsame_project\tproject\ttitle")
+        for peer in data.get("peers") or []:
+            print("\t".join((
+                _tsv_cell(peer.get("ref")),
+                _tsv_cell(peer.get("state")),
+                "true" if peer.get("reachable") else "false",
+                "true" if peer.get("same_project") else "false",
+                _tsv_cell(peer.get("project") or peer.get("cwd")),
+                _tsv_cell(_trim(peer.get("title"), 80)),
+            )))
+        print(f"# self={data.get('self') or 'none'} count={data.get('count', 0)}")
+        return
+
+    is_search = command == "search"
+    header = "ref\ttime\tstatus\tattention\tcwd\ttitle"
+    if is_search:
+        header += "\tscore\tmatched_via"
+    print(header)
+    sessions = data.get("sessions") or []
+    for session in sessions:
+        ref = f"{session.get('runtime') or ''}:{session.get('id') or session.get('short_id') or ''}"
+        time_str = session.get("time")
+        if not time_str and session.get("mtime"):
+            time_str = format_message_time(session["mtime"])
+        cols = [
+            _tsv_cell(ref),
+            _tsv_cell(time_str),
+            _tsv_cell(session.get("status")),
+            _tsv_cell(session.get("attention")),
+            _tsv_cell(session.get("cwd_display") or session.get("cwd")),
+            _tsv_cell(_trim(session.get("title"), 80)),
+        ]
+        if is_search:
+            cols.append(_tsv_cell(session.get("score")))
+            cols.append(_tsv_cell(session.get("matched_via")))
+        print("\t".join(cols))
+    meta_parts = [
+        f"returned={data.get('returned', len(sessions))}",
+        f"matched={data.get('matched', len(sessions))}",
+        f"scanned={data.get('scanned', 0)}",
+        f"potentially_limited={'true' if data.get('potentially_limited') else 'false'}",
+    ]
+    truncated = data.get("truncated_runtimes") or []
+    if truncated:
+        meta_parts.append(f"truncated={','.join(truncated)}")
+    failed = data.get("failed_runtimes") or {}
+    if failed:
+        meta_parts.append(f"failed={','.join(sorted(failed))}")
+    print("# " + " ".join(meta_parts))
+
+
 def _bin() -> str:
     """当前 CLI 的绝对入口身份：next_commands 必须保持它，而不是裸命令名。
 
@@ -485,10 +543,50 @@ def _score_quick_match(session: dict, title: str, keywords: list[str]) -> tuple[
     return score, matched
 
 
+def _parse_time_range(args) -> tuple[float | None, float | None]:
+    raw_since = getattr(args, "since", None)
+    raw_until = getattr(args, "until", None)
+    since = _parse_time_bound(raw_since, is_until=False) if isinstance(raw_since, str) and raw_since else None
+    until = _parse_time_bound(raw_until, is_until=True) if isinstance(raw_until, str) and raw_until else None
+    if since is not None and until is not None and since > until:
+        raise ApiError("usage_error", "起始时间晚于结束时间", EXIT_USAGE)
+    return since, until
+
+
+def _in_time_range(mtime, since: float | None, until: float | None) -> bool:
+    if since is not None and (mtime is None or mtime < since):
+        return False
+    if until is not None and (mtime is None or mtime > until):
+        return False
+    return True
+
+
+def _write_list_out(envelope: dict, out: str, *, compact: bool, summary: dict) -> dict:
+    output_path = _resolve_out_path(out)
+    with open(output_path, "w", encoding="utf-8") as fp:
+        json.dump(
+            envelope,
+            fp,
+            ensure_ascii=False,
+            separators=(",", ":") if compact else None,
+            indent=None if compact else 2,
+        )
+        fp.write("\n")
+    summary["output_path"] = output_path
+    summary["output_bytes"] = os.path.getsize(output_path)
+    summary["sessions_omitted"] = True
+    return _ok(summary)
+
+
 def cmd_list(args, registry) -> dict:
+    since, until = _parse_time_range(args)
     compact = getattr(args, "compact", False)
+    fmt = getattr(args, "format", None)
     top = getattr(args, "top", None)
-    fields = _parse_fields(getattr(args, "fields", None), DEFAULT_LIST_FIELDS if compact else None)
+    raw_fields = getattr(args, "fields", None)
+    raw_fields = raw_fields if isinstance(raw_fields, str) else None
+    default_fields = None if fmt == "tsv" else (DEFAULT_LIST_FIELDS if compact else None)
+    fields = _parse_fields(raw_fields, default_fields)
     _check_fields(fields, _SESSION_FIELD_NAMES, "list")
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
@@ -503,6 +601,8 @@ def cmd_list(args, registry) -> dict:
     candidates = []
     for runtime in runtimes:
         for session in scanned[runtime.id]:
+            if not _in_time_range(session.get("mtime"), since, until):
+                continue
             if args.status and STATUS_LABELS.get(session.get("status_tag") or "", "unknown") != args.status:
                 continue
             if args.cwd and args.cwd.lower() not in str(session.get("cwd") or "").lower():
@@ -532,6 +632,10 @@ def cmd_list(args, registry) -> dict:
     }
     data.update(coverage)
     data.update(source)
+    out = getattr(args, "out", None)
+    if isinstance(out, str) and out:
+        summary = {k: v for k, v in data.items() if k != "sessions"}
+        return _write_list_out(_ok(data), out, compact=compact, summary=summary)
     return _ok(data)
 
 
@@ -634,38 +738,54 @@ def _activity_text(event) -> str:
     return "\n".join(parts)
 
 
-def _activity_match(session: dict, keywords: list[str]) -> str | None:
+def _keywords_match(text: str, keywords: list[str], *, any_match: bool) -> bool:
+    if any_match:
+        return any(kw in text for kw in keywords)
+    return all(kw in text for kw in keywords)
+
+
+def _activity_match(session: dict, keywords: list[str], *, any_match: bool = False) -> str | None:
     """Search normalized tool calls/results too (SessKit activity), e.g. edited paths and commands."""
     import sesskit
 
     events = sesskit.load_activity(session).events
     texts = [_activity_text(e) for e in events]
-    if not all(any(kw in t.lower() for t in texts) for kw in keywords):
+    matcher = any if any_match else all
+    if not matcher(any(kw in t.lower() for t in texts) for kw in keywords):
         return None
     for text in texts:
         low = text.lower()
-        index = low.find(keywords[0])
-        if index >= 0:
-            start = max(0, index - 60)
-            return text[start:index + len(keywords[0]) + 100].replace("\n", " ")
+        for kw in keywords:
+            index = low.find(kw)
+            if index >= 0:
+                start = max(0, index - 60)
+                return text[start:index + len(kw) + 100].replace("\n", " ")
     return None
 
 
 def cmd_search(args, registry) -> dict:
+    since, until = _parse_time_range(args)
     keywords = [k.lower() for k in args.keywords]
+    any_match = getattr(args, "any", None) is True
     scope = getattr(args, "scope", None) if isinstance(getattr(args, "scope", None), str) else "conversation"
     raw_project = getattr(args, "project", None)
     project = os.path.realpath(os.path.expanduser(raw_project)) if isinstance(raw_project, str) else None
     if scope == "activity" and not args.deep:
         raise ApiError("usage_error", "--scope activity requires --deep", EXIT_USAGE)
     compact = getattr(args, "compact", False)
+    fmt = getattr(args, "format", None)
     top = getattr(args, "top", None)
-    fields = _parse_fields(getattr(args, "fields", None), DEFAULT_SEARCH_FIELDS if compact else None)
+    raw_fields = getattr(args, "fields", None)
+    raw_fields = raw_fields if isinstance(raw_fields, str) else None
+    default_fields = None if fmt == "tsv" else (DEFAULT_SEARCH_FIELDS if compact else None)
+    fields = _parse_fields(raw_fields, default_fields)
     _check_fields(fields, _SESSION_FIELD_NAMES | _SEARCH_EXTRA_FIELDS, "search")
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
 
-    scanned, failures = _scan_runtimes(runtimes, args.limit)
+    scanned, failures, source = _list_scan(
+        registry, runtimes, args.limit, fresh=getattr(args, "fresh", None) is True,
+    )
     flat = [session for bucket in scanned.values() for session in bucket]
     liveness.annotate(flat)
     _attach_attention(flat)
@@ -674,6 +794,8 @@ def cmd_search(args, registry) -> dict:
     history_failures = []
     for runtime in runtimes:
         for session in scanned[runtime.id]:
+            if not _in_time_range(session.get("mtime"), since, until):
+                continue
             # 用 `is True` 而不是 truthy：AgentApiTests 里的 args 常是裸 mock.Mock()，
             # 没显式设置的属性会自动生成一个真值 Mock（不是抛异常/落回默认值），
             # truthy 判断会让老测试静默被过滤成"只剩 live 会话"。
@@ -695,7 +817,7 @@ def cmd_search(args, registry) -> dict:
             ]
             haystack = " ".join(filter(None, quick_parts)).lower()
 
-            if all(kw in haystack for kw in keywords):
+            if _keywords_match(haystack, keywords, any_match=any_match):
                 score, matched_fields = _score_quick_match(session, title, keywords)
                 results.append((score, "quick", matched_fields, runtime, session, None))
             elif args.deep:
@@ -706,7 +828,7 @@ def cmd_search(args, registry) -> dict:
                                              "error": str(exc) or type(exc).__name__})
                     messages = []
                 full_text = "\n".join(m.text for m in messages).lower()
-                if all(kw in full_text for kw in keywords):
+                if _keywords_match(full_text, keywords, any_match=any_match):
                     score, matched_fields = _score_quick_match(session, title, keywords)
                     matched_fields = matched_fields + ["conversation"]
                     score += 10
@@ -714,7 +836,7 @@ def cmd_search(args, registry) -> dict:
                     results.append((score, "deep", matched_fields, runtime, session, snippet))
                 elif scope == "activity":
                     try:
-                        snippet = _activity_match(session, keywords)
+                        snippet = _activity_match(session, keywords, any_match=any_match)
                     except Exception as exc:  # noqa: BLE001 - preserve incomplete activity coverage
                         history_failures.append({"session_ref": session_key(session), "scope": "activity",
                                                  "error": str(exc) or type(exc).__name__})
@@ -744,6 +866,7 @@ def cmd_search(args, registry) -> dict:
 
     data = {
         "query": args.keywords,
+        "match_mode": "any" if any_match else "all",
         "deep": args.deep,
         "scope": scope,
         "project": project,
@@ -755,6 +878,11 @@ def cmd_search(args, registry) -> dict:
         "returned": len(sessions),
     }
     data.update(coverage)
+    data.update(source)
+    out = getattr(args, "out", None)
+    if isinstance(out, str) and out:
+        summary = {k: v for k, v in data.items() if k != "sessions"}
+        return _write_list_out(_ok(data), out, compact=compact, summary=summary)
     return _ok(data)
 
 
@@ -992,6 +1120,63 @@ def export_share_to_cache(session: dict, registry, *, compact: bool = True) -> s
     )
 
 
+_SHARE_EVENT_TYPES = frozenset({
+    "user_message", "assistant_message", "thinking", "tool_call", "tool_result",
+})
+
+
+def _share_event_text(event: dict) -> str:
+    parts = [str(event.get("text") or ""), str(event.get("name") or "")]
+    for key in ("input", "output"):
+        val = event.get(key)
+        if val is None:
+            continue
+        try:
+            parts.append(val if isinstance(val, str) else json.dumps(val, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            continue
+    return "\n".join(parts).lower()
+
+
+def _filter_share_events(args, payload: dict) -> dict:
+    raw_events = getattr(args, "events", None)
+    raw_grep = getattr(args, "grep", None)
+    raw_tail = getattr(args, "tail", None)
+    types: set[str] | None = None
+    if isinstance(raw_events, str) and raw_events.strip():
+        requested = [t.strip() for t in raw_events.split(",") if t.strip()]
+        unknown = [t for t in requested if t not in _SHARE_EVENT_TYPES]
+        if unknown:
+            raise ApiError(
+                "usage_error",
+                f"未知事件类型：{', '.join(unknown)}（可用：{', '.join(sorted(_SHARE_EVENT_TYPES))}）",
+                EXIT_USAGE,
+            )
+        types = set(requested)
+    grep = raw_grep.lower() if isinstance(raw_grep, str) and raw_grep else None
+    tail = raw_tail if isinstance(raw_tail, int) and not isinstance(raw_tail, bool) else None
+    if tail is not None and tail <= 0:
+        raise ApiError("usage_error", "--tail 必须为正整数", EXIT_USAGE)
+
+    if types is None and grep is None and tail is None:
+        return payload
+
+    events = list(payload.get("events") or [])
+    total = len(events)
+    if types is not None:
+        events = [e for e in events if e.get("type") in types]
+    if grep is not None:
+        events = [e for e in events if grep in _share_event_text(e)]
+    if tail is not None:
+        events = events[-tail:]
+
+    payload["event_count_total"] = total
+    payload["events"] = events
+    payload["event_count"] = len(events)
+    payload["counts"] = count_events(events)
+    return payload
+
+
 def cmd_share(args, registry) -> dict:
     """导出单条会话的统一 transcript（含 thinking / 工具调用），供其他 Agent 做元认知。
 
@@ -1000,7 +1185,7 @@ def cmd_share(args, registry) -> dict:
     session = resolve_ref(registry, args.session, args.limit)
     compact = getattr(args, "compact", False)
     out = getattr(args, "out", None)
-    payload = build_share_payload(session, registry)
+    payload = _filter_share_events(args, build_share_payload(session, registry))
 
     if not out:
         return _ok(payload)
@@ -1017,6 +1202,8 @@ def cmd_share(args, registry) -> dict:
         "counts": payload["counts"],
         "events_omitted": True,
     })
+    if "event_count_total" in payload:
+        summary["event_count_total"] = payload["event_count_total"]
     return _ok(summary)
 
 
@@ -1207,9 +1394,12 @@ COMMANDS = [
         "help": "结构化列出已注册运行时的会话",
         "risk": "read",
         "args": [
+            {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：2026-07-20 / '2026-07-20 15:30' / 7d、24h、30m / Unix 时间戳"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since；只给日期时按当天 23:59:59 计"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / cursor / pi / antigravity）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
+            {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "输出格式：json（默认结构化 envelope）或 tsv（超紧凑单行摘要，避免截断）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
             {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
@@ -1219,6 +1409,7 @@ COMMANDS = [
                 "kwargs": {"action": "store_true", "help": "只返回正挂在 corral 后台保活（tmux）里的会话"},
             },
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
+            {"flags": ["--out"], "kwargs": {"help": "把完整 JSON 结果写入指定文件，stdout 只返回文件引用摘要"}},
             {
                 "flags": ["--fresh"],
                 "kwargs": {
@@ -1268,13 +1459,17 @@ COMMANDS = [
         "help": "按关键词搜会话；默认搜标题/首尾消息/目录，--deep 时额外全文搜索对话内容",
         "risk": "read",
         "args": [
-            {"flags": ["keywords"], "kwargs": {"nargs": "+", "help": "关键词（多个关键词为 AND 关系）"}},
+            {"flags": ["keywords"], "kwargs": {"nargs": "+", "help": "关键词（默认 AND 关系，传 --any 改为 OR 关系）"}},
+            {"flags": ["--any"], "kwargs": {"action": "store_true", "help": "命中任意一个关键词即返回（OR 关系，避免循环搜索）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：7d/24h/30m、YYYY-MM-DD 或 Unix 时间戳（在 --deep 前过滤）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since"}},
             {"flags": ["--deep"], "kwargs": {"action": "store_true", "help": "对未命中的会话额外读取完整对话内容再搜一遍（较慢）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--runtime"], "kwargs": {"help": "只搜指定运行时"}},
             {"flags": ["--project"], "kwargs": {"help": "Only sessions whose cwd is this absolute project directory or below it"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--scope"], "kwargs": {"choices": ["conversation", "activity"], "default": "conversation", "help": "With --deep: conversation text only, or also normalized tool calls/results (paths, commands, patches)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条参与搜索"}},
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
+            {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "输出格式：json（默认）或 tsv（超紧凑单行摘要）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
             {"flags": ["--live"], "kwargs": {"action": "store_true", "help": "只返回进程仍在运行的会话"}},
             {
@@ -1282,6 +1477,8 @@ COMMANDS = [
                 "kwargs": {"action": "store_true", "help": "只返回正挂在 corral 后台保活（tmux）里的会话"},
             },
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
+            {"flags": ["--out"], "kwargs": {"help": "把完整 JSON 结果写入指定文件，stdout 只返回文件引用摘要"}},
+            {"flags": ["--fresh"], "kwargs": {"action": "store_true", "help": "跳过共享扫描索引，强制本机重新扫描"}},
         ],
         "fields": {
             "scope": "conversation or activity (activity also matched normalized tool records)",
@@ -1305,7 +1502,7 @@ COMMANDS = [
         "risk": "read",
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
-            {"flags": ["--messages"], "kwargs": {"type": int, "help": "只显示最后 N 条消息（默认 20）"}},
+            {"flags": ["--messages", "--last"], "kwargs": {"dest": "messages", "type": int, "help": "只显示最后 N 条消息（默认 20）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--full"], "kwargs": {"action": "store_true", "help": "显示完整对话，忽略 --messages"}},
             {"flags": ["--out"], "kwargs": {"help": "把 show 结果写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
@@ -1354,6 +1551,9 @@ COMMANDS = [
         "risk": "read",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
+            {"flags": ["--events"], "kwargs": {"help": "逗号分隔的事件类型过滤：user_message,assistant_message,thinking,tool_call,tool_result"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--grep"], "kwargs": {"help": "按子串过滤事件（大小写不敏感，匹配 text/name/input/output）"}},
+            {"flags": ["--tail"], "kwargs": {"type": int, "help": "只保留最后 N 条匹配事件"}},
             {"flags": ["--out"], "kwargs": {"help": "把完整 transcript 写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
@@ -1421,6 +1621,7 @@ COMMANDS = [
             {"flags": ["--recent"], "kwargs": {"type": float, "help": "Also include stopped sessions active within this many hours"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 60, "help": "Sessions scanned per runtime"}},
             {"flags": ["--top"], "kwargs": {"type": int, "help": "Return at most this many peers"}},
+            {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "Output format: json (default) or tsv (compact one-line rows)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {
@@ -1906,7 +2107,10 @@ def dispatch(argv: list[str]) -> int:
         }, compact=getattr(args, "compact", False))
         return EXIT_ERROR
 
-    _print_envelope(result, compact=getattr(args, "compact", False))
+    if getattr(args, "format", "json") == "tsv" and not getattr(args, "out", None):
+        _print_tsv(args.command, result["data"])
+    else:
+        _print_envelope(result, compact=getattr(args, "compact", False))
     return EXIT_OK
 
 

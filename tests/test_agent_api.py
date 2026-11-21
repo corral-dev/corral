@@ -815,6 +815,122 @@ class AgentFriendlyContractTests(unittest.TestCase):
     def test_bin_returns_usable_identity(self) -> None:
         self.assertTrue(agent_api._bin())
 
+    def test_list_since_until_and_out(self) -> None:
+        now = time.time()
+        s_old = {
+            "source": "fake", "id": "old00001", "short_id": "old00001",
+            "title": "Old session", "cwd": "/tmp/a", "cwd_display": "/tmp/a",
+            "mtime": now - 10 * 86400, "time": "old", "status_tag": "✅ 完成",
+        }
+        s_new = {
+            "source": "fake", "id": "new00002", "short_id": "new00002",
+            "title": "Recent session", "cwd": "/tmp/b", "cwd_display": "/tmp/b",
+            "mtime": now - 3600, "time": "1h ago", "status_tag": "✅ 完成",
+        }
+        reg = RuntimeRegistry((FakeRuntime([s_new, s_old], {}),))
+        out_path = os.path.join(self._tmpdir.name, "list.json")
+        res = agent_api.cmd_list(
+            self._list_args(since="2d", until=None, out=out_path),
+            reg,
+        )
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["data"]["sessions_omitted"])
+        self.assertEqual(res["data"]["count"], 1)
+        written = json.loads(Path(out_path).read_text(encoding="utf-8"))
+        self.assertEqual([s["id"] for s in written["data"]["sessions"]], ["new00002"])
+
+    def test_list_and_search_tsv_format(self) -> None:
+        now = time.time()
+        s1 = {
+            "source": "fake", "id": "aaaa1111-full", "short_id": "aaaa1111",
+            "fallback_title": "Alpha task", "cwd": "/tmp/proj", "cwd_display": "~/proj",
+            "mtime": now - 120, "status_tag": "✅已完成",
+        }
+        s2 = {
+            "source": "fake", "id": "bbbb2222-full", "short_id": "bbbb2222",
+            "fallback_title": "Beta task", "cwd": "/tmp/proj", "cwd_display": "~/proj",
+            "mtime": now - 7200, "status_tag": "✅已完成",
+        }
+        reg = RuntimeRegistry((FakeRuntime([s1, s2], {}),))
+        with (
+            mock.patch.object(agent_api, "default_registry", return_value=reg),
+            mock.patch("corral.scan_index.try_consume", return_value=None),
+            mock.patch("corral.scan_index.publish"),
+        ):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = agent_api.dispatch(["list", "--since", "1h", "--format", "tsv"])
+            self.assertEqual(rc, agent_api.EXIT_OK)
+            lines = buf.getvalue().strip().splitlines()
+            self.assertEqual(lines[0], "ref\ttime\tstatus\tattention\tcwd\ttitle")
+            self.assertTrue(lines[1].startswith("fake:aaaa1111-full\t"))
+            self.assertIn("\tdone\t", lines[1])
+            self.assertTrue(lines[1].endswith("\t~/proj\tAlpha task"))
+            self.assertTrue(lines[-1].startswith("# returned=1 matched=1 "))
+
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = agent_api.dispatch(["search", "alpha", "beta", "--any", "--format", "tsv"])
+            self.assertEqual(rc2, agent_api.EXIT_OK)
+            lines2 = buf2.getvalue().strip().splitlines()
+            self.assertEqual(lines2[0], "ref\ttime\tstatus\tattention\tcwd\ttitle\tscore\tmatched_via")
+            self.assertEqual(len(lines2), 4)  # header + 2 rows + footer
+
+    def test_search_any_and_since_filters_before_deep(self) -> None:
+        now = time.time()
+        s_old = {
+            "source": "fake", "id": "old1", "short_id": "old1",
+            "title": "Unrelated", "cwd": "/tmp", "mtime": now - 10 * 86400, "status_tag": "✅ 完成",
+        }
+        s_new = {
+            "source": "fake", "id": "new1", "short_id": "new1",
+            "title": "Unrelated", "cwd": "/tmp", "mtime": now - 600, "status_tag": "✅ 完成",
+        }
+        conv = {
+            "old1": [ConversationMessage("user", "needle_one")],
+            "new1": [ConversationMessage("user", "needle_two")],
+        }
+        reg = RuntimeRegistry((FakeRuntime([s_new, s_old], conv),))
+        args = argparse_namespace(
+            keywords=["needle_one", "needle_two"], any=True, since="1d", until=None,
+            deep=True, runtime=None, limit=50, top=None, fields=None, compact=False,
+        )
+        res = agent_api.cmd_search(args, reg)
+        self.assertEqual(res["data"]["match_mode"], "any")
+        self.assertEqual([s["id"] for s in res["data"]["sessions"]], ["new1"])
+
+    def test_show_last_alias(self) -> None:
+        parser = agent_api.build_parser()
+        parsed = parser.parse_args(["show", "aaaa1111", "--last", "5"])
+        self.assertEqual(parsed.messages, 5)
+
+    def test_share_events_grep_tail_filters(self) -> None:
+        sample_events = [
+            {"type": "user_message", "text": "hello"},
+            {"type": "tool_call", "name": "run_command", "input": {"cmd": "corral list"}},
+            {"type": "tool_result", "status": "ok", "output": "corral ok"},
+            {"type": "tool_call", "name": "read_file", "input": {"path": "README.md"}},
+            {"type": "tool_call", "name": "run_command", "input": {"cmd": "corral search foo"}},
+        ]
+        with mock.patch.object(agent_api, "load_events", return_value=sample_events):
+            args = argparse_namespace(
+                session="aaaa1111", out=None, compact=False, limit=200,
+                events="tool_call,tool_result", grep="corral", tail=2,
+            )
+            res = agent_api.cmd_share(args, self.registry)
+            data = res["data"]
+            self.assertEqual(data["event_count_total"], 5)
+            self.assertEqual(data["event_count"], 2)
+            self.assertEqual([e["type"] for e in data["events"]], ["tool_result", "tool_call"])
+
+            bad_args = argparse_namespace(
+                session="aaaa1111", out=None, compact=False, limit=200,
+                events="bogus_type", grep=None, tail=None,
+            )
+            with self.assertRaises(agent_api.ApiError) as cm:
+                agent_api.cmd_share(bad_args, self.registry)
+            self.assertEqual(cm.exception.exit_code, agent_api.EXIT_USAGE)
+
 
 def argparse_namespace(**kwargs):
     return _Namespace(**kwargs)

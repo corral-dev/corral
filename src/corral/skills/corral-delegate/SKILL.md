@@ -10,15 +10,13 @@ Corral itself hosts the target agent, types the brief, and records a durable
 `{"ok", "data", "error", "meta"}`; judge by exit code or `ok`.
 Exit codes: 0 ok, 2 usage, 3 not found, 5 conflict/state, 6 wait timeout.
 
-## 0. Pin the CLI and check the capability
+## 0. Call `corral` directly (upgrade only on failure)
 
-```bash
-CORRAL="$(command -v corral)" && "$CORRAL" describe run submit >/dev/null && echo ok
-```
-
-Use that absolute path everywhere, including `next_commands`. If `describe run
-submit` fails, this corral is too old: upgrade it (`brew upgrade x0c/tap/corral`
-or rerun `curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash`).
+Call `corral` directly without pre-probing `command -v` or `describe` on every turn.
+Only if `corral` is missing or reports `run submit` / `peers` unsupported, install or
+upgrade it (`brew upgrade x0c/tap/corral` or
+`curl -fsSL https://raw.githubusercontent.com/corral-dev/corral/main/install.sh | bash`).
+If an error returns `error.next_commands` with an absolute binary path, run that command verbatim.
 Never fall back to typing into tmux, calling a runtime's API, or resuming the
 session yourself - that can fork its history or double-run the work.
 
@@ -28,7 +26,7 @@ session yourself - that can fork its history or double-run the work.
 skill and keep its exact `runtime:id`. Then check for work already in flight:
 
 ```bash
-"$CORRAL" run list --target <runtime>:<id> --active --compact
+corral run list --target <runtime>:<id> --active --compact
 ```
 
 If a run is listed, observe it (step 4) instead of submitting again.
@@ -47,11 +45,11 @@ may lack your context; do not paste secrets.
 
 ```bash
 KEY="review-$(date +%Y%m%d)-<short-topic>"     # stable for this intended delegation
-"$CORRAL" run submit <runtime>:<id> --prompt-file brief.md --idempotency-key "$KEY" --dry-run
-"$CORRAL" run submit <runtime>:<id> --prompt-file brief.md --idempotency-key "$KEY" --if-version <data.target.version>
+corral run submit <runtime>:<id> --prompt-file brief.md --idempotency-key "$KEY" --dry-run
+corral run submit <runtime>:<id> --prompt-file brief.md --idempotency-key "$KEY" --if-version <data.target.version>
 # fresh session instead:
-"$CORRAL" run create --runtime codex --cwd /abs/project [--model <id>] --prompt-file brief.md --idempotency-key "$KEY" --dry-run
-"$CORRAL" run create --runtime codex --cwd /abs/project [--model <id>] --prompt-file brief.md --idempotency-key "$KEY"
+corral run create --runtime codex --cwd /abs/project [--model <id>] --prompt-file brief.md --idempotency-key "$KEY" --dry-run
+corral run create --runtime codex --cwd /abs/project [--model <id>] --prompt-file brief.md --idempotency-key "$KEY"
 ```
 
 - Dry-run writes nothing and starts nothing; it returns `target.control`
@@ -72,10 +70,10 @@ KEY="review-$(date +%Y%m%d)-<short-topic>"     # stable for this intended delega
 ## 4. Observe
 
 ```bash
-"$CORRAL" run wait <run_id> --until delivered --timeout 120   # returns once typed+recorded or rejected
-"$CORRAL" run wait <run_id> --timeout 300                     # returns on settle / question / problem
-"$CORRAL" run events <run_id> --after <cursor>                # progress since your last cursor
-"$CORRAL" run status <run_id>                                 # snapshot (also accepts several ids)
+corral run wait <run_id> --until delivered --timeout 120   # returns once typed+recorded or rejected
+corral run wait <run_id> --timeout 300                     # returns on settle / question / problem
+corral run events <run_id> --after <cursor>                # progress since your last cursor
+corral run status <run_id>                                 # snapshot (also accepts several ids)
 ```
 
 - `delivery: accepted` means queued locally — **not delivered to the target
@@ -90,7 +88,7 @@ KEY="review-$(date +%Y%m%d)-<short-topic>"     # stable for this intended delega
   interrupted / unknown. On queued runs, check `blocked_by`, `queue_timeout`,
   `queue_remaining_s`, and `warnings` (such as `blocked_by_mixed_attribution` or
   `blocked_by_stalled_run`). `supervisor.alive: false` on an unsettled run, or
-  `ready: supervisor_lost`: run `"$CORRAL" run recover <run_id>` (never re-sends).
+  `ready: supervisor_lost`: run `corral run recover <run_id>` (never re-sends).
 - Lost the run id after a restart? `run list --target <runtime>:<id>`.
 
 ## 5. Questions, steering, cancellation, and withdrawal
@@ -98,7 +96,7 @@ KEY="review-$(date +%Y%m%d)-<short-topic>"     # stable for this intended delega
 While `execution` is `waiting_input`, `questions[]` lists the native question:
 
 ```bash
-"$CORRAL" run answer <run_id> --request-id <questions[].request_id> \
+corral run answer <run_id> --request-id <questions[].request_id> \
   --answers-json '[{"question_id":"<id>","selected":["<option id>"]}]' \
   --if-version <run.version> --idempotency-key "$KEY-a1"
 ```
@@ -115,8 +113,8 @@ new `version`.
 ## Coordinate with agents running in parallel
 
 ```bash
-"$CORRAL" peers --compact                      # self + other running agents: state, project, what they do
-"$CORRAL" send <runtime>:<id> "Blocking question" --ask      # or --prompt-file msg.md
+corral peers --format tsv                                   # compact overview without stdout truncation
+corral send <runtime>:<id> "Blocking question" --ask        # or --prompt-file msg.md
 ```
 
 Shared-repo file ownership, status, build/install state, and handoffs belong in
@@ -141,9 +139,9 @@ target's messages share one queue owner and run in submission order.
 `--on-busy reject`; peer A2A messages cannot use `--on-busy steer` or bypass
 quotas with `--from-agent none`, and explicit `--on-busy queue` is capped at
 `1..120` seconds (expiry never wakes the sender). If a peer loop starts,
-`"$CORRAL" a2a pause` immediately refuses new peer sends and defers queued
-input/report-back without failing accepted work. `"$CORRAL" a2a status` shows
-who occupies the queues; `"$CORRAL" a2a resume` recovers them and deferred
+`corral a2a pause` immediately refuses new peer sends and defers queued
+input/report-back without failing accepted work. `corral a2a status` shows
+who occupies the queues; `corral a2a resume` recovers them and deferred
 outcomes. The switch does not block ordinary owner `run submit` / `run create`.
 Replies consume a parent grant once and are capped at four hops; use
 `--reply-to <run_id>` for an explicit parent or `--new-chain` for an
@@ -153,7 +151,7 @@ and `a2a ledger [--hours N]` for pair/hour queue and token costs.
 ## 6. Result and review
 
 ```bash
-"$CORRAL" run result <run_id>
+corral run result <run_id>
 ```
 
 `result.final_response`, `tools_used`, `errors`, `observed_models`, `finality`
