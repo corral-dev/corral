@@ -126,6 +126,7 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
   succeeded, so the exempted copy reaches a tag only through a new release: restate the
   pending notes under `## Unreleased` and replace the unpublished version's section with one
   `Not published. Its changes ship in <next>.` line.
+- A concurrent iPhone shipment can advance private Apple `main` while a Mac release notarizes. If the Mac tag was accepted and only `main` was rejected as non-fast-forward, use a clean checkout of current private `main` to merge the pinned Mac release commit. Review the merge against the new parent: only the Mac version/build and its release notes should change; the iPhone version and source must stay intact. Push a fast-forward update, confirm the original tag did not move, then `resume` the same prepared artifacts. The merged main commit does not become the Mac artifact source.
 - Network or notarization interruption: `resume` reuses confirmed artifacts and receipts. Reconcile an unknown external outcome against the target first; do not assume every backend offers exactly-once publication.
 - `mac.publish` read timeout after upload (2026-11-19): the anonymous digest check of an already
   uploaded asset (`download()` in `publish_public_release`) read-timed out, so the release existed
@@ -133,6 +134,12 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
   Compare the release's asset digests with the workspace artifacts, then `resume`: an existing
   release and its matching assets are re-verified instead of recreated, no duplicate appears, and
   the remaining steps complete. In particular, the shared AppShelf guide documents that an upload retry without a confirmed receipt can create a duplicate shelf release.
+
+### Hosted CLI release diagnostics
+
+The 1.0.1 GitHub release workflow ran the Node 20 declarations in checkout, setup-python, artifact upload/download, and the release action under Node 24. Their bundles emitted `punycode`, `url.parse()`, and `Buffer()` deprecations. The full release workflow passed; these are action-runtime dependencies, not modules shipped in Corral. Upgrade to releases whose action metadata declares a supported runtime and recheck every build and publication job before the legacy runner path is removed. See [GitHub's runtime notice](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners).
+
+Root-pip notices came from Maturin's disposable Linux wheel build containers. They did not change the host or installation path, and all four Linux wheels were published with verified checksums. If the builder image starts enforcing a different interpreter policy, validate a supported image or isolated build environment rather than suppressing the warning on runners.
 
 ## Private configuration
 
