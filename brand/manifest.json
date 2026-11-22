@@ -1,13 +1,13 @@
 {
-  "source_sha256": "24e5c34916630e37c426432d805cf9afa485b288c41cfd6a038079551d84dc26",
-  "background": "Cream yellow with dense sage and golden scalloped flowers",
-  "composition": "Preserve accepted Floral 04 refinement",
+  "source_sha256": "b03a7798ac1e7829572f13c920dd49b7fcbe5f329560f6527028741a5759aed6",
+  "background": "Cream yellow with dense sage and golden scalloped flowers; bold cream outline around the hat",
+  "composition": "Floral 04 ground with a bold thick cream-white contour around the hat",
   "refined_hat_sha256": "ed983fb655c552b90ab4b2dd60e754449e256d71da421b20b55789f4a7c8a5cf",
-  "artwork": "Approved yellow-green cowboy hat; Floral 04 repeating flower background",
-  "generation": "Built-in imagegen independent Floral 04 refinement; preserved composition",
+  "artwork": "Approved yellow-green cowboy hat wrapped in a bold cream-white outline; Floral 04 repeating flower background",
+  "generation": "gpt-image edit of the approved master adding one thick cream-white hat contour (owner pick, 2026-11-22)",
   "outputs": {
-    "brand/AppIcon-1024.png": "870eee3357bd73c8bbe765d642d6783048d7b821a873c76a9396faf55b1f65d1",
-    "docs/screenshots/corral-icon.png": "0781236adcc37f9d3d5eee956b2213c2d1434572aa6b6dc577663b01b9599106",
-    "docs/screenshots/social-preview.png": "e435d0f7b2d06f80e1c058f85267b87db609d18634429f323be2b9b97fd6c332"
+    "brand/AppIcon-1024.png": "73cb93a9809a1eb70832442eb9ef565c5d3c4d52b7edfb9132678aa211464a5a",
+    "docs/screenshots/corral-icon.png": "c1351a272189f34df1c7d5a0b9d65b7253e243c6133da7b3f874f4b4b5740dee",
+    "docs/screenshots/social-preview.png": "717fb97c5060198577ab85e6d781c57bc6d8a659bb8d42310606ff2ed1b6c930"
   }
 }
