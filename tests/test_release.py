@@ -199,6 +199,20 @@ class ViewTests(unittest.TestCase):
 
 
 class CoupledReleaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        cli, apple = root / "cli", root / "apple"
+        for repo in (cli, apple):
+            repo.mkdir()
+            (repo / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+        (apple / "project.yml").write_text(PROJECT, encoding="utf-8")
+        for name, repo in (("CLI", cli), ("APPLE", apple)):
+            patch = mock.patch.object(release, name, repo)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def _args(self, components: str | None = None, bump: str | None = None):
         return type("Args", (), {"components": components, "bump": bump})()
 

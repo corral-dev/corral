@@ -111,6 +111,7 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
   file and its `source_sha256`. The recipe format is in
   [PUBLIC_SOURCE_EXPORT_GUIDE](PUBLIC_SOURCE_EXPORT_GUIDE.md).
 - Fresh iOS-only workspace reports missing `logs/ios.deliver.log` after delivery: reconcile the durable `ios-deliver` job before retrying any external effect. A workflow-backed build writes its log outside the release workspace, so it does not create the release's `logs/` directory. `Context.log()` must create that parent for directly written phase logs. For affected older drivers, create only the release workspace's `logs/` directory and `resume`; the existing artifact/device job reuses its confirmed upload and installation. Do not rebuild, reinstall or upload a different artifact merely because recording its result failed.
+- `CoupledReleaseTests` must run in a standalone CLI checkout. The CLI CI checkout has no sibling Apple repository; use temporary CLI and Apple changelog/version fixtures for the release planner and starter tests. A missing sibling `apple/CHANGELOG.md` or `apple/project.yml` is a fixture defect, and does not justify skipping the coupling checks.
 - New warning: fix it if it is in owned code. Otherwise register it with an assessment.
 - New Linux failure: fix it. Register it only after showing that it also fails on the
   previous release tag on the same host, or after you have identified an environment cause.

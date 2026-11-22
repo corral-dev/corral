@@ -6,6 +6,24 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Share one release version with Corral for Mac and give immediate feedback when stopping a session.
+- Reduce daemon startup and steady-state CPU and memory use. Native SessKit parsing, isolated scan workers, a persistent scan cache, and fewer unnecessary refreshes make history and attention queries cheaper.
+- Paste files into remote sessions in chunks, navigate attachments through nested media links, and answer native Antigravity CLI questions remotely.
+- Improve visibility, liveness and cancellation of queued agent requests; simplify agent CLI queries and bundled skill instructions.
+- Restore 24-bit terminal color and apply the theme consistently at session launch.
+
+### 简体中文
+
+- 与 Corral Mac 版使用同一发布版本；停止会话时即时反馈。
+- 降低后台服务启动和常驻时的 CPU 与内存占用。使用 SessKit 原生解析、隔离扫描进程、持久化扫描缓存，并减少不必要的刷新，让历史和关注状态查询更轻量。
+- 远程会话支持分块粘贴文件、打开多层媒体链接中的附件，以及回答 Antigravity CLI 的原生提问。
+- 改善代理请求排队时的可见性、推进和取消，简化代理 CLI 查询及内置技能指令。
+- 恢复终端 24 位真彩，并在启动会话时一致地应用主题。
+
 ## 1.0.0
 
 ### English
