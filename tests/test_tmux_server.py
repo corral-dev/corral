@@ -39,6 +39,7 @@ class AppliesTests(unittest.TestCase):
 class PlistTests(unittest.TestCase):
     def test_plist_is_interactive_foreground_and_holds_no_secrets(self) -> None:
         env = {"PATH": "/usr/bin", "HOME": "/Users/x", "TMUX_TMPDIR": "/tmp",
+               "COLORTERM": "truecolor",
                "OPENAI_API_KEY": "sk-secret", "HTTPS_PROXY": "http://u:p@h"}
         payload = tmux_server.plist_payload(SOCKET_NAME, "/c.conf", env, "/bin/tmux")
         self.assertEqual(payload["ProcessType"], "Interactive")
@@ -48,7 +49,7 @@ class PlistTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["EnvironmentVariables"],
-            {"PATH": "/usr/bin", "HOME": "/Users/x", "TMUX_TMPDIR": "/tmp"},
+            {"PATH": "/usr/bin", "HOME": "/Users/x", "TMUX_TMPDIR": "/tmp", "COLORTERM": "truecolor"},
         )
         self.assertEqual(payload["Label"], f"com.x0c.corral.keepalive.{SOCKET_NAME}")
 

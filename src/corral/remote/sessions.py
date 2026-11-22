@@ -870,6 +870,12 @@ class SessionHub:
         # its transports so connections are accepted while the scan runs.
         self._ready = threading.Event()
         self._ready.set()
+        self._default_osc_report: bytes | None = None
+
+    def note_terminal_theme(self, osc_report: bytes | None) -> None:
+        """Remember the latest client terminal theme for newly hosted panes."""
+        if osc_report:
+            self._default_osc_report = osc_report
 
     # -- 生命周期 ---------------------------------------------------------
 
@@ -3022,24 +3028,24 @@ class SessionHub:
 
     # -- 桌面终端原始流（Mac 终端视图） ----------------------------------
 
-    def ensure_terminal_hosted(self, key: str) -> str:
+    def ensure_terminal_hosted(self, key: str, *, osc_report: bytes | None = None) -> str:
         """Return the hosted tmux name, natively resuming a stopped session.
 
         Retry (already-subscribed resize+resync) and cold attach share this:
         an aborted/unhosted session must resume instead of serving a snapshot
         that can never arrive (client `host_timeout`). Shell keys never resume.
         """
-        return self._keepalive_name(key, resume_if_needed=True)
+        return self._keepalive_name(key, resume_if_needed=True, osc_report=osc_report)
 
     def terminal_attach(self, key: str, viewer: str, cols: int, rows: int, *, vote: bool,
-                        active: bool = True) -> dict:
+                        active: bool = True, osc_report: bytes | None = None) -> dict:
         """Start (or join) the session's raw stream; a snapshot event follows.
 
         Full-access viewers (`vote=True`) natively resume a stopped session so
         Retry/cold-open gets a snapshot instead of `host_timeout`. Readonly
         (`vote=False`) only watches and never resumes. Shell keys never resume.
         """
-        name = self._keepalive_name(key, resume_if_needed=vote)
+        name = self._keepalive_name(key, resume_if_needed=vote, osc_report=osc_report)
         stream_class = shell_terminal.ShellTerminalStream if shell_terminal.is_shell_key(key) else TerminalStream
         with self._lock:
             entry = self._terminals.get(key)
@@ -3225,6 +3231,7 @@ class SessionHub:
         }
 
     def terminal_theme(self, key: str, report: bytes) -> None:
+        self.note_terminal_theme(report)
         self._terminal(key).set_theme(report)
 
     def terminal_input(self, key: str, data: bytes, viewer: str = "", *, passive: bool = False) -> None:
@@ -3293,6 +3300,7 @@ class SessionHub:
         *,
         resume_if_needed: bool = False,
         resumed: list[bool] | None = None,
+        osc_report: bytes | None = None,
     ) -> str:
         """Return the hosted tmux name; optionally native-resume a stopped session.
 
@@ -3316,7 +3324,8 @@ class SessionHub:
         if name:
             return name
         if resume_if_needed:
-            self.resume_session(key)
+            osc_kwargs = {"osc_report": osc_report} if osc_report is not None else {}
+            self.resume_session(key, **osc_kwargs)
             session = self.require_session(key)
             name = str(session.get("keepalive_name") or "")
             if name:
@@ -4081,11 +4090,14 @@ class SessionHub:
             except Exception:
                 pass
 
-    def _host(self, plan, runtime_id: str, title: str, cwd: str | None, *, ident: str | None = None) -> dict:
+    def _host(self, plan, runtime_id: str, title: str, cwd: str | None, *, ident: str | None = None,
+              osc_report: bytes | None = None) -> dict:
         ident = ident or keepalive.new_session_ident()
         width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
+        effective_osc = osc_report or self._default_osc_report
+        osc_kwargs = {"osc_report": effective_osc} if effective_osc else {}
         try:
-            name = embed.host_session(plan, runtime_id, ident, width, height)
+            name = embed.host_session(plan, runtime_id, ident, width, height, **osc_kwargs)
         except embed.EmbedError as exc:
             raise ActionError("unavailable", t("remote.err.launch_failed", error=exc)) from exc
         _raise_if_failed_at_start(name, "remote.err.launch_failed")
@@ -4109,7 +4121,8 @@ class SessionHub:
         return self._host(plan, runtime_id, title, cwd, ident=ident)
 
     def new_session(
-        self, runtime_id: str, cwd: str | None, *, whitelist: list[str] | None = None
+        self, runtime_id: str, cwd: str | None, *, whitelist: list[str] | None = None,
+        osc_report: bytes | None = None,
     ) -> dict:
         runtime_id = str(runtime_id or "").strip()
         if not runtime_id:
@@ -4128,7 +4141,7 @@ class SessionHub:
         request = NewSessionRequest(target_runtime_id=runtime_id, cwd=cwd or "")
         title = f"{runtime.display_name} · 新会话"
         del request  # 结构体只用于表达意图，实际启动只需要计划本身
-        return self._host(plan, runtime_id, title, cwd)
+        return self._host(plan, runtime_id, title, cwd, osc_report=osc_report)
 
     def _assert_cwd_allowed(self, cwd: str, whitelist: list[str]) -> None:
         """新建会话的工作目录必须落在已知项目或用户白名单内。"""
@@ -4168,7 +4181,7 @@ class SessionHub:
             t("remote.err.project_not_allowed"),
         )
 
-    def resume_session(self, key: str) -> dict:
+    def resume_session(self, key: str, *, osc_report: bytes | None = None) -> dict:
         """原生恢复：用助手自己的恢复命令重开这条会话，历史完整延续。
 
         A failure is absorbed here, never handed back as an action (§6.5,
@@ -4186,7 +4199,7 @@ class SessionHub:
         # one lock. Recovery already holds it when it calls us, hence RLock.
         with self._restart_lock_for(canonical), _resume_process_lock(canonical):
             try:
-                payload = self._resume_locked(canonical)
+                payload = self._resume_locked(canonical, osc_report=osc_report)
             except Exception as exc:  # noqa: BLE001 - absorbed below, then re-raised
                 retirement.schedule_resume_retry(
                     canonical,
@@ -4241,7 +4254,7 @@ class SessionHub:
         name = str(probe.get("keepalive_name") or "")
         return name if name and embed.pane_liveness(name) == "alive" else None
 
-    def _resume_locked(self, canonical: str) -> dict:
+    def _resume_locked(self, canonical: str, *, osc_report: bytes | None = None) -> dict:
         session = self.require_session(canonical)
         name = str(session.get("keepalive_name") or "")
         if name:
@@ -4274,8 +4287,10 @@ class SessionHub:
         # name-based liveness match the pane without flashing a New placeholder.
         ident = str(session.get("id") or "").strip() or keepalive.new_session_ident()
         width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
+        effective_osc = osc_report or self._default_osc_report
+        osc_kwargs = {"osc_report": effective_osc} if effective_osc else {}
         try:
-            name = embed.host_session(plan, runtime.id, ident, width, height)
+            name = embed.host_session(plan, runtime.id, ident, width, height, **osc_kwargs)
         except embed.EmbedError as exc:
             raise ActionError("unavailable", t("remote.err.resume_failed", error=exc)) from exc
         _raise_if_failed_at_start(name, "remote.err.resume_failed")
@@ -4292,7 +4307,7 @@ class SessionHub:
                 self._restart_locks[canonical] = lock
             return lock
 
-    def restart_session(self, key: str) -> dict:
+    def restart_session(self, key: str, *, osc_report: bytes | None = None) -> dict:
         """桌面高级操作「重启会话」的远程入口：只换托管进程，不碰历史与身份。
 
         复用 TUI ``_restart_hosted_session`` / ``_restart_and_focus`` 的同一套
@@ -4314,7 +4329,8 @@ class SessionHub:
         canonical = session_key(session)
         if not session.get("keepalive_name"):
             # 已结束：没有可杀的进程，直接走原生恢复（与桌面回车同一条路）。
-            return self.resume_session(canonical)
+            osc_kwargs = {"osc_report": osc_report} if osc_report is not None else {}
+            return self.resume_session(canonical, **osc_kwargs)
         # 预检先行：恢复计划都生成不出来时，原进程必须原样保留。
         try:
             self.registry.build_launch_plan(
@@ -4325,16 +4341,17 @@ class SessionHub:
                 "unavailable", t("remote.err.cannot_restart", error=exc)
             ) from exc
         with self._restart_lock_for(canonical):
-            return self._restart_locked(canonical, runtime.id)
+            return self._restart_locked(canonical, runtime.id, osc_report=osc_report)
 
-    def _restart_locked(self, canonical: str, runtime_id: str) -> dict:
+    def _restart_locked(self, canonical: str, runtime_id: str, *, osc_report: bytes | None = None) -> dict:
         """锁内重启：重读当前绑定（并发期间会话可能已变），杀旧后起新。"""
         current = self.store.find_session(canonical)
         if current is None:
             raise ActionError("not_found", t("remote.err.session_gone"))
         name = str(current.get("keepalive_name") or "")
         if not name:
-            return self.resume_session(canonical)
+            osc_kwargs = {"osc_report": osc_report} if osc_report is not None else {}
+            return self.resume_session(canonical, **osc_kwargs)
         try:
             plan = self.registry.build_launch_plan(
                 LaunchRequest(current, runtime_id, self.store.get_title(current))
@@ -4384,8 +4401,10 @@ class SessionHub:
             width, height = embed.normalize_host_size(old_size[0], old_size[1])
         else:
             width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
+        effective_osc = osc_report or self._default_osc_report
+        osc_kwargs = {"osc_report": effective_osc} if effective_osc else {}
         try:
-            new_name = embed.host_session(plan, runtime_id, ident, width, height)
+            new_name = embed.host_session(plan, runtime_id, ident, width, height, **osc_kwargs)
         except embed.EmbedError as exc:
             # 失败不碰托管标记（与桌面 `_on_restart_failed` 一致）：不伪装成功，
             # 下一轮扫描按绑定的真实存活纠正展示。
@@ -4397,7 +4416,7 @@ class SessionHub:
         refreshed = self.store.find_session(canonical) or current
         return self.session_payload(refreshed, self._layout())
 
-    def handoff_session(self, key: str, target_runtime_id: str) -> dict:
+    def handoff_session(self, key: str, target_runtime_id: str, *, osc_report: bytes | None = None) -> dict:
         """跨助手接力：把原会话导出成提示词，在目标助手里新开一局。"""
         if not embed.available():
             raise ActionError("unavailable", t("remote.err.tmux_missing_handoff"))
@@ -4414,7 +4433,7 @@ class SessionHub:
             plan = target.build_new_plan(handoff)
         except LaunchError as exc:
             raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
-        hosted = self._host(plan, target_runtime_id, f"接力 · {title}", session.get("cwd"))
+        hosted = self._host(plan, target_runtime_id, f"接力 · {title}", session.get("cwd"), osc_report=osc_report)
         try:
             from corral.handoff_notice import notify_handoff_source
 
@@ -4423,7 +4442,7 @@ class SessionHub:
             pass
         return hosted
 
-    def copy_session(self, key: str) -> dict:
+    def copy_session(self, key: str, *, osc_report: bytes | None = None) -> dict:
         """同助手复制会话：官方分叉优先，否则磁盘克隆后原生恢复。
 
         复用注册表 `prepare_copy_request`（标题/copy 后缀/未安装报错都在里面）
@@ -4441,7 +4460,7 @@ class SessionHub:
         except LaunchError as exc:
             raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
         copy_title = request.title
-        return self._host(plan, request.target_runtime_id, copy_title, session.get("cwd"))
+        return self._host(plan, request.target_runtime_id, copy_title, session.get("cwd"), osc_report=osc_report)
 
     def export_session(self, key: str) -> dict:
         """Build the share transcript JSON envelope for remote clipboard export."""

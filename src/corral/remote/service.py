@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 import threading
 import time
@@ -101,6 +102,21 @@ def _terminal_theme(params: dict) -> bytes | None:
     from corral.remote.terminal_stream import theme_report
 
     return theme_report(str(params.get("background") or ""), str(params.get("foreground") or ""))
+
+
+def _optional_osc_kwargs(fn, osc_report: bytes | None) -> dict[str, bytes]:
+    """Pass ``osc_report`` only when non-empty and accepted by ``fn`` (keeps test stubs compatible)."""
+    if not osc_report:
+        return {}
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return {}
+    if "osc_report" in sig.parameters or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    ):
+        return {"osc_report": osc_report}
+    return {}
 
 
 def _terminal_grid(params: dict) -> tuple[int, int]:
@@ -260,6 +276,7 @@ class Connection:
         # Per-process client instance (`ci` on every request). Empty for legacy clients.
         self.instance_id = ""
         self.attached_at = 0.0
+        self.terminal_theme: bytes | None = None
         self.terminal_prompt_requests: dict[str, str] = {}
         # Pending session.watch generations, guarded by RemoteService._lock.
         # A late worker may return its snapshot but must never resurrect a
@@ -357,6 +374,20 @@ class RemoteService:
         self._file_uploads_lock = threading.Lock()
         self._file_uploads: dict[tuple[int, str], dict] = {}
         self._last_reconcile_at = float("-inf")
+        self._last_terminal_theme: bytes | None = None
+
+    def _remember_theme(self, connection: Connection, params: dict) -> bytes | None:
+        """Record a writable client's theme and return the best known OSC report."""
+        if connection.access == "readonly":
+            return None
+        explicit = _terminal_theme(params)
+        if explicit:
+            connection.terminal_theme = explicit
+            self._last_terminal_theme = explicit
+            note = getattr(self.hub, "note_terminal_theme", None)
+            if callable(note):
+                note(explicit)
+        return explicit or connection.terminal_theme or self._last_terminal_theme
 
     # -- 状态同步 ---------------------------------------------------------
 
@@ -1309,6 +1340,7 @@ class RemoteService:
         # 数据面 hello 只做附着确认，不再签发新令牌。
         if str(params.get("plane") or "") == protocol.PLANE_DATA:
             return payload
+        self._remember_theme(connection, params)
         # 旧客户端不带该字段，不发 token，行为与今天完全一致。
         if params.get("want_data_plane") is True:
             payload["data_bind"] = self._issue_data_bind(connection)
@@ -1492,7 +1524,8 @@ class RemoteService:
         key = _key(params)
         viewer = _terminal_viewer(connection)
         cols, rows = _terminal_grid(params)
-        theme = _terminal_theme(params) if connection.access != "readonly" else None
+        explicit_theme = _terminal_theme(params) if connection.access != "readonly" else None
+        theme = self._remember_theme(connection, params)
         vote = connection.access != "readonly"
         active = _terminal_active(params)
         # Readonly watches only: never natively resume a stopped session.
@@ -1505,19 +1538,22 @@ class RemoteService:
                 ensure = getattr(self.hub, "ensure_terminal_hosted", None)
                 if callable(ensure):
                     try:
-                        ensure(key)
+                        ensure(key, **_optional_osc_kwargs(ensure, theme))
                     except Exception:
                         pass
             size = self.hub.terminal_resize(key, viewer, cols, rows, vote=vote, active=active)
             self.hub.terminal_resync(key)
         else:
             try:
-                size = self.hub.terminal_attach(key, viewer, cols, rows, vote=vote, active=active)
+                size = self.hub.terminal_attach(
+                    key, viewer, cols, rows, vote=vote, active=active,
+                    **_optional_osc_kwargs(self.hub.terminal_attach, theme),
+                )
             except Exception:
                 self._unsubscribe(connection, protocol.terminal_channel(key))
                 raise
-        if theme:
-            self.hub.terminal_theme(key, theme)
+        if explicit_theme:
+            self.hub.terminal_theme(key, explicit_theme)
         return size
 
     def _terminal_resize(self, connection: Connection, params: dict):
@@ -1558,6 +1594,7 @@ class RemoteService:
         theme = _terminal_theme(params)
         if not theme:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
+        self._remember_theme(connection, params)
         self.hub.terminal_theme(_key(params), theme)
         return {"ok": True}
 
@@ -1616,8 +1653,12 @@ class RemoteService:
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
         cols = _int_param(params, "cols", 100, max_value=1000) or 100
         rows = _int_param(params, "rows", 30, max_value=500) or 30
+        theme = self._remember_theme(connection, params)
         try:
-            shell = shell_terminal.open_shell(str(params.get("cwd") or ""), cols, rows)
+            shell = shell_terminal.open_shell(
+                str(params.get("cwd") or ""), cols, rows,
+                **_optional_osc_kwargs(shell_terminal.open_shell, theme),
+            )
         except shell_terminal.ShellError as exc:
             code, message = {
                 "folder_missing": (protocol.E_NOT_FOUND, t("remote.err.shell_folder_missing")),
@@ -2074,11 +2115,17 @@ class RemoteService:
         cwd = params.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise ActionError(protocol.E_USAGE, t("remote.err.bad_project_path"))
+        theme = self._remember_theme(connection, params)
         command_id = str(params.get("command_id") or "").strip()
         if not command_id:
             if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
                 raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.new_session_rate_limited"))
-            return {"session": self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)}
+            return {
+                "session": self.hub.new_session(
+                    runtime, cwd, whitelist=self.state.cwd_whitelist,
+                    **_optional_osc_kwargs(self.hub.new_session, theme),
+                )
+            }
         receipt, is_new = self.receipts.begin(
             device_key=connection.device_public_key, command_id=command_id,
             payload_digest=digest_for_creation(runtime=runtime, cwd=cwd),
@@ -2094,7 +2141,10 @@ class RemoteService:
                 receipt = self.receipts.mark_dispatching(receipt)
                 if receipt.status == STATUS_DISPATCHING:
                     try:
-                        session = self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)
+                        session = self.hub.new_session(
+                            runtime, cwd, whitelist=self.state.cwd_whitelist,
+                            **_optional_osc_kwargs(self.hub.new_session, theme),
+                        )
                         receipt = self.receipts.mark_delivered(receipt, result={"session": session})
                     except ActionError as exc:
                         receipt = self.receipts.mark_rejected(
@@ -2109,12 +2159,22 @@ class RemoteService:
     def _session_resume(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
-        return {"session": self.hub.resume_session(_key(params))}
+        theme = self._remember_theme(connection, params)
+        return {
+            "session": self.hub.resume_session(
+                _key(params), **_optional_osc_kwargs(self.hub.resume_session, theme),
+            )
+        }
 
     def _session_restart(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
-        return {"session": self.hub.restart_session(_key(params))}
+        theme = self._remember_theme(connection, params)
+        return {
+            "session": self.hub.restart_session(
+                _key(params), **_optional_osc_kwargs(self.hub.restart_session, theme),
+            )
+        }
 
     def _session_interrupt(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
@@ -2125,12 +2185,23 @@ class RemoteService:
     def _session_handoff(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
-        return {"session": self.hub.handoff_session(_key(params), str(params.get("runtime") or ""))}
+        theme = self._remember_theme(connection, params)
+        return {
+            "session": self.hub.handoff_session(
+                _key(params), str(params.get("runtime") or ""),
+                **_optional_osc_kwargs(self.hub.handoff_session, theme),
+            )
+        }
 
     def _session_copy(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
-        return {"session": self.hub.copy_session(_key(params))}
+        theme = self._remember_theme(connection, params)
+        return {
+            "session": self.hub.copy_session(
+                _key(params), **_optional_osc_kwargs(self.hub.copy_session, theme),
+            )
+        }
 
     def _session_export(self, connection: Connection, params: dict):
         return self.hub.export_session(_key(params))

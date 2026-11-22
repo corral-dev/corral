@@ -86,6 +86,20 @@ def available(disabled_flag: bool = False) -> bool:
     return shutil.which("tmux") is not None
 
 
+def _theme_env_pairs(osc_report: bytes | None) -> list[str]:
+    """Per-pane env pairs: advertise truecolor and seed COLORFGBG from theme."""
+    pairs = ["-e", "COLORTERM=truecolor"]
+    if osc_report:
+        from corral import theme
+
+        light = theme._background_is_light(osc_report)
+        if light is True:
+            pairs += ["-e", "COLORFGBG=0;15"]
+        elif light is False:
+            pairs += ["-e", "COLORFGBG=15;0"]
+    return pairs
+
+
 def host_session(
     plan: LaunchPlan, runtime_id: str, ident: str, width: int, height: int,
     osc_report: bytes | None = None,
@@ -125,6 +139,7 @@ def host_session(
     keepalive.reap_pressure()
     keepalive.ensure_server()
     name = keepalive._session_name(runtime_id, ident)
+    keepalive._ensure_truecolor(name)
     _prepare_exit_capture(name)
     argv = [
         *keepalive.tmux_argv(), "-f", keepalive._ensure_config_file(),
@@ -135,6 +150,7 @@ def host_session(
         argv += ["-c", plan.cwd]
     argv += hosted_env_pairs(runtime_id, ident)
     argv += identity_env
+    argv += _theme_env_pairs(osc_report)
     argv += ["--", *plan.argv]
     try:
         proc = subprocess.run(
@@ -190,6 +206,7 @@ def host_session(
     note_alive(name)
     _ensure_manual_window_size(name)
     keepalive._ensure_extended_keys(name)
+    keepalive._ensure_truecolor(name)
     # 托管当下就把清单刷新（不等下一轮回收）：事后取证时“谁在服务器上”要包含刚起的这条。
     hosted_lifecycle.refresh_inventory(force=True, sockets=(socket_for_session(name),))
     if osc_report and supports_theme_report():
@@ -848,6 +865,7 @@ def resize(name: str, width: int, height: int) -> None:
         return
     _ensure_manual_window_size(name)
     keepalive._ensure_extended_keys(name)
+    keepalive._ensure_truecolor(name)
     ch = _active_channel(name)
     if ch is not None and ch.command(
             "resizew", "-t", name, "-x", str(width), "-y", str(height)):
@@ -1971,6 +1989,7 @@ def open_channel(name: str, on_output=None, on_data=None) -> ControlChannel | No
             try:
                 _ensure_manual_window_size(name)
                 keepalive._ensure_extended_keys(name)
+                keepalive._ensure_truecolor(name)
                 ch = ControlChannel(name, on_output, on_data)
                 _channels[name] = ch
             except OSError:

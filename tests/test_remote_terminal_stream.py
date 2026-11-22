@@ -594,5 +594,117 @@ class ReopenBackoffTests(unittest.TestCase):
             self.assertEqual(len(opened), 4)
 
 
+class StartupThemePropagationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from test_remote_service import FakeHub
+
+        class RecordingHub(_TerminalHub, FakeHub):
+            def __init__(self) -> None:
+                FakeHub.__init__(self)
+                _TerminalHub.__init__(self)
+                self.osc_calls: list[tuple] = []
+                self.noted_theme: bytes | None = None
+
+            def note_terminal_theme(self, osc_report: bytes | None) -> None:
+                if osc_report:
+                    self.noted_theme = osc_report
+
+            def new_session(self, runtime_id, cwd, *, whitelist=None, osc_report=None):
+                self.osc_calls.append(("new", runtime_id, osc_report))
+                return {"key": f"{runtime_id}:new", "title": "新会话"}
+
+            def resume_session(self, key, *, osc_report=None):
+                self.osc_calls.append(("resume", key, osc_report))
+                return {"key": key, "title": "已恢复"}
+
+            def restart_session(self, key, *, osc_report=None):
+                self.osc_calls.append(("restart", key, osc_report))
+                return {"key": key, "title": "已重启"}
+
+            def copy_session(self, key, *, osc_report=None):
+                self.osc_calls.append(("copy", key, osc_report))
+                return {"key": f"{key}:copy", "title": "副本"}
+
+            def handoff_session(self, key, target_runtime_id, *, osc_report=None):
+                self.osc_calls.append(("handoff", key, target_runtime_id, osc_report))
+                return {"key": f"{target_runtime_id}:handoff", "title": "接力"}
+
+            def ensure_terminal_hosted(self, key, *, osc_report=None):
+                self.osc_calls.append(("ensure", key, osc_report))
+                return f"corral-{key}"
+
+            def terminal_attach(self, key, viewer, cols, rows, *, vote, active=True, osc_report=None):
+                self.osc_calls.append(("attach", key, vote, osc_report))
+                return super().terminal_attach(key, viewer, cols, rows, vote=vote, active=active)
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        lan = mock.patch("corral.remote.lan.local_hints", return_value=[])
+        lan.start()
+        self.addCleanup(lan.stop)
+        ratelimit.SESSION_CREATE.reset()
+        ratelimit.INPUT_ACTIONS.reset()
+        self.hub = RecordingHub()
+        self.service = RemoteService(self.hub)  # type: ignore[arg-type]
+        self.sent: list[dict] = []
+
+    def _paired(self, mode: str = "full") -> Connection:
+        code = self.service.begin_pairing(mode=mode)
+        connection = Connection("cd" * 32, self.sent.append)
+        self.service.attach(connection)
+        self._call(connection, protocol.M_PAIR, {"code": code, "name": "Mac"})
+        return connection
+
+    def _call(self, connection: Connection, method: str, params: dict | None = None) -> dict:
+        self.sent.clear()
+        self.service.handle(connection, protocol.request(1, method, params or {}))
+        return self.sent[-1]
+
+    def test_hello_and_launch_rpcs_propagate_terminal_theme(self) -> None:
+        connection = self._paired()
+        light = ts.theme_report("#ffffff", "#181c22")
+        self._call(connection, protocol.M_HELLO, {"name": "Mac", "background": "#ffffff", "foreground": "#181c22"})
+        self.assertEqual(self.hub.noted_theme, light)
+
+        dark = ts.theme_report("#14171f", "#e8ebf0")
+        self._call(connection, protocol.M_SESSION_NEW, {"runtime": "pi"})
+        self._call(
+            connection,
+            protocol.M_SESSION_RESUME,
+            {"key": "pi:1", "background": "#14171f", "foreground": "#e8ebf0"},
+        )
+        self._call(connection, protocol.M_SESSION_RESTART, {"key": "pi:1"})
+        self._call(connection, protocol.M_SESSION_COPY, {"key": "pi:1"})
+        self._call(connection, protocol.M_SESSION_HANDOFF, {"key": "pi:1", "runtime": "codex"})
+        self._call(connection, protocol.M_TERMINAL_ATTACH, {"key": "pi:2", "cols": 80, "rows": 24})
+        self._call(connection, protocol.M_TERMINAL_ATTACH, {"key": "pi:2", "cols": 80, "rows": 24})
+
+        self.assertIn(("new", "pi", light), self.hub.osc_calls)
+        self.assertIn(("resume", "pi:1", dark), self.hub.osc_calls)
+        self.assertIn(("restart", "pi:1", dark), self.hub.osc_calls)
+        self.assertIn(("copy", "pi:1", dark), self.hub.osc_calls)
+        self.assertIn(("handoff", "pi:1", "codex", dark), self.hub.osc_calls)
+        self.assertIn(("attach", "pi:2", True, dark), self.hub.osc_calls)
+        self.assertIn(("ensure", "pi:2", dark), self.hub.osc_calls)
+
+        with mock.patch(
+            "corral.remote.service.shell_terminal.open_shell",
+            return_value={"key": "shell:12345678"},
+        ) as open_shell:
+            reply = self._call(connection, protocol.M_SHELL_OPEN, {"cwd": ""})
+            self.assertTrue(reply["ok"])
+            open_shell.assert_called_once_with("", 100, 30, osc_report=dark)
+
+    def test_readonly_hello_and_attach_do_not_overwrite_theme(self) -> None:
+        ro = self._paired(mode="readonly")
+        self._call(ro, protocol.M_HELLO, {"name": "Viewer", "background": "#ffffff", "foreground": "#181c22"})
+        self.assertIsNone(self.hub.noted_theme)
+        self._call(ro, protocol.M_TERMINAL_ATTACH, {"key": "pi:1", "cols": 80, "rows": 24, "background": "#ffffff"})
+        self.assertIn(("attach", "pi:1", False, None), self.hub.osc_calls)
+
+
 if __name__ == "__main__":
     unittest.main()

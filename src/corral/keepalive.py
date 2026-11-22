@@ -75,6 +75,8 @@ def tmux_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     if "utf-8" not in lang and "utf8" not in lang:
         env["LANG"] = "C.UTF-8"
         env["LC_ALL"] = "C.UTF-8"
+    if not env.get("COLORTERM"):
+        env["COLORTERM"] = "truecolor"
     return env
 
 
@@ -102,19 +104,19 @@ def _terminfo_exists(name: str) -> bool:
 
 @functools.lru_cache(maxsize=1)
 def _resolve_default_terminal() -> str:
-    """Pick a TERM entry that exists on this machine.
+    """Pick a TERM entry that exists on this machine, preferring ``xterm-256color``.
 
-    Ubuntu minimal images (incl. GitHub-hosted runners) often lack
-    ``tmux-256color`` until ``ncurses-term`` is installed. Using a missing
-    entry as ``default-terminal`` can make ``new-session -d`` fail before any
-    pane program runs — which shows up in the TUI as a stuck
-    \"Press Enter to restart\" static frame.
+    Preferring ``xterm-256color`` over ``tmux-256color`` prevents libraries such
+    as ``charmbracelet/colorprofile`` and ``muesli/termenv`` (used by ``agy`` /
+    Go TUIs) from discarding ``COLORTERM=truecolor`` in headless / ``-C``
+    control-mode tmux sessions where ``tmux info`` returns empty, while also
+    avoiding minimal Ubuntu images that lack ``tmux-256color``.
 
     Cached for the process lifetime: terminfo does not change while we run, and
     every ``host_session`` / ``wrap_plan`` used to fork ``infocmp`` through here.
     Tests that mock ``_terminfo_exists`` call ``cache_clear()`` first.
     """
-    for name in ("tmux-256color", "screen-256color", "xterm-256color", "screen"):
+    for name in ("xterm-256color", "tmux-256color", "screen-256color", "screen"):
         if _terminfo_exists(name):
             return name
     return "screen"
@@ -140,6 +142,7 @@ set -g status off
 set -g mouse on
 set -g default-terminal "{term}"
 set -ga terminal-overrides ",*256col*:Tc"
+set-environment -g COLORTERM truecolor
 # Embedded panes never attach a visual client; only capture. Control mode
 # `tmux -C attach` often reports 80x24. With window-size latest that shrinks
 # the hosted window while the split cell stays full width. Apply manual after
@@ -256,6 +259,55 @@ def _ensure_extended_keys(name: str) -> None:
         pass
 
 
+_truecolor_sockets: set[str] = set()
+
+
+def _ensure_truecolor(name: str) -> None:
+    """Heal ``default-terminal``, ``COLORTERM`` and RGB capabilities on a live server.
+
+    Safe to call when no server is running — only caches per socket on success.
+    Does not alter already-running pane processes, which keep their initial env.
+    """
+    if not name:
+        return
+    socket = socket_for_session(name)
+    if socket in _truecolor_sockets:
+        return
+    env = tmux_env()
+    term = _resolve_default_terminal()
+    try:
+        proc = subprocess.run(
+            [*tmux_argv(name), "set-option", "-g", "default-terminal", term],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=_SUBPROCESS_TIMEOUT, check=False, env=env,
+        )
+        if proc.returncode != 0:
+            return
+        subprocess.run(
+            [*tmux_argv(name), "set-environment", "-g", "COLORTERM", "truecolor"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=_SUBPROCESS_TIMEOUT, check=False, env=env,
+        )
+        for opt, entry in (
+            ("terminal-overrides", ",*256col*:Tc"),
+            ("terminal-features", ",*:RGB"),
+        ):
+            cur = subprocess.run(
+                [*tmux_argv(name), "show-options", "-s", opt],
+                capture_output=True, text=True,
+                timeout=_SUBPROCESS_TIMEOUT, check=False, env=env,
+            )
+            if cur.returncode == 0 and entry not in (cur.stdout or ""):
+                subprocess.run(
+                    [*tmux_argv(name), "set-option", "-sa", opt, entry],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=_SUBPROCESS_TIMEOUT, check=False, env=env,
+                )
+        _truecolor_sockets.add(socket)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def ensure_server() -> None:
     """Start the product server as an app-class launchd job on macOS (best effort).
 
@@ -347,11 +399,13 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
     # extended-keys before building the plan (no-op when no server runs yet;
     # that server then starts from _tmux_config, which already has `on`).
     _ensure_extended_keys(name)
+    _ensure_truecolor(name)
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]
     if plan.cwd:
         argv += ["-c", plan.cwd]
     argv += hosted_env_pairs(runtime_id, ident)
     argv += identity_env
+    argv += ["-e", "COLORTERM=truecolor"]
     argv += ["--", *plan.argv]
     return LaunchPlan(argv=tuple(argv), cwd=None)
 

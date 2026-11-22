@@ -553,20 +553,33 @@ class SessionIoTests(unittest.TestCase):
         plan = LaunchPlan(argv=("claude",), cwd=None)
         embed._manual_window_size_sockets.clear()
         embed.keepalive._extended_keys_sockets.clear()
+        embed.keepalive._truecolor_sockets.clear()
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok), \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
                 mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.keepalive, "_ensure_extended_keys") as healed, \
+                mock.patch.object(embed.keepalive, "_ensure_truecolor") as healed_tc, \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             name = embed.host_session(plan, "claude", "0123456789abcdef", 120, 40)
         healed.assert_called_once_with(name)
+        self.assertGreaterEqual(healed_tc.call_count, 1)
+
+    def test_host_session_seeds_colorterm_and_colorfgbg(self):
+        self.assertEqual(embed._theme_env_pairs(None), ["-e", "COLORTERM=truecolor"])
+        light = b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b]10;rgb:1818/1c1c/2222\x07"
+        dark = b"\x1b]11;rgb:1414/1717/1f1f\x07\x1b]10;rgb:e8e8/ebeb/f0f0\x07"
+        self.assertEqual(embed._theme_env_pairs(light), ["-e", "COLORTERM=truecolor", "-e", "COLORFGBG=0;15"])
+        self.assertEqual(embed._theme_env_pairs(dark), ["-e", "COLORTERM=truecolor", "-e", "COLORFGBG=15;0"])
 
     def test_resize_heals_extended_keys(self):
         embed.keepalive._extended_keys_sockets.clear()
+        embed.keepalive._truecolor_sockets.clear()
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok), \
-                mock.patch.object(embed.keepalive, "_ensure_extended_keys") as healed:
+                mock.patch.object(embed.keepalive, "_ensure_extended_keys") as healed, \
+                mock.patch.object(embed.keepalive, "_ensure_truecolor") as healed_tc:
             embed.resize("corral-claude-01234567", 120, 40)
         healed.assert_called_once_with("corral-claude-01234567")
+        healed_tc.assert_called_once_with("corral-claude-01234567")
 
     def test_resolve_default_terminal_prefers_known_entry(self):
         from corral import keepalive
@@ -1804,6 +1817,40 @@ class ControlChannelIntegrationTests(unittest.TestCase):
             self.assertNotIn("TIMEOUT", text, f"首次查询不应超时无应答：{text!r}")
             self.assertIn("abab/1212/5656", text,
                           f"首次查询应拿到注入的真实颜色，而不是 tmux 的默认猜测值：{text!r}")
+
+    def test_host_session_preserves_truecolor_env_and_24bit_sgr(self):
+        """Real isolated tmux pane gets TERM=xterm-256color, COLORTERM=truecolor, COLORFGBG and 24-bit SGR."""
+        subprocess.run(["tmux", "-L", self.SOCKET, "kill-session", "-t", self.SESSION],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        embed.keepalive._truecolor_sockets.clear()
+        embed.keepalive._resolve_default_terminal.cache_clear()
+        with mock.patch.object(embed.keepalive, "_BASE_ARGV", ("tmux", "-L", self.SOCKET)), \
+             mock.patch.object(embed.keepalive, "tmux_argv", lambda name=None: ("tmux", "-L", self.SOCKET)), \
+             mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]):
+            script = (
+                "import os, time;"
+                "print('TC_ENV', os.environ.get('TERM'), os.environ.get('COLORTERM'), os.environ.get('COLORFGBG'));"
+                "print('\\x1b[38;2;123;45;67mRGB_MARKER\\x1b[0m');"
+                "time.sleep(60)"
+            )
+            plan = LaunchPlan(("python3", "-c", script), None)
+            light = b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b]10;rgb:1818/1c1c/2222\x07"
+            name = embed.host_session(plan, "tctest", "tctest-24bit", 100, 24, osc_report=light)
+            self.addCleanup(lambda: subprocess.run(
+                ["tmux", "-L", self.SOCKET, "kill-session", "-t", name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            deadline = time.monotonic() + 5.0
+            raw = ""
+            while time.monotonic() < deadline:
+                raw = subprocess.run(
+                    ["tmux", "-L", self.SOCKET, "capture-pane", "-p", "-e", "-t", name],
+                    capture_output=True, text=True, check=False,
+                ).stdout
+                if "RGB_MARKER" in raw:
+                    break
+                time.sleep(0.1)
+            self.assertIn("TC_ENV xterm-256color truecolor 0;15", raw, repr(raw))
+            self.assertIn("38;2;123;45;67m", raw, f"24-bit SGR was downgraded: {raw!r}")
 
 
 @unittest.skipUnless(shutil.which("tmux"), "需要真实 tmux")

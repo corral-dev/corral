@@ -140,7 +140,7 @@ def _entry(name: str, created: str, project: str, cwd: str, command: str) -> dic
 _open_lock = threading.Lock()
 
 
-def open_shell(cwd: str, cols: int, rows: int) -> dict:
+def open_shell(cwd: str, cols: int, rows: int, *, osc_report: bytes | None = None) -> dict:
     """Start a login shell in ``cwd`` (home when empty) and return its entry."""
     folder = Path(os.path.expanduser(cwd.strip() or "~"))
     if not folder.is_dir():
@@ -151,11 +151,13 @@ def open_shell(cwd: str, cols: int, rows: int) -> dict:
             raise ShellError("limit")
         keepalive.ensure_server()
         name = f"{SHELL_SESSION_PREFIX}{secrets.token_hex(4)}"
+        keepalive._ensure_truecolor(name)
         width, height = embed.normalize_host_size(cols, rows)
         argv = [
             "-f", keepalive.ensure_config_file(), "new-session", "-d", "-s", name,
             "-x", str(width), "-y", str(height), "-c", str(folder),
             "-e", "CORRAL_PROJECT_SHELL=1", *_locale_env(),
+            *embed._theme_env_pairs(osc_report),
             "--", login_shell(), "-l",
         ]
         proc = _tmux(*argv)
@@ -163,7 +165,13 @@ def open_shell(cwd: str, cols: int, rows: int) -> dict:
             detail = (proc.stderr.decode("utf-8", "replace").strip() if proc else "") or "tmux"
             raise ShellError("start_failed", detail)
         _tmux("set-option", "-t", name, "@corral_project", str(folder))
+    keepalive._ensure_truecolor(name)
     embed.note_alive(name)
+    if osc_report and embed.supports_theme_report():
+        embed.open_channel(name)
+        channel = embed.active_channel(name)
+        if channel is not None:
+            embed.report_theme(channel, osc_report)
     for shell in list_shells():
         if shell["key"] == key_for_name(name):
             return shell

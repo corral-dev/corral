@@ -35,7 +35,7 @@ _START_TIMEOUT = 3.0
 _CALL_TIMEOUT = 2.0
 # Only these go into the plist on disk; everything else (tokens, proxies) is
 # seeded in memory with set-environment after the server is up.
-_PLIST_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TMUX_TMPDIR", "USER", "SHELL")
+_PLIST_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TMUX_TMPDIR", "USER", "SHELL", "COLORTERM")
 _NOT_SEEDED = frozenset({"TMUX", "TMUX_PANE", "TERM", "TERM_PROGRAM", "_", "SHLVL", "PWD", "OLDPWD"})
 
 

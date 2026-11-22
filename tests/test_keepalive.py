@@ -632,13 +632,64 @@ class ExtendedKeysTests(unittest.TestCase):
     def test_wrap_plan_heals_server_before_attach(self) -> None:
         plan = LaunchPlan(("pi", "--approve"), "/tmp/proj")
         with mock.patch.object(keepalive, "_ensure_extended_keys") as healed, \
+             mock.patch.object(keepalive, "_ensure_truecolor") as healed_tc, \
              mock.patch.object(keepalive, "ensure_server", return_value=None):
             from corral import pi_identity
 
             with mock.patch.object(pi_identity, "ensure_extension_installed",
                                    return_value={"status": "ok"}):
-                keepalive.wrap_plan(plan, "pi", "abcd1234")
+                wrapped = keepalive.wrap_plan(plan, "pi", "abcd1234")
         healed.assert_called_once_with("corral-pi-abcd1234")
+        healed_tc.assert_called_once_with("corral-pi-abcd1234")
+        idx = wrapped.argv.index("-e")
+        self.assertIn("COLORTERM=truecolor", wrapped.argv[idx:])
+
+
+class TruecolorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        keepalive._truecolor_sockets.clear()
+        keepalive._resolve_default_terminal.cache_clear()
+        self.addCleanup(keepalive._truecolor_sockets.clear)
+        self.addCleanup(keepalive._resolve_default_terminal.cache_clear)
+
+    def test_resolve_default_terminal_prefers_xterm_256color(self) -> None:
+        with mock.patch.object(keepalive, "_terminfo_exists", return_value=True):
+            self.assertEqual(keepalive._resolve_default_terminal(), "xterm-256color")
+        keepalive._resolve_default_terminal.cache_clear()
+        with mock.patch.object(keepalive, "_terminfo_exists", side_effect=lambda n: n == "tmux-256color"):
+            self.assertEqual(keepalive._resolve_default_terminal(), "tmux-256color")
+
+    def test_tmux_env_seeds_colorterm(self) -> None:
+        env = keepalive.tmux_env({"PATH": "/usr/bin"})
+        self.assertEqual(env["COLORTERM"], "truecolor")
+        explicit = keepalive.tmux_env({"PATH": "/usr/bin", "COLORTERM": "24bit"})
+        self.assertEqual(explicit["COLORTERM"], "24bit")
+
+    def test_config_seeds_colorterm_and_overrides(self) -> None:
+        with mock.patch.object(keepalive, "_terminfo_exists", return_value=True):
+            config = keepalive._tmux_config()
+        self.assertRegex(config, r'(?m)^set -g default-terminal "xterm-256color"$')
+        self.assertRegex(config, r'(?m)^set -ga terminal-overrides ",\*256col\*:Tc"$')
+        self.assertRegex(config, r'(?m)^set-environment -g COLORTERM truecolor$')
+
+    def test_ensure_truecolor_heals_and_dedups_and_caches(self) -> None:
+        ok_empty = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        with mock.patch.object(keepalive, "_terminfo_exists", return_value=True), \
+             mock.patch.object(keepalive.subprocess, "run",
+                               side_effect=[failed, ok_empty, ok_empty, ok_empty, ok_empty, ok_empty, ok_empty]) as run:
+            keepalive._ensure_truecolor("corral-pi-abcd1234")
+            self.assertEqual(run.call_count, 1)
+            keepalive._ensure_truecolor("corral-pi-abcd1234")
+            self.assertEqual(run.call_count, 7)
+            keepalive._ensure_truecolor("corral-pi-abcd1234")
+            self.assertEqual(run.call_count, 7)
+        argv_list = [call.args[0] for call in run.call_args_list]
+        base = ["tmux", "-L", "corral-keepalive"]
+        self.assertIn([*base, "set-option", "-g", "default-terminal", "xterm-256color"], argv_list)
+        self.assertIn([*base, "set-environment", "-g", "COLORTERM", "truecolor"], argv_list)
+        self.assertIn([*base, "set-option", "-sa", "terminal-overrides", ",*256col*:Tc"], argv_list)
+        self.assertIn([*base, "set-option", "-sa", "terminal-features", ",*:RGB"], argv_list)
 
 
 if __name__ == "__main__":
