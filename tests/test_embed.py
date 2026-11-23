@@ -240,7 +240,8 @@ class HostSessionTests(unittest.TestCase):
     def test_host_session_missing_executable_names_command(self):
         plan = LaunchPlan(argv=("pi", "--approve"), cwd=None)
         with (
-            mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}, clear=False),
+            tempfile.TemporaryDirectory() as empty_bin,
+            mock.patch.dict(os.environ, {"PATH": empty_bin}, clear=False),
             mock.patch.object(embed.subprocess, "run") as run_mock,
         ):
             with self.assertRaises(embed.EmbedError) as ctx:
@@ -1969,14 +1970,16 @@ class StartupFailureCaptureTests(unittest.TestCase):
 
         tmux_bin = shutil.which("tmux")
         assert tmux_bin is not None
-        # Restart this isolated server under minimal GUI PATH (without the node dir).
+        tmux_dir = os.path.dirname(tmux_bin)
+        stripped_path = f"{tmux_dir}:/usr/bin:/bin"
+        # Restart this isolated server under minimal PATH (without the node dir).
         self._tmux("kill-server")
         subprocess.run(
             [tmux_bin, "-L", self.SOCKET, "-f", "/dev/null", "new-session", "-d", "-s", "keep", "--", "sleep", "60"],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env={**os.environ, "PATH": "/usr/bin:/bin"},
+            env={**os.environ, "PATH": stripped_path},
         )
         node_bin = os.path.join(self.tmp, ".local", "share", "nodejs", "current-v22", "bin")
         os.makedirs(node_bin, exist_ok=True)
@@ -1987,7 +1990,7 @@ class StartupFailureCaptureTests(unittest.TestCase):
         name = None
         try:
             with (
-                mock.patch.dict(os.environ, {"PATH": f"{node_bin}:/opt/homebrew/bin:/usr/bin:/bin"}, clear=False),
+                mock.patch.dict(os.environ, {"PATH": f"{node_bin}:{stripped_path}"}, clear=False),
                 mock.patch.object(embed, "socket_for_session", return_value=self.SOCKET),
                 mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]),
                 mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}),

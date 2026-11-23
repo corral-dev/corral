@@ -151,8 +151,9 @@ class NativeResumeTests(_ResumeFixture, unittest.TestCase):
 
     def test_new_session_missing_executable_names_command(self) -> None:
         with (
+            tempfile.TemporaryDirectory() as empty_bin,
             mock.patch.object(embed, "available", return_value=True),
-            mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False),
+            mock.patch.dict(os.environ, {"PATH": empty_bin}, clear=False),
         ):
             with self.assertRaises(ActionError) as error:
                 self.hub.new_session("pi", None)

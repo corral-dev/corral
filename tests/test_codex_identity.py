@@ -196,11 +196,15 @@ class CodexClaimTests(unittest.TestCase):
                     second = codex_identity.live_claims(str(root))
                     self.assertEqual(second, {live_tid: os.getpid()})
                     self.assertEqual(jload.call_count, 2)
-                # Mutating live claim file invalidates memo
-                (claims / "live.json").write_text(
-                    json.dumps({"thread_id": live_tid, "rollout_path": str(dead_rollout), "pid": os.getpid()}),
+                # Mutating live claim file atomically (matching write_claim) invalidates memo
+                replacement = claims / "live.json.tmp"
+                replacement.write_text(
+                    json.dumps(
+                        {"thread_id": live_tid, "rollout_path": str(dead_rollout), "pid": os.getpid(), "updated": True}
+                    ),
                     encoding="utf-8",
                 )
+                os.replace(replacement, claims / "live.json")
                 self.assertEqual(codex_identity.live_claims(str(root)), {})
 
 
