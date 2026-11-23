@@ -4817,6 +4817,50 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 warning = Color.parse(app.get_css_variables()["warning"]).rich_color
                 self.assertNotEqual(chosen.color, warning)
 
+    async def test_agent_picker_hides_uninstalled_runtimes_without_sessions(self) -> None:
+        from corral.ui.quick_filters import QuickFilters
+
+        sessions = [_claude_session("a1", time.time())]
+        codex = mock.Mock()
+        codex.id, codex.display_name = "codex", "Codex"
+        codex.is_available.return_value = True
+        codex.scan_sessions.return_value = []
+
+        antigravity = mock.Mock()
+        antigravity.id, antigravity.display_name = "antigravity", "Antigravity"
+        antigravity.is_available.return_value = False
+        antigravity.scan_sessions.return_value = []
+
+        pi = mock.Mock()
+        pi.id, pi.display_name = "pi", "Pi"
+        pi.is_available.return_value = False
+        pi.scan_sessions.return_value = [dict(sessions[0], source="pi", id="p1")]
+
+        store, _ = _make_store(sessions, extra_runtimes=(codex, pi, antigravity))
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.3)
+            filters = app.screen.query_one(QuickFilters)
+            option_ids = [rid for rid, _label in filters.options("agent")]
+            # Installed (codex), session-backed (claude, pi) stay; uninstalled+empty (antigravity) hides.
+            self.assertEqual(option_ids, ["claude", "codex", "pi"])
+            # Explicitly selected runtime remains visible until cleared.
+            filters.set_selected("agent", {"antigravity"})
+            self.assertEqual(
+                [rid for rid, _label in filters.options("agent")],
+                ["claude", "codex", "pi", "antigravity"],
+            )
+
+    async def test_host_failed_notifies_with_error_message(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 32)) as pilot:
+            await pilot.pause(delay=0.2)
+            with mock.patch.object(app.screen, "notify") as notify_mock:
+                app.screen._on_host_failed(error="Command 'pi' was not found in PATH")
+            notify_mock.assert_called_once()
+            self.assertIn("pi", notify_mock.call_args.args[0])
+
     async def test_header_metadata_and_native_quick_filter(self) -> None:
         from textual.widgets import Button, Static
 

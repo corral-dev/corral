@@ -287,9 +287,31 @@ class QuickFilters(Horizontal):
             (path, labels.get(path, t("filter.no_project"))) for path in sorted(missing)
         ]
 
+    @staticmethod
+    def _runtime_is_available(runtime) -> bool:
+        probe = getattr(runtime, "is_available", None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            return False
+
     def _runtime_names(self) -> list[tuple[str, str]]:
-        return [(runtime.id, "Claude" if runtime.id == "claude" else runtime.display_name)
-                for runtime in active_runtimes(self.store.registry)]
+        session_sources = {
+            str(session.get("source") or "").strip().lower()
+            for session in self.store.all_sessions()
+        }
+        selected = self.nav.runtime_filters
+        return [
+            (runtime.id, "Claude" if runtime.id == "claude" else runtime.display_name)
+            for runtime in active_runtimes(self.store.registry)
+            if (
+                runtime.id in session_sources
+                or runtime.id in selected
+                or self._runtime_is_available(runtime)
+            )
+        ]
 
     def options(self, dimension: str) -> list[tuple[str, Text | str]]:
         if dimension == "agent":

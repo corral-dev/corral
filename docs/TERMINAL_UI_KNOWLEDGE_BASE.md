@@ -179,6 +179,10 @@ The input names the object being filtered (`Filter sessions`
 in English; `筛选会话：项目、标题` in Chinese). The project picker is explicitly
 named `More projects…` / `更多项目…`. Preserve multi-select unions, intersections,
 runtime brand colors, stable recent-project order and keyboard/mouse activation.
+Per the 2026-11-23 owner decision, the `Agent:` picker shows only active runtimes
+that are installed locally (`runtime.is_available()`), present in
+`store.all_sessions()`, or currently selected in `nav.runtime_filters`; dormant
+`kimi` remains hidden.
 Only the fitting recent-project prefix is visible; all other projects remain in
 the searchable picker. Selections never move quick choices. The picker reserves
 its maximum count width so selection does not cause a layout shift.

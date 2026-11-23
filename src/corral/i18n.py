@@ -855,8 +855,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "{name} 未安装，无法分叉会话",
     },
     "launch.executable_missing": {
-        "en": "Command {executable} was not found; install the corresponding runtime first",
-        "zh": "未找到 {executable} 命令，请先安装对应运行时",
+        "en": "Command '{executable}' was not found in PATH; install it or add its directory to PATH",
+        "zh": "在 PATH 中未找到 {executable} 命令；请确认已安装并将其目录加入 PATH",
     },
     "launch.cannot_start": {
         "en": "Cannot start {executable}: {error}",

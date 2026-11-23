@@ -149,6 +149,19 @@ class NativeResumeTests(_ResumeFixture, unittest.TestCase):
             result = self.hub._recover_dead_pane_binding(self.key, "corral-claude-expired", cause="pane_gone")
         self.assertEqual(result, ("corral-claude-fresh", True))
 
+    def test_new_session_missing_executable_names_command(self) -> None:
+        with (
+            mock.patch.object(embed, "available", return_value=True),
+            mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False),
+        ):
+            with self.assertRaises(ActionError) as error:
+                self.hub.new_session("pi", None)
+        self.assertEqual(error.exception.code, "unavailable")
+        message = str(error.exception)
+        self.assertIn("pi", message)
+        self.assertIn("PATH", message)
+        self.assertNotIn("exit code 1", message)
+
 
 @unittest.skipUnless(shutil.which("tmux"), "tmux required")
 class RealResumeTests(_ResumeFixture, unittest.TestCase):

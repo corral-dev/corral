@@ -6,6 +6,20 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Preserve and heal the user's login-shell `PATH` and common Node/runtime tool directories (`~/.local/share/nodejs/current*/bin`, `nvm`, `fnm`, `volta`, `mise`, `bun`, Homebrew, etc.) across `corral remote` LaunchAgent/systemd units and tmux-hosted sessions, keeping assistants such as `pi` and `claude` discoverable across GUI upgrades and restarts.
+- Report the exact missing command name in `PATH` when launching, resuming, restarting, or handing off a session whose assistant executable cannot be found, instead of exiting silently with `exit code 1`.
+- Hide uninstalled runtimes that have no sessions from the TUI `Agent:` quick-filter picker unless currently selected.
+
+### 简体中文
+
+- 在 `corral remote` 的 LaunchAgent / systemd 自启单元与 tmux 托管会话中保留并自愈用户登录交互 shell 的 `PATH` 及常见 Node/工具目录（含 `~/.local/share/nodejs/current*/bin`、`nvm`、`fnm`、`volta`、`mise`、`bun`、Homebrew 等），确保经桌面端升级或重启后仍能正常识别并启动 `pi`、`claude` 等助手。
+- 新建、恢复或接力会话时若找不到助手可执行文件，直接明确提示缺少的命令名与 `PATH`，不再只显示 `exit code 1`。
+- 终端界面的 `Agent:` 快捷筛选弹窗仅展示已在本机安装、当前存在会话或正在被选中的运行时，隐藏未安装且无会话的助手项。
+
 ## 1.0.1
 
 ### English

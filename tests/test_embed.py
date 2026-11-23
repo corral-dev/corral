@@ -237,6 +237,18 @@ class HostSessionTests(unittest.TestCase):
             with self.assertRaises(embed.EmbedError):
                 embed.host_session(plan, "claude", "0123456789abcdef", 80, 24)
 
+    def test_host_session_missing_executable_names_command(self):
+        plan = LaunchPlan(argv=("pi", "--approve"), cwd=None)
+        with (
+            mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}, clear=False),
+            mock.patch.object(embed.subprocess, "run") as run_mock,
+        ):
+            with self.assertRaises(embed.EmbedError) as ctx:
+                embed.host_session(plan, "pi", "missingcmd01", 80, 24)
+        self.assertIn("pi", str(ctx.exception))
+        self.assertIn("PATH", str(ctx.exception))
+        run_mock.assert_not_called()
+
 
 class SessionIoTests(unittest.TestCase):
     def test_capture_returns_decoded_text(self):
@@ -1950,6 +1962,48 @@ class StartupFailureCaptureTests(unittest.TestCase):
             time.sleep(0.05)
         self._launch("corral-codex-again", "sleep 30")
         self.assertIsNone(embed.take_exit_report("corral-codex-again"))
+
+    def test_host_session_launches_user_node_bin_on_preexisting_stripped_tmux_server(self):
+        """A tmux server started under minimal GUI PATH must still launch ~/.local/share/nodejs/*/pi via -e PATH."""
+        from corral import pi_identity
+
+        tmux_bin = shutil.which("tmux")
+        assert tmux_bin is not None
+        # Restart this isolated server under minimal GUI PATH (without the node dir).
+        self._tmux("kill-server")
+        subprocess.run(
+            [tmux_bin, "-L", self.SOCKET, "-f", "/dev/null", "new-session", "-d", "-s", "keep", "--", "sleep", "60"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PATH": "/usr/bin:/bin"},
+        )
+        node_bin = os.path.join(self.tmp, ".local", "share", "nodejs", "current-v22", "bin")
+        os.makedirs(node_bin, exist_ok=True)
+        pi_bin = os.path.join(node_bin, "pi")
+        with open(pi_bin, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\necho 'PI-V1.6.0-READY'\nsleep 30\n")
+        os.chmod(pi_bin, 0o755)
+        name = None
+        try:
+            with (
+                mock.patch.dict(os.environ, {"PATH": f"{node_bin}:/opt/homebrew/bin:/usr/bin:/bin"}, clear=False),
+                mock.patch.object(embed, "socket_for_session", return_value=self.SOCKET),
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]),
+                mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}),
+            ):
+                name = embed.host_session(LaunchPlan(("pi", "--approve"), self.tmp), "pi", "nodepath01", 80, 24)
+            deadline = time.monotonic() + 4.0
+            screen = ""
+            while time.monotonic() < deadline:
+                screen = self._tmux("capture-pane", "-p", "-t", name).stdout
+                if "PI-V1.6.0-READY" in screen:
+                    break
+                time.sleep(0.05)
+            self.assertIn("PI-V1.6.0-READY", screen, repr(screen))
+        finally:
+            if name:
+                self._tmux("kill-session", "-t", name)
 
 
 if __name__ == "__main__":

@@ -178,7 +178,7 @@ class HostControllerMixin:
                 ok=False,
             )
             corral._log_embed_error("内嵌会话启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed, pending_key)
+            self.app.call_from_thread(self._on_host_failed, pending_key, str(exc))
             return
         observe.event(
             "host_session",
@@ -198,13 +198,15 @@ class HostControllerMixin:
         except Exception:  # noqa: BLE001 预热失败不该影响托管成功收尾
             pass
 
-    def _on_host_failed(self, pending_key: str | None = None) -> None:
-        """host worker 失败收尾：移除占位格、释放托管计数并给用户终端响铃。"""
+    def _on_host_failed(self, pending_key: str | None = None, error: str = "") -> None:
+        """host worker 失败收尾：移除占位格、释放托管计数并展示错误提示。"""
         self._host_pending = max(0, self._host_pending - 1)
         try:
             self._split_area().abort_pending_pane(pending_key)
         except Exception:  # noqa: BLE001 分栏重建中间态缺件时静默跳过
             pass
+        if error:
+            self.notify(t("error.launch_failed", error=error))
         self._restore_direct_search_focus()
         self.app.bell()
 
@@ -392,7 +394,7 @@ class HostControllerMixin:
                 ok=False,
             )
             corral._log_embed_error("内嵌 shell 启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed, pending_key)
+            self.app.call_from_thread(self._on_host_failed, pending_key, str(exc))
             return
         observe.event(
             "host_session",
@@ -471,7 +473,7 @@ class HostControllerMixin:
                 ok=False,
             )
             corral._log_embed_error("直启会话启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed, pending_key)
+            self.app.call_from_thread(self._on_host_failed, pending_key, str(exc))
             return
         observe.event(
             "host_session",

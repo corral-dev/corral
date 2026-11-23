@@ -129,6 +129,13 @@ def host_session(
     """
     from corral.pi_identity import PiExtensionInstallError
 
+    launch_env = keepalive.tmux_env()
+    command = plan.argv[0] if plan.argv else ""
+    if command and shutil.which(command, path=launch_env.get("PATH")) is None:
+        from corral.i18n import t
+
+        raise EmbedError(t("launch.executable_missing", executable=command))
+
     # 身份桥与 wrap_plan 同源：Pi 扩展 + instance、Codex app-server 代理。
     # Pi 扩展安装失败则中止这条托管启动，绝不静默退回猜测绑定。
     try:
@@ -151,11 +158,13 @@ def host_session(
     argv += hosted_env_pairs(runtime_id, ident)
     argv += identity_env
     argv += _theme_env_pairs(osc_report)
+    if launch_env.get("PATH"):
+        argv += ["-e", f"PATH={launch_env['PATH']}"]
     argv += ["--", *plan.argv]
     try:
         proc = subprocess.run(
             argv, check=True, capture_output=True, timeout=_CREATE_TIMEOUT,
-            env=keepalive.tmux_env(),
+            env=launch_env,
         )
         pane_id = (proc.stdout or b"").decode().strip()
         if pane_id.startswith("%"):
@@ -175,7 +184,7 @@ def host_session(
                     [*keepalive.tmux_argv(), "kill-server"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     timeout=_CALL_TIMEOUT, check=False,
-                    env=keepalive.tmux_env(),
+                    env=launch_env,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
@@ -183,7 +192,7 @@ def host_session(
             try:
                 proc = subprocess.run(
                     argv, check=True, capture_output=True, timeout=_CREATE_TIMEOUT,
-                    env=keepalive.tmux_env(),
+                    env=launch_env,
                 )
                 pane_id = (proc.stdout or b"").decode().strip()
                 if pane_id.startswith("%"):

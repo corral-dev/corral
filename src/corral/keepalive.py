@@ -406,6 +406,9 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
     argv += hosted_env_pairs(runtime_id, ident)
     argv += identity_env
     argv += ["-e", "COLORTERM=truecolor"]
+    path_env = tmux_env().get("PATH")
+    if path_env:
+        argv += ["-e", f"PATH={path_env}"]
     argv += ["--", *plan.argv]
     return LaunchPlan(argv=tuple(argv), cwd=None)
 

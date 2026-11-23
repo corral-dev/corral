@@ -188,6 +188,66 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         self.assertIn(t("remote.on.pair_hint"), buf.getvalue())
         self.assertIn(t("remote.on.remembered"), buf.getvalue())
 
+    def test_on_force_captures_installed_path_before_disarming_autostart(self) -> None:
+        state = remote_config.RemoteState(
+            host_id="h1",
+            host_name="suzhou",
+            relay_url="",
+            relay_enabled=False,
+            local_enabled=False,
+            local_port=8737,
+            devices=[],
+        )
+        args = mock.Mock(
+            relay_url=None,
+            insecure_relay=False,
+            no_relay=False,
+            no_local=False,
+            port=None,
+            force=True,
+            foreground=False,
+            quiet=True,
+            json=True,
+        )
+        order: list[str] = []
+
+        def fake_read() -> str:
+            order.append("read")
+            return "/home/.local/share/nodejs/current-v22/bin:/opt/homebrew/bin"
+
+        def fake_disable() -> str:
+            order.append("disable")
+            return ""
+
+        def fake_enable(*, preserved_path: str = "", **_kwargs) -> str:
+            order.append(f"enable:{preserved_path}")
+            return ""
+
+        with (
+            mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
+            mock.patch.object(remote_config, "load_state", return_value=state),
+            mock.patch.object(remote_config, "save_state"),
+            mock.patch.object(remote_config, "read_pid", side_effect=[1234, None, 5678]),
+            mock.patch.object(remote_config, "clear_pid"),
+            mock.patch.object(remote_cli, "_stop_pid"),
+            mock.patch.object(remote_cli, "_spawn_background_daemon", return_value=mock.Mock(poll=lambda: None)),
+            mock.patch.object(remote_cli.remote_autostart, "read_installed_path_env", side_effect=fake_read),
+            mock.patch.object(remote_cli.remote_autostart, "disable", side_effect=fake_disable),
+            mock.patch.object(remote_cli.remote_autostart, "enable", side_effect=fake_enable),
+            mock.patch.object(remote_cli.remote_autostart, "is_installed", return_value=True),
+        ):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(remote_cli._cmd_on(args), 0)
+
+        self.assertEqual(
+            order,
+            [
+                "read",
+                "disable",
+                "enable:/home/.local/share/nodejs/current-v22/bin:/opt/homebrew/bin",
+            ],
+        )
+
     def test_start_alias_matches_on(self) -> None:
         self.assertIs(remote_cli._cmd_start, remote_cli._cmd_on)
         self.assertIs(remote_cli._cmd_stop, remote_cli._cmd_off)

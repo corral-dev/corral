@@ -57,23 +57,30 @@ def is_installed() -> bool:
     return False
 
 
-def enable(*, restart_existing: bool = True) -> str:
+def enable(*, restart_existing: bool = True, preserved_path: str = "") -> str:
     """Arm autostart and ensure the service is loaded. Empty string on success."""
     if not autostart_allowed():
         return ""
     if sys.platform == "darwin":
-        return _darwin_enable(restart_existing=restart_existing)
+        return _darwin_enable(restart_existing=restart_existing, preserved_path=preserved_path)
     if sys.platform.startswith("linux"):
-        return _linux_enable()
+        return _linux_enable(preserved_path=preserved_path)
     return ""
+
+
+def _unit_missing_current_path(unit_path_value: str) -> bool:
+    current_items = [item.strip() for item in os.environ.get("PATH", "").split(":") if item.strip()]
+    existing_items = {item.strip() for item in unit_path_value.split(":") if item.strip()}
+    return any(item not in existing_items for item in current_items)
 
 
 def refresh_unit_file() -> None:
     """Rewrite an armed unit whose command no longer matches ``serve_argv()``.
 
     Older units pinned a versioned Homebrew Cellar interpreter that a later cleanup
-    deletes. Called by the running service: the file is rewritten without reloading
-    the job (that would kill the caller), so the change applies at the next load.
+    deletes, or carried a stripped LaunchAgent PATH. Called by the running service:
+    the file is rewritten without reloading the job (that would kill the caller),
+    so the change applies at the next load.
     """
     if not autostart_allowed():
         return
@@ -83,14 +90,20 @@ def refresh_unit_file() -> None:
             if path.is_file():
                 with path.open("rb") as fh:
                     payload = plistlib.load(fh)
-                if isinstance(payload, dict) and payload.get("ProgramArguments") != serve_argv():
-                    _darwin_write_plist()
+                if isinstance(payload, dict):
+                    env_dict = payload.get("EnvironmentVariables")
+                    existing_path = str(env_dict.get("PATH") or "") if isinstance(env_dict, dict) else ""
+                    if payload.get("ProgramArguments") != serve_argv() or _unit_missing_current_path(existing_path):
+                        _darwin_write_plist(preserved_path=existing_path)
         elif sys.platform.startswith("linux"):
             path = _linux_unit_path()
-            if path.is_file() and f"ExecStart={_exec_start()}\n" not in path.read_text(encoding="utf-8"):
-                _linux_write_unit()
-                if shutil.which("systemctl") is not None:
-                    _linux_systemctl(["daemon-reload"])
+            if path.is_file():
+                text = path.read_text(encoding="utf-8")
+                existing_path = read_installed_path_env()
+                if f"ExecStart={_exec_start()}\n" not in text or _unit_missing_current_path(existing_path):
+                    _linux_write_unit(preserved_path=existing_path)
+                    if shutil.which("systemctl") is not None:
+                        _linux_systemctl(["daemon-reload"])
     except Exception:  # noqa: BLE001 - a unit refresh must never stop the service
         pass
 
@@ -118,22 +131,52 @@ def _log_dir() -> Path:
     return path
 
 
-def _path_env() -> str:
-    extras = [
-        str(_home() / ".local" / "bin"),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-    ]
-    current = os.environ.get("PATH", "")
-    parts = []
-    seen: set[str] = set()
-    for item in extras + current.split(":"):
-        if item and item not in seen:
-            seen.add(item)
-            parts.append(item)
-    return ":".join(parts)
+def read_installed_path_env() -> str:
+    """Read PATH stored in the active autostart unit, if any."""
+    try:
+        if sys.platform == "darwin":
+            path = _darwin_plist_path()
+            if not path.is_file():
+                return ""
+            with path.open("rb") as fh:
+                payload = plistlib.load(fh)
+            if isinstance(payload, dict):
+                env_dict = payload.get("EnvironmentVariables")
+                if isinstance(env_dict, dict):
+                    return str(env_dict.get("PATH") or "")
+        elif sys.platform.startswith("linux"):
+            path = _linux_unit_path()
+            if not path.is_file():
+                return ""
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("Environment=PATH="):
+                    raw = line[len("Environment=PATH=") :].strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
+                        raw = raw[1:-1].replace("'\"'\"'", "'")
+                    return raw
+    except Exception:  # noqa: BLE001 - missing or corrupt unit falls back to empty
+        pass
+    return ""
+
+
+def _probe_shell_path() -> str:
+    from corral import shell_env
+
+    return shell_env.probe_login_shell_path()
+
+
+def _path_env(preserved_path: str = "") -> str:
+    from corral import shell_env
+
+    home = _home()
+    existing = preserved_path or read_installed_path_env()
+    # Skip real-user shell probing when unit tests isolate _home() to a tempdir.
+    shell_path = _probe_shell_path() if home == Path.home() else ""
+    cur = os.environ.get("PATH", "")
+    common = shell_env.discover_common_bin_dirs(home)
+    if shell_env.is_minimal_path(cur, home=home):
+        return shell_env.merge_path_entries(shell_path, existing, cur, common)
+    return shell_env.merge_path_entries(cur, shell_path, existing, common)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +206,7 @@ def _darwin_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def _darwin_write_plist() -> Path:
+def _darwin_write_plist(*, preserved_path: str = "") -> Path:
     agents = _darwin_plist_path().parent
     agents.mkdir(parents=True, exist_ok=True)
     logs = _log_dir()
@@ -179,7 +222,7 @@ def _darwin_write_plist() -> Path:
         "StandardErrorPath": str(logs / "remote.err.log"),
         "EnvironmentVariables": {
             "HOME": str(_home()),
-            "PATH": _path_env(),
+            "PATH": _path_env(preserved_path=preserved_path),
             "LANG": os.environ.get("LANG") or "en_US.UTF-8",
         },
     }
@@ -203,8 +246,8 @@ def _darwin_run(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _darwin_enable(*, restart_existing: bool = True) -> str:
-    path = _darwin_write_plist()
+def _darwin_enable(*, restart_existing: bool = True, preserved_path: str = "") -> str:
+    path = _darwin_write_plist(preserved_path=preserved_path)
     domain = _darwin_domain()
     target = f"{domain}/{_LABEL}"
     # Pairing refreshes login persistence without disconnecting active clients.
@@ -268,7 +311,7 @@ def _linux_unit_path() -> Path:
     return base / "systemd" / "user" / _SYSTEMD_UNIT
 
 
-def _linux_write_unit() -> Path:
+def _linux_write_unit(*, preserved_path: str = "") -> Path:
     path = _linux_unit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     logs = _log_dir()
@@ -285,7 +328,7 @@ def _linux_write_unit() -> Path:
             "Restart=on-failure",
             "RestartSec=5",
             f"Environment=HOME={_shell_quote(str(_home()))}",
-            f"Environment=PATH={_shell_quote(_path_env())}",
+            f"Environment=PATH={_shell_quote(_path_env(preserved_path=preserved_path))}",
             f"StandardOutput=append:{logs / 'remote.out.log'}",
             f"StandardError=append:{logs / 'remote.err.log'}",
             "",
@@ -324,10 +367,10 @@ def _linux_systemctl(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _linux_enable() -> str:
+def _linux_enable(*, preserved_path: str = "") -> str:
     if shutil.which("systemctl") is None:
         return ""
-    _linux_write_unit()
+    _linux_write_unit(preserved_path=preserved_path)
     reloaded = _linux_systemctl(["daemon-reload"])
     if reloaded.returncode != 0:
         return (reloaded.stderr or reloaded.stdout or "daemon-reload failed").strip()

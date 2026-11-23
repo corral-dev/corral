@@ -366,10 +366,11 @@ def restart_if_outdated() -> bool:
     if not updater.is_newer(__version__, updater._version_tuple(host_version)):
         return False
     observe.event("remote_outdated_restart", host_version=host_version, version=__version__)
+    preserved_path = remote_autostart.read_installed_path_env()
     remote_autostart.disable()
     _stop_pid(running)
     remote_config.clear_pid()
-    _start_background(remote_autostart.enable())
+    _start_background(remote_autostart.enable(preserved_path=preserved_path))
     return True
 
 
@@ -464,6 +465,7 @@ def _cmd_on(args) -> int:
             print(t("remote.on.remembered"))
         return EXIT_OK
 
+    preserved_path = remote_autostart.read_installed_path_env()
     if running and args.force:
         remote_autostart.disable()
         _stop_pid(running)
@@ -475,7 +477,7 @@ def _cmd_on(args) -> int:
                      next_commands=[f"{_bin()} remote status --json"])
 
     # Arm OS autostart before starting so a crash mid-on still comes back after reboot.
-    autostart_error = remote_autostart.enable()
+    autostart_error = remote_autostart.enable(preserved_path=preserved_path)
 
     if args.foreground:
         if args.json:
@@ -611,6 +613,10 @@ def _cmd_serve(_args) -> int:
     if existing and existing != os.getpid():
         # Another live instance owns the switch; exit cleanly for launchd/systemd.
         return EXIT_OK
+    if remote_autostart.autostart_allowed():
+        from corral import shell_env
+
+        shell_env.enrich_process_path()
     remote_autostart.refresh_unit_file()
     return _run_daemon_foreground(state)
 

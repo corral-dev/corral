@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -207,6 +208,85 @@ class RemoteAutostartTests(unittest.TestCase):
             ):
                 self.assertEqual(autostart.disable(), "")
             self.assertFalse(plist_path.exists())
+
+    def test_enable_preserves_custom_path_under_minimal_gui_env(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS only")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            node_bin = home / ".local" / "share" / "nodejs" / "current-v22" / "bin"
+            node_bin.mkdir(parents=True)
+            plist_path = home / "Library" / "LaunchAgents" / "com.x0c.corral.remote.plist"
+            with (
+                mock.patch.object(autostart, "autostart_allowed", return_value=True),
+                mock.patch.object(autostart, "_home", return_value=home),
+                mock.patch.object(autostart, "_darwin_run", side_effect=_fast_run),
+                mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}, clear=False),
+            ):
+                self.assertEqual(
+                    autostart.enable(preserved_path="/custom/tool/bin:/usr/bin"),
+                    "",
+                )
+            with plist_path.open("rb") as fh:
+                payload = plistlib.load(fh)
+            plist_path_env = payload["EnvironmentVariables"]["PATH"]
+            self.assertIn("/custom/tool/bin", plist_path_env.split(":"))
+            self.assertIn(str(node_bin), plist_path_env.split(":"))
+            self.assertIn("/opt/homebrew/bin", plist_path_env.split(":"))
+            with (
+                mock.patch.object(autostart, "_home", return_value=home),
+            ):
+                self.assertEqual(autostart.read_installed_path_env(), plist_path_env)
+
+    def test_refresh_rewrites_plist_when_process_gains_new_path_entries(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS only")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with (
+                mock.patch.object(autostart, "autostart_allowed", return_value=True),
+                mock.patch.object(autostart, "_home", return_value=home),
+                mock.patch.object(autostart, "_darwin_run", side_effect=AssertionError("no reload")),
+            ):
+                with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+                    autostart._darwin_write_plist()
+                with mock.patch.dict(os.environ, {"PATH": "/custom/v22/bin:/usr/bin:/bin"}, clear=False):
+                    autostart.refresh_unit_file()
+                with autostart._darwin_plist_path().open("rb") as fh:
+                    payload = plistlib.load(fh)
+            self.assertIn("/custom/v22/bin", payload["EnvironmentVariables"]["PATH"].split(":"))
+
+    def test_ui_upgrade_from_applications_heals_stripped_plist_for_user_node_dir(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS only")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            node_bin = home / ".local" / "share" / "nodejs" / "current-v22" / "bin"
+            node_bin.mkdir(parents=True)
+            pi_bin = node_bin / "pi"
+            pi_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            pi_bin.chmod(0o755)
+            with (
+                mock.patch.object(autostart, "autostart_allowed", return_value=True),
+                mock.patch.object(autostart, "_home", return_value=home),
+                mock.patch.object(autostart, "_darwin_run", side_effect=_fast_run),
+            ):
+                # Seed a 1.0.1 stripped plist missing the user-level Node directory.
+                with mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}, clear=False):
+                    autostart._darwin_write_plist()
+                # Simulate Corral.app from /Applications running `corral remote on --force` with GUI 4-entry PATH.
+                with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}, clear=False):
+                    preserved = autostart.read_installed_path_env()
+                    autostart.disable()
+                    self.assertEqual(autostart.enable(preserved_path=preserved), "")
+                with autostart._darwin_plist_path().open("rb") as fh:
+                    payload = plistlib.load(fh)
+            plist_dirs = payload["EnvironmentVariables"]["PATH"].split(":")
+            self.assertIn(str(node_bin), plist_dirs)
+            # Even when another copy exists in /opt/homebrew/bin, fallback discovery includes node_bin;
+            # and filtering out /opt/homebrew/bin proves node_bin itself resolves `pi`.
+            node_first = ":".join(d for d in plist_dirs if d != "/opt/homebrew/bin")
+            self.assertEqual(shutil.which("pi", path=node_first), str(pi_bin))
 
 
 if __name__ == "__main__":
