@@ -1691,6 +1691,7 @@ class SessionHubPayloadTests(unittest.TestCase):
         with (
             mock.patch.object(self.hub, "resume_session", side_effect=_fake_resume),
             mock.patch.object(remote_sessions.embed, "pane_liveness", side_effect=_liveness),
+            mock.patch.object(remote_sessions.embed, "capture", return_value="→ ready"),
             mock.patch.object(remote_sessions.embed, "paste_detailed", side_effect=_fake_paste),
             mock.patch.object(
                 remote_sessions.embed, "send_key_detailed", return_value=InjectionResult(True)

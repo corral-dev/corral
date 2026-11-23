@@ -5,7 +5,7 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>在一个终端里运行所有编程助手，离开电脑也能用手机接着做。</strong></p>
-<p align="center">Claude Code、Codex、OpenCode、Cursor 和 Pi 并排工作。看到哪个助手需要你，同时打开多个会话，关闭工作区后托管的助手也能继续运行。</p>
+<p align="center">Claude Code、Codex、OpenCode、Cursor、Pi 和 Antigravity 并排工作。看到哪个助手需要你，同时打开多个会话，关闭工作区后托管的助手也能继续运行。</p>
 
 <p align="center">
   <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="最新版本"></a>
@@ -77,7 +77,7 @@ corral
 
 ```bash
 corral claude
-# 也支持：corral codex | corral opencode | corral cursor | corral pi
+# 也支持：corral codex | corral opencode | corral cursor | corral pi | corral antigravity
 ```
 
 用 `Space` 选中二至四个会话，再按 `Enter` 分屏打开。关掉其中一个显示区域只是收起画面，不会结束正在托管的助手。
@@ -172,6 +172,24 @@ corral show <session-id-prefix> --messages 10 --compact
 ```
 
 JSON 输出、导出及接力计划详见[命令参考](docs/SKILL.md)。
+
+## 常见问题
+
+### Corral 与云端沙箱或纯 tmux 有什么区别？
+
+Corral 是运行在 macOS 和 Linux 本机 `tmux` 上的本地优先终端工作区，直接驱动你本机已安装的编程 CLI，不用一次性容器，也没有托管中继；同时补齐了统一的待办关注提示、最多四格分屏、全历史正文搜索、跨助手接力，以及原生 iPhone / Mac 同步。
+
+### 如何在 iPhone 或 Mac 上查看并回复 Claude Code / Codex 会话？
+
+安装原生 [Corral Apple 应用](https://github.com/corral-dev/corral-apple)，并在运行助手的电脑上执行 `corral remote pair`。同一局域网内直连，跨网络则通过你自建的 [corral-relay](https://github.com/corral-dev/corral-relay) 进行端到端加密通信。Mac 版可在 [Releases](https://github.com/corral-dev/corral-apple/releases/latest) 直接下载签名版；iPhone 版目前需用 Xcode 从源码构建。
+
+### 如何把 Claude Code 的会话交给 Codex 或其他助手接着做？
+
+选中或打开会话后按 `Ctrl+T`，选择目标助手。Corral 会为目标助手新建一个会话并让它读取原对话历史，原会话本身保持不变。
+
+### Corral 会上传我的代码或对话历史吗？
+
+不会。会话浏览、正文搜索和 `corral flex` 全部在本地运行。仅在开启标题生成时使用你配置的模型网关或已有助手登录，检查更新会访问 GitHub，已配对的远程设备之间采用端到端加密。
 
 ## 获取帮助与参与贡献
 

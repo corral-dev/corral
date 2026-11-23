@@ -5,7 +5,7 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>Run all your coding agents from one terminal — and pick them up from your phone.</strong></p>
-<p align="center">Claude Code, Codex, OpenCode, Cursor, and Pi side by side. See which agent needs you, open several sessions together, and keep hosted agents running when you close the workspace.</p>
+<p align="center">Claude Code, Codex, OpenCode, Cursor, Pi, and Antigravity side by side. See which agent needs you, open several sessions together, and keep hosted agents running when you close the workspace.</p>
 
 <p align="center">
   <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="Latest release"></a>
@@ -77,7 +77,7 @@ Press `Ctrl+N` to start something new. The New Session dialog remembers your fiv
 
 ```bash
 corral claude
-# Also: corral codex | corral opencode | corral cursor | corral pi
+# Also: corral codex | corral opencode | corral cursor | corral pi | corral antigravity
 ```
 
 Select two to four sessions with `Space`, then press `Enter` to open them side by side. Closing a pane only hides the view; it does not stop a hosted agent.
@@ -172,6 +172,24 @@ corral show <session-id-prefix> --messages 10 --compact
 ```
 
 See the [command reference](docs/SKILL.md) for JSON output, export, and handoff planning.
+
+## FAQ
+
+### How is Corral different from cloud sandboxes or plain tmux?
+
+Corral is a local-first terminal workspace over `tmux` on macOS and Linux. It runs the coding CLIs already installed on your machine directly — no throwaway containers or hosted broker — while adding unified attention indicators, up to four split panes, full-text conversation search, cross-agent handoff, and native iPhone/Mac sync.
+
+### How can I monitor or reply to Claude Code and Codex from my iPhone or Mac?
+
+Install the native [Corral Apple app](https://github.com/corral-dev/corral-apple) and run `corral remote pair` on your host. Connections work directly over your local network or through a self-hosted [corral-relay](https://github.com/corral-dev/corral-relay) with end-to-end encryption. Signed Mac builds are available in [Releases](https://github.com/corral-dev/corral-apple/releases/latest); the iPhone app currently requires building from source with Xcode.
+
+### How do I hand off a Claude Code session to Codex or another assistant?
+
+Open or select a session, press `Ctrl+T`, and choose the target assistant. Corral starts a new session for that assistant with access to the source conversation history while leaving the original session untouched.
+
+### Does Corral upload my code or conversation history?
+
+No. Session browsing, full-text search, and `corral flex` run 100% locally on your machine. Optional title generation uses your configured model gateway or an installed assistant’s existing login, update checks query GitHub, and paired devices use end-to-end encryption.
 
 ## Help and contribute
 
