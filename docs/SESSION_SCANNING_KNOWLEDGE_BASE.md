@@ -158,6 +158,12 @@ A phone list row reading `Codex error: The usage limit has been reached` for a s
 
 Fix belongs upstream (SessKit `docs/CONTRACT.md` → *Verified gaps closed (2026-09-15 live Mac runs)*, the paragraph after item 5) and reaches both clients through the pinned artifact and provider cohort: SessKit 0.3.6 with the complete Corral dependency pin. Do not special-case error text in `remote/sessions.py`, the TUI or the Apple clients — a second heuristic there would re-diverge from native evidence. Verification is the exact live history: the row for the reported session now shows its latest real reply, `sesskit verify --sample 30` passes 30/30 for codex and pi with parity, and no Pi/Codex row in the installed list still shows a superseded failure. Physical iPhone capture stays outstanding while the device is locked; the shared `SessionPresentation.preview` renders `last_agent` verbatim and needs no package change.
 
+### Latest-message speaker in list preview (`last_msg_role`, 2026-11-24)
+
+When a session has an earlier assistant reply followed by newer user message(s) without a subsequent assistant reply (observed live on `antigravity:3a788774`), `last_agent_msg` remains non-empty alongside the newer `last_user_msg`. Client previews that unconditionally preferred `last_agent` over `last_user` therefore kept displaying the stale older assistant reply instead of the newest message.
+
+Native history ordering belongs upstream in SessKit (`0.3.13`, `last_msg_role: "user" | "assistant" | null` on `SessionInfo`, derived without adding a second parser in Corral). Corral forwards `last_msg_role` through `SessionHub.session_payload()`, includes it in `SessionHub._window_version()` so speaker flips invalidate client list versions even when excerpt texts stay unchanged, and exposes it in `agent_api.session_payload()`. The TUI sidebar card shows only title, runtime, and time (no message-preview line).
+
 ### 2.3 完整对话按需加载
 
 1. 用户选中会话后，`SessionStore.get_conversation()` 以“运行时 + 会话 ID”定位预览缓存。

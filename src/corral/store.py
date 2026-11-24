@@ -204,7 +204,7 @@ def _antigravity_db_signature(session: dict, *, memo: dict | None = None) -> tup
 
 # Fields the per-session turn probe owns between full scans (status follows
 # native turn ends within the state tick, see REMOTE_KNOWLEDGE_BASE turn-end rule).
-_TURN_STATE_FIELDS = ("status_tag", "completion_id", "last_agent_msg", "last_user_msg")
+_TURN_STATE_FIELDS = ("status_tag", "completion_id", "last_agent_msg", "last_user_msg", "last_msg_role")
 # A chat submit is working on the host at once. The mark holds until native
 # evidence shows the new turn (working/waiting, or a new completion/abort id),
 # or the history stays quiet this long with non-working evidence (the submit
@@ -2282,6 +2282,7 @@ class SessionStore:
             "first_user_msg": "",
             "last_user_msg": "",
             "last_agent_msg": "",
+            "last_msg_role": None,
             "path": "",
             "keepalive_name": keepalive_name,
             "provisional": True,

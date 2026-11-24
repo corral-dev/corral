@@ -3040,6 +3040,24 @@ class StartupHydrationTests(unittest.TestCase):
         session["loop_count"] = -5
         self.assertIsNone(hub.session_payload(session)["loop_count"])
 
+    def test_session_payload_and_window_version_include_last_msg_role(self) -> None:
+        hub = SessionHub(scan_limit=10)
+        self.addCleanup(hub.stop)
+        session = _session(sid="roleflip", last_user="问", last_agent="答")
+        self.assertEqual(hub.session_payload(session)["last_msg_role"], "")
+
+        session["last_msg_role"] = "assistant"
+        self.assertEqual(hub.session_payload(session)["last_msg_role"], "assistant")
+        v1 = hub._window_version([session], None)
+
+        session["last_msg_role"] = "user"
+        self.assertEqual(hub.session_payload(session)["last_msg_role"], "user")
+        v2 = hub._window_version([session], None)
+        self.assertNotEqual(v1, v2)
+
+        session["last_msg_role"] = "invalid"
+        self.assertEqual(hub.session_payload(session)["last_msg_role"], "")
+
     def test_blocked_input_cause_detects_antigravity_question_picker_and_wrapped_footer(self) -> None:
         normal = (
             "Question 1/1: Pick one\n"

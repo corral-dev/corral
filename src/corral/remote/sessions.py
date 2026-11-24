@@ -1518,6 +1518,11 @@ class SessionHub:
 
         return parse_loop_count(value)
 
+    @staticmethod
+    def _wire_last_msg_role(value: object) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in ("user", "assistant") else ""
+
     def session_payload(self, session: dict, layout=None) -> dict:
         key = session_key(session)
         title = self.store.get_title(session)
@@ -1546,6 +1551,7 @@ class SessionHub:
             "needs_attention": needs_attention(session),
             "last_user": str(session.get("last_user_msg") or "")[:160],
             "last_agent": str(session.get("last_agent_msg") or "")[:160],
+            "last_msg_role": self._wire_last_msg_role(session.get("last_msg_role")),
             # 完成通知去重与事后核对用：只读透传，不进排序/筛选/版本指纹。
             "completion_id": str(session.get("completion_id") or ""),
             # 终局失败分类（仅 aborted 行有值）：推送层据此区分可重试探险
@@ -1593,6 +1599,7 @@ class SessionHub:
                     round(self._wire_float(session.get("mtime")), 3),
                     str(session.get("last_user_msg") or "")[:160],
                     str(session.get("last_agent_msg") or "")[:160],
+                    self._wire_last_msg_role(session.get("last_msg_role")),
                     bool(session.get("live")),
                     pinned,
                     resolve_active_marker(session) or "",
