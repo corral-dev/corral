@@ -218,7 +218,7 @@ def _resolve_out_path(out: str) -> str:
 _SESSION_FIELD_NAMES = frozenset({
     "runtime", "id", "short_id", "title", "cwd", "cwd_display", "time", "mtime",
     "size_kb", "loop_count", "status", "status_tag", "history_path", "resumable", "resume_command",
-    "live", "keepalive", "attention", "pid", "last_user", "last_agent", "initiated_by",
+    "live", "keepalive", "attention", "pid", "last_user", "last_agent", "last_msg_role", "initiated_by",
 })
 _SEARCH_EXTRA_FIELDS = frozenset({"score", "matched_via", "matched_fields", "snippet"})
 _SHOW_EXTRA_FIELDS = frozenset({"messages", "message_count_shown", "message_count_total", "control", "session_origin"})
