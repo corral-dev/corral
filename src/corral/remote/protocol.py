@@ -231,6 +231,8 @@ CAPABILITY_USER_PROMPTS = "user_prompts"
 CAPABILITY_PROJECT_SHELL = "project_shell"
 # Host writes a compact share transcript JSON file to cache and returns its path (`session.export`).
 CAPABILITY_SESSION_EXPORT = "session_export"
+# Ephemeral live assistant streaming frames (`kind: "stream"`) on `session:<key>`.
+CAPABILITY_CHAT_STREAMING = "chat_streaming"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）

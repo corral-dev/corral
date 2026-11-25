@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -206,6 +207,62 @@ class CodexClaimTests(unittest.TestCase):
                 )
                 os.replace(replacement, claims / "live.json")
                 self.assertEqual(codex_identity.live_claims(str(root)), {})
+
+    def test_live_stream_tap_forwards_deltas_non_blockingly_without_leaking_on_missing_socket(self) -> None:
+        import socket as std_socket
+
+        # Missing socket stays completely inert without raising or blocking.
+        missing_tap = codex_proxy._LiveStreamTap(socket_path=Path("/tmp/corral-nonexistent-live-stream.sock"))
+        missing_tap.start()
+        missing_tap.root_thread_id = "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3b"
+        missing_tap.observe_outgoing({
+            "method": "item/agentMessage/delta",
+            "params": {"itemId": "m1", "delta": "ignored safely"},
+        })
+        missing_tap.close()
+
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="ctap-") as td:
+            sock_path = Path(td) / "live.sock"
+            received: list[bytes] = []
+            ready = threading.Event()
+            with std_socket.socket(std_socket.AF_UNIX, std_socket.SOCK_STREAM) as srv:
+                srv.bind(str(sock_path))
+                srv.listen(1)
+                srv.settimeout(2.0)
+
+                def reader() -> None:
+                    ready.set()
+                    conn, _ = srv.accept()
+                    with conn:
+                        conn.settimeout(1.0)
+                        while chunk := conn.recv(4096):
+                            received.append(chunk)
+                            if b"\n" in chunk:
+                                break
+
+                t = threading.Thread(target=reader, daemon=True)
+                t.start()
+                ready.wait(timeout=1.0)
+
+                tap = codex_proxy._LiveStreamTap(socket_path=sock_path)
+                tap.start()
+                pending = {"1": "thread/start"}
+                codex_proxy._observe_response(
+                    {"id": 1, "result": {"thread": {"id": "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3b"}}},
+                    pending,
+                    tap=tap,
+                )
+                tap.observe_outgoing({
+                    "method": "item/agentMessage/delta",
+                    "params": {"itemId": "m1", "delta": "hi"},
+                })
+                t.join(timeout=2.0)
+                tap.close()
+
+            line = json.loads(b"".join(received).decode("utf-8").splitlines()[0])
+            self.assertEqual(line["runtime"], "codex")
+            self.assertEqual(line["session_id"], "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3b")
+            self.assertEqual(line["event"]["method"], "item/agentMessage/delta")
 
 
 if __name__ == "__main__":

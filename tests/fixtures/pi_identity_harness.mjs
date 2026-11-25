@@ -56,9 +56,17 @@ const ctx = {
   shutdown: () => { shutdown = true; },
 };
 await handlers.get("session_start")({ reason: "startup" }, ctx);
-for (const name of spec.events ?? []) {
-  const handler = handlers.get(name);
-  if (handler) await handler({}, ctx);
+for (const entry of spec.events ?? []) {
+  if (typeof entry === "string") {
+    const handler = handlers.get(entry);
+    if (handler) await handler({}, ctx);
+  } else if (entry && typeof entry === "object" && typeof entry.type === "string") {
+    const handler = handlers.get(entry.type);
+    if (handler) await handler(entry, ctx);
+  }
+}
+if (typeof spec.waitAfterEventsMs === "number" && spec.waitAfterEventsMs > 0) {
+  await new Promise((resolve) => setTimeout(resolve, spec.waitAfterEventsMs));
 }
 let result;
 if (spec.target) {

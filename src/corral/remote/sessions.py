@@ -43,7 +43,7 @@ from corral.models import (
     session_key,
 )
 from corral.projects import normalize_cwd
-from corral.remote import questions, richmsg, shell_terminal, terminal_stream, transcript_cache
+from corral.remote import live_stream, questions, richmsg, shell_terminal, terminal_stream, transcript_cache
 from corral.remote.push import abort_kind
 from corral.remote.screen import ScreenEncoder
 from corral.remote.terminal_stream import TerminalStream
@@ -812,7 +812,7 @@ class SessionHub:
     """
 
     def __init__(self, on_event=None, *, scan_limit: int = _SCAN_LIMIT,
-                 title_spawn_fn=None) -> None:
+                 title_spawn_fn=None, enable_live_stream_socket: bool = False) -> None:
         self.store = SessionStore(limit=scan_limit)
         # The remote host participates in the same title state machine.  The
         # caller may inject the gateway-backed launcher; leaving it unset keeps
@@ -841,6 +841,13 @@ class SessionHub:
         self._layout_cache: tuple[int, object] | None = None
         self._stop = threading.Event()
         self._search_refresh = threading.Event()
+        self._conversation_wake = threading.Event()
+        self._live_stream = live_stream.LiveStreamBroker(
+            emit_event=self._on_live_stream_event,
+            on_turn_activity=self._on_live_turn_activity,
+            after_seq_provider=self._max_official_seq,
+            enable_socket=enable_live_stream_socket,
+        )
         self._search_catalog_needed = False
         self._search_demanded_at = 0.0
         self._clients_idle_since: float | None = None
@@ -895,6 +902,7 @@ class SessionHub:
         watcher = HistoryWatcher()
         self._history_watcher = watcher
         watcher.start()
+        self._live_stream.start()
         self._loading_done.clear()
         try:
             # Answer opens from the last sidebar snapshot while the first scan
@@ -943,6 +951,10 @@ class SessionHub:
         self._stop.set()
         self._state_wake.set()
         self._search_refresh.set()
+        if (wake := getattr(self, "_conversation_wake", None)) is not None:
+            wake.set()
+        if (broker := getattr(self, "_live_stream", None)) is not None:
+            broker.stop()
         with self._lock:
             terminals = list(dict.fromkeys(stream for stream, _ in self._terminals.values()))
             self._terminals.clear()
@@ -1451,7 +1463,11 @@ class SessionHub:
         return _CONVERSATION_INTERVAL
 
     def _conversation_loop(self) -> None:
-        while not self._stop.wait(self._conversation_poll_interval()):
+        while not self._stop.is_set():
+            self._conversation_wake.wait(timeout=self._conversation_poll_interval())
+            self._conversation_wake.clear()
+            if self._stop.is_set():
+                return
             with self._lock:
                 watches = [w for w in self._conversations.values() if w.watchers > 0]
             seen_readers: set[int] = set()
@@ -1913,6 +1929,13 @@ class SessionHub:
                 current.reader = transcript.reader
                 current.generation = transcript.generation
                 current.canonical_key = new_key
+            if (broker := getattr(self, "_live_stream", None)) is not None:
+                for active in broker.active_streams(new_key):
+                    self._on_event(
+                        f"session:{watch.key}",
+                        {**active, "op": "replace", "kind": "stream", "session": watch.key},
+                    )
+        self._sync_opencode_live_watches()
 
     def _announce_key_migrations(self) -> None:
         """Tell list watchers a provisional key became canonical, before the snapshot.
@@ -2122,9 +2145,16 @@ class SessionHub:
             ]
             for watch in targets:
                 watch.deltas.append(new_messages)
+        broker = getattr(self, "_live_stream", None)
+        cleared_streams = broker.reconcile_official(transcript_key, new_messages) if broker is not None else []
         for watch in targets:
             for event in _wire_message_batches(new_messages, session_key=watch.key):
                 self._on_event(f"session:{watch.key}", event)
+            for stream_id in cleared_streams:
+                self._on_event(
+                    f"session:{watch.key}",
+                    {"kind": "stream", "session": watch.key, "op": "clear", "stream_id": stream_id},
+                )
 
     def _publish_reader_update(
         self,
@@ -2163,6 +2193,8 @@ class SessionHub:
         )
         self._persist_transcript(transcript)
         self._trim_transcripts()
+        if (broker := getattr(self, "_live_stream", None)) is not None:
+            broker.clear_session(key)
         for watch in targets:
             self._on_event(f"session:{watch.key}", {
                 **page, "kind": "history_reset", "session": watch.key, "resume": "tail",
@@ -2960,6 +2992,9 @@ class SessionHub:
             if after_seq is not None:
                 replayed = _try_replay(watch, transcript, int(after_seq), generation)
         self._trim_transcripts()
+        self._sync_opencode_live_watches()
+        broker = getattr(self, "_live_stream", None)
+        active_streams = broker.active_streams(canonical) if broker is not None else []
         if after_seq is not None and replayed is not None:
             page = _replay_page(
                 replayed,
@@ -2968,6 +3003,8 @@ class SessionHub:
                 total=len(transcript.messages),
             )
             page.update(attention=self.session_payload(session)["attention"], live=bool(session.get("live")))
+            if active_streams:
+                page["active_streams"] = active_streams
             return page
         page = _message_page(
             transcript.messages,
@@ -2977,6 +3014,8 @@ class SessionHub:
         )
         page["resume"] = "tail"
         page.update(attention=self.session_payload(session)["attention"], live=bool(session.get("live")))
+        if active_streams:
+            page["active_streams"] = active_streams
         return page
 
     def unwatch_conversation(self, key: str) -> None:
@@ -2995,6 +3034,77 @@ class SessionHub:
                 transcript.last_used = time.monotonic()
         self._release_idle_reader(release_key)
         self._trim_transcripts()
+        self._sync_opencode_live_watches()
+
+    def _max_official_seq(self, canonical_key: str) -> int:
+        with self._lock:
+            transcript = self._transcripts.get(canonical_key)
+            if transcript is None or not transcript.messages:
+                return 0
+            return max((int(item.seq) for item in transcript.messages if item.seq > 0), default=0)
+
+    def _on_live_stream_event(self, canonical_key: str, payload: dict) -> None:
+        with self._lock:
+            keys = [
+                watch.key
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+                and (watch.key == canonical_key or watch.canonical_key == canonical_key)
+            ]
+        for watch_key in keys:
+            self._on_event(
+                f"session:{watch_key}",
+                {**payload, "kind": "stream", "session": watch_key},
+            )
+
+    def _on_live_turn_activity(self, canonical_key: str) -> None:
+        with self._lock:
+            watched = any(
+                watch.watchers > 0
+                and (watch.key == canonical_key or watch.canonical_key == canonical_key)
+                for watch in self._conversations.values()
+            )
+        if watched:
+            self._conversation_wake.set()
+
+    def _sync_opencode_live_watches(self) -> None:
+        with self._lock:
+            keys = [
+                watch.canonical_key or watch.key
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+            ]
+        opencode_ids: set[str] = set()
+        for key in keys:
+            if not key.startswith("opencode:"):
+                continue
+            session = self.store.find_session(key)
+            if session is not None and not session.get("live"):
+                continue
+            sid = str((session or {}).get("id") or key.partition(":")[2]).strip()
+            if sid:
+                opencode_ids.add(sid)
+        if (broker := getattr(self, "_live_stream", None)) is not None:
+            broker.set_watched_opencode(opencode_ids)
+
+    def _clear_live_session(self, canonical_key: str) -> None:
+        broker = getattr(self, "_live_stream", None)
+        cleared = broker.clear_session(canonical_key) if broker is not None else []
+        if not cleared:
+            return
+        with self._lock:
+            watch_keys = [
+                watch.key
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+                and (watch.key == canonical_key or watch.canonical_key == canonical_key)
+            ]
+        for watch_key in watch_keys:
+            for stream_id in cleared:
+                self._on_event(
+                    f"session:{watch_key}",
+                    {"kind": "stream", "session": watch_key, "op": "clear", "stream_id": stream_id},
+                )
 
     def watch_screen(self, key: str) -> dict | None:
         """订阅终端画面。返回首帧（整屏）；会话没有托管在 tmux 里则返回 None。"""
@@ -4084,6 +4194,8 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.session_not_running"))
         keepalive.kill(name)
         self.store.mark_hosted(canonical, None)
+        self._clear_live_session(canonical)
+        self._sync_opencode_live_watches()
 
     def delete_session(self, key: str) -> None:
         session = self.require_session(key)

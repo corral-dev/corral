@@ -857,6 +857,8 @@ Pi Server/SessionLease 稳定并提供可依赖的会话身份与写入租约后
 
 ## 18. 与会话扫描的边界
 
+> **Live-stream boundary update (owner-approved 2026-11-25, Option A chat streaming):** Extension `v1.3.0` additionally forwards in-memory `turn_start`, `message_start`, `message_update` (`text_delta` only), `message_end`, and `agent_end` events over a user-private (`0700`/`0600`) local Unix domain socket (`live-stream.sock`) exclusively while Corral's local remote daemon is listening. Message bodies are never written to claim files, owner locks, or logs, and any socket absence, backpressure, or error fails open with zero blocking or impact on the Pi TUI.
+
 改「谁正在用哪一条会话」读本文；改「有哪些历史、正文是什么、列表会不会被旧目录挤爆」读扫描知识库。两边不要互相补对方的启发式。
 
 | 在这边 | 不在这边 |

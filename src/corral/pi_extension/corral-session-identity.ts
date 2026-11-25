@@ -30,13 +30,16 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { createConnection, type Socket } from "node:net";
+import { homedir, tmpdir } from "node:os";
 
 const PROTOCOL_VERSION = 1;
-const EXTENSION_VERSION = "1.2.2";
+const EXTENSION_VERSION = "1.3.0";
 const IDENTITY_DIRNAME = "corral-session-identity";
 /** 心跳间隔；Corral 读取侧按 4 个周期（60s）判定 claim 过期。 */
 const HEARTBEAT_MS = 15_000;
+const LIVE_STREAM_RETRY_MS = 2_000;
+const LIVE_STREAM_MAX_PENDING_BYTES = 256 * 1024;
 
 type AgentPhase = "idle" | "working";
 
@@ -507,6 +510,171 @@ export default function (pi: ExtensionAPI): void {
 		setAgentPhase("idle", "agent_settled");
 	});
 
+	// Best-effort local Unix socket publisher for Option A chat streaming.
+	// Completely in-memory; never writes message text to claims, locks, or logs.
+	function resolveLiveStreamSocketPath(): string {
+		const explicit = (process.env.CORRAL_LIVE_STREAM_SOCKET || "").trim();
+		if (explicit) return explicit;
+		const cacheRoot = (
+			process.env.CORRAL_CACHE_DIR ||
+			process.env.XDG_CACHE_HOME ||
+			join(homedir(), ".cache")
+		).trim();
+		const base = process.env.CORRAL_CACHE_DIR
+			? cacheRoot
+			: join(cacheRoot, "corral");
+		return join(base, "live-stream.sock");
+	}
+
+	let liveSock: Socket | null = null;
+	let liveConnecting = false;
+	let liveDisabledUntil = 0;
+	let liveSkipUntilReset = false;
+	let livePending: string[] = [];
+
+	function closeLiveSocket(): void {
+		liveConnecting = false;
+		livePending = [];
+		if (liveSock) {
+			try { liveSock.destroy(); } catch { /* ignore */ }
+			liveSock = null;
+		}
+	}
+
+	function flushLiveLine(line: string): void {
+		if (!liveSock || liveSock.destroyed || !liveSock.writable) {
+			if (liveConnecting && livePending.length < 32) {
+				livePending.push(line);
+			} else if (liveConnecting) {
+				livePending = [];
+				liveSkipUntilReset = true;
+			}
+			return;
+		}
+		if (liveSock.writableLength >= LIVE_STREAM_MAX_PENDING_BYTES) {
+			// Avoid silently dropping mid-message deltas; wait until next message boundary.
+			liveSkipUntilReset = true;
+			return;
+		}
+		try {
+			liveSock.write(line);
+		} catch {
+			closeLiveSocket();
+			liveDisabledUntil = Date.now() + LIVE_STREAM_RETRY_MS;
+		}
+	}
+
+	function ensureLiveSocket(): boolean {
+		if (liveSock && !liveSock.destroyed) return true;
+		if (liveConnecting) return true;
+		if (Date.now() < liveDisabledUntil) return false;
+		const sockPath = resolveLiveStreamSocketPath();
+		liveConnecting = true;
+		try {
+			const candidate = createConnection(sockPath);
+			if (typeof candidate.unref === "function") candidate.unref();
+			candidate.on("connect", () => {
+				liveConnecting = false;
+				liveSock = candidate;
+				const queued = livePending;
+				livePending = [];
+				for (const line of queued) {
+					flushLiveLine(line);
+				}
+			});
+			candidate.on("error", () => {
+				liveConnecting = false;
+				livePending = [];
+				liveDisabledUntil = Date.now() + LIVE_STREAM_RETRY_MS;
+				if (liveSock === candidate) liveSock = null;
+				try { candidate.destroy(); } catch { /* ignore */ }
+			});
+			candidate.on("close", () => {
+				liveConnecting = false;
+				livePending = [];
+				if (liveSock === candidate) liveSock = null;
+			});
+			return true;
+		} catch {
+			liveConnecting = false;
+			livePending = [];
+			liveDisabledUntil = Date.now() + LIVE_STREAM_RETRY_MS;
+			return false;
+		}
+	}
+
+	function emitLiveEvent(ctx: ExtensionContext, eventPayload: Record<string, unknown>): void {
+		if (ctx.mode !== "tui" || blockedByOwner || lastState !== "active") return;
+		const sid = lastIdentity?.sessionId || ctx.sessionManager?.getSessionId?.() || "";
+		if (!sid) return;
+		const type = String(eventPayload.type ?? "");
+		if (type === "turn_start" || type === "message_start" || type === "agent_end") {
+			liveSkipUntilReset = false;
+		} else if (liveSkipUntilReset) {
+			return;
+		}
+		if (!ensureLiveSocket()) return;
+		flushLiveLine(JSON.stringify({ v: 1, runtime: "pi", session_id: sid, event: eventPayload }) + "\n");
+	}
+
+	pi.on("turn_start", async (_event, ctx) => {
+		emitLiveEvent(ctx, { type: "turn_start" });
+	});
+
+	pi.on("message_start", async (event, ctx) => {
+		const msg = (event as { message?: { id?: unknown; role?: unknown } })?.message;
+		if (msg?.role === "assistant") {
+			emitLiveEvent(ctx, {
+				type: "message_start",
+				message: { id: msg.id ?? null, role: "assistant" },
+			});
+		}
+	});
+
+	pi.on("message_update", async (event, ctx) => {
+		const typed = event as {
+			message?: { id?: unknown; role?: unknown };
+			assistantMessageEvent?: { type?: unknown; delta?: unknown; contentIndex?: unknown };
+		};
+		const ame = typed?.assistantMessageEvent;
+		if (
+			ame?.type === "text_delta" &&
+			typeof ame.delta === "string" &&
+			ame.delta.length > 0
+		) {
+			emitLiveEvent(ctx, {
+				type: "message_update",
+				message: { id: typed.message?.id ?? null, role: "assistant" },
+				assistantMessageEvent: {
+					type: "text_delta",
+					contentIndex: typeof ame.contentIndex === "number" ? ame.contentIndex : 0,
+					delta: ame.delta,
+				},
+			});
+		}
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		const msg = (event as {
+			message?: { id?: unknown; role?: unknown; stopReason?: unknown; errorMessage?: unknown };
+		})?.message;
+		if (msg?.role === "assistant") {
+			emitLiveEvent(ctx, {
+				type: "message_end",
+				message: {
+					id: msg.id ?? null,
+					role: "assistant",
+					stopReason: msg.stopReason ?? null,
+					errorMessage: msg.errorMessage ?? null,
+				},
+			});
+		}
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		emitLiveEvent(ctx, { type: "agent_end" });
+	});
+
 	pi.on("session_before_switch", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		lastCtx = ctx;
@@ -534,6 +702,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
+		closeLiveSocket();
 		stopHeartbeat();
 		releaseOwnership();
 		lastCtx = ctx;

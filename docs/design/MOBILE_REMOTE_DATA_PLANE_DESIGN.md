@@ -598,4 +598,27 @@ Apple text sends allocate their command identity before capability/readiness che
 
 The same host preparation serves iPhone and Mac; the TUI's direct terminal resume remains its native Enter path. Verify delayed startup of an old formal conversation, dead versus unknown binding, capability change between tap and dispatch, authenticated readiness, same-ID transport retry and verified terminal injection without duplicate delivery.
 
+## 12. Chat Streaming (Option A, Progressive Hybrid, 2026-11-25)
+
+Owner decision (2026-11-25): adopt Option A — true token/chunk streaming in chat mode for runtimes with an inspectable live event stream (**Codex**, **Pi**, **OpenCode**) while automatically falling back to persisted-history incremental following for **Claude Code**, **Cursor**, and **Antigravity** (and for legacy panes or stopped external servers), without replacing tmux hosting or switching chat ↔ terminal mode.
+
+### 12.1 Capability & Wire Contract
+
+- **Negotiation**: host `hello` advertises `capabilities.chat_streaming: true`. Opted-in clients send `"want_chat_streaming": true` in control `hello`; legacy clients receive neither `kind: "stream"` events nor `active_streams` snapshots.
+- **Control-plane ordering**: ephemeral `kind: "stream"` events on `session:<key>` always travel on the control connection (`via_data = False`) so they stay strictly ordered relative to durable `messages` and `history_reset` events.
+- **Frame schema (`kind: "stream"`)**:
+  - `op: "replace"` — `stream_id`, `rev`, `role: "assistant"`, `text`, `after_seq`, `complete`, `timestamp` (used for the first chunk so TTFT is immediate, non-monotonic edits, provisional promotion snapshots, and `active_streams` in `session.watch` responses).
+  - `op: "delta"` — `stream_id`, `rev`, `delta`, `after_seq`, `complete`, `timestamp` (incremental suffix append).
+  - `op: "clear"` — `stream_id` (optional; clears one draft or all drafts for the session on handoff, overflow degradation, `history_reset`, stop, or 5 s post-completion grace expiry).
+- **Zero-pollution invariant**: ephemeral stream drafts never allocate durable `seq > 0`, never enter `_DeltaBuffer`, never enter host `TranscriptCache`, and never persist to client `ConversationTailCache` or `userPrompts`.
+
+### 12.2 Host Aggregation, Safety Bounds & Reconciliation
+
+- **Sources** (`remote/live_stream.py` + `sesskit.stream_native.NativeEventNormalizer`):
+  - **Codex**: non-blocking tap inside `codex_proxy.py` pushing `app-server` JSON-RPC notifications (`item/agentMessage/delta`, `item/started`, `item/completed`, `turn/started`, `turn/completed`, `error`) to the host daemon's user-private (`0700`/`0600`) local Unix domain socket (`live-stream.sock`).
+  - **Pi**: fail-open `net` tap inside `pi_extension/corral-session-identity.ts` (`v1.3.0`) pushing `turn_start`, `message_start`, `message_update` (`text_delta`), `message_end`, `agent_end` to the same socket when the daemon is listening.
+  - **OpenCode**: lazy read-only SSE observer started only when ≥1 live OpenCode conversation has active watchers; disconnects cleanly when unwatched and never starts `opencode service` when stopped.
+- **Coalescing & degradation**: first chunk of each `stream_id` emits immediately; subsequent chunks coalesce at ~65 ms (~15 Hz). Drafts exceeding 256 KiB trigger `op: "clear"` and degrade automatically to persisted history for that item.
+- **Atomic handoff**: item completion or turn end wakes an immediate host `RichReader.poll()`. When durable `RichMessage(seq > 0)` arrives in `SessionHub._publish_new_messages` superseding a draft, both host reconciliation and client `ConversationStore` drop the ephemeral draft in lockstep with adding the official message. If an idle completed draft waits >5 s (or an open draft goes silent >45 s), the broker evicts and emits `op: "clear"`.
+
 <!-- 该文档整理/压缩于 2026-10-20 -->

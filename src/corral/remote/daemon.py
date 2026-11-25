@@ -38,7 +38,7 @@ class RemoteDaemon:
         #: Set when the install was upgraded underneath; the caller re-execs.
         self.restart_requested = False
         self.static_private = remote_config.load_or_create_identity()
-        self.hub = SessionHub(title_spawn_fn=default_title_spawn_fn)
+        self.hub = SessionHub(title_spawn_fn=default_title_spawn_fn, enable_live_stream_socket=True)
         self.service = RemoteService(self.hub)
         self.relay = RelayClient(self.service, state, self.static_private) if state.relay_enabled else None
         self.local = LocalServer(self.service, state, self.static_private) if state.local_enabled else None

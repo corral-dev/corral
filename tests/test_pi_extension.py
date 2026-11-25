@@ -207,6 +207,49 @@ class PiExtensionOwnershipTests(unittest.TestCase):
         self.assertEqual(result["claim"]["agentPhase"], "idle")
         self.assertEqual(result["claim"]["agentPhaseEvent"], "startup")
 
+    def test_extension_forwards_message_update_deltas_to_live_socket_without_touching_claims(self) -> None:
+        self.assertEqual(pi_identity.EXTENSION_VERSION, "1.3.0")
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="cpi-") as td:
+            sock_path = Path(td) / "live.sock"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                srv.bind(str(sock_path))
+                srv.listen(1)
+                srv.settimeout(2.0)
+                os.environ["CORRAL_LIVE_STREAM_SOCKET"] = str(sock_path)
+                try:
+                    result = self.run_extension(
+                        target=str(self.current),
+                        waitAfterEventsMs=120,
+                        events=[
+                            {"type": "message_start", "message": {"id": "m1", "role": "assistant"}},
+                            {
+                                "type": "message_update",
+                                "message": {"id": "m1", "role": "assistant"},
+                                "assistantMessageEvent": {
+                                    "type": "text_delta",
+                                    "contentIndex": 0,
+                                    "delta": "Secret token",
+                                },
+                            },
+                            {"type": "message_end", "message": {"id": "m1", "role": "assistant", "stopReason": "stop"}},
+                        ],
+                    )
+                finally:
+                    os.environ.pop("CORRAL_LIVE_STREAM_SOCKET", None)
+
+                conn, _ = srv.accept()
+                with conn:
+                    conn.settimeout(1.0)
+                    raw = conn.recv(8192).decode("utf-8")
+            lines = [json.loads(line) for line in raw.splitlines() if line.strip()]
+            deltas = [item for item in lines if item["event"]["type"] == "message_update"]
+            self.assertEqual(len(deltas), 1)
+            self.assertEqual(deltas[0]["runtime"], "pi")
+            self.assertEqual(deltas[0]["session_id"], "current")
+            self.assertEqual(deltas[0]["event"]["assistantMessageEvent"]["delta"], "Secret token")
+            # Claim files must remain completely free of conversation text.
+            self.assertNotIn("Secret token", json.dumps(result["claim"]))
+
 
 if __name__ == "__main__":
     unittest.main()

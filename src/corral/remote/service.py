@@ -270,6 +270,7 @@ class Connection:
         self.closed = False
         self.compression_enabled = False
         self.command_receipts = False  # hello 协商 want_command_receipts 后打开
+        self.chat_streaming = False    # hello 协商 want_chat_streaming 后打开
         self.close_hook = None  # 可选：() -> None，用于踢掉控制面底层传输
         self.data_close_hook = None  # 可选：() -> None，只关数据面
         self.data_channel = None  # 数据面 HostChannel 身份，供拆绑时对号入座
@@ -722,10 +723,15 @@ class RemoteService:
             targets = list(self._subscribers.get(channel, ()))
         if not targets:
             return
+        is_stream_event = isinstance(data, dict) and data.get("kind") == "stream"
         message = protocol.event(channel, data)
+        # Keep ephemeral stream frames on the control lane for strict FIFO order
+        # with durable `messages` and `history_reset` events.
         via_data = channel.startswith(("screen:", "term:"))
         for connection in targets:
             if connection.closed:
+                continue
+            if is_stream_event and not connection.chat_streaming:
                 continue
             try:
                 connection.emit(message, data=via_data)
@@ -1074,6 +1080,7 @@ class RemoteService:
                         payload = self.hub.conversation_watch_page(
                             key, limit=limit, after_seq=after_seq, generation=generation,
                         )
+                    payload = _filter_stream_snapshot(connection, payload)
                 except ActionError as exc:
                     discard_temporary_watch()
                     try:
@@ -1335,6 +1342,7 @@ class RemoteService:
                 protocol.CAPABILITY_USER_PROMPTS: True,
                 protocol.CAPABILITY_PROJECT_SHELL: True,
                 protocol.CAPABILITY_SESSION_EXPORT: True,
+                protocol.CAPABILITY_CHAT_STREAMING: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -1347,6 +1355,8 @@ class RemoteService:
         # 回执能力：主机已在 capabilities 声明；客户端显式 opt-in 后本连接启用。
         if params.get("want_command_receipts") is True:
             connection.command_receipts = True
+        if params.get("want_chat_streaming") is True:
+            connection.chat_streaming = True
         return payload
 
     def _sessions_list_payload(self, params: dict) -> dict:
@@ -1484,14 +1494,15 @@ class RemoteService:
         after_seq = _optional_int_param(params, "after_seq")
         generation = _optional_int_param(params, "generation")
         if self._subscribe(connection, channel):
-            return self.hub.watch_conversation(
+            payload = self.hub.watch_conversation(
                 key,
                 limit=limit,
                 after_seq=after_seq,
                 generation=generation,
             )
         else:
-            return self.hub.conversation_page(key, limit=limit)
+            payload = self.hub.conversation_page(key, limit=limit)
+        return _filter_stream_snapshot(connection, payload)
 
     def _session_unwatch(self, connection: Connection, params: dict):
         key = _key(params)
@@ -2248,6 +2259,14 @@ class RemoteService:
         if device is None:
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
         return {"ok": True}
+
+
+def _filter_stream_snapshot(connection: Connection, payload: dict) -> dict:
+    if connection.chat_streaming or "active_streams" not in payload:
+        return payload
+    filtered = dict(payload)
+    filtered.pop("active_streams", None)
+    return filtered
 
 
 def _key(params: dict) -> str:
