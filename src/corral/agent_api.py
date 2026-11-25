@@ -994,8 +994,33 @@ def _parse_time_bound(raw: str, *, is_until: bool) -> float:
     )
 
 
+def _write_jsonl_records(records, fp) -> None:
+    for record in records:
+        fp.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+        fp.write("\n")
+
+
+def _write_json_envelope(envelope: dict, fp, *, compact: bool) -> None:
+    json.dump(
+        envelope,
+        fp,
+        ensure_ascii=False,
+        separators=(",", ":") if compact else None,
+        indent=None if compact else 2,
+    )
+    fp.write("\n")
+
+
+def share_jsonl_records(payload: dict) -> list[dict]:
+    """Build `[session_meta, *events]` JSONL records from a share payload."""
+    meta = {key: value for key, value in payload.items() if key != "events"}
+    records: list[dict] = [{"type": "session_meta", **meta}]
+    records.extend(payload.get("events") or ())
+    return records
+
+
 def cmd_export(args, registry) -> dict:
-    """按时间范围导出区间内所有会话的完整对话，合并为一个 JSON。
+    """按时间范围导出区间内所有会话的完整对话。
 
     只读：与 list 共用扫描 / 过滤，与 show --full 共用完整对话结构；不触发任何拉起或写会话操作。
     """
@@ -1005,6 +1030,7 @@ def cmd_export(args, registry) -> dict:
         raise ApiError("usage_error", "起始时间晚于结束时间", EXIT_USAGE)
 
     compact = getattr(args, "compact", False)
+    fmt = getattr(args, "format", None)
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
 
@@ -1068,16 +1094,19 @@ def cmd_export(args, registry) -> dict:
     if not out:
         return _ok(data)
 
-    envelope = _ok(data)
+    file_format = (fmt or "jsonl").lower()
     output_path = _resolve_out_path(out)
     with open(output_path, "w", encoding="utf-8") as fp:
-        json.dump(envelope, fp, ensure_ascii=False,
-                  separators=(",", ":") if compact else None,
-                  indent=None if compact else 2)
-        fp.write("\n")
+        if file_format == "jsonl":
+            _write_jsonl_records(sessions, fp)
+        elif file_format == "json":
+            _write_json_envelope(_ok(data), fp, compact=compact)
+        else:
+            raise ApiError("usage_error", f"不支持的导出格式：{file_format}（可用：jsonl, json）", EXIT_USAGE)
     return _ok({
         "output_path": output_path,
         "output_bytes": os.path.getsize(output_path),
+        "format": file_format,
         "session_count": len(sessions),
         "message_count_total": sum(s["message_count_total"] for s in sessions),
         "range": data["range"],
@@ -1085,21 +1114,22 @@ def cmd_export(args, registry) -> dict:
     })
 
 
-def share_cache_path(session: dict) -> str:
-    """TUI / 远程「导出会话」落盘路径：``<cache>/share/<runtime>_<id>-<stamp>.json``。"""
+def share_cache_path(session: dict, *, ext: str = "jsonl") -> str:
+    """TUI / 远程「导出会话」落盘路径：``<cache>/share/<runtime>_<id>-<stamp>.jsonl``。"""
+    suffix = ext.lstrip(".") or "jsonl"
     stamp = time.strftime("%Y%m%d-%H%M%S")
     raw = session_key(session)
     safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("._") or "session"
     directory = cache_dir() / "share"
     os.makedirs(directory, exist_ok=True)
-    path = directory / f"{safe}-{stamp}.json"
+    path = directory / f"{safe}-{stamp}.{suffix}"
     if path.exists():
         pid_base = f"{safe}-{stamp}-{os.getpid()}"
-        path = directory / f"{pid_base}.json"
-        suffix = 1
+        path = directory / f"{pid_base}.{suffix}"
+        suffix_num = 1
         while path.exists():
-            path = directory / f"{pid_base}-{suffix}.json"
-            suffix += 1
+            path = directory / f"{pid_base}-{suffix_num}.{suffix}"
+            suffix_num += 1
     return str(path)
 
 
@@ -1116,26 +1146,44 @@ def build_share_payload(session: dict, registry) -> dict:
     return payload
 
 
-def write_share_envelope(payload: dict, out_path: str, *, compact: bool = False) -> str:
-    """把 share envelope 写到 ``out_path``，返回绝对路径。"""
+def write_share_output(
+    payload: dict,
+    out_path: str,
+    *,
+    format: str = "jsonl",
+    compact: bool = False,
+) -> str:
+    """Write a share transcript as JSONL (default) or JSON envelope to ``out_path``."""
+    fmt = (format or "jsonl").lower()
     output_path = _resolve_out_path(out_path)
     with open(output_path, "w", encoding="utf-8") as fp:
-        json.dump(
-            _ok(payload),
-            fp,
-            ensure_ascii=False,
-            separators=(",", ":") if compact else None,
-            indent=None if compact else 2,
-        )
-        fp.write("\n")
+        if fmt == "jsonl":
+            _write_jsonl_records(share_jsonl_records(payload), fp)
+        elif fmt == "json":
+            _write_json_envelope(_ok(payload), fp, compact=compact)
+        else:
+            raise ApiError("usage_error", f"不支持的导出格式：{fmt}（可用：jsonl, json）", EXIT_USAGE)
     return output_path
 
 
-def export_share_to_cache(session: dict, registry, *, compact: bool = True) -> str:
-    """写出 share transcript 到缓存目录，返回绝对路径（TUI 导出会话用）。"""
-    return write_share_envelope(
+def write_share_envelope(payload: dict, out_path: str, *, compact: bool = False) -> str:
+    """把 share JSON envelope 写到 ``out_path``，返回绝对路径。"""
+    return write_share_output(payload, out_path, format="json", compact=compact)
+
+
+def export_share_to_cache(
+    session: dict,
+    registry,
+    *,
+    compact: bool = True,
+    format: str = "jsonl",
+) -> str:
+    """写出 share transcript 到缓存目录，返回绝对路径（TUI / 远程导出会话用，默认 JSONL）。"""
+    fmt = (format or "jsonl").lower()
+    return write_share_output(
         build_share_payload(session, registry),
-        share_cache_path(session),
+        share_cache_path(session, ext=fmt),
+        format=fmt,
         compact=compact,
     )
 
@@ -1204,13 +1252,15 @@ def cmd_share(args, registry) -> dict:
     """
     session = resolve_ref(registry, args.session, args.limit)
     compact = getattr(args, "compact", False)
+    fmt = getattr(args, "format", None)
     out = getattr(args, "out", None)
     payload = _filter_share_events(args, build_share_payload(session, registry))
 
     if not out:
         return _ok(payload)
 
-    output_path = write_share_envelope(payload, out, compact=compact)
+    file_format = (fmt or "jsonl").lower()
+    output_path = write_share_output(payload, out, format=file_format, compact=compact)
     cache = titles.load_cache()
     runtime = registry.get(str(session.get("source") or ""))
     summary = session_payload(session, cache, runtime, DEFAULT_LIST_FIELDS if compact else None)
@@ -1218,6 +1268,7 @@ def cmd_share(args, registry) -> dict:
         "schema": SCHEMA_ID,
         "output_path": output_path,
         "output_bytes": os.path.getsize(output_path),
+        "format": file_format,
         "event_count": payload["event_count"],
         "counts": payload["counts"],
         "events_omitted": True,
@@ -1542,7 +1593,7 @@ COMMANDS = [
     },
     {
         "name": "export",
-        "help": "导出某个时间范围内所有会话的完整对话，合并为一个 JSON",
+        "help": "导出某个时间范围内所有会话的完整对话（--out 默认 JSONL，每行一条会话）",
         "risk": "read",
         "args": [
             {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：2026-07-20 / '2026-07-20 15:30' / 7d、24h、30m（距今）/ Unix 时间戳；省略则不设下界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
@@ -1551,15 +1602,17 @@ COMMANDS = [
             {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
-            {"flags": ["--out"], "kwargs": {"help": "写入指定 JSON 文件；省略则打到 stdout。大范围导出建议用 --out"}},
-            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON"}},
+            {"flags": ["--format"], "kwargs": {"choices": ["jsonl", "json"], "help": "导出格式：jsonl（--out 时默认，每行一条会话）或 json（无 --out 时默认返回 JSON envelope）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--out"], "kwargs": {"help": "写入指定文件（默认 JSONL；加 --format json 写完整 JSON envelope）；省略则打到 stdout"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "紧凑 JSON（--format json）"}},
         ],
         "fields": {
             "range": "本次导出的时间范围；since/until 为 Unix 时间戳，*_display 为人类可读，null 表示该侧无界",
             "count": "命中的会话数",
             "scan_limit": "本次每个运行时的扫描深度（同 --limit）",
             "sessions": "按最后更新时间正序排列的会话数组；每条含 list 的全部字段，外加 messages 完整对话（结构同 show --full）与 message_count_total",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
-            "output_path": "--out 模式下写入的 JSON 文件绝对路径；此模式 stdout 只回文件引用摘要，sessions_omitted 为 true",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "output_path": "--out 模式下写入的文件绝对路径；此模式 stdout 只回文件引用摘要，sessions_omitted 为 true",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "format": "--out 模式下实际写入的文件格式（jsonl 或 json）",
             "scanned": "本次各运行时实际读到的会话总数（时间/状态过滤前）",
             "truncated_runtimes": "读满扫描深度的运行时 ID 列表",
             "failed_runtimes": "本次扫描抛异常的运行时 {id: 失败摘要}",
@@ -1568,15 +1621,16 @@ COMMANDS = [
     },
     {
         "name": "share",
-        "help": "导出单条会话的统一 transcript（含 thinking 与工具调用），供其他 Agent 做元认知；不改 show/export 的纯文本契约",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+        "help": "导出单条会话的统一 transcript（含 thinking 与工具调用；--out 默认 JSONL）",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         "risk": "read",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
             {"flags": ["--events"], "kwargs": {"help": "逗号分隔的事件类型过滤：user_message,assistant_message,thinking,tool_call,tool_result"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--grep"], "kwargs": {"help": "按子串过滤事件（大小写不敏感，匹配 text/name/input/output）"}},
             {"flags": ["--tail"], "kwargs": {"type": int, "help": "只保留最后 N 条匹配事件"}},
-            {"flags": ["--out"], "kwargs": {"help": "把完整 transcript 写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
-            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON"}},
+            {"flags": ["--format"], "kwargs": {"choices": ["jsonl", "json"], "help": "导出格式：jsonl（--out 时默认，首行 session_meta + 每行一条事件）或 json（无 --out 时默认返回 JSON envelope）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--out"], "kwargs": {"help": "把完整 transcript 写入指定文件（默认 JSONL；加 --format json 写完整 JSON envelope），stdout 只返回文件引用摘要"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "紧凑 JSON（--format json）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
         ],
         "fields": {
@@ -1586,7 +1640,8 @@ COMMANDS = [
             "events": "按原始历史顺序的统一事件数组，type 为 user_message / assistant_message / thinking / tool_call / tool_result；tool_call 含 id/name/kind/input，tool_result 含 call_id/status/output，均不截断",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "event_count": "events 条数",
             "counts": "按 type 分组的事件计数",
-            "output_path": "--out 模式下写入的 JSON 文件绝对路径",
+            "output_path": "--out 模式下写入的文件绝对路径",
+            "format": "--out 模式下实际写入的文件格式（jsonl 或 json）",
             "events_omitted": "--out 模式下 stdout 摘要不含 events 正文，为 true",
         },
     },
@@ -2096,6 +2151,11 @@ def build_parser() -> JSONArgumentParser:
     return parser
 
 
+def _print_jsonl(command: str, data: dict) -> None:
+    records = share_jsonl_records(data) if command == "share" else list(data.get("sessions") or ())
+    _write_jsonl_records(records, sys.stdout)
+
+
 def dispatch(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -2128,8 +2188,11 @@ def dispatch(argv: list[str]) -> int:
         }, compact=getattr(args, "compact", False))
         return EXIT_ERROR
 
-    if getattr(args, "format", "json") == "tsv" and not getattr(args, "out", None):
+    fmt = getattr(args, "format", "json")
+    if fmt == "tsv" and not getattr(args, "out", None):
         _print_tsv(args.command, result["data"])
+    elif fmt == "jsonl" and not getattr(args, "out", None) and args.command in ("export", "share"):
+        _print_jsonl(args.command, result["data"])
     else:
         _print_envelope(result, compact=getattr(args, "compact", False))
     return EXIT_OK

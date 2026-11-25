@@ -47,8 +47,8 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 | `corral list [--since T] [--until T] [--runtime R] [--limit N] [--top N] [--format json\|tsv] [--compact] [--status S] [--cwd 子串] [--live] [--keepalive] [--fields a,b] [--out 路径] [--fresh]` | 结构化列出会话（浏览近期会话优先 `--since 7d --format tsv`，零截断、无需 Python 二次解析） |
 | `corral search <关键词...> [--any] [--since T] [--until T] [--deep] [--scope conversation\|activity] [--project 路径] [--runtime R] [--limit N] [--top N] [--format json\|tsv] [--compact] [--live] [--keepalive] [--fields a,b] [--out 路径] [--fresh]` | 按主题或工具调用找会话（默认复用共享索引；`--any` 为 OR 匹配） |
 | `corral show <会话> [--messages/--last N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 纯文本对话内容 |
-| `corral share <会话> [--events 类型,...] [--grep 子串] [--tail N] [--out 路径] [--compact]` | 导出或按事件类型/关键词过滤统一 transcript（含 `tool_call`/`tool_result`/`thinking`） |
-| `corral export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话，合并为一个 JSON |
+| `corral share <会话> [--events 类型,...] [--grep 子串] [--tail N] [--format jsonl\|json] [--out 路径] [--compact]` | 导出或按事件类型/关键词过滤统一 transcript（含 `tool_call`/`tool_result`/`thinking`；`--out` 默认写 JSONL） |
+| `corral export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话（`--out` 默认写 JSONL，每行一条会话） |
 | `corral peers [--project 路径] [--recent H] [--top N] [--format json\|tsv] [--compact]` | 发现并行运行的其他 Agent 会话（优先 `--format tsv` 避免截断） |
 | `corral context <会话>` | 生成接续该会话所需的上下文数据包 |
 | `corral plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
@@ -77,7 +77,7 @@ corral search 天气 app                    # 快速搜标题/首尾消息/工�
 corral search 天气 app --top 3 --compact  # 只取最相关的 3 条，减少 token
 corral search 天气 app --deep             # 快速搜没结果时，搜全部对话内容（较慢）
 corral show <候选会话的 short_id>          # 确认是不是要找的那次会话
-corral share <候选会话> --out /tmp/corral-share.json  # 含工具调用与 thinking 的统一 transcript
+corral share <候选会话> --out /tmp/corral-share.jsonl  # 含工具调用与 thinking 的统一 transcript（默认 JSONL）
 corral show <候选会话> --full --out /tmp/corral-session.json  # 纯文本对话（不含工具调用）
 corral context <会话>                     # 拿到 history_path / suggested_prompt / resume_command
 corral plan continue <会话> --instruction "继续完成剩余工作并汇报结果" # 只生成外部执行器可运行的计划
@@ -201,18 +201,20 @@ corral list --live --keepalive --compact
   是本会话助手自己的输出。`--fields` 白名单含会话级 `initiated_by` 与 `show` 的 `session_origin`
  （含证据），未知字段直接 `usage_error`。
 - `corral export` 是「按时间范围批量拿完整对话」的入口：等价于对区间内每条会话跑一次 `show --full`，
-  再按最后更新时间正序合并成一个 JSON（`data.sessions[]`，每条含 `list` 全部字段 + `messages` 完整
-  对话）。`--since`/`--until` 均为闭区间，任一侧省略即无界；时间可写 `2026-07-20`、`'2026-07-20 15:30'`、
-  相对量 `7d`/`24h`/`30m`（距今）或 Unix 时间戳；只给日期时 `--until` 自动补到当天 23:59:59。范围内会话
-  多时合并结果可达数 MB，**强烈建议加 `--out <path>`**——stdout 只回文件路径、字节数、会话数与消息总数，
-  完整内容写在文件里。时间过滤按会话的 `mtime`（最后更新时间）判定。
+  再按最后更新时间正序导出（`data.sessions[]`，每条含 `list` 全部字段 + `messages` 完整对话）。`--since`/`--until`
+  均为闭区间，任一侧省略即无界；时间可写 `2026-07-20`、`'2026-07-20 15:30'`、相对量 `7d`/`24h`/`30m`（距今）
+  或 Unix 时间戳；只给日期时 `--until` 自动补到当天 23:59:59。范围内会话多时合并结果可达数 MB，**强烈建议加 `--out <path>`**
+  ——`--out` 默认按 **JSONL** 写出（每行一条会话对象，便于 `jq`/DuckDB/按行读取；加 `--format json` 可写回完整 JSON
+  envelope），stdout 只回文件路径、字节数、格式、会话数与消息总数；不加 `--out` 时传 `--format jsonl` 可直接向
+  stdout 流式输出 JSONL，省略 `--format` 则保持统一 JSON envelope。时间过滤按会话的 `mtime`（最后更新时间）判定。
 - `corral share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `sesskit.transcript/v1`（兼容读旧 `corral.share/v1`），
   `data.events[]` 按原始历史顺序包含 `user_message` / `assistant_message` / `thinking` / `tool_call` /
   `tool_result`（工具参数与结果不截断）。**不要用 `show`/`export` 的 `messages` 充当这一用途**——那两条
-  命令仍然只出纯文本。大结果同样优先 `--out`。`tool_result.status` 在 Claude 认 `is_error`、OpenCode 认
-  `state.status`、Pi 认 `isError`；Kimi 目前只按 output 正文启发式，`isError=true` 仍可能是 `ok`。
-  TUI 高级操作「导出会话」写出同一份 envelope 到 `~/.cache/corral/share/`（尊重 `CORRAL_CACHE_DIR`），
-  并把绝对路径复制到剪贴板。
+  命令仍然只出纯文本。大结果同样优先 `--out`：**`--out` 默认写为 JSONL**（第 1 行为 `type: "session_meta"` 的会话元数据与统计，
+  第 2 行起每行一条 `event`；加 `--format json` 可写回 JSON envelope），不加 `--out` 时传 `--format jsonl` 可向 stdout 流式输出 JSONL。
+  `tool_result.status` 在 Claude 认 `is_error`、OpenCode 认 `state.status`、Pi 认 `isError`；Kimi 目前只按 output 正文启发式，
+  `isError=true` 仍可能是 `ok`。TUI 高级操作「导出会话」与远程客户端「导出会话」写出同一份 JSONL 到 `~/.cache/corral/share/*.jsonl`
+  （尊重 `CORRAL_CACHE_DIR`），并把绝对路径复制到剪贴板。
 
 ## 拿会话数据做总结 / 周报时的边界
 
@@ -268,10 +270,10 @@ corral list --live --keepalive --compact
    **怎么办**：真实成果去代码仓库侧取，用 `corral` 提供的 `cwd` 和 `mtime` 做锚点即可对齐：
 
    ```bash
-   # 1. 圈出时间范围内涉及哪些工作目录（export 没有 --fields，落盘后再取需要的字段）
-   corral export --since 7d --out /tmp/week.json
-   python3 -c "import json;d=json.load(open('/tmp/week.json'))['data'];\
-   print('\n'.join(sorted({s['cwd'] for s in d['sessions'] if s.get('cwd')})))"
+   # 1. 圈出时间范围内涉及哪些工作目录（export --out 默认写 JSONL，每行一条会话）
+   corral export --since 7d --out /tmp/week.jsonl
+   python3 -c "import json;rows=[json.loads(line) for line in open('/tmp/week.jsonl') if line.strip()];\
+   print('\n'.join(sorted({s['cwd'] for s in rows if s.get('cwd')})))"
    # 2. 再到各工作目录用 git 拿可核验的成果
    git -C <上一步列出的目录> log --since=7.days --stat
    ```

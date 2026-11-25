@@ -6587,7 +6587,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(corral.session_key(hosted[0]), source_key)
 
     async def test_export_session_advanced_action_copies_share_path(self) -> None:
-        """高级操作选「导出会话」：写出 share JSON，绝对路径进剪贴板，不启动会话。"""
+        """高级操作选「导出会话」：默认写出 share JSONL，绝对路径进剪贴板，不启动会话。"""
         import json
 
         store, _ = _make_store()
@@ -6603,13 +6603,15 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await _wait_until(lambda: bool(app._clipboard))
             path = app._clipboard
-            self.assertTrue(path.endswith(".json"))
+            self.assertTrue(path.endswith(".jsonl"))
             self.assertIn(f"{os.sep}share{os.sep}", path)
             self.assertTrue(os.path.isfile(path), path)
             with open(path, encoding="utf-8") as fp:
-                envelope = json.load(fp)
-            self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
-            self.assertIn("events", envelope["data"])
+                rows = [json.loads(line) for line in fp if line.strip()]
+            self.assertGreaterEqual(len(rows), 1)
+            self.assertEqual(rows[0]["type"], "session_meta")
+            self.assertEqual(rows[0]["schema"], "sesskit.transcript/v1")
+            self.assertEqual(rows[0]["event_count"], len(rows) - 1)
             self.assertEqual(type(app.screen).__name__, "MainScreen")
 
     async def test_restart_session_advanced_action_kills_and_resumes_in_place(self) -> None:

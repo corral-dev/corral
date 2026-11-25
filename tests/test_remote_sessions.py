@@ -1009,17 +1009,19 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertNotIn("json", exported)
         exported_path = exported["path"]
         self.assertTrue(os.path.isabs(exported_path))
-        self.assertTrue(exported_path.endswith(".json"))
+        self.assertTrue(exported_path.endswith(".jsonl"))
         self.assertIn(f"{os.sep}share{os.sep}", exported_path)
         self.assertEqual(os.path.commonpath([exported_path, str(cache_dir)]), str(cache_dir))
         self.assertTrue(os.path.isfile(exported_path))
         with open(exported_path, encoding="utf-8") as fp:
-            envelope = json.load(fp)
-        self.assertTrue(envelope["ok"])
-        self.assertEqual(envelope["data"]["id"], "exp1")
-        self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
-        self.assertEqual(envelope["data"]["event_count"], 1)
-        self.assertEqual(envelope["data"]["events"][0]["text"], "hello export")
+            rows = [json.loads(line) for line in fp if line.strip()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["type"], "session_meta")
+        self.assertEqual(rows[0]["id"], "exp1")
+        self.assertEqual(rows[0]["schema"], "sesskit.transcript/v1")
+        self.assertEqual(rows[0]["event_count"], 1)
+        self.assertEqual(rows[1]["type"], "assistant_message")
+        self.assertEqual(rows[1]["text"], "hello export")
 
         # Large transcripts (> 3.5 MiB) write to cache cleanly instead of failing a wire transfer cap.
         large_path = Path(self._tmp.name) / "claude-large-export.jsonl"

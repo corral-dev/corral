@@ -312,14 +312,27 @@ class AgentApiTests(unittest.TestCase):
             agent_api.cmd_export(self._export_args(since="1700003000", until="1700001000"), self._export_registry())
         self.assertEqual(cm.exception.exit_code, agent_api.EXIT_USAGE)
 
-    def test_cmd_export_out_writes_merged_file_and_returns_summary(self) -> None:
+    def test_cmd_export_out_defaults_to_jsonl_and_supports_json_format(self) -> None:
         registry = self._export_registry()
-        out_path = str(Path(self._tmpdir.name) / "export.json")
+        out_path = str(Path(self._tmpdir.name) / "export.jsonl")
         result = agent_api.cmd_export(self._export_args(out=out_path), registry)
+        self.assertEqual(result["data"]["format"], "jsonl")
         self.assertEqual(result["data"]["session_count"], 3)
         self.assertTrue(result["data"]["sessions_omitted"])
         self.assertNotIn("sessions", result["data"])
         with open(out_path, encoding="utf-8") as fp:
+            rows = [json.loads(line) for line in fp if line.strip()]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([row["id"] for row in rows], ["1111", "2222", "3333"])
+        self.assertEqual(rows[0]["messages"][0]["text"], "帮我做一个天气 App")
+
+        json_path = str(Path(self._tmpdir.name) / "export.json")
+        json_result = agent_api.cmd_export(
+            self._export_args(out=json_path, format="json"),
+            registry,
+        )
+        self.assertEqual(json_result["data"]["format"], "json")
+        with open(json_path, encoding="utf-8") as fp:
             envelope = json.load(fp)
         self.assertEqual(envelope["data"]["count"], 3)
         self.assertEqual(len(envelope["data"]["sessions"]), 3)
@@ -400,26 +413,63 @@ class AgentApiTests(unittest.TestCase):
         session = _session(self.history_path, source="fake")
         runtime = FakeRuntime([session], {session["id"]: self.messages})
         registry = RuntimeRegistry((runtime,))
-        out_path = str(Path(self._tmpdir.name) / "share.json")
-        result = agent_api.cmd_share(
-            argparse_namespace(session=session["short_id"], limit=200, out=out_path, compact=False),
-            registry,
-        )
-        self.assertTrue(result["data"]["events_omitted"])
-        self.assertNotIn("events", result["data"])
-        with open(out_path, encoding="utf-8") as fp:
-            envelope = json.load(fp)
-        self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
-        self.assertIn("events", envelope["data"])
+        with mock.patch.object(
+            agent_api,
+            "load_events",
+            return_value=[{"type": "user_message", "seq": 1, "ts": None, "text": "hello"}],
+        ):
+            out_path = str(Path(self._tmpdir.name) / "share.jsonl")
+            result = agent_api.cmd_share(
+                argparse_namespace(session=session["short_id"], limit=200, out=out_path, compact=False),
+                registry,
+            )
+            self.assertEqual(result["data"]["format"], "jsonl")
+            self.assertTrue(result["data"]["events_omitted"])
+            self.assertNotIn("events", result["data"])
+            with open(out_path, encoding="utf-8") as fp:
+                rows = [json.loads(line) for line in fp if line.strip()]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["type"], "session_meta")
+            self.assertEqual(rows[0]["schema"], "sesskit.transcript/v1")
+            self.assertEqual(rows[1]["type"], "user_message")
 
-    def test_export_share_to_cache_writes_envelope(self) -> None:
+            json_path = str(Path(self._tmpdir.name) / "share.json")
+            json_result = agent_api.cmd_share(
+                argparse_namespace(
+                    session=session["short_id"], limit=200, out=json_path, format="json", compact=False,
+                ),
+                registry,
+            )
+            self.assertEqual(json_result["data"]["format"], "json")
+            with open(json_path, encoding="utf-8") as fp:
+                envelope = json.load(fp)
+            self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
+            self.assertIn("events", envelope["data"])
+
+    def test_export_share_to_cache_writes_jsonl_by_default_and_supports_json(self) -> None:
         cache = Path(self._tmpdir.name) / "corral-cache"
         cache.mkdir()
-        with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": str(cache)}):
+        with (
+            mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": str(cache)}),
+            mock.patch.object(
+                agent_api,
+                "load_events",
+                return_value=[{"type": "user_message", "seq": 1, "ts": None, "text": "hi"}],
+            ),
+        ):
             path = agent_api.export_share_to_cache(self.session, self.registry)
+            json_path = agent_api.export_share_to_cache(self.session, self.registry, format="json")
         self.assertTrue(os.path.commonpath([path, str(cache)]) == str(cache))
-        self.assertTrue(path.endswith(".json"))
+        self.assertTrue(path.endswith(".jsonl"))
         with open(path, encoding="utf-8") as fp:
+            rows = [json.loads(line) for line in fp if line.strip()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["type"], "session_meta")
+        self.assertEqual(rows[0]["schema"], "sesskit.transcript/v1")
+        self.assertEqual(rows[1]["text"], "hi")
+
+        self.assertTrue(json_path.endswith(".json"))
+        with open(json_path, encoding="utf-8") as fp:
             envelope = json.load(fp)
         self.assertTrue(envelope["ok"])
         self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
@@ -944,6 +994,66 @@ class AgentFriendlyContractTests(unittest.TestCase):
             with self.assertRaises(agent_api.ApiError) as cm:
                 agent_api.cmd_share(bad_args, self.registry)
             self.assertEqual(cm.exception.exit_code, agent_api.EXIT_USAGE)
+
+    def test_export_and_share_dispatch_cli_format_flags(self) -> None:
+        older = _session(self.history_path, id="1111", short_id="1111", mtime=1700001000.0)
+        mid = _session(self.history_path, id="2222", short_id="2222", mtime=1700002000.0)
+        newer = _session(self.history_path, id="3333", short_id="3333", mtime=1700003000.0)
+        msgs = [ConversationMessage("user", "hi"), ConversationMessage("assistant", "ok")]
+        registry = RuntimeRegistry((
+            FakeRuntime([newer, older, mid], {sid: msgs for sid in ("1111", "2222", "3333")}),
+        ))
+        sample_events = [
+            {"type": "user_message", "seq": 1, "ts": None, "text": "hello"},
+            {"type": "assistant_message", "seq": 2, "ts": None, "text": "world"},
+        ]
+        with (
+            mock.patch.object(agent_api, "default_registry", return_value=registry),
+            mock.patch.object(agent_api, "load_events", return_value=sample_events),
+        ):
+            # export --format jsonl streams one session JSON object per line to stdout
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = agent_api.dispatch(["export", "--format", "jsonl"])
+            self.assertEqual(rc, agent_api.EXIT_OK)
+            export_rows = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            self.assertEqual([r["id"] for r in export_rows], ["1111", "2222", "3333"])
+
+            # share --format jsonl streams session_meta + event lines to stdout
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = agent_api.dispatch(["share", "2222", "--format", "jsonl"])
+            self.assertEqual(rc2, agent_api.EXIT_OK)
+            share_rows = [json.loads(line) for line in buf2.getvalue().splitlines() if line.strip()]
+            self.assertEqual(len(share_rows), 3)
+            self.assertEqual(share_rows[0]["type"], "session_meta")
+            self.assertEqual(share_rows[0]["id"], "2222")
+            self.assertEqual([r["type"] for r in share_rows[1:]], ["user_message", "assistant_message"])
+
+            # export --out without --format writes JSONL by default and prints summary envelope
+            out_jsonl = str(Path(self._tmpdir.name) / "cli-export.jsonl")
+            buf3 = io.StringIO()
+            with contextlib.redirect_stdout(buf3):
+                rc3 = agent_api.dispatch(["export", "--out", out_jsonl])
+            self.assertEqual(rc3, agent_api.EXIT_OK)
+            summary = json.loads(buf3.getvalue())
+            self.assertEqual(summary["data"]["format"], "jsonl")
+            with open(out_jsonl, encoding="utf-8") as fp:
+                file_rows = [json.loads(line) for line in fp if line.strip()]
+            self.assertEqual(len(file_rows), 3)
+
+            # share --out --format json keeps JSON envelope output
+            out_json = str(Path(self._tmpdir.name) / "cli-share.json")
+            buf4 = io.StringIO()
+            with contextlib.redirect_stdout(buf4):
+                rc4 = agent_api.dispatch(["share", "2222", "--out", out_json, "--format", "json"])
+            self.assertEqual(rc4, agent_api.EXIT_OK)
+            summary4 = json.loads(buf4.getvalue())
+            self.assertEqual(summary4["data"]["format"], "json")
+            with open(out_json, encoding="utf-8") as fp:
+                env = json.load(fp)
+            self.assertTrue(env["ok"])
+            self.assertEqual(len(env["data"]["events"]), 2)
 
 
 def argparse_namespace(**kwargs):
