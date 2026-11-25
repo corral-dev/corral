@@ -30,7 +30,7 @@ def selected_skills(stdout: str, skills_root: Path) -> list[str]:
     pending = {}
     selected = []
     paths = {str((skills_root / n / "SKILL.md").resolve()): n
-             for n in ("corral-search", "corral-delegate")}
+             for n in ("corral",)}
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -63,7 +63,7 @@ def run_case(case: dict, args, binary: str) -> dict:
         argv.extend(["--model", args.model])
     for extension in args.extensions:
         argv.extend(["--extension", extension])
-    for name in ("corral-search", "corral-delegate"):
+    for name in ("corral",):
         argv.extend(["--skill", str(args.skills_root / name)])
     argv.extend(["--", case["prompt"]])
     started = time.monotonic()
@@ -143,7 +143,7 @@ def main() -> int:
     summary = {"model": args.model, "runtime": subprocess.check_output([binary, "--version"], text=True).strip(),
                "skills_root": str(args.skills_root),
                "skill_sha256": {n: hashlib.sha256((args.skills_root / n / "SKILL.md").read_bytes()).hexdigest()
-                                for n in ("corral-search", "corral-delegate")},
+                                for n in ("corral",)},
                "cases": records,
                "passed": sum(r["passed"] for r in records), "total": len(records),
                "scope": "Successful native skill reads during read-only checkpoints; no execution claim"}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -445,27 +447,28 @@ class SkillBundleTests(unittest.TestCase):
     def test_dry_run_is_read_only_and_aliases_dedupe(self):
         plan = skill_bundle.install(dry_run=True)
         paths = {a["path"] for a in plan["actions"]}
-        self.assertEqual(len(paths), 4)  # two skills x two physical roots, absent pi untouched
-        self.assertFalse((self.home / "shared" / "corral-search").exists())
+        self.assertEqual(len(paths), 2)  # one unified skill x two physical roots, absent pi untouched
+        self.assertFalse((self.home / "shared" / "corral").exists())
         self.assertFalse((self.home / "manifest.json").exists())
         self.assertFalse((self.home / ".pi").exists())
 
     def test_install_converges_and_uninstall_removes_only_owned(self):
         first = skill_bundle.install(dry_run=False)
         self.assertEqual(first["status"], "applied")
-        self.assertTrue((self.home / "shared" / "corral-delegate" / "SKILL.md").is_file())
+        self.assertTrue((self.home / "shared" / "corral" / "SKILL.md").is_file())
+        self.assertTrue((self.home / "shared" / "corral" / "references" / "reference.md").is_file())
         second = skill_bundle.install(dry_run=False)
         self.assertEqual(second["status"], "unchanged")
-        edited = self.codex / "corral-search" / "SKILL.md"
+        edited = self.codex / "corral" / "SKILL.md"
         edited.write_text("user edit", encoding="utf-8")
         removed = skill_bundle.uninstall(dry_run=False)
         actions = {a["path"]: a["action"] for a in removed["actions"]}
-        self.assertEqual(actions[str(self.codex / "corral-search")], "keep_modified")
+        self.assertEqual(actions[str(self.codex / "corral")], "keep_modified")
         self.assertTrue(edited.is_file())
-        self.assertFalse((self.home / "shared" / "corral-search").exists())
+        self.assertFalse((self.home / "shared" / "corral").exists())
 
     def test_foreign_same_name_skill_is_a_conflict(self):
-        foreign = self.codex / "corral-search"
+        foreign = self.codex / "corral"
         foreign.mkdir()
         (foreign / "SKILL.md").write_text("someone else's skill", encoding="utf-8")
         result = skill_bundle.install(dry_run=False)
@@ -479,9 +482,9 @@ class SkillBundleTests(unittest.TestCase):
             self.assertNotIn(str(Path.home()), text)
 
     def test_identical_unowned_skill_is_not_adopted(self):
-        target = self.codex / "corral-search"
+        target = self.codex / "corral"
         target.mkdir()
-        (target / "SKILL.md").write_text(skill_bundle.bundle_text("corral-search"))
+        (target / "SKILL.md").write_text(skill_bundle.bundle_text("corral"))
         (target / "user-notes.md").write_text("keep me")
         result = skill_bundle.install(dry_run=False)
         self.assertIn(str(target), [c["path"] for c in result["conflicts"]])
@@ -491,7 +494,7 @@ class SkillBundleTests(unittest.TestCase):
 
     def test_update_and_uninstall_preserve_added_user_files(self):
         skill_bundle.install(dry_run=False)
-        target = self.codex / "corral-search"
+        target = self.codex / "corral"
         notes = target / "user-notes.md"
         notes.write_text("keep me")
         original = skill_bundle.bundle_text
@@ -501,10 +504,11 @@ class SkillBundleTests(unittest.TestCase):
             skill_bundle.uninstall(dry_run=False)
         self.assertEqual(notes.read_text(), "keep me")
         self.assertFalse((target / "SKILL.md").exists())
+        self.assertFalse((target / "references").exists())
 
     def test_skill_and_file_symlinks_conflict(self):
         skill_bundle.install(dry_run=False)
-        target = self.codex / "corral-search" / "SKILL.md"
+        target = self.codex / "corral" / "SKILL.md"
         external = self.home / "external.md"
         external.write_text(target.read_text())
         target.unlink()
@@ -518,8 +522,8 @@ class SkillBundleTests(unittest.TestCase):
     def test_interrupted_registration_reconciles_journal(self):
         original = skill_bundle._write_skill
 
-        def crash_after_write(path, name):
-            original(path, name)
+        def crash_after_write(path, name, old_files=None):
+            original(path, name, old_files=old_files)
             raise RuntimeError("crash after rename")
 
         with mock.patch.object(skill_bundle, "_write_skill", side_effect=crash_after_write):
@@ -529,6 +533,32 @@ class SkillBundleTests(unittest.TestCase):
         result = skill_bundle.install(dry_run=False)
         self.assertEqual(result["conflicts"], [])
         self.assertFalse(skill_bundle._load_manifest()["pending"])
+
+    def test_install_cleans_unmodified_legacy_skills_and_keeps_modified(self):
+        legacy_clean = self.home / "shared" / "corral-search"
+        legacy_clean.mkdir()
+        clean_text = "old search skill"
+        (legacy_clean / "SKILL.md").write_text(clean_text, encoding="utf-8")
+        legacy_edited = self.codex / "corral-delegate"
+        legacy_edited.mkdir()
+        (legacy_edited / "SKILL.md").write_text("user customized delegate", encoding="utf-8")
+        manifest = {
+            "bundle_version": "1.0.3",
+            "installed": {
+                str(legacy_clean): {"skill": "corral-search", "hash": skill_bundle._hash(clean_text)},
+                str(legacy_edited): {"skill": "corral-delegate", "hash": skill_bundle._hash("original delegate")},
+            },
+            "pending": {},
+        }
+        skill_bundle._save_manifest(manifest)
+
+        result = skill_bundle.install(dry_run=False)
+        by_path = {a["path"]: a["action"] for a in result["actions"]}
+        self.assertEqual(by_path[str(legacy_clean)], "remove_legacy")
+        self.assertEqual(by_path[str(legacy_edited)], "keep_modified")
+        self.assertFalse(legacy_clean.exists())
+        self.assertTrue((legacy_edited / "SKILL.md").is_file())
+        self.assertTrue((self.home / "shared" / "corral" / "SKILL.md").is_file())
 
     def test_auto_registration_detects_new_runtime_without_version_change(self):
         skill_bundle.auto_register()
@@ -1369,6 +1399,48 @@ class GateTests(unittest.TestCase):
             shown = self._describe({})
         for name in ("run submit", "run create", "run wait", "run answer", "skills install"):
             self.assertIn(name, shown)
+
+    def test_run_list_tsv_events_tail_result_compact_and_json_flag(self):
+        from corral import agent_api
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "control"
+            with mock.patch.object(control_store, "control_home", return_value=root):
+                store = RunStore(root)
+                rec, _ = store.create(
+                    "local-user", "k-1",
+                    {"mode": "submit", "session_ref": "claude:s1", "prompt": "hi"},
+                    {"mode": "submit", "runtime": "claude", "session_ref": "claude:s1", "cwd": tmp,
+                     "history_path": str(Path(tmp) / "h.jsonl"), "delivery": "native_recorded",
+                     "execution": "completed", "result": {"final_response": "done"}},
+                )
+                run_id = rec["run_id"]
+                for i in range(5):
+                    store.append(run_id, f"step:{i}", {"kind": "activity", "step": i})
+
+                buf_list = io.StringIO()
+                with contextlib.redirect_stdout(buf_list):
+                    rc = agent_api.dispatch(["run", "list", "-n", "5", "--format", "tsv"])
+                self.assertEqual(rc, agent_api.EXIT_OK)
+                lines = buf_list.getvalue().strip().splitlines()
+                self.assertEqual(lines[0], "run_id\ttarget\tdelivery\texecution\tfrom_agent\tblocked_by")
+                self.assertIn(run_id, lines[1])
+
+                buf_ev = io.StringIO()
+                with contextlib.redirect_stdout(buf_ev):
+                    rc_ev = agent_api.dispatch(["run", "events", run_id, "-n", "2", "--json"])
+                self.assertEqual(rc_ev, agent_api.EXIT_OK)
+                ev_data = json.loads(buf_ev.getvalue())["data"]
+                self.assertEqual(len(ev_data["events"]), 2)
+                self.assertTrue(ev_data["truncated_by_tail"])
+
+                buf_res = io.StringIO()
+                with contextlib.redirect_stdout(buf_res):
+                    rc_res = agent_api.dispatch(["run", "result", run_id, "--compact", "--json"])
+                self.assertEqual(rc_res, agent_api.EXIT_OK)
+                res_data = json.loads(buf_res.getvalue())["data"]
+                self.assertNotIn("messages", res_data)
+                self.assertEqual(res_data["result"]["final_response"], "done")
 
 
 if __name__ == "__main__":

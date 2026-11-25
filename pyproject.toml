@@ -89,7 +89,7 @@ corral = "corral.bootstrap:main"
 python-source = "src"
 module-name = "corral._native"
 features = ["pyo3/abi3-py310"]
-include = ["corral/ui/assets/*.json", "corral/pi_extension/*.ts", "corral/skills/*/SKILL.md"]
+include = ["corral/ui/assets/*.json", "corral/pi_extension/*.ts", "corral/skills/*/SKILL.md", "corral/skills/*/references/*.md"]
 
 [tool.ruff]
 line-length = 120

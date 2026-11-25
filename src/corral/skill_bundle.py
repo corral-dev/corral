@@ -16,7 +16,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-BUNDLE_NAMES = ("corral-search", "corral-delegate")
+BUNDLE_NAMES = ("corral",)
+LEGACY_BUNDLE_NAMES = ("corral-search", "corral-delegate")
 _BUNDLE_DIR = Path(__file__).parent / "skills"
 
 
@@ -33,8 +34,29 @@ def bundle_text(name: str) -> str:
     return (_BUNDLE_DIR / name / "SKILL.md").read_text(encoding="utf-8")
 
 
+def _bundle_files(name: str) -> dict[str, str]:
+    """Relative file map for a bundled skill (SKILL.md + optional references/*.md)."""
+    files = {"SKILL.md": bundle_text(name)}
+    refs_dir = _BUNDLE_DIR / name / "references"
+    if refs_dir.is_dir():
+        for ref_file in sorted(refs_dir.glob("*.md")):
+            if ref_file.is_file():
+                files[f"references/{ref_file.name}"] = ref_file.read_text(encoding="utf-8")
+    return files
+
+
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+
+def _file_hashes(files: dict[str, str]) -> dict[str, str]:
+    return {rel: _hash(content) for rel, content in sorted(files.items())}
+
+
+def _bundle_digest(files: dict[str, str]) -> str:
+    if list(files.keys()) == ["SKILL.md"]:
+        return _hash(files["SKILL.md"])
+    return _hash(json.dumps(_file_hashes(files), sort_keys=True))
 
 
 def runtime_roots() -> list[dict]:
@@ -87,7 +109,10 @@ def _save_manifest(data: dict) -> None:
 def _ownership(manifest: dict) -> dict:
     owned = {path: dict(record) for path, record in manifest.get("installed", {}).items()}
     for path, record in manifest.get("pending", {}).items():
-        owned.setdefault(path, {}).update(pending_hash=record["hash"])
+        entry = owned.setdefault(path, {})
+        entry["pending_hash"] = record.get("hash")
+        if record.get("files"):
+            entry["pending_files"] = record["files"]
     return owned
 
 
@@ -106,22 +131,58 @@ def _registration_lock(dry_run: bool):
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+def _recorded_files(record: dict) -> dict[str, str]:
+    files = record.get("files")
+    if isinstance(files, dict) and files:
+        return {str(k): str(v) for k, v in files.items()}
+    if record.get("hash"):
+        return {"SKILL.md": str(record["hash"])}
+    return {}
+
+
 def _state(skill_dir: Path, name: str, owned: dict) -> str:
-    target = skill_dir / "SKILL.md"
-    if skill_dir.is_symlink() or target.is_symlink():
+    refs_dir = skill_dir / "references"
+    if skill_dir.is_symlink() or (skill_dir / "SKILL.md").is_symlink() or refs_dir.is_symlink():
         return "conflict"
     if not skill_dir.exists():
         return "missing"
     record = owned.get(str(skill_dir))
     if not record or not skill_dir.is_dir():
         return "conflict"
-    try:
-        current = _hash(target.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError):
+    expected_files = _recorded_files(record)
+    pending_files = record.get("pending_files") if isinstance(record.get("pending_files"), dict) else {}
+    if not expected_files and record.get("pending_hash"):
+        expected_files = {"SKILL.md": str(record["pending_hash"])}
+    if not expected_files:
         return "conflict"
-    if current not in {record.get("hash"), record.get("pending_hash")}:
-        return "modified"
-    return "current" if current == _hash(bundle_text(name)) else "outdated"
+    for rel, expected_hash in expected_files.items():
+        target = skill_dir / rel
+        if target.is_symlink():
+            return "conflict"
+        if not target.is_file():
+            return "modified"
+        try:
+            current = _hash(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            return "conflict"
+        allowed = {expected_hash}
+        if rel in pending_files:
+            allowed.add(str(pending_files[rel]))
+        elif rel == "SKILL.md" and record.get("pending_hash"):
+            allowed.add(str(record["pending_hash"]))
+        if current not in allowed:
+            return "modified"
+    if name not in BUNDLE_NAMES:
+        return "outdated"
+    bundle_files = _bundle_files(name)
+    target_hashes = _file_hashes(bundle_files)
+    # Also ensure every file in the current bundle is present and matches when already tracked
+    if set(expected_files.keys()) != set(target_hashes.keys()):
+        return "outdated"
+    for rel, expected_hash in target_hashes.items():
+        if expected_files.get(rel) != expected_hash:
+            return "outdated"
+    return "current"
 
 
 def _targets(runtime: str | None) -> list[dict]:
@@ -154,19 +215,42 @@ def status(runtime: str | None = None) -> dict:
             "note": "File presence is not proof that a runtime loaded the skill; start a fresh session to verify."}
 
 
-def _write_skill(skill_dir: Path, name: str) -> None:
-    """Replace only the registered file; additional user files stay in place."""
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=skill_dir, prefix=".SKILL.corral-")
+def _atomic_write(dest: Path, content: str) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.corral-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(bundle_text(name))
+            stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(tmp, 0o644)
-        os.replace(tmp, skill_dir / "SKILL.md")
+        os.replace(tmp, dest)
     finally:
         Path(tmp).unlink(missing_ok=True)
+
+
+def _write_skill(skill_dir: Path, name: str, old_files: dict[str, str] | None = None) -> None:
+    """Replace only the registered files; additional user files stay in place."""
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    files = _bundle_files(name)
+    for rel, content in files.items():
+        _atomic_write(skill_dir / rel, content)
+    if old_files:
+        for stale in set(old_files) - set(files):
+            (skill_dir / stale).unlink(missing_ok=True)
+        refs_dir = skill_dir / "references"
+        if refs_dir.is_dir() and not any(refs_dir.iterdir()):
+            refs_dir.rmdir()
+
+
+def _remove_owned_files(skill_dir: Path, record: dict) -> None:
+    for rel in _recorded_files(record) or {"SKILL.md": ""}:
+        (skill_dir / rel).unlink(missing_ok=True)
+    refs_dir = skill_dir / "references"
+    if refs_dir.is_dir() and not any(refs_dir.iterdir()):
+        refs_dir.rmdir()
+    if skill_dir.is_dir() and not any(skill_dir.iterdir()):
+        skill_dir.rmdir()
 
 
 def install(*, dry_run: bool, runtime: str | None = None) -> dict:
@@ -189,27 +273,56 @@ def _install(*, dry_run: bool, runtime: str | None = None) -> dict:
             action = {"missing": "create", "outdated": "update", "current": "unchanged"}.get(state, "conflict")
             entry = {"skill": name, "path": str(skill_dir), "runtimes": group["runtimes"], "action": action,
                      "state": state}
+            files = _bundle_files(name)
+            digest = _bundle_digest(files)
+            fhashes = _file_hashes(files)
             if action == "conflict":
                 entry["hint"] = ("A same-name skill Corral did not write (or one edited since) exists; "
                                  "Corral leaves it untouched. Remove or rename it, then run corral skills install.")
                 conflicts.append(entry)
             elif action != "unchanged" and not dry_run:
-                pending[str(skill_dir)] = {"skill": name, "hash": _hash(bundle_text(name)), "at": time.time()}
+                old_files = _recorded_files(owned.get(str(skill_dir), {}))
+                pending[str(skill_dir)] = {"skill": name, "hash": digest, "files": fhashes, "at": time.time()}
                 _save_manifest(manifest)
-                _write_skill(skill_dir, name)
+                _write_skill(skill_dir, name, old_files=old_files)
             if action in {"create", "update", "unchanged"} and not dry_run:
-                owned[str(skill_dir)] = {"skill": name, "hash": _hash(bundle_text(name)), "version": __version__,
-                                         "at": time.time()}
+                owned[str(skill_dir)] = {"skill": name, "hash": digest, "files": fhashes,
+                                         "version": __version__, "at": time.time()}
                 pending.pop(str(skill_dir), None)
                 _save_manifest(manifest)
             actions.append(entry)
+
+    # Migrate away unchanged owned legacy skills (corral-search / corral-delegate).
+    target_roots = {Path(g["resolved_root"]) for g in _targets(runtime)}
+    for path, record in sorted(list(owned.items())):
+        legacy_name = record.get("skill")
+        if legacy_name not in LEGACY_BUNDLE_NAMES:
+            continue
+        skill_dir = Path(path)
+        if skill_dir.parent not in target_roots:
+            continue
+        state = _state(skill_dir, legacy_name, _ownership(manifest))
+        if state == "outdated":
+            actions.append({"skill": legacy_name, "path": path, "action": "remove_legacy", "state": state})
+            if not dry_run:
+                _remove_owned_files(skill_dir, record)
+                owned.pop(path, None)
+                pending.pop(path, None)
+        elif state == "missing":
+            actions.append({"skill": legacy_name, "path": path, "action": "forget_legacy", "state": state})
+            if not dry_run:
+                owned.pop(path, None)
+                pending.pop(path, None)
+        else:
+            actions.append({"skill": legacy_name, "path": path, "action": "keep_modified", "state": state})
+
     if not dry_run:
         manifest["bundle_version"] = __version__
         manifest["conflicts"] = conflicts
         manifest["targets"] = digest_roots()
         manifest["checked_at"] = time.time()
         _save_manifest(manifest)
-    changed = any(a["action"] in {"create", "update"} for a in actions)
+    changed = any(a["action"] in {"create", "update", "remove_legacy"} for a in actions)
     return {"dry_run": dry_run, "status": "planned" if dry_run else ("applied" if changed else "unchanged"),
             "actions": actions, "conflicts": conflicts, "bundle_version": __version__}
 
@@ -223,21 +336,20 @@ def _uninstall(*, dry_run: bool, runtime: str | None = None) -> dict:
     manifest = _load_manifest()
     owned = manifest.get("installed", {})
     actions = []
+    valid_names = set(BUNDLE_NAMES) | set(LEGACY_BUNDLE_NAMES)
     for path, record in sorted(owned.items()):
         skill_dir = Path(path)
         name = record.get("skill")
         if runtime and not any(runtime in g["runtimes"] and str(Path(g["resolved_root"]) / name) == path
                                for g in _targets(None)):
             continue
-        state = _state(skill_dir, name, _ownership(manifest)) if name in BUNDLE_NAMES else "conflict"
+        state = _state(skill_dir, name, _ownership(manifest)) if name in valid_names else "conflict"
         removable = state in {"current", "outdated"}
         actions.append({"skill": name, "path": path, "action": "remove" if removable else
                         ("forget" if state == "missing" else "keep_modified"), "state": state})
         if not dry_run and (removable or state == "missing"):
             if removable:
-                (skill_dir / "SKILL.md").unlink()
-                if not any(skill_dir.iterdir()):
-                    skill_dir.rmdir()
+                _remove_owned_files(skill_dir, record)
             owned.pop(path, None)
             manifest.get("pending", {}).pop(path, None)
     if not dry_run:

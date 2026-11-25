@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -57,7 +58,7 @@ _RESOLVE_SCAN_LIMIT = 200  # show/share/context 按标识定位会话时的扫�
 # 有没有挂在 corral 托管里、界面关注态是等你 / 干活 / 未读，不必再多一次 show。
 # pid 体积小但多数为 null，不进精简集，需要时用 --fields 或 --live 取。
 DEFAULT_LIST_FIELDS = (
-    "id", "short_id", "corral_id", "runtime", "title", "status", "live", "keepalive", "attention", "mtime",
+    "ref", "id", "short_id", "corral_id", "runtime", "title", "status", "live", "keepalive", "attention", "mtime",
     "cwd_display", "resumable", "resume_command", "last_user", "last_agent",
 )
 # search 的精简字段集在 list 基础上额外保留命中方式、命中字段和相关性得分，方便调用方理解排序
@@ -87,18 +88,68 @@ class ApiError(Exception):
         self.details = details
 
 
+_ACTIVE_ARGV: list[str] = []
+
+
+def _infer_subcommand(argv: list[str]) -> str:
+    """Infer matched leaf command from raw argv for accurate usage_error recovery."""
+    tokens = [tok for tok in argv if tok and not tok.startswith("-")]
+    if len(tokens) >= 2 and f"{tokens[0]} {tokens[1]}" in COMMAND_NAMES:
+        return f"{tokens[0]} {tokens[1]}"
+    if tokens and tokens[0] in COMMAND_NAMES:
+        return tokens[0]
+    return ""
+
+
 class JSONArgumentParser(argparse.ArgumentParser):
     """参数错误时输出 JSON envelope + 退出码 2，而不是纯文本 usage 信息。"""
 
+    def parse_args(self, args=None, namespace=None):
+        global _ACTIVE_ARGV
+        prev = _ACTIVE_ARGV
+        _ACTIVE_ARGV = list(args) if args is not None else sys.argv[1:]
+        try:
+            return super().parse_args(args, namespace)
+        finally:
+            _ACTIVE_ARGV = prev
+
     def error(self, message):
+        subcmd = self.prog.removeprefix("corral ").strip() if self.prog != "corral" else _infer_subcommand(_ACTIVE_ARGV)
+        hint = f"运行 corral describe {subcmd} 查看用法" if subcmd else "运行 corral describe 查看用法"
+        next_commands = [f"{_bin()} describe {subcmd}" if subcmd else f"{_bin()} describe"]
+        before_dd = _ACTIVE_ARGV[:_ACTIVE_ARGV.index("--")] if "--" in _ACTIVE_ARGV else _ACTIVE_ARGV
+        known_search_flags = (
+            "--since", "--until", "--runtime", "--limit", "--top", "-n", "--format",
+            "--json", "--compact", "--deep", "--any", "--scope", "--project",
+            "--live", "--keepalive", "--fields", "--out", "--fresh",
+        )
+        dashed = [
+            tok for tok in before_dd
+            if tok.startswith("-") and tok not in {"-h", "--help"}
+            and not tok.startswith(known_search_flags)
+        ]
+        if subcmd == "search" and (dashed or "unrecognized arguments:" in message):
+            bad_tok = dashed[0] if dashed else message.split("unrecognized arguments:", 1)[-1].strip().split()[0]
+            if bad_tok.startswith("-"):
+                hint = "以 '-' 开头的关键词需放在 '--' 之后（且所有选项放 '--' 之前）"
+                next_commands = [
+                    f"{_bin()} search --deep -- {shlex.quote(bad_tok)}",
+                    f"{_bin()} describe search",
+                ]
+        elif not subcmd and ("invalid choice: 'session'" in message or "invalid choice: 'sessions'" in message):
+            hint = "会话查询命令为 list / search / show / share，而非 session(s)"
+            next_commands = [f"{_bin()} list --since 7d --format tsv", f"{_bin()} describe"]
+        elif subcmd == "describe":
+            hint = "可用命令可通过 corral describe 查看；skill 命令为 skills status / install / uninstall"
+            next_commands = [f"{_bin()} describe", f"{_bin()} skills status"]
         _print_envelope({
             "ok": False,
             "data": None,
             "error": {
                 "code": "usage_error",
                 "message": message,
-                "hint": "运行 corral describe 或 corral describe <command> 查看用法",
-                "next_commands": [f"{_bin()} describe"],
+                "hint": hint,
+                "next_commands": next_commands,
             },
             "meta": {"version": AGENT_API_VERSION},
         })
@@ -117,7 +168,48 @@ def _tsv_cell(value) -> str:
 
 
 def _print_tsv(command: str, data: dict) -> None:
-    """Compact tab-separated summary for list/search/peers (low-token, avoids stdout truncation)."""
+    """Compact tab-separated summary for list/search/peers/share/run list (low-token, avoids stdout truncation)."""
+    if command == "run list":
+        print("run_id\ttarget\tdelivery\texecution\tfrom_agent\tblocked_by")
+        runs = data.get("runs") or []
+        for run in runs:
+            blocker = (run.get("blocked_by") or {}).get("run_id") or ""
+            print("\t".join((
+                _tsv_cell(run.get("run_id")),
+                _tsv_cell(run.get("session_ref") or run.get("runtime")),
+                _tsv_cell(run.get("delivery")),
+                _tsv_cell(run.get("execution")),
+                _tsv_cell(run.get("from_agent") or ""),
+                _tsv_cell(blocker),
+            )))
+        print(f"# returned={data.get('returned', len(runs))}")
+        return
+
+    if command == "share":
+        print("seq\ttype\tname\tstatus\tsummary")
+        events = data.get("events") or []
+        for idx, ev in enumerate(events, 1):
+            seq = ev.get("seq") if ev.get("seq") is not None else idx
+            raw_summary = ev.get("text")
+            if raw_summary is None or raw_summary == "":
+                raw_summary = ev.get("output") if ev.get("type") == "tool_result" else ev.get("input")
+            if raw_summary is not None and not isinstance(raw_summary, str):
+                try:
+                    raw_summary = json.dumps(raw_summary, ensure_ascii=False, separators=(",", ":"), default=str)
+                except (TypeError, ValueError):
+                    raw_summary = str(raw_summary)
+            print("\t".join((
+                _tsv_cell(seq),
+                _tsv_cell(ev.get("type")),
+                _tsv_cell(ev.get("name") or ""),
+                _tsv_cell(ev.get("status") or ""),
+                _tsv_cell(_trim(raw_summary, 200)),
+            )))
+        ref = data.get("ref") or f"{data.get('runtime') or ''}:{data.get('id') or ''}"
+        total = data.get("event_count_total", data.get("event_count", len(events)))
+        print(f"# returned={len(events)} total={total} ref={ref}")
+        return
+
     if command == "peers":
         print("ref\tstate\treachable\tsame_project\tproject\ttitle")
         for peer in data.get("peers") or []:
@@ -222,7 +314,7 @@ def _resolve_out_path(out: str) -> str:
 
 # session_payload 产出的全部字段名：--fields 白名单的真源（与 payload 共用定义，不另写一套）。
 _SESSION_FIELD_NAMES = frozenset({
-    "runtime", "id", "short_id", "corral_id", "title", "cwd", "cwd_display", "time", "mtime",
+    "ref", "runtime", "id", "short_id", "corral_id", "title", "cwd", "cwd_display", "time", "mtime",
     "size_kb", "loop_count", "status", "status_tag", "history_path", "resumable", "resume_command",
     "live", "keepalive", "attention", "pid", "last_user", "last_agent", "last_msg_role", "initiated_by",
 })
@@ -368,6 +460,7 @@ def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] 
     if attention not in {"waiting", "working", "unread", "none"}:
         attention = "none"
     payload = {
+        "ref": session_key(session),
         "runtime": session.get("source"),
         "id": session.get("id"),
         "short_id": session.get("short_id"),
@@ -894,6 +987,19 @@ def cmd_search(args, registry) -> dict:
     }
     data.update(coverage)
     data.update(source)
+    if matched == 0:
+        suggestions = []
+        base = f"{_bin()} search"
+        quoted_kws = [shlex.quote(k) for k in args.keywords]
+        kw_str = ("-- " if any(k.startswith("-") for k in args.keywords) else "") + " ".join(quoted_kws)
+        if not any_match and len(keywords) > 1:
+            suggestions.append(f"{base} {kw_str} --any --format tsv")
+        if not args.deep:
+            suggestions.append(f"{base} {kw_str} --deep --scope activity --format tsv")
+        if coverage["potentially_limited"]:
+            suggestions.append(f"{base} {kw_str} --limit {max(200, args.limit * 2)} --format tsv")
+        if suggestions:
+            data["next_commands"] = suggestions
     out = getattr(args, "out", None)
     if isinstance(out, str) and out:
         summary = {k: v for k, v in data.items() if k != "sessions"}
@@ -1206,10 +1312,25 @@ def _share_event_text(event: dict) -> str:
     return "\n".join(parts).lower()
 
 
+def _truncate_share_value(val, max_chars: int):
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val if len(val) <= max_chars else val[:max_chars] + "…"
+    try:
+        serialized = json.dumps(val, ensure_ascii=False, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        serialized = str(val)
+    if len(serialized) <= max_chars:
+        return val
+    return serialized[:max_chars] + "…"
+
+
 def _filter_share_events(args, payload: dict) -> dict:
     raw_events = getattr(args, "events", None)
     raw_grep = getattr(args, "grep", None)
     raw_tail = getattr(args, "tail", None)
+    raw_max_chars = getattr(args, "max_chars", None)
     types: set[str] | None = None
     if isinstance(raw_events, str) and raw_events.strip():
         requested = [t.strip() for t in raw_events.split(",") if t.strip()]
@@ -1225,8 +1346,11 @@ def _filter_share_events(args, payload: dict) -> dict:
     tail = raw_tail if isinstance(raw_tail, int) and not isinstance(raw_tail, bool) else None
     if tail is not None and tail <= 0:
         raise ApiError("usage_error", "--tail 必须为正整数", EXIT_USAGE)
+    max_chars = raw_max_chars if isinstance(raw_max_chars, int) and not isinstance(raw_max_chars, bool) else None
+    if max_chars is not None and max_chars <= 0:
+        raise ApiError("usage_error", "--max-chars 必须为正整数", EXIT_USAGE)
 
-    if types is None and grep is None and tail is None:
+    if types is None and grep is None and tail is None and max_chars is None:
         return payload
 
     events = list(payload.get("events") or [])
@@ -1237,6 +1361,15 @@ def _filter_share_events(args, payload: dict) -> dict:
         events = [e for e in events if grep in _share_event_text(e)]
     if tail is not None:
         events = events[-tail:]
+    if max_chars is not None:
+        trimmed = []
+        for ev in events:
+            copy = dict(ev)
+            for key in ("text", "input", "output"):
+                if key in copy and copy[key] is not None:
+                    copy[key] = _truncate_share_value(copy[key], max_chars)
+            trimmed.append(copy)
+        events = trimmed
 
     payload["event_count_total"] = total
     payload["events"] = events
@@ -1358,9 +1491,19 @@ def cmd_describe(args, registry) -> dict:
         target = args.target if isinstance(args.target, str) else " ".join(args.target)
         spec = next((c for c in COMMANDS if c["name"] == target), None)
         if spec is None:
+            low = target.lower()
+            next_cmds = [f"{_bin()} describe"]
+            hint = "运行 corral describe 查看全部命令"
+            if "skill" in low:
+                hint = "skill 管理子命令为 skills status / skills install / skills uninstall"
+                next_cmds = [f"{_bin()} describe skills status", f"{_bin()} skills status"]
+            elif "session" in low:
+                hint = "会话查询子命令为 list / search / show / share"
+                next_cmds = [f"{_bin()} describe list", f"{_bin()} describe show"]
             raise ApiError(
                 "not_found", f"未知命令：{target}", EXIT_NOT_FOUND,
-                hint="运行 corral describe 查看全部命令",
+                hint=hint,
+                next_commands=next_cmds,
             )
         return _ok(_describe_command(spec, full=True))
     return _ok({"commands": [_describe_command(spec, full=False) for spec in COMMANDS]})
@@ -1469,8 +1612,9 @@ COMMANDS = [
             {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since；只给日期时按当天 23:59:59 计"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / cursor / pi / antigravity）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
-            {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
+            {"flags": ["--top", "-n"], "kwargs": {"dest": "top", "type": int, "help": "最多返回多少条结果；不影响扫描深度"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "输出格式：json（默认结构化 envelope）或 tsv（超紧凑单行摘要，避免截断）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--json"], "kwargs": {"action": "store_const", "const": "json", "dest": "format", "help": "输出 JSON envelope（默认）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
             {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
@@ -1540,8 +1684,9 @@ COMMANDS = [
             {"flags": ["--project"], "kwargs": {"help": "Only sessions whose cwd is this absolute project directory or below it"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--scope"], "kwargs": {"choices": ["conversation", "activity"], "default": "conversation", "help": "With --deep: conversation text only, or also normalized tool calls/results (paths, commands, patches)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条参与搜索"}},
-            {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
+            {"flags": ["--top", "-n"], "kwargs": {"dest": "top", "type": int, "help": "最多返回多少条结果；不影响扫描深度"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "输出格式：json（默认）或 tsv（超紧凑单行摘要）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--json"], "kwargs": {"action": "store_const", "const": "json", "dest": "format", "help": "输出 JSON envelope（默认）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
             {"flags": ["--live"], "kwargs": {"action": "store_true", "help": "只返回进程仍在运行的会话"}},
             {
@@ -1574,7 +1719,7 @@ COMMANDS = [
         "risk": "read",
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
-            {"flags": ["--messages", "--last"], "kwargs": {"dest": "messages", "type": int, "help": "只显示最后 N 条消息（默认 20）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--messages", "--last", "-n"], "kwargs": {"dest": "messages", "type": int, "help": "只显示最后 N 条消息（默认 20）"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--full"], "kwargs": {"action": "store_true", "help": "显示完整对话，忽略 --messages"}},
             {"flags": ["--out"], "kwargs": {"help": "把 show 结果写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
@@ -1603,6 +1748,7 @@ COMMANDS = [
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--format"], "kwargs": {"choices": ["jsonl", "json"], "help": "导出格式：jsonl（--out 时默认，每行一条会话）或 json（无 --out 时默认返回 JSON envelope）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--json"], "kwargs": {"action": "store_const", "const": "json", "dest": "format", "help": "输出 JSON envelope"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--out"], "kwargs": {"help": "写入指定文件（默认 JSONL；加 --format json 写完整 JSON envelope）；省略则打到 stdout"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "紧凑 JSON（--format json）"}},
         ],
@@ -1627,8 +1773,10 @@ COMMANDS = [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
             {"flags": ["--events"], "kwargs": {"help": "逗号分隔的事件类型过滤：user_message,assistant_message,thinking,tool_call,tool_result"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--grep"], "kwargs": {"help": "按子串过滤事件（大小写不敏感，匹配 text/name/input/output）"}},
-            {"flags": ["--tail"], "kwargs": {"type": int, "help": "只保留最后 N 条匹配事件"}},
-            {"flags": ["--format"], "kwargs": {"choices": ["jsonl", "json"], "help": "导出格式：jsonl（--out 时默认，首行 session_meta + 每行一条事件）或 json（无 --out 时默认返回 JSON envelope）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--tail", "-n"], "kwargs": {"dest": "tail", "type": int, "help": "只保留最后 N 条匹配事件"}},
+            {"flags": ["--max-chars"], "kwargs": {"type": int, "help": "把每条事件的 text/input/output 截断到最多 N 字符（stdout 巡检防截断）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--format"], "kwargs": {"choices": ["jsonl", "json", "tsv"], "help": "导出格式：jsonl（--out 时默认）、json（无 --out 时默认）或 tsv（stdout 单行时间线）"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--json"], "kwargs": {"action": "store_const", "const": "json", "dest": "format", "help": "输出 JSON envelope"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--out"], "kwargs": {"help": "把完整 transcript 写入指定文件（默认 JSONL；加 --format json 写完整 JSON envelope），stdout 只返回文件引用摘要"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "紧凑 JSON（--format json）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
@@ -1696,8 +1844,9 @@ COMMANDS = [
             {"flags": ["--project"], "kwargs": {"help": "Only sessions under this directory (e.g. . for the current project)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--recent"], "kwargs": {"type": float, "help": "Also include stopped sessions active within this many hours"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 60, "help": "Sessions scanned per runtime"}},
-            {"flags": ["--top"], "kwargs": {"type": int, "help": "Return at most this many peers"}},
+            {"flags": ["--top", "-n"], "kwargs": {"dest": "top", "type": int, "help": "Return at most this many peers"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "Output format: json (default) or tsv (compact one-line rows)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--json"], "kwargs": {"action": "store_const", "const": "json", "dest": "format", "help": "Output JSON envelope (default)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {
@@ -1902,6 +2051,7 @@ COMMANDS = [
             {"flags": ["run_id"], "kwargs": {"help": "Run id"}},
             {"flags": ["--after"], "kwargs": {"type": int, "default": 0, "help": "Return events with seq greater than this cursor (use next_cursor)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "Maximum events per page (1-500)"}},
+            {"flags": ["--tail", "-n"], "kwargs": {"dest": "tail", "type": int, "help": "Return only the last N events (skips manual cursor paging)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {"events": "seq-ordered records: kind=state/message/activity", "next_cursor": "Pass to --after next time", "has_more": "More events are available now"},  # noqa: E501 - COMMANDS 数据表
@@ -1987,10 +2137,12 @@ COMMANDS = [
         "help": "Recent runs, newest first (read-only)",
         "risk": "read",
         "args": [
-            {"flags": ["--top"], "kwargs": {"type": int, "default": 20, "help": "Maximum runs to return (1-200)"}},
+            {"flags": ["--top", "-n"], "kwargs": {"dest": "top", "type": int, "default": 20, "help": "Maximum runs to return (1-200)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--mine"], "kwargs": {"action": "store_true", "help": "Only runs created by the calling actor"}},
             {"flags": ["--target"], "kwargs": {"help": "Only runs on this runtime:id (find in-flight work after losing a run id)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--active"], "kwargs": {"action": "store_true", "help": "Only unsettled runs"}},
+            {"flags": ["--format"], "kwargs": {"choices": ["json", "tsv"], "default": "json", "help": "Output format: json (default) or tsv (compact one-line rows)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--json"], "kwargs": {"action": "store_const", "const": "json", "dest": "format", "help": "Output JSON envelope (default)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "Compact JSON"}},
         ],
         "fields": {"runs": "Compact run views", "actor_filter": "Actor used by --mine"},
@@ -2007,7 +2159,7 @@ COMMANDS = [
     },
     {
         "name": "skills status",
-        "help": "Bundled corral-search/corral-delegate skills per installed runtime (read-only)",
+        "help": "Bundled corral skill per installed runtime (read-only)",
         "risk": "read",
         "args": [
             {"flags": ["--runtime"], "kwargs": {"choices": ["claude", "codex", "opencode", "cursor", "pi", "antigravity"], "help": "Only this runtime"}},  # noqa: E501 - COMMANDS 数据表
@@ -2148,6 +2300,8 @@ def build_parser() -> JSONArgumentParser:
                 groups[key] = sp.add_subparsers(dest=f"command_part_{depth}")
         for arg in spec.get("args", []):
             sp.add_argument(*arg["flags"], **arg["kwargs"])
+        if not any("--json" in arg["flags"] for arg in spec.get("args", [])):
+            sp.add_argument("--json", action="store_true", help="输出 JSON envelope（默认即为此格式）")
     return parser
 
 

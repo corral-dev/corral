@@ -362,3 +362,11 @@ interrupted automatic tap closeout; the maintained formula generator completed
 through HTTP/1.1, and the live tap plus local upgrade were verified separately.
 
 Release: <https://github.com/corral-dev/corral/releases/tag/v0.24.340>.
+
+## Single unified bundled skill (2026-11-26)
+
+Session-history audits through 2026-11-26 showed agents loading up to ~40 KB across three overlapping skills (`corral`, `corral-search`, `corral-delegate`) and hitting `modified` conflicts between AgentSync-adopted copies and Corral's bundled installer. By owner decision (2026-11-26), the two bundled skills (`corral-search` and `corral-delegate`) merge into one bundled skill named **`corral`**:
+
+- **Bundle structure (`src/corral/skills/corral/`)**: Concise `SKILL.md` workflow (~5 KB) covering history search/inspection, session delegation (`run`), and peer coordination (`peers`/`send`), with progressive-disclosure details in `references/reference.md`. `pyproject.toml` packages `corral/skills/*/SKILL.md` and `corral/skills/*/references/*.md`; `skill_bundle.py` tracks owned relative file hashes in `registrations.json`, preserves user-added files, and updates/removes `SKILL.md` plus owned `references/*.md`.
+- **Legacy migration**: `BUNDLE_NAMES` becomes `("corral",)`. During `corral skills install`, any unchanged owned `corral-search` or `corral-delegate` copy recorded in `registrations.json` is removed cleanly; user-modified copies are left untouched and reported as conflicts.
+- **Public discovery convergence (`cli/skills/corral/`)**: `cli/skills/corral/` mirrors the unified `src/corral/skills/corral/` skill so `npx skills add corral-dev/corral -g` and `corral skills install` expose the same single skill without pulling all of `cli/docs/` into user skill roots. `cli/docs/SKILL.md` remains the full developer/API reference inside `cli/docs/`.

@@ -1055,6 +1055,63 @@ class AgentFriendlyContractTests(unittest.TestCase):
             self.assertTrue(env["ok"])
             self.assertEqual(len(env["data"]["events"]), 2)
 
+    def test_low_friction_flags_ref_share_truncation_and_error_hints(self) -> None:
+        sample_events = [
+            {"type": "user_message", "seq": 1, "text": "hello " * 50},
+            {"type": "tool_call", "seq": 2, "name": "run_command", "input": {"cmd": "x" * 200}},
+            {"type": "tool_result", "seq": 3, "name": "run_command", "status": "ok", "output": "y" * 200},
+        ]
+        with (
+            mock.patch.object(agent_api, "default_registry", return_value=self.registry),
+            mock.patch.object(agent_api, "load_events", return_value=sample_events),
+            mock.patch("corral.scan_index.try_consume", return_value=None),
+            mock.patch("corral.scan_index.publish"),
+        ):
+            # --json and -n on list, plus ref field in JSON
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = agent_api.dispatch(["list", "-n", "1", "--json", "--compact"])
+            self.assertEqual(rc, agent_api.EXIT_OK)
+            list_data = json.loads(buf.getvalue())["data"]
+            self.assertEqual(list_data["sessions"][0]["ref"], "fake:aaaa1111-0000-0000-0000-000000000000")
+
+            # share --max-chars and --format tsv
+            buf_s = io.StringIO()
+            with contextlib.redirect_stdout(buf_s):
+                rc_s = agent_api.dispatch(["share", "aaaa1111", "-n", "2", "--max-chars", "20", "--format", "tsv"])
+            self.assertEqual(rc_s, agent_api.EXIT_OK)
+            tsv_lines = buf_s.getvalue().strip().splitlines()
+            self.assertEqual(tsv_lines[0], "seq\ttype\tname\tstatus\tsummary")
+            self.assertTrue(tsv_lines[-1].startswith("# returned=2 total=3 ref=fake:aaaa1111"))
+
+            # share --max-chars JSON keeps events truncated cleanly
+            buf_j = io.StringIO()
+            with contextlib.redirect_stdout(buf_j):
+                rc_j = agent_api.dispatch(["share", "aaaa1111", "--max-chars", "25", "--json"])
+            self.assertEqual(rc_j, agent_api.EXIT_OK)
+            ev_out = json.loads(buf_j.getvalue())["data"]["events"]
+            self.assertLessEqual(len(ev_out[0]["text"]), 26)
+            self.assertTrue(ev_out[2]["output"].endswith("…"))
+
+            # search zero hits provides next_commands
+            buf_z = io.StringIO()
+            with contextlib.redirect_stdout(buf_z):
+                rc_z = agent_api.dispatch(["search", "missing_kw1", "missing_kw2", "--json"])
+            self.assertEqual(rc_z, agent_api.EXIT_OK)
+            z_data = json.loads(buf_z.getvalue())["data"]
+            self.assertTrue(any("--any" in c for c in z_data.get("next_commands", [])))
+            self.assertTrue(any("--deep" in c for c in z_data.get("next_commands", [])))
+
+            # search -prefixed keyword error gives concrete `--` hint
+            buf_err = io.StringIO()
+            with contextlib.redirect_stdout(buf_err):
+                with self.assertRaises(SystemExit) as cm:
+                    agent_api.dispatch(["search", "--ak-id"])
+            self.assertEqual(cm.exception.code, agent_api.EXIT_USAGE)
+            err_payload = json.loads(buf_err.getvalue())["error"]
+            self.assertIn("--", err_payload["hint"])
+            self.assertTrue(any("search --deep -- --ak-id" in c for c in err_payload["next_commands"]))
+
 
 def argparse_namespace(**kwargs):
     return _Namespace(**kwargs)

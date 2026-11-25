@@ -1063,8 +1063,33 @@ def cmd_status(args, registry) -> dict:
 
 def cmd_events(args, registry) -> dict:
     store = RunStore()
-    page = store.events(args.run_id, max(0, args.after), max(1, min(args.limit, 500)))
     record = store.get(args.run_id)
+    tail = getattr(args, "tail", None)
+    if tail is not None:
+        if tail <= 0:
+            raise ControlError("usage_error", "--tail must be a positive integer.", EXIT_USAGE)
+        events_all = []
+        cursor = max(0, getattr(args, "after", 0) or 0)
+        while True:
+            page = store.events(args.run_id, cursor, 500)
+            batch = page.get("events") or []
+            events_all.extend(batch)
+            if not page.get("has_more") or not batch:
+                next_cursor = page.get("next_cursor", cursor)
+                break
+            cursor = page.get("next_cursor", cursor)
+        return _ok({
+            "run_id": args.run_id,
+            "execution": record["execution"],
+            "settled": record["execution"] in SETTLED,
+            "from_agent": record.get("from_agent"),
+            "last_from_agent": record.get("last_from_agent"),
+            "events": events_all[-tail:],
+            "next_cursor": next_cursor,
+            "has_more": False,
+            "truncated_by_tail": len(events_all) > tail,
+        })
+    page = store.events(args.run_id, max(0, args.after), max(1, min(args.limit, 500)))
     return _ok({"run_id": args.run_id, "execution": record["execution"], "settled": record["execution"] in SETTLED,
                 "from_agent": record.get("from_agent"), "last_from_agent": record.get("last_from_agent"),
                 **page})
@@ -1128,7 +1153,7 @@ def cmd_result(args, registry) -> dict:
         raise ControlError("result_not_ready", f"The run is still {record['execution']}.", EXIT_CONFLICT,
                            details={"run": public_run(store, record, compact=True)},
                            next_commands=[f"{_bin()} run wait {args.run_id} --timeout 120"])
-    view = public_run(store, record)
+    view = public_run(store, record, compact=bool(getattr(args, "compact", False)))
     return _ok({**view, "result": record.get("result"),
                 "note": "execution=completed means the delegated turn ended; review the work before "
                         "treating the task as done."})

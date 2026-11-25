@@ -1085,3 +1085,15 @@ Owner confirmed retaining the 2026-11-15 anti-storm A2A guardrails (`steer_not_a
 
 1. **Fresh target liveness and phase during `admit()` polling (`control_worker.py`)**: `SupervisorRunner.admit()` resolves `session` once before entering the `BUSY_POLL` loop. `corral_hooks` now refreshes live target state on each poll tick (sharing one probe across back-to-back `target_waiting` and `target_busy` checks): Pi `agent_phase` claims, Antigravity `presence` PID liveness (scoped to the target's own root when `presence/` exists), and hosted tmux pane liveness when the target pane was initially confirmed alive—preventing exited targets from staying pinned to a stale `live=True` snapshot until `queue_expired`.
 2. **Delivery wait margin (`corral-delegate`)**: When waiting on a bounded queue (`--queue-timeout 120`), `corral run wait --until delivered --timeout` should allow a small margin (e.g., `125s`) past `--queue-timeout` so callers observe the settled `rejected / queue_expired` outcome directly instead of hitting `wait_timeout` during the final `BUSY_POLL` interval.
+
+### Agent CLI friction reduction (2026-11-26)
+
+Empirical audit of agent sessions from 2026-11-16 through 2026-11-26 identified repeated `exit 2` argument guesses, stdout truncation on `share` and `run` queries, and weak recovery hints. The following additive, backward-compatible improvements apply:
+
+1. **Universal `--json` and `-n` aliases**: Accept `--json` across all machine subcommands (`list`, `search`, `show`, `export`, `share`, `peers`, `context`, `plan continue`, `describe`, `diagnose`, `run *`, `a2a *`, `send`, `skills *`), and accept `-n` as an alias for `--top` (`list`/`search`/`peers`/`run list`), `--messages`/`--last` (`show`), and `--tail` (`share`/`run events`).
+2. **Low-token `share`, `run list`, `run events`, and `run result --compact`**:
+   - `corral share` adds opt-in `--max-chars N` (caps `text`/`input`/`output` preview strings per event) and `--format tsv` (`seq\ttype\tname\tstatus\tsummary`). Default JSON/JSONL output remains untruncated.
+   - `corral run list` adds `--format json|tsv` (`run_id\ttarget\tdelivery\texecution\tfrom_agent\tblocked_by`).
+   - `corral run events` adds `--tail N` / `-n N` to inspect the latest `N` events directly.
+   - `corral run result --compact` passes `compact=True` to `public_run()` so verbose message histories and host paths are omitted as documented.
+3. **Consistent `ref` field and actionable recovery**: `session_payload()` adds `"ref": "<runtime>:<id>"` alongside `runtime`/`id`. `JSONArgumentParser.error()` routes `next_commands` to the failing subcommand's `describe` entry, gives explicit `search -- <keyword>` guidance on `-`-prefixed keywords, and redirects guessed `session`/`sessions`/`describe skill` subcommands. Zero-hit `search` responses include concrete `next_commands` suggestions (`--any`, `--deep --scope activity`, higher `--limit`). `corral --help` accurately notes `--ask` opt-in for `send` report-back.
