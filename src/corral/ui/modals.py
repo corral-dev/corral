@@ -729,8 +729,14 @@ class TextInputModal(OutsideClickDismiss, ModalScreen[str | None]):
 EXPORT_SESSION_CHOICE = "__export_session__"
 COPY_SESSION_CHOICE = "__copy_session__"
 RESTART_SESSION_CHOICE = "__restart_session__"
+COPY_CORRAL_ID_CHOICE = "__copy_corral_id__"
 _ADVANCED_SENTINELS = frozenset(
-    {EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE, RESTART_SESSION_CHOICE}
+    {
+        EXPORT_SESSION_CHOICE,
+        COPY_SESSION_CHOICE,
+        RESTART_SESSION_CHOICE,
+        COPY_CORRAL_ID_CHOICE,
+    }
 )
 
 
@@ -755,15 +761,17 @@ async def choose_target_runtime(
     source: str,
     restart_available: bool = False,
     restart_unavailable_text: str | None = None,
+    corral_id: str = "",
+    corral_id_unavailable_text: str | None = None,
 ) -> str | None:
-    """高级操作：导出会话、复制会话、重启会话，或选择接力目标运行时。
+    """高级操作：导出会话、复制会话、重启会话、复制 Corral ID，或选择接力目标运行时。
 
     列表第一项是「导出会话」（写 share transcript 并把路径复制到剪贴板，不启动）；
     第二项是「复制会话」（同助手完整克隆）；第三项是「重启会话」（结束托管进程后
-    按原会话原地恢复，仅对 corral 正托管、非占位的会话可用）；其后每一个助手
-    （含来源自身）都是「读取源历史后新建会话」--同助手另起用于原会话卡住 / 出 bug 时；
-    真正的原生恢复走侧边栏回车，不走本入口。
-    仅展示 ACTIVE_RUNTIME_IDS 内的目标，dormant 兼容不出现在接力菜单。
+    按原会话原地恢复，仅对 corral 正托管、非占位的会话可用）；第四项是「复制 Corral ID」
+    （把 8 位无状态短 ID 复制到剪贴板）；其后每一个助手（含来源自身）都是「读取源历史
+    后新建会话」--同助手另起用于原会话卡住 / 出 bug 时；真正的原生恢复走侧边栏回车，
+    不走本入口。仅展示 ACTIVE_RUNTIME_IDS 内的目标，dormant 兼容不出现在接力菜单。
     """
     from corral.runtime.registry import active_runtimes
 
@@ -793,6 +801,14 @@ async def choose_target_runtime(
             restart_action,
             restart_available,
             unavailable_text=restart_unavailable_text or t("modal.not_hosted", action=restart_action),
+            section=session_section,
+        ),
+        RuntimeChoice(
+            COPY_CORRAL_ID_CHOICE,
+            t("modal.copy_corral_id"),
+            corral_id,
+            bool(corral_id),
+            unavailable_text=corral_id_unavailable_text or t("modal.copy_corral_id_unavailable"),
             section=session_section,
         ),
     ]

@@ -680,7 +680,7 @@ terminal smoke checks pass; fixture sockets are removed at cleanup.
 | 右栏顶栏点助手 | 当前项目目录已知且未满四格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | 右栏顶栏点「终端」 | 当前项目目录已知且未满四格 | `_on_shell_pick` → `_embed_open_shell` 加一格交互式 shell | 不进侧栏列表；关格或 shell 退出即结束 tmux 会话 |
 | 分屏格 ✕ 关格 | 右栏至少有一格 | `_PaneClose` → `SplitPaneArea._close_spec` | 该格退出当前分屏（托管会话继续在后台跑，可再打开）；右栏留在剩余格，不得切到刚被关掉的那条会话； **Closing a pane in a group preserves the sidebar scroll offset; rebuilding the group or selecting the surviving pane must not scroll its row into view (2026-09-30). Clamp only when the shortened list no longer supports the old offset.**不绑单字母 `c`。 |
-| `Ctrl+T` | 右栏正对着某个会话（筛选框持焦时让路） | `Session actions` 弹窗：本会话导出 / 分叉 / 重启，以及对各运行时读历史后新建 | 与 `Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+X` 同级的全局键；不绑单字母 `a`。**不要绑回 `Ctrl+A`**：那是行首，必须透传给助手 |
+| `Ctrl+T` | 右栏正对着某个会话（筛选框持焦时让路） | `Session actions` 弹窗：本会话导出 / 复制 Corral ID / 分叉 / 重启，以及对各运行时读历史后新建 | 与 `Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+X` 同级的全局键；不绑单字母 `a`。**不要绑回 `Ctrl+A`**：那是行首，必须透传给助手 |
 | `Ctrl+X` | 右栏正对着某个会话（筛选框持焦时让路） | 确认弹窗（确认键为 `x`）确认的瞬间摘卡；结束托管进程与抹磁盘在后台完成 | 与 `Ctrl+T` 同级的全局键；不绑单字母 `x`。无右栏且侧栏高亮在组卡上时删整组 |
 | `Ctrl+P` | 任意主界面焦点（含右栏实时格） | 置顶当前窗口或其所在会话组 | 框架命令面板已关闭，不再占用此键 |
 | `Ctrl+N` | 任意主界面焦点（含右栏实时格） | 打开新建会话双栏弹窗 | 与侧栏「＋ 新建」同一条流程；单字母 `n` 仍不绑 |

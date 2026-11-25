@@ -67,6 +67,8 @@ _SYMBOL_EXPORTS = {
     "LaunchPlan": ("corral.models", "LaunchPlan"),
     "LaunchRequest": ("corral.models", "LaunchRequest"),
     "NewSessionRequest": ("corral.models", "NewSessionRequest"),
+    "corral_id_for_session": ("corral.corral_id", "corral_id_for_session"),
+    "derive_corral_id": ("corral.corral_id", "derive_corral_id"),
     "format_message_time": ("corral.models", "format_message_time"),
     "session_key": ("corral.models", "session_key"),
     "_log_embed_error": ("corral.observe", "log_embed_error"),

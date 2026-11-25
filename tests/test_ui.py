@@ -6649,8 +6649,8 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 choices = app.screen._choices
                 self.assertEqual(choices[2].id, RESTART_SESSION_CHOICE)
                 self.assertTrue(choices[2].available)
-                # 默认高亮在接力项（最后一项）；上移一次落到「重启会话」
-                await pilot.press("up")
+                # 默认高亮在接力项（最后一项）；上移两次越过「复制 Corral ID」落到「重启会话」
+                await pilot.press("up", "up")
                 await pilot.press("enter")
                 # 菜单选定即占位返回：杀旧 + 起新串行跑在后台 host worker，
                 # 前台只做校验 + 占位（右栏「正在重启…」），不再冻住事件循环。

@@ -548,6 +548,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Could not export session: {error}",
         "zh": "无法导出会话：{error}",
     },
+    "modal.copy_corral_id": {
+        "en": "Copy Corral ID",
+        "zh": "复制 Corral ID",
+    },
+    "modal.copy_corral_id_copied": {
+        "en": "Copied Corral ID: {corral_id}",
+        "zh": "已复制 Corral ID：{corral_id}",
+    },
+    "modal.copy_corral_id_unavailable": {
+        "en": "Waiting for session ID",
+        "zh": "等待会话 ID 生成",
+    },
+    "modal.copy_corral_id_shell": {
+        "en": "Not a session",
+        "zh": "终端窗格无会话 ID",
+    },
     "modal.copy_session": {
         "en": "Fork session",
         "zh": "分叉会话",

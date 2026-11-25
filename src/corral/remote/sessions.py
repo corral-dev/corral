@@ -34,7 +34,14 @@ from corral.activity_board import needs_attention, resolve_active_marker
 from corral.cache import history_signature
 from corral.history_watch import ScanMissBackoff
 from corral.i18n import t
-from corral.models import LaunchRequest, NewSessionRequest, is_shell_session, session_key
+from corral.models import (
+    LaunchRequest,
+    NewSessionRequest,
+    corral_id_for_session,
+    is_shell_session,
+    normalize_corral_id,
+    session_key,
+)
 from corral.projects import normalize_cwd
 from corral.remote import questions, richmsg, shell_terminal, terminal_stream, transcript_cache
 from corral.remote.push import abort_kind
@@ -1533,6 +1540,7 @@ class SessionHub:
             "runtime": runtime,
             "id": self._wire_str(session.get("id")),
             "short_id": self._wire_str(session.get("short_id")),
+            "corral_id": corral_id_for_session(session),
             "title": str(title or ""),
             "cwd": str(session.get("cwd") or ""),
             "cwd_display": str(session.get("cwd_display") or ""),
@@ -1573,13 +1581,17 @@ class SessionHub:
         return payload
 
     def _session_matches(self, session: dict, layout, needle: str) -> bool:
+        cid = corral_id_for_session(session)
+        norm_needle = normalize_corral_id(needle)
+        if cid and norm_needle and cid == norm_needle:
+            return True
         title = str(self.store.get_title(session) or "")
         cwd = str(session.get("cwd_display") or session.get("cwd") or "")
         last_user = str(session.get("last_user_msg") or "")
         last_agent = str(session.get("last_agent_msg") or "")
         native = str(session.get("native_title") or "")
         fallback = str(session.get("fallback_title") or "")
-        haystack = f"{title}\n{native}\n{fallback}\n{cwd}\n{last_user}\n{last_agent}".lower()
+        haystack = f"{title}\n{native}\n{fallback}\n{cwd}\n{last_user}\n{last_agent}\n{cid}".lower()
         return needle in haystack
 
     def _window_version(self, sessions: list[dict], layout) -> str:

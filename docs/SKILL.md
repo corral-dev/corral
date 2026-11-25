@@ -152,6 +152,7 @@ corral list --live --keepalive --compact
 ## 字段说明要点
 
 - `title`：只读已生成的标题缓存或本地兜底标题，不会触发新的标题生成（不花账号额度）。
+- `corral_id`：Corral 无状态短会话 ID（8 位小写：`2 位运行时前缀` + `6 位 Crockford Base32`，`cc`/`cx`/`oc`/`cu`/`pi`/`ag` 分别对应六个活跃运行时，`km` 对应 dormant Kimi；由 `SHA-256("<runtime>:<id>")` 确定性派生）。`show`/`context`/`share`/`plan continue` 均支持直接传入 `corral_id` 定位会话（大小写不敏感）。
 - `live` / `pid`：`live` 是运行中会话的进程是否真实存活（Claude 用 pid 注册表 + `os.kill`，Codex
   用 `pgrep`+`lsof` 探测持有对应会话文件的进程，OpenCode 用命令行 `-s`/`--session` 或完整托管会话
   id 精确绑定，同一目录可同时标多条；`opencode run` 不算运行中。Kimi 用命令行 `-S`/`--session`

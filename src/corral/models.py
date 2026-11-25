@@ -21,6 +21,12 @@ from sesskit.models import (
     SessionInfo as _SessKitSessionInfo,
 )
 
+from corral.corral_id import (  # noqa: F401 — re-export
+    corral_id_for_session,
+    derive_corral_id,
+    matches_corral_id,
+    normalize_corral_id,
+)
 from corral.i18n import t
 
 SHELL_RUNTIME_ID = "shell"

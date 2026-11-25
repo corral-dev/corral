@@ -23,7 +23,13 @@ from datetime import datetime
 from corral import liveness, titles
 from corral.cache import cache_dir, get_cache, scan_period
 from corral.legacy_names import getenv
-from corral.models import format_message_time, is_shell_session, session_key
+from corral.models import (
+    corral_id_for_session,
+    format_message_time,
+    is_shell_session,
+    matches_corral_id,
+    session_key,
+)
 from corral.runtime import LaunchError, default_registry
 from corral.runtime.base import usable_cwd
 from corral.textutil import parse_loop_count
@@ -51,7 +57,7 @@ _RESOLVE_SCAN_LIMIT = 200  # show/share/context 按标识定位会话时的扫�
 # 有没有挂在 corral 托管里、界面关注态是等你 / 干活 / 未读，不必再多一次 show。
 # pid 体积小但多数为 null，不进精简集，需要时用 --fields 或 --live 取。
 DEFAULT_LIST_FIELDS = (
-    "id", "short_id", "runtime", "title", "status", "live", "keepalive", "attention", "mtime",
+    "id", "short_id", "corral_id", "runtime", "title", "status", "live", "keepalive", "attention", "mtime",
     "cwd_display", "resumable", "resume_command", "last_user", "last_agent",
 )
 # search 的精简字段集在 list 基础上额外保留命中方式、命中字段和相关性得分，方便调用方理解排序
@@ -216,7 +222,7 @@ def _resolve_out_path(out: str) -> str:
 
 # session_payload 产出的全部字段名：--fields 白名单的真源（与 payload 共用定义，不另写一套）。
 _SESSION_FIELD_NAMES = frozenset({
-    "runtime", "id", "short_id", "title", "cwd", "cwd_display", "time", "mtime",
+    "runtime", "id", "short_id", "corral_id", "title", "cwd", "cwd_display", "time", "mtime",
     "size_kb", "loop_count", "status", "status_tag", "history_path", "resumable", "resume_command",
     "live", "keepalive", "attention", "pid", "last_user", "last_agent", "last_msg_role", "initiated_by",
 })
@@ -365,6 +371,7 @@ def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] 
         "runtime": session.get("source"),
         "id": session.get("id"),
         "short_id": session.get("short_id"),
+        "corral_id": corral_id_for_session(session),
         "title": title,
         "cwd": session.get("cwd") or "",
         "cwd_display": session.get("cwd_display") or "",
@@ -392,7 +399,10 @@ def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] 
 def _match_sessions(sessions: list[dict], ident: str) -> list[dict]:
     return [
         s for s in sessions
-        if s.get("id") == ident or str(s.get("id") or "").startswith(ident) or s.get("short_id") == ident
+        if s.get("id") == ident
+        or str(s.get("id") or "").startswith(ident)
+        or s.get("short_id") == ident
+        or matches_corral_id(s, ident)
     ]
 
 
@@ -482,7 +492,10 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
     liveness.annotate(matches)
     _attach_attention(matches)
 
-    exact = [s for s in matches if s.get("id") == ref or session_key(s) == ref]
+    exact = [
+        s for s in matches
+        if s.get("id") == ref or session_key(s) == ref or matches_corral_id(s, ref)
+    ]
     if len(exact) == 1:
         return exact[0]
     if len(matches) > 1:
@@ -815,6 +828,7 @@ def cmd_search(args, registry) -> dict:
                 session.get("last_agent_msg"),
                 session.get("cwd"),
                 session.get("cwd_display"),
+                corral_id_for_session(session),
             ]
             haystack = " ".join(filter(None, quick_parts)).lower()
 
@@ -1428,6 +1442,7 @@ COMMANDS = [
             "runtime": "运行时标识（claude / codex / opencode / cursor / pi / antigravity）",
             "id": "会话完整 ID",
             "short_id": "会话短 ID（前 8 位）",
+            "corral_id": "Corral 无状态短 ID（2 位运行时前缀 + 6 位 Crockford Base32）",
             "title": "会话标题（缓存的生成标题或本地兜底标题，不触发新生成）",
             "cwd": "原会话工作目录绝对路径",
             "cwd_display": "工作目录的展示形式（可能是缩短路径）",

@@ -319,17 +319,21 @@ def _filter_sessions_by_query(
     *,
     titles: dict[str, str] | None = None,
 ) -> list[dict]:
-    """按项目名/路径/会话标题做大小写无关模糊过滤；空查询不过滤。"""
+    """按项目名/路径/会话标题/Corral ID 做大小写无关模糊过滤；空查询不过滤。"""
+    from corral.corral_id import corral_id_for_session, normalize_corral_id
+
     needle = (query or "").strip()
     if not needle:
         return sessions
+    norm_needle = normalize_corral_id(needle)
     titles = titles or {}
     out: list[dict] = []
     for session in sessions:
         cwd_key = normalize_cwd(session.get("cwd"))
         title = titles.get(session_key(session), "")
         fallback = str(session.get("fallback_title") or "")
-        if fuzzy_match(
+        cid = corral_id_for_session(session)
+        if (norm_needle and cid == norm_needle) or fuzzy_match(
             needle,
             session_project_label(session),
             cwd_key,
@@ -337,6 +341,7 @@ def _filter_sessions_by_query(
             title,
             fallback,
             str(session.get("native_title") or ""),
+            cid,
         ):
             out.append(session)
     return out

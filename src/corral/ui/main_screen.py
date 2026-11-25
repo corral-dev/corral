@@ -42,6 +42,7 @@ from corral.ui.dragon_easter_egg import DragonOverlay
 from corral.ui.dragon_splash import DragonSplash
 from corral.ui.footer import CorralFooter
 from corral.ui.modals import (
+    COPY_CORRAL_ID_CHOICE,
     COPY_SESSION_CHOICE,
     EXPORT_SESSION_CHOICE,
     RESTART_SESSION_CHOICE,
@@ -2237,13 +2238,19 @@ class MainScreen(
             return
         session = self._current_bound_session(session)
         source = str(session.get("source") or self.nav.source)
-        from corral.models import is_shell_session
+        from corral.models import corral_id_for_session, is_shell_session
         from corral.runtime.base import LaunchError
 
         restart_available = bool(
             session.get("keepalive_name")
             and not is_shell_session(session)
             and not session.get("provisional")
+        )
+        corral_id = corral_id_for_session(session)
+        corral_id_unavailable = (
+            t("modal.copy_corral_id_shell")
+            if is_shell_session(session)
+            else t("modal.copy_corral_id_unavailable")
         )
         target = await choose_target_runtime(
             self.app,
@@ -2254,12 +2261,22 @@ class MainScreen(
                 t("modal.restart_unsaved", action=t("modal.restart_session_action"))
                 if session.get("keepalive_name") and session.get("provisional") else None
             ),
+            corral_id=corral_id,
+            corral_id_unavailable_text=corral_id_unavailable,
         )
         if target is None:
             return
         import corral
 
         session = self._current_bound_session(session)
+        if target == COPY_CORRAL_ID_CHOICE:
+            latest_id = corral_id_for_session(session) or corral_id
+            if not latest_id:
+                self.app.bell()
+                return
+            self.app.copy_to_clipboard(latest_id)
+            self.notify(t("modal.copy_corral_id_copied", corral_id=latest_id))
+            return
         if target == RESTART_SESSION_CHOICE:
             await self._restart_hosted_session(session)
             return
