@@ -19,7 +19,7 @@ Read the documents whose described content is relevant before deciding or changi
 - [Public presentation](~/Codes/Corral/cli/docs/PUBLIC_PRESENTATION_GUIDE.md): Approved identity, brand assets and sanitized captures.
 - [Independent UI annotation](~/Codes/_standards/workspace-docs/IOS_UI_ANNOTATION_COMPONENT_DESIGN.md): Independent EditHere core and optional Corral adapter boundary.
 - [Remote protocol](~/Codes/Corral/cli/docs/REMOTE_KNOWLEDGE_BASE.md): Pairing, relay/security boundaries, message delivery and multi-runtime acceptance.
-- [Mobile data plane](~/Codes/Corral/cli/docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live data isolation, question state and reconnect recovery.
+- [Mobile data plane](~/Codes/Corral/cli/docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live data isolation, chat streaming, question state and reconnect recovery.
 - [Managed session identity](~/Codes/Corral/cli/docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md): Pi/Codex ownership, claims, plugins and legacy migration.
 - [Completion notifications](~/Codes/Corral/cli/docs/design/AGENT_COMPLETION_NOTIFICATIONS_DESIGN.md): Completed/interrupted evidence, notification preferences and sound presets, deduplication and delivery.
 - [Activity card (agentflex)](~/Codes/Corral/cli/docs/design/SHAREABLE_WRAP_CARD_DESIGN.md): history of the `corral wrap` prototype, owner decisions, the standalone agentflex card (npx, Rust, SessKit engine, Windows) and `corral flex`.
@@ -132,7 +132,7 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md): One-command CLI/Mac/iPhone release procedure, gates, known issues and recovery.
 - [docs/REMOTE_KNOWLEDGE_BASE.md](docs/REMOTE_KNOWLEDGE_BASE.md): Pairing, encrypted remote protocol, delivery, relay boundaries and remote acceptance.
 - [docs/TCC_KNOWLEDGE_BASE.md](docs/TCC_KNOWLEDGE_BASE.md): macOS permission attribution (Python/tmux vs corral), `corral tcc` launcher scope and limits.
-- [docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live-data isolation, pagination and recovery.
+- [docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md): History loading, live-data isolation, chat streaming, pagination and recovery.
 - [docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md](docs/design/MOBILE_SESSION_ACTIONS_DESIGN.md): 实现、评审或联调 iOS 会话页右上菜单的复制（`session.copy`，新增）与接力（`session.handoff`，服务端已有）前必读.
 - [docs/SKILL.md](docs/SKILL.md): 修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）.
 - [PRIVACY.md](PRIVACY.md): 修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界.
