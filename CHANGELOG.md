@@ -6,6 +6,22 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## Unreleased
+
+### English
+
+- Stream live reply output from running Codex, Pi, and OpenCode sessions to connected Apple clients as they work.
+- Add stateless runtime-prefixed Corral IDs (`cl-`, `cx-`, `oc-`, `cu-`, `pi-`, `ag-`) across the CLI, TUI, and remote API for compact cross-surface session references and lookups.
+- Keep active Antigravity turns marked as working during longer async pauses instead of raising a premature unread completion dot (upgraded to SessKit 0.3.15).
+- Write remote session JSON exports to the local cache and return the saved file path; include the latest message's speaker role in session list and agent API payloads.
+
+### 简体中文
+
+- 支持将运行中的 Codex、Pi 和 OpenCode 会话实时回复输出流式推送至已连接的 Apple 客户端。
+- 在 CLI、终端界面和远程接口中新增带运行时前缀的无状态 Corral ID（`cl-`、`cx-`、`oc-`、`cu-`、`pi-`、`ag-`），便于跨端简短引用与定位会话。
+- 修复 Antigravity 会话在长耗时异步步骤停顿时过早出现未读完成红点的问题，保持运行中状态准确（升级至 SessKit 0.3.15）。
+- 远程导出会话 JSON 时自动写入本地缓存并返回保存路径，同时在会话列表和代理只读接口中提供最新一条消息的发言方角色。
+
 ## 1.0.2
 
 ### English
