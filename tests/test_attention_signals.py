@@ -1766,6 +1766,140 @@ class AntigravityAttentionTests(unittest.TestCase):
             self._write_fixture(root, "ag-q", entries, db_status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
             self.assertEqual(inspect_session(sess).phase, "idle")
 
+    def test_background_task_and_subagent_stay_working_with_fresh_idle_db_and_same_second(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bg_entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T07:16:00Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "run_command", "args": {"CommandLine": "swift test"}}],
+                    "created_at": "2026-11-25T07:16:12Z",
+                },
+                {
+                    "step_index": 2,
+                    "type": "GENERIC",
+                    "status": "RUNNING",
+                    "content": (
+                        "Created At: 2026-11-25T15:16:13+08:00\n"
+                        "Tool is running as a background task with task id: ag-fresh/task-2\n"
+                        "Task Description: swift test"
+                    ),
+                    "created_at": "2026-11-25T07:16:13Z",
+                },
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "content": "Running swift test in background.",
+                    "created_at": "2026-11-25T07:16:24Z",
+                },
+            ]
+            # Even when DB already updated to IDLE (not_fully_idle=0) at same/later timestamp,
+            # pending_async keeps the live session working instead of flashing unread red dot.
+            path = self._write_fixture(
+                root,
+                "ag-fresh",
+                bg_entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+                last_modified_time="2026-11-25 07:16:24.500000+00:00",
+            )
+            sess = {"source": "antigravity", "id": "ag-fresh", "path": str(path), "live": True}
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+            # Prefixed subagent output also stays working under fresh IDLE DB until SYSTEM_MESSAGE arrives.
+            sub_entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T07:17:00Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "invoke_subagent", "args": {"Role": "Worker"}}],
+                    "created_at": "2026-11-25T07:17:01Z",
+                },
+                {
+                    "step_index": 2,
+                    "type": "GENERIC",
+                    "status": "DONE",
+                    "content": (
+                        "Created At: 2026-11-25T15:17:02+08:00\n"
+                        "Created the following subagent:\n"
+                        '{\n  "conversationId": "sub-999"\n}'
+                    ),
+                    "created_at": "2026-11-25T07:17:02Z",
+                },
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "content": "Waiting for subagent.",
+                    "created_at": "2026-11-25T07:17:03Z",
+                },
+            ]
+            sub_path = self._write_fixture(
+                root,
+                "ag-sub",
+                sub_entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+                last_modified_time="2026-11-25 07:17:03.400000+00:00",
+            )
+            sub_sess = {"source": "antigravity", "id": "ag-sub", "path": str(sub_path), "live": True}
+            self.assertEqual(inspect_session(sub_sess).phase, "working")
+
+            settled = sub_entries + [
+                {
+                    "step_index": 4,
+                    "type": "SYSTEM_MESSAGE",
+                    "status": "DONE",
+                    "content": "<SYSTEM_MESSAGE>\n[Message] sender=sub-999 done\n</SYSTEM_MESSAGE>",
+                    "created_at": "2026-11-25T07:17:20Z",
+                },
+                {
+                    "step_index": 5,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "content": "Completed.",
+                    "created_at": "2026-11-25T07:17:21Z",
+                },
+            ]
+            self._write_fixture(
+                root,
+                "ag-sub",
+                settled,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+                last_modified_time="2026-11-25 07:17:21.400000+00:00",
+            )
+            self.assertEqual(inspect_session(sub_sess).phase, "idle")
+
+            # Non-terminal USER_INPUT / GENERIC sharing whole-second timestamp with DB IDLE stays working.
+            same_sec = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T07:18:37Z"},
+            ]
+            ss_path = self._write_fixture(
+                root,
+                "ag-samesec",
+                same_sec,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=0,
+                last_modified_time="2026-11-25 07:18:37.155436+00:00",
+            )
+            self.assertEqual(
+                inspect_session(
+                    {"source": "antigravity", "id": "ag-samesec", "path": str(ss_path), "live": True}
+                ).phase,
+                "working",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

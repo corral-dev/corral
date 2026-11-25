@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import threading
 from collections import OrderedDict
@@ -1353,31 +1352,10 @@ def _antigravity_db_summary(cid: str, path: str) -> sqlite3.Row | None:
         conn.close()
 
 
-_AG_BG_TASK_RE = re.compile(r"Tool is running as a background task with task id:\s*([^\s\n]+)")
-_AG_SYS_SENDER_RE = re.compile(r"sender=([^\s\n]+)")
-_AG_SYS_TASK_DONE_RE = re.compile(
-    r'Task id "([^"]+)" (?:finished|was canceled|stopped|failed|terminated)'
-)
-
-
-def _is_truthy_arg(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "1", "yes"}
-    return False
-
-
-def _tool_call_args(tc: dict[str, Any]) -> dict[str, Any]:
-    for key in ("args", "arguments"):
-        raw = tc.get(key)
-        if isinstance(raw, dict):
-            return raw
-    return {}
-
-
 def _inspect_antigravity(session: dict) -> AttentionEvidence:
     """Extract Antigravity attention state from transcript JSONL tail + summaries DB."""
+    from corral.scan import antigravity as scan_antigravity
+
     path = str(session.get("path") or "")
     cid = str(session.get("id") or "").strip()
     db_row = _antigravity_db_summary(cid, path)
@@ -1388,12 +1366,12 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
     observed_at = _stable_observed_at(session, path)
     pending_question: str | None = None
     open_tools = 0
-    daemon_slots: list[bool] = []
-    pending_async: set[str] = set()
+    tracker = scan_antigravity.AntigravityTurnTracker()
     last_entry: dict | None = None
 
-    for entry in (_iter_jsonl_tail(path) if path else ()):
+    for idx, entry in enumerate(_iter_jsonl_tail(path) if path else (), 1):
         last_entry = entry
+        tracker.observe(entry, lineno=idx)
         etype = entry.get("type")
         status = str(entry.get("status") or "")
         step = entry.get("step_index")
@@ -1406,30 +1384,17 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
         if etype == "USER_INPUT":
             pending_question = None
             open_tools = 0
-            daemon_slots.clear()
             phase = "working"
             activity_token = _token("antigravity", "user", native) or activity_token
         elif etype == "PLANNER_RESPONSE":
             raw_tools = entry.get("tool_calls")
             tool_calls = raw_tools if isinstance(raw_tools, list) else []
             has_question = False
-            daemon_slots.clear()
             for tc in tool_calls:
                 if not isinstance(tc, dict):
-                    daemon_slots.append(False)
                     continue
-                name = tc.get("name")
-                if name == "ask_question":
+                if tc.get("name") == "ask_question":
                     has_question = True
-                args = _tool_call_args(tc)
-                daemon_slots.append(_is_truthy_arg(args.get("IsDaemon")))
-                if name == "manage_task" and str(args.get("Action") or "").strip().lower() in {
-                    "kill",
-                    "cancel",
-                }:
-                    tid = str(args.get("TaskId") or "").strip()
-                    if tid:
-                        pending_async.discard(tid)
             if tool_calls:
                 pending_question = (
                     _token("antigravity", "question", f"{cid}:{step if step is not None else native}")
@@ -1442,12 +1407,13 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
             else:
                 pending_question = None
                 open_tools = 0
+                has_real_async = any(not tok.startswith("call:") for tok in tracker.pending_async)
                 if status == "RUNNING":
                     phase = "working"
                     activity_token = (
                         _token("antigravity", "planner_running", native) or activity_token
                     )
-                elif pending_async:
+                elif has_real_async:
                     # Interim no-tool reply while a non-daemon background task/subagent runs.
                     phase = "working"
                     activity_token = (
@@ -1460,16 +1426,7 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
                     phase = "idle"
                     activity_token = _token("antigravity", "done", native) or activity_token
         elif etype == "GENERIC":
-            is_daemon = daemon_slots.pop(0) if daemon_slots else False
             if status == "RUNNING":
-                content = str(entry.get("content") or "")
-                match = _AG_BG_TASK_RE.search(content)
-                if (
-                    match is not None
-                    and not is_daemon
-                    and "Task Description: Cron:" not in content
-                ):
-                    pending_async.add(match.group(1))
                 phase = "working"
                 activity_token = (
                     _token("antigravity", "generic_running", native) or activity_token
@@ -1482,17 +1439,9 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
                 # Mid-turn tool completions or tool errors keep the turn active.
                 phase = "working"
                 activity_token = _token("antigravity", "generic_done", native) or activity_token
-        elif etype == "SYSTEM_MESSAGE":
-            content = str(entry.get("content") or "")
-            sender_match = _AG_SYS_SENDER_RE.search(content)
-            if sender_match is not None:
-                pending_async.discard(sender_match.group(1))
-            for done_match in _AG_SYS_TASK_DONE_RE.finditer(content):
-                pending_async.discard(done_match.group(1))
         elif etype == "ERROR_MESSAGE":
             pending_question = None
             open_tools = 0
-            daemon_slots.clear()
             phase = "idle"
             activity_token = _token("antigravity", "error", native) or activity_token
 
@@ -1506,6 +1455,8 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
             question_token=pending_question,
             observed_at=observed_at,
         )
+
+    pending_async = {tok for tok in tracker.pending_async if not tok.startswith("call:")}
 
     if db_row is not None:
         db_status = str(db_row["status"] or "")
@@ -1523,7 +1474,12 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
             )
             or last_entry.get("type") == "ERROR_MESSAGE"
         )
-        db_lagging = db_ts <= 0 or tail_ts > db_ts
+        # Transcript `created_at` has whole-second resolution while DB
+        # `last_modified_time` is microsecond-precise; treat same-second DB writes
+        # on non-terminal steps as potentially lagging the active turn.
+        db_lagging = db_ts <= 0 or (
+            tail_ts > 0 and (tail_ts > db_ts or (not tail_ended and tail_ts + 1.0 > db_ts))
+        )
         if killed:
             phase = "idle"
             activity_token = _token("antigravity", "killed", db_time or cid) or activity_token
@@ -1538,9 +1494,17 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
                 activity_token = activity_token or _token(
                     "antigravity", "db_not_idle", db_time or cid
                 )
-            elif db_lagging and (pending_async or phase in {"working", "waiting"}):
-                if pending_async:
-                    phase = "working"
+            elif (
+                pending_async
+                and last_entry is not None
+                and last_entry.get("type") != "ERROR_MESSAGE"
+            ):
+                phase = "working"
+                activity_token = activity_token or _token(
+                    "antigravity", "async_pending", db_time or cid
+                )
+            elif db_lagging and phase in {"working", "waiting"}:
+                pass
             elif tail_ended:
                 phase = "idle"
             else:

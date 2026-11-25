@@ -164,6 +164,13 @@ When a session has an earlier assistant reply followed by newer user message(s) 
 
 Native history ordering belongs upstream in SessKit (`0.3.13`, `last_msg_role: "user" | "assistant" | null` on `SessionInfo`, derived without adding a second parser in Corral). Corral forwards `last_msg_role` through `SessionHub.session_payload()`, includes it in `SessionHub._window_version()` so speaker flips invalidate client list versions even when excerpt texts stay unchanged, and exposes it in `agent_api.session_payload()`. The TUI sidebar card shows only title, runtime, and time (no message-preview line).
 
+### Antigravity mid-turn unread red dot (2026-11-25)
+
+When an active Antigravity session pauses after launching a non-daemon background task, timer, subagent, or workflow (`run_command`, `schedule`, `invoke_subagent`, `run_workflow`), `conversation_summaries.db` often updates to `CASCADE_RUN_STATUS_IDLE` (`not_fully_idle = 0`) while the session is still waiting for `<SYSTEM_MESSAGE>` wakeup. Previously `_inspect_antigravity()` gated `pending_async` behind `db_lagging`, maintained its own partial regex parser, and compared second-resolution transcript `created_at` values strictly (`tail_ts > db_ts`) against microsecond DB timestamps, flipping live active sessions to `idle`/`unread` mid-turn.
+
+- **Ownership & boundary:** SessKit `AntigravityTurnTracker` (`0.3.15`) owns Antigravity transcript async extraction (including prefixed JSON subagent outputs like `Created the following subagent:\n{...}`, `manage_subagents` `ConversationIds` cancellation, and `IsDaemon` cron filtering). Corral's `_inspect_antigravity()` reuses `AntigravityTurnTracker` directly rather than duplicating a second regex parser.
+- **Idle/working precedence:** For live, unkilled sessions without a terminal `ERROR_MESSAGE` tail, active non-synthetic `pending_async` keeps `phase = "working"` even when the summaries DB already reports `CASCADE_RUN_STATUS_IDLE` (`not_fully_idle = 0`) at a fresh timestamp. Same-second non-terminal transcript entries allow a 1-second timestamp tolerance (`tail_ts + 1.0 > db_ts`) against DB `last_modified_time` so same-second writes do not briefly flash `unread`.
+
 ### 2.3 完整对话按需加载
 
 1. 用户选中会话后，`SessionStore.get_conversation()` 以“运行时 + 会话 ID”定位预览缓存。

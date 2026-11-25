@@ -17,7 +17,7 @@ import sys
 import urllib.request
 
 # --- single source of truth -------------------------------------------------
-VERSION = "0.3.14"
+VERSION = "0.3.15"
 TAG = f"v{VERSION}"
 REPO = "x0c/sesskit"
 PURE_WHEEL_NAME = f"sesskit-{VERSION}-py3-none-any.whl"
@@ -29,10 +29,10 @@ MACOS_WHEEL_NAME = (
 MACOS_WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{MACOS_WHEEL_NAME}"
 SDIST_NAME = f"sesskit-{VERSION}.tar.gz"
 SDIST_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{SDIST_NAME}"
-# sha256 of the built/published v0.3.14 assets (verified 2026-11-24).
-PURE_WHEEL_SHA256 = "640d64c9b4215b35918cc58893022d0585343ff9457b678de250b2189abb8d55"
-MACOS_WHEEL_SHA256 = "c2a974e9b45a3055cb1db85fb06613b625e2c0fff9564b3ed48fd6c300c2a191"
-SDIST_SHA256 = "7f1450dcac12d46e0ea55a2f341e6423ab9f010a33533ce2799a86f583b431da"
+# sha256 of the built/published v0.3.15 assets (verified 2026-11-25).
+PURE_WHEEL_SHA256 = "64badf3eecad7c7a64c3bff1014e5232dd4b201eef72e160f736cd6d550f4cbe"
+MACOS_WHEEL_SHA256 = "081ec59ef51c0eab946b3ef689cac05e314014659e0d599e5ac019ae9fb42b75"
+SDIST_SHA256 = "3d6c62c4aecd9a4f6a87a7106fcd052f53f3feca4141907603341e10653d34da"
 # Minimum version declared in Corral's pyproject.toml dependencies.
 REQUIRES = f"sesskit>={VERSION}"
 
