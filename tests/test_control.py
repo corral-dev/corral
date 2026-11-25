@@ -1214,6 +1214,144 @@ class SupervisorReviewTests(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_target_busy_and_phase_allow_antigravity_background_wait_but_track_own_async(self):
+        import sqlite3
+        from contextlib import closing
+
+        from corral import attention_signals, embed, liveness
+
+        ag_root = Path(self.tmp.name) / ".gemini" / "antigravity-cli"
+        (ag_root / "presence").mkdir(parents=True)
+        logs_dir = ag_root / "brain" / "ag-bg-1" / ".system_generated" / "logs"
+        logs_dir.mkdir(parents=True)
+        hist = logs_dir / "transcript_full.jsonl"
+        base_rows = [
+            {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-26T00:50:00Z"},
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [{"name": "run_command", "args": {"CommandLine": "docker build"}}],
+                "created_at": "2026-11-26T00:50:01Z",
+            },
+            {
+                "step_index": 2,
+                "type": "GENERIC",
+                "status": "RUNNING",
+                "content": "Tool is running as a background task with task id: ag-bg-1/task-2",
+                "created_at": "2026-11-26T00:50:02Z",
+            },
+            {
+                "step_index": 3,
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [],
+                "content": "Waiting for background build.",
+                "created_at": "2026-11-26T00:50:03Z",
+            },
+        ]
+        _write_fixture_rows(str(hist), base_rows)
+        db_path = ag_root / "conversation_summaries.db"
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, status TEXT, not_fully_idle INTEGER, "
+                "killed INTEGER, last_modified_time TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
+                ("ag-bg-1", "CASCADE_RUN_STATUS_IDLE", 1, 0, "2026-11-26 00:50:12.000000+00:00"),
+            )
+            conn.commit()
+
+        session = {
+            "source": "antigravity",
+            "id": "ag-bg-1",
+            "cwd": self.project,
+            "path": str(hist),
+            "live": True,
+            "keepalive_name": "corral-antigravity-agbg1",
+        }
+        run_id = self._submit("k-ag-bg", session)
+        hub = _FakeHub(session)
+
+        def fake_annotate(items, *, roots=None, force_override=False):
+            for item in items:
+                item["live"] = True
+                item["pid"] = 5151
+
+        with (
+            mock.patch.object(attention_signals, "inspect_session", side_effect=attention_signals._inspect_antigravity),
+            mock.patch("corral.control.resolve_target", return_value=dict(session)),
+            mock.patch.object(embed, "pane_liveness", return_value="alive"),
+            mock.patch.object(liveness, "annotate_antigravity_sessions", side_effect=fake_annotate),
+        ):
+            hooks, state = control_worker.corral_hooks(self.store, run_id, hub)
+            frozen = hooks.resolve_target("antigravity:ag-bg-1")
+            # Foreground turn ended and prompt `>` is open while only task-2 runs in background:
+            # UI attention remains working, but peer queue admission is not blocked.
+            self.assertEqual(attention_signals.inspect_session(session).phase, "working")
+            self.assertFalse(hooks.target_waiting(frozen))
+            self.assertFalse(hooks.target_busy(frozen))
+
+            # Snapshot baseline async tokens before our delivered turn runs.
+            hooks.baseline_of(state["binding"])
+
+            # Delivered turn replies directly without launching its own async task:
+            # pre-existing task-2 must not keep this run stuck in working phase.
+            _write_fixture_rows(
+                str(hist),
+                base_rows
+                + [
+                    {"step_index": 4, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-26T00:51:00Z"},
+                    {
+                        "step_index": 5,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "tool_calls": [],
+                        "content": "Review noted.",
+                        "created_at": "2026-11-26T00:51:05Z",
+                    },
+                ],
+            )
+            self.assertEqual(hooks.phase("antigravity:ag-bg-1"), "idle")
+
+            # If this run itself spawns a NEW background task (task-7), hooks.phase stays working.
+            _write_fixture_rows(
+                str(hist),
+                base_rows
+                + [
+                    {"step_index": 4, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-26T00:51:00Z"},
+                    {
+                        "step_index": 5,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "tool_calls": [{"name": "run_command", "args": {"CommandLine": "go test"}}],
+                        "created_at": "2026-11-26T00:51:02Z",
+                    },
+                    {
+                        "step_index": 6,
+                        "type": "GENERIC",
+                        "status": "RUNNING",
+                        "content": "Tool is running as a background task with task id: ag-bg-1/task-7",
+                        "created_at": "2026-11-26T00:51:03Z",
+                    },
+                    {
+                        "step_index": 7,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "tool_calls": [],
+                        "content": "Running go test in background.",
+                        "created_at": "2026-11-26T00:51:05Z",
+                    },
+                ],
+            )
+            self.assertEqual(hooks.phase("antigravity:ag-bg-1"), "working")
+            try:
+                state["locks"].close()
+            except Exception:
+                pass
+
     def _old_turn(self, path):
         _write_fixture_rows(
             path,

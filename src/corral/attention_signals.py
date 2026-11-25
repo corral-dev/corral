@@ -39,6 +39,7 @@ def _evidence(
     activity_token: str | None = None,
     question_token: str | None = None,
     observed_at: float = 0.0,
+    background_only: bool = False,
 ) -> AttentionEvidence:
     return AttentionEvidence(
         phase=phase,
@@ -46,6 +47,7 @@ def _evidence(
         question_token=question_token,
         observed_at=observed_at,
         source="history",
+        background_only=background_only,
     )
 
 
@@ -1352,6 +1354,24 @@ def _antigravity_db_summary(cid: str, path: str) -> sqlite3.Row | None:
         conn.close()
 
 
+def antigravity_pending_async(session: dict) -> frozenset[str]:
+    """Return active non-synthetic Antigravity async tokens for control-plane diffing."""
+    if not isinstance(session, dict) or str(session.get("source") or "") != "antigravity":
+        return frozenset()
+    path = str(session.get("path") or "")
+    if not path:
+        return frozenset()
+    from corral.scan import antigravity as scan_antigravity
+
+    tracker = scan_antigravity.AntigravityTurnTracker()
+    try:
+        for idx, entry in enumerate(_iter_jsonl_tail(path), 1):
+            tracker.observe(entry, lineno=idx)
+    except (OSError, TypeError, ValueError):
+        return frozenset()
+    return frozenset(tok for tok in tracker.pending_async if not tok.startswith("call:"))
+
+
 def _inspect_antigravity(session: dict) -> AttentionEvidence:
     """Extract Antigravity attention state from transcript JSONL tail + summaries DB."""
     from corral.scan import antigravity as scan_antigravity
@@ -1457,6 +1477,15 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
         )
 
     pending_async = {tok for tok in tracker.pending_async if not tok.startswith("call:")}
+    tail_ended = last_entry is not None and (
+        (
+            last_entry.get("type") == "PLANNER_RESPONSE"
+            and not last_entry.get("tool_calls")
+            and last_entry.get("status") in {"DONE", "ERROR", "INVALID"}
+        )
+        or last_entry.get("type") == "ERROR_MESSAGE"
+    )
+    background_only = bool(tail_ended and pending_async and phase == "working")
 
     if db_row is not None:
         db_status = str(db_row["status"] or "")
@@ -1466,14 +1495,6 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
         if db_ts > observed_at:
             observed_at = db_ts
         tail_ts = _timestamp((last_entry or {}).get("created_at")) or 0.0
-        tail_ended = last_entry is not None and (
-            (
-                last_entry.get("type") == "PLANNER_RESPONSE"
-                and not last_entry.get("tool_calls")
-                and last_entry.get("status") in {"DONE", "ERROR", "INVALID"}
-            )
-            or last_entry.get("type") == "ERROR_MESSAGE"
-        )
         # Transcript `created_at` has whole-second resolution while DB
         # `last_modified_time` is microsecond-precise; treat same-second DB writes
         # on non-terminal steps as potentially lagging the active turn.
@@ -1489,19 +1510,24 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
         )
         if killed:
             phase = "idle"
+            background_only = False
             activity_token = _token("antigravity", "killed", db_time or cid) or activity_token
         elif stale_running_db:
             # Summary DB writes often lag several seconds after a terminal
             # PLANNER_RESPONSE/ERROR_MESSAGE; keep the newer idle transcript.
-            pass
+            background_only = False
         elif db_status == "CASCADE_RUN_STATUS_RUNNING":
             phase = "working"
+            background_only = bool(
+                tail_ended and pending_async and (db_ts <= 0 or tail_ts + 1.0 > db_ts)
+            )
             activity_token = activity_token or _token(
                 "antigravity", "db_running", db_time or cid
             )
         elif db_status == "CASCADE_RUN_STATUS_IDLE":
             if not_fully_idle:
                 phase = "working"
+                background_only = tail_ended
                 activity_token = activity_token or _token(
                     "antigravity", "db_not_idle", db_time or cid
                 )
@@ -1511,6 +1537,7 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
                 and last_entry.get("type") != "ERROR_MESSAGE"
             ):
                 phase = "working"
+                background_only = tail_ended
                 activity_token = activity_token or _token(
                     "antigravity", "async_pending", db_time or cid
                 )
@@ -1518,17 +1545,27 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
                 pass
             elif tail_ended:
                 phase = "idle"
+                background_only = False
             else:
                 phase = "idle"
+                background_only = False
                 activity_token = activity_token or _token("antigravity", "db_idle", db_time or cid)
         elif not_fully_idle:
             phase = "working"
+            background_only = False
             activity_token = activity_token or _token(
                 "antigravity", "db_not_idle", db_time or cid
             )
 
     phase = _finalize_history_phase(phase, live)
-    return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+    if phase != "working":
+        background_only = False
+    return _evidence(
+        phase,
+        activity_token=activity_token,
+        observed_at=observed_at,
+        background_only=background_only,
+    )
 
 
 _INSPECTORS = {

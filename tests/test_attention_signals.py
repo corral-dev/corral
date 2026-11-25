@@ -1988,6 +1988,80 @@ class AntigravityAttentionTests(unittest.TestCase):
                 "working",
             )
 
+    def test_antigravity_background_only_distinguishes_foreground_idle_from_active_turns(self) -> None:
+        from corral.attention_signals import antigravity_pending_async
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bg_entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-26T00:50:00Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "run_command", "args": {"CommandLine": "docker build"}}],
+                    "created_at": "2026-11-26T00:50:01Z",
+                },
+                {
+                    "step_index": 2,
+                    "type": "GENERIC",
+                    "status": "RUNNING",
+                    "content": "Tool is running as a background task with task id: ag-bg-only/task-2",
+                    "created_at": "2026-11-26T00:50:02Z",
+                },
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "content": "Waiting for background build.",
+                    "created_at": "2026-11-26T00:50:03Z",
+                },
+            ]
+            path = self._write_fixture(
+                root,
+                "ag-bg-only",
+                bg_entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=1,
+                last_modified_time="2026-11-26 00:50:20.000000+00:00",
+            )
+            sess = {"source": "antigravity", "id": "ag-bg-only", "path": str(path), "live": True}
+            ev = inspect_session(sess)
+            self.assertEqual(ev.phase, "working")
+            self.assertTrue(ev.background_only)
+            self.assertEqual(antigravity_pending_async(sess), frozenset({"ag-bg-only/task-2"}))
+
+            # If a newer CASCADE_RUN_STATUS_RUNNING write appears past tail_ts + 1.0,
+            # treat the session as actively working in foreground again.
+            self._write_fixture(
+                root,
+                "ag-bg-only",
+                bg_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+                last_modified_time="2026-11-26 00:50:20.000000+00:00",
+            )
+            newer_running = inspect_session(sess)
+            self.assertEqual(newer_running.phase, "working")
+            self.assertFalse(newer_running.background_only)
+
+            # Mid-turn active USER_INPUT is foreground work, never background_only.
+            active_entries = bg_entries + [
+                {"step_index": 4, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-26T00:50:30Z"},
+            ]
+            self._write_fixture(
+                root,
+                "ag-bg-only",
+                active_entries,
+                db_status="CASCADE_RUN_STATUS_IDLE",
+                not_fully_idle=1,
+                last_modified_time="2026-11-26 00:50:20.000000+00:00",
+            )
+            fg_ev = inspect_session(sess)
+            self.assertEqual(fg_ev.phase, "working")
+            self.assertFalse(fg_ev.background_only)
+
 
 if __name__ == "__main__":
     unittest.main()

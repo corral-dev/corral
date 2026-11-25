@@ -41,6 +41,7 @@ class AttentionEvidence:
     question_token: str | None = None
     observed_at: float = 0.0
     source: AttentionSource = "history"
+    background_only: bool = False
 
 
 @dataclass(frozen=True)

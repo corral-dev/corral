@@ -177,14 +177,27 @@ def _refresh_live_session(session: dict, *, check_pane: bool = False) -> dict:
     return updated
 
 
-def _phase(session: dict) -> str:
-    """Corral's own working/waiting evidence; unknown never blocks settlement."""
+def _evidence_for(session: dict):
     try:
         from corral.attention_signals import inspect_session
 
-        return str(inspect_session(_fresh_session_for_phase(session)).phase or "unknown")
+        return inspect_session(_fresh_session_for_phase(session))
     except Exception:  # noqa: BLE001 - a broken probe must not wedge supervision
+        return None
+
+
+def _phase(session: dict) -> str:
+    """Corral's own working/waiting evidence; unknown never blocks settlement."""
+    ev = _evidence_for(session)
+    if ev is None:
         return "unknown"
+    return str(getattr(ev, "phase", None) or "unknown")
+
+
+def _is_background_only(session: dict) -> bool:
+    """True when working phase reflects only background async work behind an open prompt."""
+    ev = _evidence_for(session)
+    return bool(getattr(ev, "background_only", False)) if ev is not None else False
 
 
 _COMPOSER_CHROME = set("›❯┃│─━╭╮╰╯┌┐└┘→>-|+ \t")
@@ -618,9 +631,26 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
         },
         "last_sweep": 0.0,
         "initial_pane_alive": False,
+        "baseline_async": None,
         # Only a pane that existed before this run can hold residue or a human draft.
         "composer_guard": spec.get("mode") != "create" and record.get("target_control") == "hosted",
     }
+
+    def _capture_baseline_async(session: dict | None) -> frozenset[str]:
+        if not isinstance(session, dict) or str(session.get("source") or "") != "antigravity":
+            return frozenset()
+        try:
+            from corral.attention_signals import antigravity_pending_async
+
+            tokens = antigravity_pending_async(session)
+        except Exception:  # noqa: BLE001 - best-effort async baseline only
+            return frozenset()
+        state["baseline_async"] = tokens
+        try:
+            store.update(run_id, {"baseline_async": sorted(tokens)})
+        except Exception:  # noqa: BLE001 - best-effort persistence for supervisor recovery
+            pass
+        return tokens
 
     def _maybe_sweep_target() -> None:
         if spec.get("mode") != "submit":
@@ -653,7 +683,11 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
     def target_busy(session: dict) -> bool:
         _maybe_sweep_target()
         live_session = _refresh_live_session(session, check_pane=bool(state["initial_pane_alive"]))
-        return bool(live_session.get("live")) and _phase(live_session) == "working"
+        return (
+            bool(live_session.get("live"))
+            and _phase(live_session) == "working"
+            and not _is_background_only(live_session)
+        )
 
     # waiting_input semantics (coordinator contract; verified against the
     # shared AgentSessionControl supervisor admit()/observation_changes()).
@@ -758,6 +792,7 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
                 raise CertainFailure(
                     "composer_not_empty", "The session's input box already holds text; it was left untouched." + detail
                 )
+        _capture_baseline_async(session)
         return baseline
 
     def _send_text(key: str, text: str) -> None:
@@ -934,6 +969,8 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
         import sesskit
 
         session = _lookup_session()
+        if state["baseline_async"] is None:
+            _capture_baseline_async(session)
         if not session.get("path"):
             return -1
         try:
@@ -988,7 +1025,25 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
 
     def phase(session_ref: str) -> str:
         session = _lookup_session()
-        return _phase(session) if session else "unknown"
+        if not session:
+            return "unknown"
+        current_phase = _phase(session)
+        if current_phase == "working" and _is_background_only(session):
+            if str(session.get("source") or "") == "antigravity":
+                from corral.attention_signals import antigravity_pending_async
+
+                baseline_tokens = state.get("baseline_async")
+                if baseline_tokens is None:
+                    try:
+                        raw_saved = store.get(run_id, private=True).get("baseline_async")
+                        baseline_tokens = frozenset(raw_saved) if isinstance(raw_saved, list) else frozenset()
+                    except Exception:  # noqa: BLE001 - best-effort recovery read
+                        baseline_tokens = frozenset()
+                    state["baseline_async"] = baseline_tokens
+                if antigravity_pending_async(session) - baseline_tokens:
+                    return "working"
+            return "idle"
+        return current_phase
 
     def list_questions(session_ref: str) -> list:
         try:
