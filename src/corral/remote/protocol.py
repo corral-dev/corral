@@ -229,7 +229,7 @@ CAPABILITY_USER_PROMPTS = "user_prompts"
 # Project shells (remote/shell_terminal.py): shell.* below; their output, input,
 # sizing and colours use terminal.* with keys ``shell:<id>``. Full pairings only.
 CAPABILITY_PROJECT_SHELL = "project_shell"
-# Host exports a compact share transcript JSON envelope (`session.export`).
+# Host writes a compact share transcript JSON file to cache and returns its path (`session.export`).
 CAPABILITY_SESSION_EXPORT = "session_export"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
@@ -276,7 +276,7 @@ M_SESSION_HANDOFF = "session.handoff"
 # 同助手复制会话：params 只有 {key}，返回 {"session": SessionSummary}，与 handoff/resume 同形。
 # 官方分叉优先，否则磁盘克隆；故意不进 service._READONLY_METHODS（只读配对服务端拒掉）。
 M_SESSION_COPY = "session.copy"
-# Read-only: {key} → {"json": "<compact share envelope JSON>"}.
+# Read-only: {key} → {"path": "<absolute share JSON path in host cache>"}.
 M_SESSION_EXPORT = "session.export"
 M_SESSION_STOP = "session.stop"
 M_SESSION_DELETE = "session.delete"

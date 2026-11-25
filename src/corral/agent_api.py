@@ -1072,7 +1072,7 @@ def cmd_export(args, registry) -> dict:
 
 
 def share_cache_path(session: dict) -> str:
-    """TUI「导出会话」落盘路径：``<cache>/share/<runtime>_<id>-<stamp>.json``。"""
+    """TUI / 远程「导出会话」落盘路径：``<cache>/share/<runtime>_<id>-<stamp>.json``。"""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     raw = session_key(session)
     safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("._") or "session"
@@ -1080,7 +1080,12 @@ def share_cache_path(session: dict) -> str:
     os.makedirs(directory, exist_ok=True)
     path = directory / f"{safe}-{stamp}.json"
     if path.exists():
-        path = directory / f"{safe}-{stamp}-{os.getpid()}.json"
+        pid_base = f"{safe}-{stamp}-{os.getpid()}"
+        path = directory / f"{pid_base}.json"
+        suffix = 1
+        while path.exists():
+            path = directory / f"{pid_base}-{suffix}.json"
+            suffix += 1
     return str(path)
 
 

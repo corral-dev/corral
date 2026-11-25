@@ -2363,10 +2363,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "This item cannot be exported",
         "zh": "该会话不支持导出",
     },
-    "remote.err.export_too_large": {
-        "en": "Exported session JSON exceeds the remote transfer limit",
-        "zh": "导出的会话 JSON 超过远程传输上限",
-    },
     "flex.unavailable": {
         "en": "corral flex needs agentflex: install Node.js (for npx) or run: npm install -g agentflex",
         "zh": "corral flex 需要 agentflex：请安装 Node.js（用于 npx），或运行 npm install -g agentflex",

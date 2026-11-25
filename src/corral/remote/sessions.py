@@ -4470,20 +4470,19 @@ class SessionHub:
         return self._host(plan, request.target_runtime_id, copy_title, session.get("cwd"), osc_report=osc_report)
 
     def export_session(self, key: str) -> dict:
-        """Build the share transcript JSON envelope for remote clipboard export."""
+        """Write the share transcript JSON envelope to host cache and return its path."""
         from corral import agent_api
 
         session = self.require_session(key)
         if is_shell_session(session):
             raise ActionError("usage_error", t("remote.err.export_not_supported"))
-        payload = agent_api.build_share_payload(session, self.registry)
-        raw_json = json.dumps(
-            agent_api._ok(payload), ensure_ascii=False, separators=(",", ":")
-        )
-        # Leave headroom for the outer {"t":"res",...} JSON wrapper inside 4 MiB.
-        if len(raw_json.encode("utf-8")) > 3_500_000:
-            raise ActionError("unavailable", t("remote.err.export_too_large"))
-        return {"json": raw_json}
+        try:
+            path = agent_api.export_share_to_cache(session, self.registry)
+        except agent_api.ApiError as exc:
+            raise ActionError("unavailable", exc.message) from exc
+        except OSError as exc:
+            raise ActionError("unavailable", str(exc)) from exc
+        return {"path": path}
 
     # -- 关注状态变化 -----------------------------------------------------
 

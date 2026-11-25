@@ -128,7 +128,7 @@ class FakeHub:
 
     def export_session(self, key: str):
         self._record("export_session", key)
-        return {"json": json.dumps({"ok": True, "data": {"id": key}}, separators=(",", ":"))}
+        return {"path": f"/tmp/corral-share/{key}.json"}
 
 
 class RemoteServiceTests(unittest.TestCase):
@@ -783,8 +783,8 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual(len(data_sent), 1)
         self.assertTrue(data_sent[0]["ok"])
-        parsed = json.loads(data_sent[0]["d"]["json"])
-        self.assertEqual(parsed["data"]["id"], "codex:abc")
+        self.assertEqual(data_sent[0]["d"], {"path": "/tmp/corral-share/codex:abc.json"})
+        self.assertNotIn("json", data_sent[0]["d"])
 
         full = self._paired()
         rejected = self._call(full, protocol.M_SESSION_EXPORT, {"key": "shell:1"})

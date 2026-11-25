@@ -993,18 +993,46 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.assertEqual(earliest["messages"][0]["text"], "提问-0")
         self.hub.unwatch_conversation("claude:p")
 
-    def test_export_session_returns_compact_share_json_envelope(self) -> None:
+    def test_export_session_writes_cache_file_and_returns_path(self) -> None:
         path = Path(self._tmp.name) / "claude-export.jsonl"
         _write_assistant_jsonl(path, ["hello export"])
         session = _session(sid="exp1")
         session["path"] = str(path)
-        with mock.patch.object(self.hub, "require_session", return_value=session):
+        cache_dir = Path(self._tmp.name) / "cache"
+        cache_dir.mkdir()
+        with (
+            mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": str(cache_dir)}),
+            mock.patch.object(self.hub, "require_session", return_value=session),
+        ):
             exported = self.hub.export_session("claude:exp1")
-        envelope = json.loads(exported["json"])
+        self.assertIn("path", exported)
+        self.assertNotIn("json", exported)
+        exported_path = exported["path"]
+        self.assertTrue(os.path.isabs(exported_path))
+        self.assertTrue(exported_path.endswith(".json"))
+        self.assertIn(f"{os.sep}share{os.sep}", exported_path)
+        self.assertEqual(os.path.commonpath([exported_path, str(cache_dir)]), str(cache_dir))
+        self.assertTrue(os.path.isfile(exported_path))
+        with open(exported_path, encoding="utf-8") as fp:
+            envelope = json.load(fp)
         self.assertTrue(envelope["ok"])
         self.assertEqual(envelope["data"]["id"], "exp1")
+        self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
         self.assertEqual(envelope["data"]["event_count"], 1)
         self.assertEqual(envelope["data"]["events"][0]["text"], "hello export")
+
+        # Large transcripts (> 3.5 MiB) write to cache cleanly instead of failing a wire transfer cap.
+        large_path = Path(self._tmp.name) / "claude-large-export.jsonl"
+        _write_assistant_jsonl(large_path, ["x" * 3_800_000])
+        large_session = _session(sid="exp-large")
+        large_session["path"] = str(large_path)
+        with (
+            mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": str(cache_dir)}),
+            mock.patch.object(self.hub, "require_session", return_value=large_session),
+        ):
+            large_exported = self.hub.export_session("claude:exp-large")
+        self.assertTrue(os.path.isfile(large_exported["path"]))
+        self.assertGreater(os.path.getsize(large_exported["path"]), 3_500_000)
 
         shell_session = {"source": "shell", "id": "1", "key": "shell:1"}
         with mock.patch.object(self.hub, "require_session", return_value=shell_session):

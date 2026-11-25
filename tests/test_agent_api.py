@@ -425,6 +425,20 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
         self.assertIn("events", envelope["data"])
 
+    def test_export_share_to_cache_same_second_collisions_stay_distinct(self) -> None:
+        cache = Path(self._tmpdir.name) / "corral-cache"
+        cache.mkdir()
+        with (
+            mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": str(cache)}),
+            mock.patch("corral.agent_api.time.strftime", return_value="20261125-120000"),
+        ):
+            p1 = agent_api.export_share_to_cache(self.session, self.registry)
+            p2 = agent_api.export_share_to_cache(self.session, self.registry)
+            p3 = agent_api.export_share_to_cache(self.session, self.registry)
+        self.assertEqual(len({p1, p2, p3}), 3)
+        for p in (p1, p2, p3):
+            self.assertTrue(os.path.isfile(p))
+
     def test_describe_includes_share(self) -> None:
         result = agent_api.cmd_describe(argparse_namespace(target="share"), self.registry)
         self.assertEqual(result["data"]["name"], "share")
