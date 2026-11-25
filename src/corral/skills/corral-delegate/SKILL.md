@@ -70,7 +70,7 @@ corral run create --runtime codex --cwd /abs/project [--model <id>] --prompt-fil
 ## 4. Observe
 
 ```bash
-corral run wait <run_id> --until delivered --timeout 120   # returns once typed+recorded or rejected
+corral run wait <run_id> --until delivered --timeout 125   # returns once typed+recorded or rejected (5s margin over 120s queue)
 corral run wait <run_id> --timeout 300                     # returns on settle / question / problem
 corral run events <run_id> --after <cursor>                # progress since your last cursor
 corral run status <run_id>                                 # snapshot (also accepts several ids)

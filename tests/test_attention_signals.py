@@ -1900,6 +1900,94 @@ class AntigravityAttentionTests(unittest.TestCase):
                 "working",
             )
 
+    def test_stale_running_db_does_not_override_newer_terminal_planner_done_or_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            done_entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T08:40:00Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "content": "Finished.",
+                    "created_at": "2026-11-25T08:41:49Z",
+                },
+            ]
+            # Stale DB row older than terminal PLANNER_RESPONSE DONE must settle idle.
+            path = self._write_fixture(
+                root,
+                "ag-stale-run",
+                done_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+                last_modified_time="2026-11-25 08:40:30.000000+00:00",
+            )
+            sess = {"source": "antigravity", "id": "ag-stale-run", "path": str(path), "live": True}
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+            # Same-second DB row (written before whole-second terminal step) also stays idle.
+            self._write_fixture(
+                root,
+                "ag-stale-run",
+                done_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+                last_modified_time="2026-11-25 08:41:49.250000+00:00",
+            )
+            self.assertEqual(inspect_session(sess).phase, "idle")
+
+            # Strictly newer DB row past tail_ts + 1.0 still keeps working.
+            self._write_fixture(
+                root,
+                "ag-stale-run",
+                done_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+                last_modified_time="2026-11-25 08:41:52.000000+00:00",
+            )
+            self.assertEqual(inspect_session(sess).phase, "working")
+
+            # Pending async background task keeps working even with older RUNNING DB.
+            async_entries = [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T08:40:00Z"},
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [{"name": "run_command", "args": {"CommandLine": "sleep 5"}}],
+                    "created_at": "2026-11-25T08:40:01Z",
+                },
+                {
+                    "step_index": 2,
+                    "type": "GENERIC",
+                    "status": "RUNNING",
+                    "content": "Tool is running as a background task with task id: ag-stale-async/task-2",
+                    "created_at": "2026-11-25T08:40:02Z",
+                },
+                {
+                    "step_index": 3,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "tool_calls": [],
+                    "created_at": "2026-11-25T08:41:49Z",
+                },
+            ]
+            async_path = self._write_fixture(
+                root,
+                "ag-stale-async",
+                async_entries,
+                db_status="CASCADE_RUN_STATUS_RUNNING",
+                not_fully_idle=1,
+                last_modified_time="2026-11-25 08:40:30.000000+00:00",
+            )
+            self.assertEqual(
+                inspect_session(
+                    {"source": "antigravity", "id": "ag-stale-async", "path": str(async_path), "live": True}
+                ).phase,
+                "working",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

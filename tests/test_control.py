@@ -1088,6 +1088,102 @@ class SupervisorReviewTests(unittest.TestCase):
             synth = {"source": "pi", "id": "pi-synth", "live": True, "path": str(hist), "agent_phase": "working"}
             self.assertEqual(control_worker._fresh_session_for_phase(synth), synth)
 
+    def test_target_busy_refreshes_live_pane_and_clears_stale_antigravity_running_db(self):
+        import sqlite3
+        from contextlib import closing
+
+        from corral import attention_signals, embed, liveness
+
+        ag_root = Path(self.tmp.name) / ".gemini" / "antigravity-cli"
+        (ag_root / "presence").mkdir(parents=True)
+        logs_dir = ag_root / "brain" / "ag-live-1" / ".system_generated" / "logs"
+        logs_dir.mkdir(parents=True)
+        hist = logs_dir / "transcript_full.jsonl"
+        _write_fixture_rows(
+            str(hist),
+            [
+                {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T08:40:00Z"},
+                {"step_index": 1, "type": "GENERIC", "status": "RUNNING", "created_at": "2026-11-25T08:40:30Z"},
+            ],
+        )
+        db_path = ag_root / "conversation_summaries.db"
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, status TEXT, not_fully_idle INTEGER, "
+                "killed INTEGER, last_modified_time TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
+                ("ag-live-1", "CASCADE_RUN_STATUS_RUNNING", 1, 0, "2026-11-25 08:40:30.000000+00:00"),
+            )
+            conn.commit()
+
+        session = {
+            "source": "antigravity",
+            "id": "ag-live-1",
+            "cwd": self.project,
+            "path": str(hist),
+            "live": True,
+            "keepalive_name": "corral-antigravity-aglive1",
+        }
+        run_id = self._submit("k-ag-refresh", session)
+        hub = _FakeHub(session)
+        pane_state = {"liveness": "alive"}
+        ag_live_state = {"pid": 4242}
+
+        def fake_annotate(items, *, roots=None, force_override=False):
+            for item in items:
+                if ag_live_state["pid"] is not None:
+                    item["live"] = True
+                    item["pid"] = ag_live_state["pid"]
+                else:
+                    item["live"] = False
+                    item["pid"] = None
+
+        with (
+            mock.patch.object(attention_signals, "inspect_session", side_effect=attention_signals._inspect_antigravity),
+            mock.patch("corral.control.resolve_target", return_value=dict(session)),
+            mock.patch.object(embed, "pane_liveness", side_effect=lambda _name: pane_state["liveness"]),
+            mock.patch.object(liveness, "annotate_antigravity_sessions", side_effect=fake_annotate),
+        ):
+            hooks, state = control_worker.corral_hooks(self.store, run_id, hub)
+            frozen = hooks.resolve_target("antigravity:ag-live-1")
+            self.assertTrue(hooks.target_busy(frozen))
+
+            # Terminal PLANNER_RESPONSE DONE drops target_busy to False even when DB is stale RUNNING.
+            _write_fixture_rows(
+                str(hist),
+                [
+                    {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T08:40:00Z"},
+                    {
+                        "step_index": 1,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "tool_calls": [],
+                        "content": "Done.",
+                        "created_at": "2026-11-25T08:41:49Z",
+                    },
+                ],
+            )
+            self.assertFalse(hooks.target_busy(frozen))
+
+            # Mid-turn again, but if live process/pane exits while queued, target_busy flips False.
+            _write_fixture_rows(
+                str(hist),
+                [
+                    {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T08:42:00Z"},
+                ],
+            )
+            self.assertTrue(hooks.target_busy(frozen))
+            ag_live_state["pid"] = None
+            pane_state["liveness"] = "dead"
+            self.assertFalse(hooks.target_busy(frozen))
+            try:
+                state["locks"].close()
+            except Exception:
+                pass
+
     def _old_turn(self, path):
         _write_fixture_rows(
             path,

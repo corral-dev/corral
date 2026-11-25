@@ -145,6 +145,38 @@ def _fresh_session_for_phase(session: dict) -> dict:
     return session
 
 
+def _refresh_live_session(session: dict, *, check_pane: bool = False) -> dict:
+    """Refresh live process/pane flags so admit() loops do not read a frozen dict."""
+    if not isinstance(session, dict):
+        return session
+    updated = session
+    if str(session.get("source") or "") == "antigravity":
+        path = str(session.get("path") or "")
+        if path:
+            try:
+                from corral import liveness
+
+                root = liveness._antigravity_root_from_path(path)
+                if root is not None and (root / "presence").is_dir():
+                    updated = dict(session)
+                    liveness.annotate_antigravity_sessions([updated], roots=[root], force_override=True)
+            except Exception:  # noqa: BLE001 - best-effort live refresh only
+                pass
+    if check_pane:
+        pane = updated.get("keepalive_name") or updated.get("pane")
+        if pane:
+            try:
+                from corral import embed
+
+                if embed.pane_liveness(str(pane)) == "dead":
+                    if updated is session:
+                        updated = dict(session)
+                    updated["live"] = False
+            except Exception:  # noqa: BLE001 - best-effort live refresh only
+                pass
+    return updated
+
+
 def _phase(session: dict) -> str:
     """Corral's own working/waiting evidence; unknown never blocks settlement."""
     try:
@@ -585,6 +617,7 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
             "started": time.monotonic(),
         },
         "last_sweep": 0.0,
+        "initial_pane_alive": False,
         # Only a pane that existed before this run can hold residue or a human draft.
         "composer_guard": spec.get("mode") != "create" and record.get("target_control") == "hosted",
     }
@@ -600,6 +633,7 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
         _sweep_queued_on_target(store, target_ref, run_id)
 
     def resolve_target(session_ref: str) -> dict:
+        from corral import embed
         from corral.control import resolve_target as _host_resolve
 
         try:
@@ -609,12 +643,17 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
         _seed_hub(hub, session)
         mapping = dict(session)
         mapping["pane"] = session.get("keepalive_name")
+        try:
+            state["initial_pane_alive"] = bool(mapping["pane"] and embed.pane_liveness(mapping["pane"]) == "alive")
+        except Exception:  # noqa: BLE001 - best-effort probe only
+            state["initial_pane_alive"] = False
         state["binding"] = {"session_ref": session_ref, "pane": mapping["pane"], "history_path": session.get("path")}
         return mapping
 
     def target_busy(session: dict) -> bool:
         _maybe_sweep_target()
-        return bool(session.get("live")) and _phase(session) == "working"
+        live_session = _refresh_live_session(session, check_pane=bool(state["initial_pane_alive"]))
+        return bool(live_session.get("live")) and _phase(live_session) == "working"
 
     # waiting_input semantics (coordinator contract; verified against the
     # shared AgentSessionControl supervisor admit()/observation_changes()).
@@ -637,7 +676,8 @@ def corral_hooks(store: RunStore, run_id: str, hub) -> tuple[SupervisorHooks, di
     # '[{"question_id":...}]'`, or `corral run interrupt <run_id>`.
     # `run message` stays blocked while a question is pending, by design.
     def target_waiting(session: dict) -> bool:
-        return _phase(session) == "waiting"
+        live_session = _refresh_live_session(session, check_pane=bool(state["initial_pane_alive"]))
+        return _phase(live_session) == "waiting"
 
     def host_fresh(fresh_spec: dict, ident: str) -> dict:
         import uuid

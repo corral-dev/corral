@@ -1480,9 +1480,20 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
         db_lagging = db_ts <= 0 or (
             tail_ts > 0 and (tail_ts > db_ts or (not tail_ended and tail_ts + 1.0 > db_ts))
         )
+        stale_running_db = (
+            tail_ended
+            and not pending_async
+            and phase == "idle"
+            and tail_ts > 0
+            and (db_ts <= 0 or tail_ts + 1.0 > db_ts)
+        )
         if killed:
             phase = "idle"
             activity_token = _token("antigravity", "killed", db_time or cid) or activity_token
+        elif stale_running_db:
+            # Summary DB writes often lag several seconds after a terminal
+            # PLANNER_RESPONSE/ERROR_MESSAGE; keep the newer idle transcript.
+            pass
         elif db_status == "CASCADE_RUN_STATUS_RUNNING":
             phase = "working"
             activity_token = activity_token or _token(

@@ -171,6 +171,12 @@ When an active Antigravity session pauses after launching a non-daemon backgroun
 - **Ownership & boundary:** SessKit `AntigravityTurnTracker` (`0.3.15`) owns Antigravity transcript async extraction (including prefixed JSON subagent outputs like `Created the following subagent:\n{...}`, `manage_subagents` `ConversationIds` cancellation, and `IsDaemon` cron filtering). Corral's `_inspect_antigravity()` reuses `AntigravityTurnTracker` directly rather than duplicating a second regex parser.
 - **Idle/working precedence:** For live, unkilled sessions without a terminal `ERROR_MESSAGE` tail, active non-synthetic `pending_async` keeps `phase = "working"` even when the summaries DB already reports `CASCADE_RUN_STATUS_IDLE` (`not_fully_idle = 0`) at a fresh timestamp. Same-second non-terminal transcript entries allow a 1-second timestamp tolerance (`tail_ts + 1.0 > db_ts`) against DB `last_modified_time` so same-second writes do not briefly flash `unread`.
 
+### Antigravity post-turn DB running lag (2026-11-25)
+
+`agy` often leaves `conversation_summaries.db` `last_modified_time` untouched mid-turn and can lag 6–27+ seconds after writing a terminal `PLANNER_RESPONSE DONE` or `ERROR_MESSAGE` before flipping `status` from `CASCADE_RUN_STATUS_RUNNING` (`not_fully_idle = 1`) to `CASCADE_RUN_STATUS_IDLE` (`0`). Previously `_inspect_antigravity()` only checked `db_lagging` under `CASCADE_RUN_STATUS_IDLE`, letting a stale `RUNNING` / `not_fully_idle=1` row override an already terminated turn and block queued peer A2A deliveries (`target_busy`) until `queue_expired`.
+
+- **Stale running DB guard:** When the transcript tail is cleanly terminal (`tail_ended`, zero non-synthetic `pending_async`, `phase == "idle"`, and no `pending_question`) and `db_ts` is missing or not strictly past the terminal second (`tail_ts > 0 and (db_ts <= 0 or tail_ts + 1.0 > db_ts)`), `_inspect_antigravity()` ignores the stale `CASCADE_RUN_STATUS_RUNNING` / `not_fully_idle=1` state and preserves `phase = "idle"`. A DB write strictly newer than `tail_ts + 1.0` still holds `working` (preserving interim `not_fully_idle = 1` turns).
+
 ### 2.3 完整对话按需加载
 
 1. 用户选中会话后，`SessionStore.get_conversation()` 以“运行时 + 会话 ID”定位预览缓存。
