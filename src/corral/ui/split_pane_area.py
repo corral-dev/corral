@@ -1432,33 +1432,23 @@ class SplitPaneArea(Vertical):
             return ""
         if source == SHELL_RUNTIME_ID:
             return t("shell.pane_title")
-        runtime = self.store.registry.get(source)
         title = self.store.get_title(session)
-        from corral.projects import session_project_label
+        return self._format_pane_title(title)
 
-        project = session_project_label(session)
-        return self._format_pane_title(runtime.display_name, project, title)
-
-    def _format_pane_title(self, display_name: str, project: str, title: str) -> str:
-        if self.title_with_project:
-            return f"{project} · {title}"
-        return f"{display_name} · {project} · {title}"
+    def _format_pane_title(self, title: str) -> str:
+        return title
 
     def pending_pane_title(
         self, session: dict, *, title_override: str | None = None,
     ) -> str:
         """待启动占位格的标题：与托管成功后 `_pane_title` 给的那一份一致。"""
         from corral.models import SHELL_RUNTIME_ID
-        from corral.projects import session_project_label
 
         source = str(session.get("source") or "")
         if source == SHELL_RUNTIME_ID:
             return t("shell.pane_title")
-        runtime = self.store.registry.get(source)
         title = title_override if title_override is not None else self.store.get_title(session)
-        return self._format_pane_title(
-            runtime.display_name, session_project_label(session), title,
-        )
+        return self._format_pane_title(title)
 
     def _sync_leading_cells(self) -> None:
         """可见格里最左一格去左边距；闲置格不参与 :first-child，故用手写标记。"""

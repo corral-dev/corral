@@ -12359,5 +12359,84 @@ class SidebarSnapshotTests(unittest.TestCase):
         self.assertFalse(fresh.hydrated)
 
 
+class PaneHeaderTitleTests(unittest.IsolatedAsyncioTestCase):
+    """分屏底栏标题只显示会话标题，不拼「助手 · 项目 · 」前缀（2026-11-26）。"""
+
+    async def test_split_pane_headers_show_only_session_title(self) -> None:
+        from corral.i18n import t as _t
+        from corral.models import SHELL_RUNTIME_ID
+        from corral.ui.split_pane_area import SplitPaneArea, _PaneHeader
+
+        now = _local_day_mtime(0)
+        sessions = [
+            {
+                **_claude_session("s1", now - 10, "Fix sidebar icon alignment", live=True),
+                "cwd": "/work/PersonalNavigation",
+            },
+            {
+                **_claude_session("s2", now - 20, "Harden OAuth callback flow", live=True),
+                "cwd": "/work/PersonalNavigation",
+            },
+            {
+                **_claude_session("s3", now - 30, "Polish dark theme contrast", live=True),
+                "cwd": "/work/PersonalNavigation",
+            },
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        with (
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.capture", return_value=""),
+            mock.patch("corral.embed.pane_state", return_value=None),
+            mock.patch("corral.embed.resize"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                area.show_hosted_group(
+                    "/work/PersonalNavigation",
+                    [
+                        (sessions[0], "corral-s1", None),
+                        (sessions[1], "corral-s2", None),
+                        (sessions[2], "corral-s3", None),
+                    ],
+                    focus_key=corral.session_key(sessions[0]),
+                )
+                await pilot.pause()
+                await _wait_until(lambda: len(area.cells()) == 3)
+
+                headers = [cell.query_one(_PaneHeader)._title for cell in area.cells()]
+                self.assertEqual(
+                    headers,
+                    [
+                        "Fix sidebar icon alignment",
+                        "Harden OAuth callback flow",
+                        "Polish dark theme contrast",
+                    ],
+                )
+                for header in headers:
+                    self.assertNotIn("Claude", header)
+                    self.assertNotIn("PersonalNavigation", header)
+                    self.assertNotIn(" · ", header)
+
+                # pending_pane_title 与 _pane_title 同口径；终端格仍用 shell.pane_title。
+                self.assertEqual(
+                    area.pending_pane_title(sessions[0]),
+                    "Fix sidebar icon alignment",
+                )
+                self.assertEqual(
+                    area.pending_pane_title(sessions[0], title_override="New session"),
+                    "New session",
+                )
+                shell_session = {
+                    "source": SHELL_RUNTIME_ID,
+                    "id": "sh1",
+                    "cwd": "/work/PersonalNavigation",
+                }
+                self.assertEqual(area._pane_title(shell_session), _t("shell.pane_title"))
+                self.assertEqual(area.pending_pane_title(shell_session), _t("shell.pane_title"))
+
+
 if __name__ == "__main__":
     unittest.main()
