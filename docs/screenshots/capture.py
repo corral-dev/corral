@@ -73,11 +73,9 @@ from corral.ui.app import CorralApp
 
 OUT_DIR = Path(__file__).resolve().parent
 
-# 演示用外层终端底色：对齐左栏列表空区实测色 (#1e242b)，避免右栏垫成
-# corral-dark $background (#0d1117) 后出现「半边深半边浅」的割裂感。
-# osc_report=None 时 EmbedPane 不设 styles.background，空白格会透成纯黑。
-_DEMO_BG_HEX = "#1e242b"
-_DEMO_OSC_REPORT = b"\x1b]11;rgb:1e1e/2424/2b2b\x07"
+# 演示用外层终端底色：对齐 corral-light $background (#f7f8f8)，避免空白格透成纯黑。
+_DEMO_BG_HEX = "#f7f8f8"
+_DEMO_OSC_REPORT = b"\x1b]11;rgb:f7f7/f8f8/f8f8\x07"
 
 
 # 演示会话的时间：按「刚刚 / 快一小时前 / 大半天前」铺开，让侧边栏时间行的
@@ -186,7 +184,7 @@ def _terminal_background_hex(svg_text: str) -> str:
     垫一层底，cairosvg 会把透明渲成纯黑，右栏大片空洞 vs 左栏石板色——半边黑。
     """
     lowered = svg_text.lower()
-    for candidate in (_DEMO_BG_HEX, "#161b22", "#1c2430"):
+    for candidate in (_DEMO_BG_HEX, "#eff1f1", "#161b22", "#1c2430"):
         if candidate in lowered:
             return candidate
     chrome = re.search(
@@ -532,7 +530,7 @@ async def _capture_new_session() -> None:
     choices = [
         RuntimeChoice(rid, name, "", True)
         for rid, name in (("claude", "Claude"), ("codex", "Codex"), ("opencode", "OpenCode"),
-                          ("cursor", "Cursor"), ("pi", "Pi"))
+                          ("cursor", "Cursor"), ("pi", "Pi"), ("antigravity", "Antigravity"))
     ]
     with tempfile.TemporaryDirectory() as layout_td:
         with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": layout_td}, clear=False):

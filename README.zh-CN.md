@@ -5,29 +5,29 @@
 </p>
 <h1 align="center">Corral</h1>
 <p align="center"><strong>在一个终端里运行所有编程助手，离开电脑也能用手机接着做。</strong></p>
-<p align="center">Claude Code、Codex、OpenCode、Cursor、Pi 和 Antigravity 并排工作。看到哪个助手需要你，同时打开多个会话，关闭工作区后托管的助手也能继续运行。</p>
+<p align="center">Claude Code、Codex、OpenCode、Cursor、Pi 和 Antigravity 并排工作。一眼看出哪个助手在等你、同时打开多个会话，关掉工作区后托管助手依然继续运行。</p>
 
 <p align="center">
   <a href="https://github.com/corral-dev/corral/releases/latest"><img src="https://img.shields.io/github/v/release/corral-dev/corral" alt="最新版本"></a>
-  <a href="https://github.com/corral-dev/corral/actions/workflows/test.yml"><img src="https://github.com/corral-dev/corral/actions/workflows/test.yml/badge.svg" alt="测试"></a>
+  <a href="https://github.com/corral-dev/corral/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/corral-dev/corral/test.yml?label=tests" alt="测试"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT 许可证"></a>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" alt="在 Corral 里切换编程助手会话、搜索，并把两个会话并排打开" width="100%">
+  <img src="docs/screenshots/demo.gif" alt="在 Corral 里切换编程助手会话、搜索对话历史，并把两个会话并排打开" width="100%">
 </p>
-<p align="center"><em>在一个侧栏中查看助手，阅读对话，或并排打开多个会话。</em></p>
+<p align="center"><em>一个侧栏管齐所有助手：随时预览对话、搜索历史，或分屏并排推进。</em></p>
 
 <p align="center">
-  <img src="docs/screenshots/list.png" alt="Corral 侧栏列出 Claude Code、Codex 等编程助手会话，旁边是对话预览" width="100%">
+  <img src="docs/screenshots/list.png" alt="Corral 浅色主题终端界面：左侧为 Claude Code、Cursor、Codex 会话列表，右侧为对话预览" width="100%">
 </p>
 
-## 选择安装哪些部分
+## 组件与下载
 
-| 部分 | 用途 | 状态 |
+| 组件 | 用途 | 状态 |
 | --- | --- | --- |
 | **[终端应用](https://github.com/corral-dev/corral)** | 在一个终端里运行、查看、切换所有编程助手。 | 已可用，安装方法见下文 |
-| **[Mac 与 iPhone 应用](https://github.com/corral-dev/corral-apple)** | 离开终端也能跟进助手、回答它的提问。 | Mac：[签名版下载](https://github.com/corral-dev/corral-apple/releases/latest) · iPhone：使用 Xcode 自行构建 |
+| **[Mac 与 iPhone 应用](https://github.com/corral-dev/corral-apple)** | 离开终端也能跟进助手、回答它的提问。 | Mac：[签名版下载](https://github.com/corral-dev/corral-apple/releases/latest)或 Homebrew Cask · iPhone：使用 Xcode 自行构建 |
 | **[中继](https://github.com/corral-dev/corral-relay)** | 跨网络连接开发机与客户端。 | 自行部署 · AGPL-3.0-only |
 | **Corral Ideas** | 在一个本地页面里随手记想法，由一个统筹助手整理成任务，交给编程助手去做。 | 规划中 |
 
@@ -42,7 +42,7 @@ corral
 
 请使用完整名称：`brew install corral` 会安装另一个不相关的项目。Homebrew 会一并安装 Python 和 tmux。
 
-升级使用 `brew update && brew upgrade x0c/tap/corral`（交互式自更新可执行 `corral update`）。配方使用 Corral 和 Python 依赖的预编译 wheel，减少安装时的本地构建。若本机已安装 `/Applications/Corral.app`，`corral update` 还会同步更新桌面端到同版本（可用 `--no-mac` 跳过）。
+升级使用 `brew update && brew upgrade x0c/tap/corral`，或执行 `corral update` 交互式自更新。若本机已安装 `/Applications/Corral.app`，`corral update` 还会同步更新桌面端到同版本（加 `--no-mac` 可跳过）。
 
 <details>
 <summary>不使用 Homebrew</summary>
@@ -62,31 +62,31 @@ corral
 
 ## 能帮你做什么
 
-- **知道哪个在等你。** 所有助手正在执行的任务和等你回答的问题，集中在同一个侧栏里。
+- **知道哪个在等你。** 六种助手里正在运行、刚出结果、或在等你回答的会话，都集中在同一个侧栏。
 - **同时推进多个任务。** 最多四个会话分屏，相关任务可以分组、置顶。
-- **走开了助手照样跑。** 关掉 Corral 或断开 SSH 后，托管会话继续运行，开发机需要保持唤醒。
+- **走开了助手照样跑。** 关掉 Corral 或断开 SSH 后，托管会话继续运行（需保持开发机唤醒）。
 - **换个助手接着做。** 把任务连同对话历史交给另一个助手新开会话，比如 Claude 写完交给 Codex 检查。
-- **用手机或 Mac 接着做。** 不开终端，也能用原生应用查看回复、追问，或回答助手的提问，见下文。
-- **找回以前的对话。** 快筛按「关注 → 活跃 → 全部」循环切换，可与助手、项目和标题筛选组合，也可以跨所有助手搜索聊过的内容。快筛只收窄侧栏列表，保留右侧已打开的会话。
+- **用手机或 Mac 接着做。** 不开终端，也能用原生应用实时看输出、发追问，或回答助手的提问，见下文。
+- **找回以前的对话。** 快速筛选按「关注 → 活跃 → 全部」循环切换，可与助手、项目和标题筛选组合，也能跨所有助手全文搜索。快速筛选只过滤侧栏，不影响右侧已打开的会话。
 
 ## 开始使用
 
-打开 `corral`，侧栏会显示已有的助手会话。选中对话即可阅读，这一步不会启动助手。按 `Enter` 恢复已结束的会话，或进入正在托管的助手终端。
+打开 `corral`，侧栏会列出已有的助手会话。选中对话即可预览记录，这一步不会启动助手。按 `Enter` 恢复已结束的会话，或进入正在托管的助手终端。
 
-按 `Ctrl+N` 开始新任务。「快捷启动」里会列出最近用过的五个助手＋项目组合，点击直接启动，右键移除。也可以在终端指定助手启动：
+按 `Ctrl+N` 新建会话。「快捷启动」会记住最近用过的五个助手＋项目组合，点选即可直接启动，右键可移除。也可以在终端里指定助手直启：
 
 ```bash
 corral claude
 # 也支持：corral codex | corral opencode | corral cursor | corral pi | corral antigravity
 ```
 
-用 `Space` 选中二至四个会话，再按 `Enter` 分屏打开。关掉其中一个显示区域只是收起画面，不会结束正在托管的助手。
+用 `Space` 选中二至四个会话，再按 `Enter` 分屏打开。关闭其中一个分屏只是收起画面，不会结束正在托管的助手。
 
-如果想换助手继续：打开会话，按 `Ctrl+T`，选择助手。例如 Claude 完成初步实现后，可以让 Codex 新开一个会话来检查这段对话。源对话保持完整，接手的助手自行读取所需历史。要用原助手原生恢复，按 `Enter` 即可。
+想换助手继续时，选中或打开会话，按 `Ctrl+T` 选择目标助手。例如 Claude 完成实现后，可以让 Codex 新开会话检查这段对话。源对话保持完整，接手的助手自行读取所需历史。要用原助手原生恢复，按 `Enter` 即可。
 
-按 `Ctrl+\` 把键盘控制交回侧栏。退出 Corral 后，托管的助手继续运行。
+按 `Ctrl+\` 把键盘焦点交回侧栏。退出 Corral 后，托管的助手继续运行。
 
-Corral 启动助手时，会在支持的情况下启用自动批准模式。这些助手将以你本地用户的权限执行操作。
+Corral 启动助手时，会在支持的情况下启用自动批准模式，助手将以你当前本机用户的权限执行操作。
 
 ### 记住这几个快捷键
 
@@ -96,12 +96,13 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 | `Ctrl+F` | 搜索对话正文 |
 | `Enter` | 恢复或进入选中的会话 |
 | `Ctrl+N` | 新建会话 |
+| `Ctrl+P` | 置顶或取消置顶选中的会话 |
 | `Space`，然后 `Enter` | 选中二至四个会话并分屏打开 |
-| `Ctrl+T` | 导出、复制或交给另一个助手 |
+| `Ctrl+T` | 操作菜单：导出、复制或交给另一个助手 |
 | `Ctrl+\` | 把输入焦点交回侧栏 |
 | `Esc` | 关闭当前弹窗或退出 |
 
-侧栏快捷键在侧栏获得焦点时生效。当前页面可用的操作会显示在底部提示栏。
+侧栏快捷键在侧栏获得焦点时生效。当前界面可用的操作会显示在底部提示栏。
 
 <details>
 <summary>记得聊过什么，就能找到那段对话</summary>
@@ -112,7 +113,7 @@ Corral 启动助手时，会在支持的情况下启用自动批准模式。这�
 
 ## 晒出你的一周
 
-`corral flex` 播放一张动态卡片，汇总最近 7 天所有助手的 token、会话数、每天 token、最高并行会话数、各助手占比，以及按星期和小时排布的活跃热力图。按 `s` 保存 1200×630 PNG 用来分享。全部在本机读取，不上传任何数据。这张卡片来自 [agentflex](https://github.com/corral-dev/agentflex)，不装 Corral 也能运行：
+`corral flex` 会播放一张动态卡片，汇总最近 7 天所有助手的 token、会话数、每天用量、最高并行会话数、各助手占比，以及按星期和小时排布的活跃热力图。按 `s` 保存 1200×630 PNG 用来分享。数据全部在本地读取，不上传任何内容。卡片由 [agentflex](https://github.com/corral-dev/agentflex) 驱动，不装 Corral 也能单独运行：
 
 ```bash
 corral flex          # 或：npx agentflex
@@ -123,7 +124,7 @@ corral flex --month  # 或 --all、--png week.png
 
 ## 用 Mac 或 iPhone 接着做
 
-原生应用与终端看到的是同一批会话：并排查看对话、追问或回答提问，都不用打开终端。
+原生 Apple 应用与终端看到的是同一批会话：并排查看对话、发追问或回答提问，都不用打开终端。
 
 <p align="center">
   <picture>
@@ -143,23 +144,23 @@ corral flex --month  # 或 --all、--png week.png
   </picture>
 </p>
 
-- **Mac：** 下载[签名版应用](https://github.com/corral-dev/corral-apple/releases/latest)（需要 macOS 26 及以上），之后会自动更新。
-- **iPhone：** 使用 Xcode [从源码构建](https://github.com/corral-dev/corral-apple/blob/main/README.zh-CN.md)。目前尚无公开的 App Store 或 TestFlight 下载。
+- **Mac：** 执行 `brew install --cask x0c/tap/corral-mac` 安装，或下载[签名版应用](https://github.com/corral-dev/corral-apple/releases/latest)（需要 macOS 26 及以上），之后会自动更新。
+- **iPhone：** 使用 Xcode [从源码构建](https://github.com/corral-dev/corral-apple/blob/main/README.zh-CN.md#iphone)。目前尚无公开的 App Store 或 TestFlight 下载。
 
-安装命令行工具不会同时安装应用；而安装或更新 Mac 客户端时，会自动安装并同步匹配的 Corral CLI（源码/开发版安装不会被覆盖）。装好应用后，在运行助手的开发机上执行：
+安装命令行工具不会同时安装 Mac 应用；安装或更新 Mac 应用时，会自动安装并同步匹配的 Corral CLI（源码开发版不会被覆盖）。装好应用后，在运行助手的开发机上执行：
 
 ```bash
 corral remote pair
 ```
 
-配对会开启远程连接，并自动补装缺失的远程组件。在同一局域网中，用应用扫描配对码，或手动粘贴输入。外出使用需要自行部署中继；Corral 不内置共享公共中继。远程通信采用端到端加密。跨网络访问请按[中继快速开始](https://github.com/corral-dev/corral-relay#quick-start)配置。若设备只需查看会话，可使用 `corral remote pair --readonly` 配对。
+配对会开启远程连接，并自动补装缺失的远程组件。在同一局域网内，用应用扫描或粘贴配对码即可。外出使用需要自行部署中继；Corral 不内置共享公共中继。远程通信采用端到端加密，跨网络配置见[中继快速开始](https://github.com/corral-dev/corral-relay#quick-start)。若设备只需查看会话，可使用 `corral remote pair --readonly` 配对。
 
 ## 隐私
 
-- 会话浏览和搜索读取本地助手历史。
-- 标题优先使用已配置的模型网关；没有网关配置时，复用已安装助手的登录。简短摘录可能消耗对应账号的额度。
+- 会话浏览、全文搜索和 `corral flex` 仅读取本地助手历史。
+- 可选的标题生成优先使用你配置的模型网关；未配置时复用已安装助手的现有登录，简短摘录可能消耗对应账号额度。
 - 更新检查会访问 GitHub。
-- 配对即表示授权该设备访问并操作你的会话；远程通信采用端到端加密。
+- 配对即表示授权该设备读取并操作你的会话；远程通信采用端到端加密。
 
 数据流向与控制方式见[隐私说明](PRIVACY.md)。
 
@@ -168,20 +169,20 @@ corral remote pair
 ```bash
 corral list --top 10 --compact
 corral search "login" --deep
-corral show <session-id-prefix> --messages 10 --compact
+corral show <session-id> --messages 10 --compact
 ```
 
-JSON 输出、导出及接力计划详见[命令参考](docs/SKILL.md)。
+JSON / JSONL 导出、自动化参数与接力计划详见[命令参考](docs/SKILL.md)。
 
 ## 常见问题
 
 ### Corral 与云端沙箱或纯 tmux 有什么区别？
 
-Corral 是运行在 macOS 和 Linux 本机 `tmux` 上的本地优先终端工作区，直接驱动你本机已安装的编程 CLI，不用一次性容器，也没有托管中继；同时补齐了统一的待办关注提示、最多四格分屏、全历史正文搜索、跨助手接力，以及原生 iPhone / Mac 同步。
+Corral 是运行在 macOS 和 Linux 本机 `tmux` 上的本地优先终端工作区，直接驱动你本机已安装的编程 CLI，不用一次性容器，也没有托管中继；同时补齐了统一的状态提醒、最多四格分屏、全历史正文搜索、跨助手接力，以及原生 iPhone / Mac 同步。
 
 ### 如何在 iPhone 或 Mac 上查看并回复 Claude Code / Codex 会话？
 
-安装原生 [Corral Apple 应用](https://github.com/corral-dev/corral-apple)，并在运行助手的电脑上执行 `corral remote pair`。同一局域网内直连，跨网络则通过你自建的 [corral-relay](https://github.com/corral-dev/corral-relay) 进行端到端加密通信。Mac 版可在 [Releases](https://github.com/corral-dev/corral-apple/releases/latest) 直接下载签名版；iPhone 版目前需用 Xcode 从源码构建。
+安装原生 [Corral Apple 应用](https://github.com/corral-dev/corral-apple)，并在运行助手的电脑上执行 `corral remote pair`。同一局域网内直连，跨网络则通过你自建的 [corral-relay](https://github.com/corral-dev/corral-relay) 进行端到端加密通信。Mac 版可通过 Homebrew Cask 安装或在 [Releases](https://github.com/corral-dev/corral-apple/releases/latest) 直接下载签名版；iPhone 版目前需用 Xcode 从源码构建。
 
 ### 如何把 Claude Code 的会话交给 Codex 或其他助手接着做？
 
@@ -201,15 +202,15 @@ Corral 是运行在 macOS 和 Linux 本机 `tmux` 上的本地优先终端工作
 
 如果 Corral 适合你的工作方式，可以点 Star 收藏，方便以后找到。
 
-## 🧩 AI 编程工具链里的相关工具
+## 相关工具
 
 如果你每天在多个 AI 编程助手之间切换，看看这套本地优先工具链的其余部分：
 
 | 仓库 | 说明 |
 | :--- | :--- |
-| **[subswap](https://github.com/x0c/subswap)** | 查剩余额度，一键切换 Claude Code、Codex、Cursor、Kimi Code 和 OpenCode 的账号，不用反复登录。 |
+| **[subswap](https://github.com/x0c/subswap)** | 查剩余额度，一键切换 Claude Code、Codex、Cursor、Kimi Code 和 OpenCode 账号，不用反复登录。 |
 | **[agentsync](https://github.com/x0c/agentsync)** | 以一份本地源统一同步 `AGENTS.md`、`CLAUDE.md`、skills 和 MCP 配置到各编程助手。 |
-| **[agent-doc-skills](https://github.com/x0c/agent-doc-skills)** | 可导航的项目知识库 skills（`doc-init`、`doc-update`、`doc-compact`），让 coding agent 不再每个会话都重新认识你的仓库。 |
-| **[sesskit](https://github.com/x0c/sesskit)** | 从磁盘解析、导出本地 Claude Code、Codex CLI 和 Cursor 会话记录文件。 |
+| **[agent-doc-skills](https://github.com/x0c/agent-doc-skills)** | 可导航的项目知识库 skills（`doc-init`、`doc-update`、`doc-compact`），让编程助手不再每个会话都重新认识你的仓库。 |
+| **[sesskit](https://github.com/x0c/sesskit)** | 从磁盘解析并导出 Claude Code、Codex、OpenCode、Cursor、Pi 和 Antigravity 的本地会话记录。 |
 
 [MIT 许可证](LICENSE)
