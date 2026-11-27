@@ -1413,17 +1413,24 @@ class SessionStore:
     def _drop_tombstoned_sessions(
         self, scanned: dict[str, list[dict]],
     ) -> dict[str, list[dict]]:
-        """墓碑过滤：按 `x` 确认删除过的会话键滤掉本轮扫描结果，
-        阻止已删会话被重新灌回列表（见 `_deleted` 的说明）。"""
+        """墓碑与插件子会话过滤：按 `x` 确认删除过的会话键与插件登记的隐藏子会话
+        一并滤掉本轮扫描结果，阻止已删会话回流或扩展子会话撑爆主会话列表。"""
+        from corral.state_contracts import (
+            hidden_marker_prefixes,
+            is_hidden_session,
+            known_hidden_session_keys,
+        )
+
         with self.lock:
             deleted = set(self._deleted)
-        if not deleted:
-            return scanned
+        hidden_keys = known_hidden_session_keys()
+        prefixes = hidden_marker_prefixes()
         return {
             runtime_id: [
                 session
                 for session in bucket
                 if session_key(session) not in deleted
+                and not is_hidden_session(session, known_keys=hidden_keys, prefixes=prefixes)
             ]
             for runtime_id, bucket in scanned.items()
         }

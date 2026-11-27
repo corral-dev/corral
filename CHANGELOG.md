@@ -6,6 +6,28 @@ next version's section. A `Release: minor` or `Release: major` line requests a
 larger version step; `Release: hold <reason>` keeps the changes unreleased until
 the named acceptance is done.
 
+## 1.0.5
+
+### English
+
+- Add `corral workflow` Python orchestration with capability routing, circuit breaking, playbook library, resume/cancel checkpoint safety, and portable skill discovery, extracted into the new Wave 0 external plugin runtime (`corral plugin` / `corral-workflow`).
+- Let connected clients read available agent usage limits, and improve direct connection discovery on overlay networks.
+- Default session export and share to JSONL; use `--format` to select a different format.
+- Simplify agent CLI flags and combine the bundled Corral skills. The TUI split pane footer now shows only the session title.
+- Report Antigravity turn failures and improve delivery to sessions that are ready for input while background work continues. Ignore stale running records when updating session activity.
+
+### 简体中文
+
+- 新增 `corral workflow` Python 工作流编排（含能力路由、熔断降级、剧本库、可恢复/取消检查点保护与跨运行时技能发现），并基于 Wave 0 外部插件运行时（`corral plugin` / `corral-workflow`）完成解耦。
+- 已连接的客户端现在可以查询助手用量和限额；改进通过组网发现可直连主机的方式。
+- 导出和分享会话默认使用 JSONL，也可以用 `--format` 选择其他格式。
+- 简化助手 CLI 参数并合并内置 Corral 技能。终端分屏底栏只显示会话标题。
+- 显示 Antigravity 轮次失败原因；当后台任务尚在运行、会话已可以接收输入时，改进消息投递；更新会话活动状态时忽略过期的运行记录。
+
+## 1.0.4
+
+Not published. Its changes ship in 1.0.5.
+
 ## 1.0.3
 
 ### English

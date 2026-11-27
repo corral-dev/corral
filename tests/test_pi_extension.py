@@ -208,7 +208,6 @@ class PiExtensionOwnershipTests(unittest.TestCase):
         self.assertEqual(result["claim"]["agentPhaseEvent"], "startup")
 
     def test_extension_forwards_message_update_deltas_to_live_socket_without_touching_claims(self) -> None:
-        self.assertEqual(pi_identity.EXTENSION_VERSION, "1.3.0")
         with tempfile.TemporaryDirectory(dir="/tmp", prefix="cpi-") as td:
             sock_path = Path(td) / "live.sock"
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
@@ -249,6 +248,25 @@ class PiExtensionOwnershipTests(unittest.TestCase):
             self.assertEqual(deltas[0]["event"]["assistantMessageEvent"]["delta"], "Secret token")
             # Claim files must remain completely free of conversation text.
             self.assertNotIn("Secret token", json.dumps(result["claim"]))
+
+    def test_identity_keeps_claims_without_changing_workflow_routing_in_prompt(self) -> None:
+        fake_bin = self.root / "corral"
+        fake_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_bin.chmod(0o755)
+        sections = {"other_extension": "Keep existing instructions."}
+        result = self.run_extension(
+            target=str(self.current),
+            env={
+                "CORRAL_BIN": str(fake_bin), "CORRAL_PI_WORKFLOW_ROUTING": None,
+                "CORRAL_WF_ID": None, "CORRAL_WF_STEP_ID": None,
+            },
+            beforeAgentStartTurns=[{"prompt": "Use Corral Workflow", "sections": sections}],
+        )
+        self.assertEqual(result["claim"]["sessionId"], "current")
+        self.assertEqual(result["claim"]["extensionVersion"], pi_identity.EXTENSION_VERSION)
+        self.assertEqual(result["beforeAgentStart"], [{
+            "returned": None, "sections": sections, "forceSystemPrompt": None,
+        }])
 
 
 if __name__ == "__main__":

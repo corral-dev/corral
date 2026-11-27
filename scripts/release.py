@@ -117,7 +117,8 @@ def sync_next_version(cli_current: str, mac_current: str, cli_step: str, mac_ste
 def sync_release_notes(version: str, previous: str, partner_label: str) -> str:
     return (
         f"## Unreleased\n\n### English\n\n"
-        f"- Synchronized version {version} with {partner_label} (previously {previous}); no standalone code changes.\n\n"
+        f"- Synchronized version {version} with {partner_label} "
+        f"(previously {previous}); no standalone code changes.\n\n"
         f"### 简体中文\n\n"
         f"- 与 {partner_label} 同步发布 {version} 版本（上一版本为 {previous}），本端无独立代码改动。\n\n"
     )
@@ -810,9 +811,35 @@ def phase_cli_tag(ctx: Context) -> str:
     if not existing:
         git(ctx.cli, "tag", "-a", tag, "-F", str(ctx.workspace / "cli-notes.md"))
     env = path_env(ctx.cli / ".venv/bin")  # the pre-push hook runs the checkout's Ruff
-    for remote in ("origin", "github"):
-        push(ctx.cli, remote, ["main", tag], log, env)
-    return f"{tag} pushed to origin and github"
+    push(ctx.cli, "origin", ["main", tag], log, env)
+    # Publish a sanitized snapshot commit on top of public GitHub main so private
+    # development history never reaches the public repository (owner decision 2026-11-27).
+    public_tree = ctx.workspace / "cli-public-tree"
+    shutil.rmtree(public_tree, ignore_errors=True)
+    public_tree.mkdir(parents=True)
+    archive = subprocess.run(["git", "-C", str(ctx.cli), "archive", "HEAD"], capture_output=True, check=True).stdout
+    must(["tar", "-xf", "-", "-C", str(public_tree)], log, "cannot export CLI snapshot", input_bytes=archive)
+    public = ctx.workspace / "cli-public"
+    if not (public / ".git").exists():
+        for attempt in range(3):
+            shutil.rmtree(public, ignore_errors=True)
+            if not run_logged(["git", "clone", "-q", f"git@github.com:{CLI_REPO}.git", str(public)], log):
+                break
+            if attempt == 2:
+                raise Failure("cannot clone the public CLI repository", log=log, excerpt=excerpt(log))
+            time.sleep(10)
+    must(["rsync", "-a", "--delete", "--exclude", ".git", f"{public_tree}/", f"{public}/"], log,
+         "cannot synchronize the public CLI tree")
+    if git(public, "status", "--porcelain"):
+        git(public, "add", "-A")
+        git(public, "commit", "-q", "-m", f"release: {tag}")
+    existing_public = git(public, "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}", check=False)
+    if existing_public and existing_public != git(public, "rev-parse", "HEAD"):
+        raise Failure(f"public tag {tag} already points at another commit", log=log)
+    if not existing_public:
+        git(public, "tag", "-a", tag, "-F", str(ctx.workspace / "cli-notes.md"))
+    push(public, "origin", ["main", tag], log, env)
+    return f"{tag} pushed to origin and github (sanitized snapshot)"
 
 
 def phase_cli_publish(ctx: Context) -> str:

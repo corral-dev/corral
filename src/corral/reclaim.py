@@ -932,7 +932,7 @@ def _background_state(
 
 
 def _unreadable_context_source(
-    busy: Any, waiting: Any, viewed: Any, pinned: Any, delegated: Any,
+    busy: Any, waiting: Any, viewed: Any, pinned: Any, delegated: Any, leased: Any = (),
 ) -> str | None:
     for name, value in (
         ("attention_busy", busy),
@@ -940,6 +940,7 @@ def _unreadable_context_source(
         ("host_viewers", viewed),
         ("pinned_keys", pinned),
         ("delegated_runs", delegated),
+        ("host_leases", leased),
     ):
         if value is None:
             return name
@@ -963,22 +964,24 @@ def _build_context(
     from corral import embed, split_layout
     from corral.attention import AttentionStore
     from corral.control_store import RunStore
+    from corral.state_contracts import active_leased_hosts
 
     store = AttentionStore()
     busy = store.busy_pairs()
     waiting = store.waiting_pairs()
     viewed = embed.live_host_viewer_names()
     pinned = split_layout.pinned_keys_effective()
-    # Hosts of unsettled Agent delegation runs are leased like viewed ones.
+    # Hosts of unsettled Agent delegation runs and plugin leases are protected like viewed ones.
     delegated = RunStore().active_hosts()
-    missing = _unreadable_context_source(busy, waiting, viewed, pinned, delegated)
+    leased = active_leased_hosts(now=now)
+    missing = _unreadable_context_source(busy, waiting, viewed, pinned, delegated, leased)
     if missing is not None:
         try:
             observe.event("reclaim_blocked", hosted=len(hosted), blocked={"context_unavailable": 1}, source=missing)
         except Exception:  # noqa: BLE001
             pass
         return None
-    viewed = set(viewed) | delegated
+    viewed = set(viewed) | delegated | set(leased)
     background = _background_state(hosted, history or {})
     if background is None:
         try:

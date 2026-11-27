@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "workflow",
+  "version": "0.1.0",
+  "description": "Multi-stage Python workflow orchestration, capability routing, and playbooks.",
+  "core_api": ">=1.0,<2.0",
+  "runtime": "python-venv",
+  "commands": ["workflow", "wf"],
+  "entrypoint": "bin/corral-workflow",
+  "describe_file": "describe.json",
+  "skills_dir": "skills",
+  "session_hide_prefixes": ["[corral-wf:"],
+  "remote_namespaces": ["workflow."]
+}

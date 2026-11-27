@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -109,6 +110,15 @@ def history_signature(path: str) -> tuple[int, int, int, int] | None:
     main = file_signature(path)
     if main is None:
         return None
+    if path.endswith(("/transcript_full.jsonl", "/transcript.jsonl")):
+        from sesskit.parsers.antigravity_errors import companion_signature
+
+        companion = companion_signature(path)
+        if companion:
+            # Retain the transcript's identity and size for incremental readers.
+            # The fourth field is a freshness token, including DB-only commits.
+            digest = hashlib.blake2b(repr((main[3], companion)).encode(), digest_size=8)
+            return (*main[:3], int.from_bytes(digest.digest(), "big") & 0x7FFFFFFFFFFFFFFF)
     wal = file_signature(path + "-wal")
     if wal is None:
         return main

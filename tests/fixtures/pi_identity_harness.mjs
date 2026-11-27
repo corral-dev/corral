@@ -11,6 +11,12 @@ process.env.CORRAL_PI_INSTANCE_ID = "contender";
 delete process.env.CORRAL_PI_CLAIM_PATH;
 process.env.TMUX = spec.tmux ?? "";
 process.env.TMUX_TMPDIR = spec.agentDir;
+if (spec.env && typeof spec.env === "object") {
+  for (const [k, v] of Object.entries(spec.env)) {
+    if (v === null) delete process.env[k];
+    else process.env[k] = String(v);
+  }
+}
 
 // A regression fixture must never query the developer's real tmux sessions.
 const realExec = childProcess.execFileSync;
@@ -73,8 +79,30 @@ if (spec.target) {
   result = await handlers.get("session_before_switch")({ reason: "resume", targetSessionFile: spec.target }, ctx);
 }
 const input = await handlers.get("input")({}, ctx);
+const beforeAgentStartResults = [];
+if (Array.isArray(spec.beforeAgentStartTurns)) {
+  const beforeHandler = handlers.get("before_agent_start");
+  for (const turn of spec.beforeAgentStartTurns) {
+    const ev = {
+      type: "before_agent_start",
+      messageType: turn.messageType ?? "user",
+      prompt: turn.prompt ?? "",
+      systemPrompt: "BASE_PROMPT",
+      systemPromptOptions: { sections: { ...(turn.sections ?? {}) } },
+    };
+    const ret = beforeHandler ? await beforeHandler(ev, ctx) : undefined;
+    beforeAgentStartResults.push({
+      returned: ret ?? null,
+      sections: ev.systemPromptOptions.sections,
+      forceSystemPrompt: ev.systemPromptOptions.forceSystemPrompt ?? null,
+    });
+  }
+}
 const claimPath = join(
   spec.agentDir, "corral-session-identity", "claims", "v1", "contender.json",
 );
 const claim = existsSync(claimPath) ? JSON.parse(readFileSync(claimPath, "utf8")) : null;
-console.log(JSON.stringify({ result, notifications, shutdown, input, claim, pid: process.pid }));
+console.log(JSON.stringify({
+  result, notifications, shutdown, input, claim, pid: process.pid,
+  beforeAgentStart: beforeAgentStartResults,
+}));

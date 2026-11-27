@@ -1389,7 +1389,8 @@ def _inspect_antigravity(session: dict) -> AttentionEvidence:
     tracker = scan_antigravity.AntigravityTurnTracker()
     last_entry: dict | None = None
 
-    for idx, entry in enumerate(_iter_jsonl_tail(path) if path else (), 1):
+    jsonl_tail = _iter_jsonl_tail(path) if path and not path.endswith(".db") else ()
+    for idx, entry in enumerate(scan_antigravity.merge_turn_errors(path, jsonl_tail), 1):
         last_entry = entry
         tracker.observe(entry, lineno=idx)
         etype = entry.get("type")

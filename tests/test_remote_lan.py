@@ -71,16 +71,47 @@ class LanAddressTests(unittest.TestCase):
             "198.18.0.1",
             ["127.0.0.1", "192.168.110.11", "198.18.0.1", "169.254.5.6"],
         )
-        with mock.patch.object(lan_module, "socket", fake):
+        with (
+            mock.patch.object(lan_module, "socket", fake),
+            mock.patch.object(lan_module, "_interface_addresses", return_value=[]),
+        ):
             addresses = lan_addresses()
         self.assertEqual(addresses, ["192.168.110.11"])
 
     def test_real_lan_sorts_before_overlay_networks(self):
         """真局域网在前；Tailscale 这类私有组网保留在后，不断连。"""
         fake = _FakeSocketModule("100.96.0.2", ["192.168.1.5"])
-        with mock.patch.object(lan_module, "socket", fake):
+        with (
+            mock.patch.object(lan_module, "socket", fake),
+            mock.patch.object(lan_module, "_interface_addresses", return_value=[]),
+        ):
             addresses = lan_addresses()
         self.assertEqual(addresses, ["192.168.1.5", "100.96.0.2"])
+
+    def test_interface_overlay_addresses_follow_physical_lan(self):
+        """Active overlay interfaces (e.g. CGNAT/overlay) appear after physical LAN."""
+        fake = _FakeSocketModule("192.168.1.5", ["192.168.1.5"])
+        with (
+            mock.patch.object(lan_module, "socket", fake),
+            mock.patch.object(
+                lan_module,
+                "_interface_addresses",
+                return_value=["192.168.1.5", "100.64.0.2", "198.18.0.1"],
+            ),
+        ):
+            addresses = lan_addresses()
+        self.assertEqual(addresses, ["192.168.1.5", "100.64.0.2"])
+
+    def test_skip_interface_filter_keeps_zerotier_and_drops_bridges(self):
+        self.assertFalse(lan_module._should_skip_interface("en0"))
+        self.assertFalse(lan_module._should_skip_interface("feth3894"))
+        self.assertFalse(lan_module._should_skip_interface("zt0"))
+        self.assertFalse(lan_module._should_skip_interface("utun3"))
+        self.assertTrue(lan_module._should_skip_interface("lo0"))
+        self.assertTrue(lan_module._should_skip_interface("awdl0"))
+        self.assertTrue(lan_module._should_skip_interface("bridge100"))
+        self.assertTrue(lan_module._should_skip_interface("docker0"))
+        self.assertTrue(lan_module._should_skip_interface("br-1234"))
 
     def test_effective_local_port(self):
         zero = remote_config.RemoteState(host_id="h", host_name="dev", local_port=0)
@@ -104,7 +135,10 @@ class LanAddressTests(unittest.TestCase):
         fake = _FakeSocketModule("192.168.110.11", [])
         fake.getaddrinfo = slow_resolve
         try:
-            with mock.patch.object(lan_module, "socket", fake):
+            with (
+                mock.patch.object(lan_module, "socket", fake),
+                mock.patch.object(lan_module, "_interface_addresses", return_value=[]),
+            ):
                 started = time.monotonic()
                 addresses = lan_addresses()
                 elapsed = time.monotonic() - started

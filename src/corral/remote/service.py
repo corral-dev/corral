@@ -38,6 +38,7 @@ from corral.remote.command_receipts import (
     digest_for_text,
     new_host_run_id,
 )
+from corral.remote.quotas import QuotaHub
 from corral.remote.sessions import (
     MESSAGE_PAGE_LIMIT,
     MESSAGE_PAGE_LIMIT_MAX,
@@ -85,6 +86,9 @@ _READONLY_METHODS = frozenset(
         protocol.M_MEDIA_IMAGE,
         protocol.M_MEDIA_FILE,
         protocol.M_SESSION_EXPORT,
+        protocol.M_QUOTAS_SNAPSHOT,
+        protocol.M_QUOTAS_WATCH,
+        protocol.M_QUOTAS_UNWATCH,
     }
 )
 
@@ -211,6 +215,7 @@ _CONCURRENT_READ_METHODS = frozenset(
         protocol.M_TERMINAL_PEEK,
         protocol.M_SESSIONS_LIST,
         protocol.M_SESSION_EXPORT,
+        protocol.M_QUOTAS_SNAPSHOT,
     }
 )
 # Concurrent slow reads one connection may run. Excess requests get a retryable
@@ -304,6 +309,7 @@ _HUB_READY_WAIT = 15.0
 _MAX_STARTUP_QUERIES = 8
 _INDEX_INDEPENDENT_METHODS = frozenset({
     protocol.M_HELLO, protocol.M_PAIR, protocol.M_RUNTIMES_LIST,
+    protocol.M_QUOTAS_SNAPSHOT, protocol.M_QUOTAS_WATCH, protocol.M_QUOTAS_UNWATCH,
 })
 
 # Concurrent control planes one device key may hold (several app instances on
@@ -343,13 +349,16 @@ def _superseded_by(connection: Connection, existing) -> list[Connection]:
 
 
 class RemoteService:
-    def __init__(self, hub: SessionHub | None = None) -> None:
+    def __init__(self, hub: SessionHub | None = None, *, quotas: QuotaHub | None = None) -> None:
         self.hub = hub or SessionHub(
             on_event=self._dispatch_event,
             title_spawn_fn=default_title_spawn_fn,
         )
         if hub is not None:
             hub._on_event = self._dispatch_event
+        self.quotas = quotas or QuotaHub(on_event=self._dispatch_event)
+        if quotas is not None:
+            quotas._on_event = self._dispatch_event
         self.state = remote_config.load_state()
         # 服务自持「上次加载」mtime：模块全局会被同进程的 remove_device 写脏，
         # 不能用来判断「磁盘是否相对我这份快照变了」。
@@ -704,6 +713,8 @@ class RemoteService:
             self.hub.unwatch_sessions()
         elif channel == protocol.CH_LAYOUT:
             self.hub.unwatch_layout()
+        elif channel == protocol.CH_QUOTAS:
+            self.quotas.unwatch()
         elif channel.startswith("screen:"):
             self.hub.unwatch_screen(channel[len("screen:") :])
         elif channel.startswith("term:"):
@@ -1292,6 +1303,14 @@ class RemoteService:
         ):
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.pairing_rate_limited"))
 
+    def _remote_plugin_capabilities(self) -> dict:
+        try:
+            from corral import plugins
+
+            return plugins.remote_capabilities()
+        except Exception:  # noqa: BLE001 - capability probe must never break hello
+            return {}
+
     def _hello(self, connection: Connection, params: dict):
         connection.device_name = remote_config.sanitize_display_name(
             str(params.get("name") or ""), fallback=connection.device_name or ""
@@ -1343,6 +1362,8 @@ class RemoteService:
                 protocol.CAPABILITY_PROJECT_SHELL: True,
                 protocol.CAPABILITY_SESSION_EXPORT: True,
                 protocol.CAPABILITY_CHAT_STREAMING: True,
+                protocol.CAPABILITY_QUOTAS: True,
+                "plugins": self._remote_plugin_capabilities(),
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -2220,8 +2241,56 @@ class RemoteService:
     def _projects_list(self, connection: Connection, params: dict):
         return {"projects": self.hub.projects()}
 
+    def stop(self) -> None:
+        """Stop auxiliary hubs owned by RemoteService."""
+        self.quotas.stop()
+
     def _runtimes_list(self, connection: Connection, params: dict):
         return {"runtimes": self.hub.runtimes()}
+
+    def _quotas_snapshot(self, connection: Connection, params: dict):
+        return self.quotas.snapshot(refresh=bool(params.get("refresh")))
+
+    def _quotas_watch(self, connection: Connection, params: dict):
+        with self._lock:
+            if connection.closed:
+                return {
+                    "available": False,
+                    "reason": "error",
+                    "error": "Connection closed.",
+                    "fetched_at": time.time(),
+                }
+            newly_subscribed = self._subscribe_locked(connection, protocol.CH_QUOTAS)
+        if not newly_subscribed:
+            return self.quotas.snapshot(refresh=bool(params.get("refresh")))
+
+        needs_cold, cached = self.quotas.watch_subscribe()
+        if not needs_cold and cached is not None:
+            return cached
+
+        def _warm() -> None:
+            try:
+                payload = self.quotas.snapshot(refresh=True)
+            except Exception as exc:
+                payload = {
+                    "available": False,
+                    "reason": "error",
+                    "error": str(exc),
+                    "fetched_at": time.time(),
+                }
+            self._dispatch_event(protocol.CH_QUOTAS, payload)
+
+        threading.Thread(target=_warm, daemon=True, name="corral-quota-warm").start()
+        return cached or {
+            "available": True,
+            "pending": True,
+            "fetched_at": time.time(),
+        }
+
+    def _quotas_unwatch(self, connection: Connection, params: dict):
+        if self._unsubscribe(connection, protocol.CH_QUOTAS):
+            self.quotas.unwatch()
+        return {"ok": True}
 
     def _search(self, connection: Connection, params: dict):
         return {"sessions": self.hub.list_sessions(query=str(params.get("q") or ""), limit=100)}
@@ -2417,6 +2486,9 @@ _HANDLERS = {
     protocol.M_SHELL_CLOSE: RemoteService._shell_close,
     protocol.M_PROJECTS_LIST: RemoteService._projects_list,
     protocol.M_RUNTIMES_LIST: RemoteService._runtimes_list,
+    protocol.M_QUOTAS_SNAPSHOT: RemoteService._quotas_snapshot,
+    protocol.M_QUOTAS_WATCH: RemoteService._quotas_watch,
+    protocol.M_QUOTAS_UNWATCH: RemoteService._quotas_unwatch,
     protocol.M_SEARCH: RemoteService._search,
     protocol.M_SEARCH_FULLTEXT: RemoteService._search_fulltext,
     protocol.M_PUSH_REGISTER: RemoteService._push_register,

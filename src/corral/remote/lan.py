@@ -11,7 +11,10 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import socket
+import sys
 import threading
 from ipaddress import ip_address, ip_network
 from typing import TYPE_CHECKING
@@ -41,6 +44,110 @@ _RFC1918 = (
 )
 #: 透明代理 fake-ip 常用段（RFC 2544 基准测试段，常被本机代理占用）：绝不发给手机。
 _FAKE_IP = ip_network("198.18.0.0/15")
+
+_IFF_UP = 0x1
+_IFF_LOOPBACK = 0x8
+_IFF_RUNNING = 0x40
+_SKIP_INTERFACE_PREFIXES = (
+    "lo",
+    "awdl",
+    "llw",
+    "anpi",
+    "ap",
+    "bridge",
+    "docker",
+    "br-",
+    "veth",
+    "virbr",
+    "podman",
+    "cni",
+    "flannel",
+)
+
+
+class _IfAddrs(ctypes.Structure):
+    pass
+
+
+_IfAddrs._fields_ = [
+    ("ifa_next", ctypes.POINTER(_IfAddrs)),
+    ("ifa_name", ctypes.c_char_p),
+    ("ifa_flags", ctypes.c_uint),
+    ("ifa_addr", ctypes.c_void_p),
+    ("ifa_netmask", ctypes.c_void_p),
+    ("ifa_ifu", ctypes.c_void_p),
+    ("ifa_data", ctypes.c_void_p),
+]
+
+_libc_lock = threading.Lock()
+_libc_loaded = False
+_libc_handle: ctypes.CDLL | None = None
+
+
+def _get_libc() -> ctypes.CDLL | None:
+    global _libc_loaded, _libc_handle
+    with _libc_lock:
+        if _libc_loaded:
+            return _libc_handle
+        _libc_loaded = True
+        try:
+            if sys.platform == "darwin":
+                lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            elif sys.platform.startswith("linux"):
+                lib = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+            else:
+                return None
+            lib.getifaddrs.argtypes = [ctypes.POINTER(ctypes.POINTER(_IfAddrs))]
+            lib.getifaddrs.restype = ctypes.c_int
+            lib.freeifaddrs.argtypes = [ctypes.POINTER(_IfAddrs)]
+            lib.freeifaddrs.restype = None
+            _libc_handle = lib
+        except (OSError, AttributeError):
+            _libc_handle = None
+        return _libc_handle
+
+
+def _should_skip_interface(name: str) -> bool:
+    lower = name.lower()
+    return any(lower.startswith(prefix) for prefix in _SKIP_INTERFACE_PREFIXES)
+
+
+def _interface_addresses() -> list[str]:
+    """Enumerate active non-loopback IPv4 interface addresses via POSIX getifaddrs.
+
+    Includes private overlay interfaces (such as macOS ZeroTier ``feth*`` or
+    Tailscale ``utun*``) that neither the default-route probe nor hostname
+    resolution returns.
+    """
+    lib = _get_libc()
+    if lib is None:
+        return []
+    head = ctypes.POINTER(_IfAddrs)()
+    if lib.getifaddrs(ctypes.byref(head)) != 0:
+        return []
+    found: list[str] = []
+    try:
+        current = head
+        while current:
+            entry = current.contents
+            flags = int(entry.ifa_flags)
+            name = entry.ifa_name.decode("utf-8", "ignore") if entry.ifa_name else ""
+            if (
+                (flags & _IFF_UP)
+                and (flags & _IFF_RUNNING)
+                and not (flags & _IFF_LOOPBACK)
+                and name
+                and not _should_skip_interface(name)
+                and entry.ifa_addr
+            ):
+                raw = ctypes.string_at(entry.ifa_addr, 8)
+                family = raw[1] if sys.platform == "darwin" else int.from_bytes(raw[0:2], sys.byteorder)
+                if family == socket.AF_INET:
+                    found.append(socket.inet_ntoa(raw[4:8]))
+            current = entry.ifa_next
+    finally:
+        lib.freeifaddrs(head)
+    return found
 
 
 def effective_local_port(state: RemoteState) -> int:
@@ -92,15 +199,17 @@ def probe_outbound_ipv4() -> str:
 def lan_addresses() -> list[str]:
     """列出这台开发机在局域网上的地址，真局域网在前，去重并排好序。
 
-    刻意不做完整的网卡枚举：先用一次到外网地址的 UDP「连接」（不产生任何流量）
-    问操作系统「出去的话会走哪个地址」，再用 hostname 解析补充；两路候选都经过
-    `_rank` 过滤，VPN/代理的脏地址进不了结果。
+    先用一次到外网地址的 UDP「连接」（不产生任何流量）问操作系统默认出口，
+    再用 hostname 解析和 POSIX `getifaddrs` 活动网卡枚举补充（让 ZeroTier `feth*`、
+    Tailscale 等私有组网地址也能被手机拿到）；全部候选经 `_rank` 过滤排序，
+    VPN/代理的脏地址进不了结果。
     """
     candidates: list[str] = []
     primary = probe_outbound_ipv4()
     if primary:
         candidates.append(primary)
     candidates.extend(_hostname_addresses())
+    candidates.extend(_interface_addresses())
     ranked: list[tuple[int, str]] = []
     seen: set[str] = set()
     for raw in candidates:

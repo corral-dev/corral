@@ -126,6 +126,16 @@ that repository's lanes rerun from the start. Refresh is refused once a lane has
   succeeded, so the exempted copy reaches a tag only through a new release: restate the
   pending notes under `## Unreleased` and replace the unpublished version's section with one
   `Not published. Its changes ship in <next>.` line.
+- A private tag can land before the same public CLI tag is rejected. Compare the pinned tag's
+  history with the fetched public `main`, and validate any flagged test literal against the
+  infrastructure inventory without printing the address. In the 1.0.4 run, both flagged fixture
+  values matched live interfaces; the offending commit was not present on public `main`.
+  Never allowlist real endpoints, skip the gate or move the accepted private tag. Per owner
+  decision (2026-11-27), `cli.tag` now pushes full history only to private `origin` and exports
+  a sanitized `git archive HEAD` snapshot commit onto public `github/main` (retaining full
+  `leakgate` checks on the public push) so private commit ancestry never reaches GitHub. Future
+  network tests should use deliberately synthetic fixtures unrelated to any actual interface or
+  overlay address.
 - A concurrent iPhone shipment can advance private Apple `main` while a Mac release notarizes. If the Mac tag was accepted and only `main` was rejected as non-fast-forward, use a clean checkout of current private `main` to merge the pinned Mac release commit. Review the merge against the new parent: only the Mac version/build and its release notes should change; the iPhone version and source must stay intact. Push a fast-forward update, confirm the original tag did not move, then `resume` the same prepared artifacts. The merged main commit does not become the Mac artifact source.
 - Network or notarization interruption: `resume` reuses confirmed artifacts and receipts. Reconcile an unknown external outcome against the target first; do not assume every backend offers exactly-once publication.
 - `mac.publish` read timeout after upload (2026-11-19): the anonymous digest check of an already

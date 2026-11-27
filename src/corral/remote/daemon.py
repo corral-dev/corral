@@ -108,6 +108,7 @@ class RemoteDaemon:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.mdns is not None:
                 await asyncio.to_thread(self.mdns.stop)
+            await asyncio.to_thread(self.service.stop)
             await asyncio.to_thread(self.hub.stop)
             remote_config.clear_pid()
             remote_config.clear_status_snapshot()

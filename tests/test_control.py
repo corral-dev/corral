@@ -467,6 +467,20 @@ class SkillBundleTests(unittest.TestCase):
         self.assertTrue(edited.is_file())
         self.assertFalse((self.home / "shared" / "corral").exists())
 
+    def test_pi_skill_install_does_not_install_a_runtime_extension(self):
+        root = self.home / ".agents" / "skills"
+        with (
+            mock.patch.object(skill_bundle, "runtime_roots", return_value=[{
+                "runtime": "pi", "root": str(root), "resolved_root": str(root),
+                "available": True, "root_exists": False,
+            }]),
+            mock.patch("corral.pi_identity.ensure_extension_installed") as install_extension,
+        ):
+            result = skill_bundle.install(dry_run=False, runtime="pi")
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual((root / "corral" / "SKILL.md").read_text(), skill_bundle.bundle_text("corral"))
+        install_extension.assert_not_called()
+
     def test_foreign_same_name_skill_is_a_conflict(self):
         foreign = self.codex / "corral"
         foreign.mkdir()

@@ -611,6 +611,7 @@ class WhitelistTests(unittest.TestCase):
                 protocol.M_TERMINAL_PEEK,
                 protocol.M_SESSIONS_LIST,
                 protocol.M_SESSION_EXPORT,
+                protocol.M_QUOTAS_SNAPSHOT,
             }),
         )
         # Ordering-sensitive frames must never join the generic read whitelist.

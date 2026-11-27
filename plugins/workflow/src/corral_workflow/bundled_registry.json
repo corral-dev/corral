@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "registry_version": "2026.11.27-1",
+  "published_at": "2026-11-27T00:00:00Z",
+  "capabilities": {
+    "ui-design": {
+      "description": "UI layout, visual taste, frontend/SwiftUI polish and interactive ergonomics",
+      "rankings": [
+        {"family": "claude-opus", "runtime_hint": "claude"},
+        {"family": "claude-sonnet", "runtime_hint": "claude"},
+        {"family": "gemini-pro", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "codex-gpt", "runtime_hint": "codex"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"}
+      ]
+    },
+    "code-review": {
+      "description": "Strict adversarial code review, edge-case discovery and security auditing",
+      "rankings": [
+        {"family": "codex-gpt", "runtime_hint": "codex"},
+        {"family": "claude-opus", "runtime_hint": "claude"},
+        {"family": "claude-sonnet", "runtime_hint": "claude"},
+        {"family": "gemini-pro", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "deepseek-reasoner"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"}
+      ]
+    },
+    "report-writing": {
+      "description": "Executive reports, clear architecture memos, bilingual documentation and crisp prose",
+      "rankings": [
+        {"family": "claude-opus", "runtime_hint": "claude"},
+        {"family": "claude-sonnet", "runtime_hint": "claude"},
+        {"family": "gemini-pro", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "codex-gpt", "runtime_hint": "codex"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "deepseek-flash"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"}
+      ]
+    },
+    "deep-impl": {
+      "description": "Complex multi-file implementation, architectural refactoring and system engineering",
+      "rankings": [
+        {"family": "codex-gpt", "runtime_hint": "codex"},
+        {"family": "claude-opus", "runtime_hint": "claude"},
+        {"family": "claude-sonnet", "runtime_hint": "claude"},
+        {"family": "gemini-pro", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"},
+        {"family": "deepseek-flash"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"}
+      ]
+    },
+    "debugging": {
+      "description": "Root-cause investigation, reproduction tests and tricky concurrency or runtime fixes",
+      "rankings": [
+        {"family": "codex-gpt", "runtime_hint": "codex"},
+        {"family": "claude-opus", "runtime_hint": "claude"},
+        {"family": "gemini-pro", "runtime_hint": "antigravity"},
+        {"family": "claude-sonnet", "runtime_hint": "claude"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "deepseek-reasoner"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"}
+      ]
+    },
+    "cheap-fanout": {
+      "description": "High-fan-out parallel scanning, bulk file audits, classification and low-cost batch work",
+      "rankings": [
+        {"family": "deepseek-flash"},
+        {"family": "gemini-flash"},
+        {"family": "claude-haiku"},
+        {"family": "gpt-mini"},
+        {"family": "qwen-coder"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"}
+      ]
+    },
+    "fast-router": {
+      "description": "Low-latency planning, task decomposition, summarization and lightweight JSON extraction",
+      "rankings": [
+        {"family": "gateway-budget"},
+        {"family": "gemini-flash"},
+        {"family": "deepseek-flash"},
+        {"family": "claude-haiku"},
+        {"family": "gpt-mini"},
+        {"family": "runtime-default-pi", "runtime_hint": "pi"},
+        {"family": "runtime-default-opencode", "runtime_hint": "opencode"},
+        {"family": "runtime-default-antigravity", "runtime_hint": "antigravity"},
+        {"family": "runtime-default-claude", "runtime_hint": "claude"},
+        {"family": "runtime-default-codex", "runtime_hint": "codex"},
+        {"family": "runtime-default-cursor", "runtime_hint": "cursor"}
+      ]
+    }
+  },
+  "families": {
+    "claude-opus": {
+      "patterns": ["claude-opus", "opus"],
+      "cost_tier": "high",
+      "speed_tier": "slow",
+      "strengths": ["ui-design", "aesthetics", "architecture", "report-writing", "code-review", "deep-impl", "debugging"],
+      "avoid_for": ["cheap-fanout"]
+    },
+    "claude-sonnet": {
+      "patterns": ["claude-sonnet", "sonnet"],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["ui-design", "report-writing", "code-review", "deep-impl", "debugging"],
+      "avoid_for": []
+    },
+    "claude-haiku": {
+      "patterns": ["claude-haiku", "haiku"],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "fast-router", "summarization"],
+      "avoid_for": ["ui-design"]
+    },
+    "codex-gpt": {
+      "patterns": ["gpt-6", "gpt-5", "gpt-4.1", "codex", "o3", "o4"],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["deep-impl", "code-review", "debugging", "tdd"],
+      "avoid_for": []
+    },
+    "gpt-mini": {
+      "patterns": ["gpt-5-mini", "gpt-4o-mini", "o4-mini", "gpt-mini"],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "fast-router", "summarization"],
+      "avoid_for": []
+    },
+    "gemini-pro": {
+      "patterns": ["gemini-4", "gemini 4", "gemini-3", "gemini 3", "gemini-2.5-pro", "neon"],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["ui-design", "report-writing", "architecture", "code-review", "deep-impl"],
+      "avoid_for": []
+    },
+    "gemini-flash": {
+      "patterns": ["gemini-flash", "gemini-2.5-flash", "gemini-3-flash", "flash-lite", "flash_lite"],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "fast-router", "summarization"],
+      "avoid_for": []
+    },
+    "deepseek-flash": {
+      "patterns": ["deepseek-v4", "deepseek-v3", "deepseek-flash", "deepseek-chat", "deepseek-coder"],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "fast-router", "deep-impl", "bulk-audit"],
+      "avoid_for": []
+    },
+    "deepseek-reasoner": {
+      "patterns": ["deepseek-r1", "deepseek-reasoner"],
+      "cost_tier": "low",
+      "speed_tier": "medium",
+      "strengths": ["code-review", "debugging", "architecture"],
+      "avoid_for": []
+    },
+    "qwen-coder": {
+      "patterns": ["qwen-coder", "qwen3-coder", "qwen2.5-coder"],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "bulk-audit"],
+      "avoid_for": []
+    },
+    "gateway-budget": {
+      "patterns": ["budget-chat", "chat-fast", "chat-cheap", "summarization-cheap", "structured-text"],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["fast-router", "cheap-fanout", "summarization"],
+      "avoid_for": []
+    },
+    "runtime-default-claude": {
+      "patterns": [],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["ui-design", "report-writing", "code-review", "deep-impl", "debugging"],
+      "avoid_for": []
+    },
+    "runtime-default-codex": {
+      "patterns": [],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["deep-impl", "code-review", "debugging", "tdd"],
+      "avoid_for": []
+    },
+    "runtime-default-antigravity": {
+      "patterns": [],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["ui-design", "report-writing", "code-review", "deep-impl", "debugging"],
+      "avoid_for": []
+    },
+    "runtime-default-opencode": {
+      "patterns": [],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "fast-router", "deep-impl"],
+      "avoid_for": []
+    },
+    "runtime-default-cursor": {
+      "patterns": [],
+      "cost_tier": "medium",
+      "speed_tier": "medium",
+      "strengths": ["deep-impl", "code-review", "ui-design"],
+      "avoid_for": []
+    },
+    "runtime-default-pi": {
+      "patterns": [],
+      "cost_tier": "low",
+      "speed_tier": "fast",
+      "strengths": ["cheap-fanout", "fast-router", "deep-impl", "report-writing"],
+      "avoid_for": []
+    }
+  }
+}

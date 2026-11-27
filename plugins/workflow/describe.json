@@ -1,0 +1,170 @@
+{
+  "commands": [
+    {
+      "name": "workflow catalog",
+      "help": "Progressive-disclosure capability catalog (Local Scan ∩ Cloud Registry + User Overrides + Health)",
+      "risk": "read",
+      "examples": [
+        "corral workflow catalog --compact",
+        "corral workflow catalog --for ui-design --explain"
+      ]
+    },
+    {
+      "name": "workflow scan",
+      "help": "Zero-quota scan of locally installed runtimes and available models",
+      "risk": "write_local",
+      "examples": [
+        "corral workflow scan --dry-run",
+        "corral workflow scan --refresh"
+      ]
+    },
+    {
+      "name": "workflow registry",
+      "help": "Inspect, sync (ETag) or configure the static cloud capability registry URL",
+      "risk": "read / write_local",
+      "examples": [
+        "corral workflow registry status",
+        "corral workflow registry sync --force"
+      ]
+    },
+    {
+      "name": "workflow target",
+      "help": "List, inspect, declaratively set or delete concrete runtime/model targets (--version guarded)",
+      "risk": "read / write_local",
+      "examples": [
+        "corral workflow target list --format tsv",
+        "corral workflow target set claude-opus --runtime claude --model claude-opus-4 --cost high --strengths ui-design,report-writing"
+      ]
+    },
+    {
+      "name": "workflow profile",
+      "help": "List, inspect, override, reset or delete semantic capability profiles and ordered fallback chains",
+      "risk": "read / write_local",
+      "examples": [
+        "corral workflow profile list --format tsv",
+        "corral workflow profile set ui-design --candidates claude-opus,antigravity-default --version <ver>"
+      ]
+    },
+    {
+      "name": "workflow health",
+      "help": "Inspect shared circuit-breaker states and cooldowns, or reset a target circuit with --version",
+      "risk": "read / write_local",
+      "examples": [
+        "corral workflow health",
+        "corral workflow health --reset claude-default --version <ver>"
+      ]
+    },
+    {
+      "name": "workflow meta",
+      "help": "Export or import portable user metadata overrides (JSON)",
+      "risk": "read / write_local",
+      "examples": [
+        "corral workflow meta export --out catalog.json",
+        "corral workflow meta import --file catalog.json --dry-run"
+      ]
+    },
+    {
+      "name": "workflow run",
+      "help": "Execute or --dry-run a Python workflow script (--arg, --max-concurrency, --detach)",
+      "risk": "write_local",
+      "examples": [
+        "corral workflow run flow.py --arg goal='audit auth' --dry-run",
+        "corral workflow run flow.py --max-concurrency 20"
+      ]
+    },
+    {
+      "name": "workflow list",
+      "help": "List workflow runs and progress counts",
+      "risk": "read",
+      "examples": [
+        "corral workflow list --format tsv"
+      ]
+    },
+    {
+      "name": "workflow status",
+      "help": "Inspect workflow run status, phase and node counts",
+      "risk": "read",
+      "examples": [
+        "corral workflow status <wf_id>"
+      ]
+    },
+    {
+      "name": "workflow graph",
+      "help": "Inspect execution DAG nodes and edges (--format json or ascii)",
+      "risk": "read",
+      "examples": [
+        "corral workflow graph <wf_id> --format ascii"
+      ]
+    },
+    {
+      "name": "workflow events",
+      "help": "Cursor-based workflow event stream",
+      "risk": "read",
+      "examples": [
+        "corral workflow events <wf_id> --after 0"
+      ]
+    },
+    {
+      "name": "workflow resume",
+      "help": "Resume a paused/failed workflow from SQLite checkpoints (skips completed steps)",
+      "risk": "write_local",
+      "examples": [
+        "corral workflow resume <wf_id>",
+        "corral workflow resume <wf_id> --from-step impl:auth --override-target impl:auth=codex-default"
+      ]
+    },
+    {
+      "name": "workflow cancel",
+      "help": "Cancel an active workflow run and stop in-flight work (--wait, --force)",
+      "risk": "write_local",
+      "examples": [
+        "corral workflow cancel <wf_id>",
+        "corral workflow cancel <wf_id> --wait 5"
+      ]
+    },
+    {
+      "name": "workflow script",
+      "help": "Export the saved script snapshot from a historical workflow run",
+      "risk": "read",
+      "examples": [
+        "corral workflow script <wf_id>",
+        "corral workflow script <wf_id> --out flow.py"
+      ]
+    },
+    {
+      "name": "workflow playbook",
+      "help": "List, inspect (with optimization signals), save, delete, or opt-in export thin skills for reusable playbooks",
+      "risk": "read / write_local",
+      "examples": [
+        "corral workflow playbook list --format tsv",
+        "corral workflow playbook show <name>",
+        "corral workflow playbook save <name> --from-run <wf_id> --scope project",
+        "corral workflow playbook export-skill <name> --scope project --dry-run"
+      ]
+    },
+    {
+      "name": "workflow finish",
+      "help": "Worker CLI: validate structured JSON against step schema and commit output",
+      "risk": "write_local",
+      "examples": [
+        "corral workflow finish --wf <wf_id> --step <step_id> --json-file result.json"
+      ]
+    },
+    {
+      "name": "workflow schema",
+      "help": "Worker CLI: print the registered JSON Schema for a workflow step",
+      "risk": "read",
+      "examples": [
+        "corral workflow schema --wf <wf_id> --step <step_id>"
+      ]
+    },
+    {
+      "name": "workflow log",
+      "help": "Worker CLI: emit a concise progress note onto the flowchart node card",
+      "risk": "write_local",
+      "examples": [
+        "corral workflow log --wf <wf_id> --step <step_id> 'Scanned 18/24 routes'"
+      ]
+    }
+  ]
+}

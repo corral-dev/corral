@@ -11,6 +11,8 @@
 Read the documents whose described content is relevant before deciding or changing behavior.
 
 - [Agent workflow](~/Codes/Corral/cli/docs/AGENT_WORKFLOW_GUIDE.md): Readiness, resource ownership, resumable delivery and checkpoints.
+- [Corral workflow orchestration](~/Codes/Corral/cli/docs/design/CORRAL_WORKFLOW_DESIGN.md): `corral workflow` Python orchestration, pure-CLI structured output, global capability/routing metadata, circuit breaking/degradation, session-list isolation and Mac-first visual flowchart design.
+- [Plugin architecture & core decoupling](~/Codes/Corral/cli/docs/design/PLUGIN_ARCHITECTURE_DESIGN.md): External executable plugin model (`plugin.json` manifest, `corral plugin` lifecycle, Homebrew-safe storage), Core extension contracts (session hiding, host leases, remote events/RPC, per-plugin skills), client management UI (Mac/iOS/TUI) and `plugin.*` remote protocol, layering cleanup and phased migration for `workflow` and `a2a`/`control`.
 - [Product task routing](~/Codes/Corral/cli/docs/PROJECT_TASK_ROUTING_GUIDE.md): Detailed cross-component preconditions and investigation routes.
 - [Release runbook](~/Codes/Corral/cli/docs/RELEASE_RUNBOOK.md): One-command CLI, Mac and iPhone releases: default scope, gates and known issues, failure recovery and private configuration.
 - [CLI instructions](~/Codes/Corral/cli/AGENTS.md): Terminal UI, runtime integration, local development and CLI delivery.
@@ -64,6 +66,7 @@ Read the documents whose described content is relevant before deciding or changi
 | 命令拦截（shim） | cli/src/corral/shim.py · cli/src/corral/bootstrap.py · cli/src/corral/runtime/registry.py |
 | 标题补全 | cli/src/corral/titles.py · cli/src/corral/titlegen.py |
 | Agent 只读查询 | cli/src/corral/agent_api.py |
+| 工作流编排 | cli/src/corral/workflow/ · cli/docs/design/CORRAL_WORKFLOW_DESIGN.md · cli/tests/test_workflow.py |
 | 手机远程接力（开发机侧） | cli/src/corral/remote/ · cli/docs/REMOTE_KNOWLEDGE_BASE.md（文首「开源中继硬规则」：公开默认关中继、无维护者域名） · cli/src/corral/bootstrap.py · cli/tests/test_remote_service.py |
 | Apple 客户端（iPhone + 原生 Mac） | apple/ · apple/AGENTS.md · apple/Shared/（两端共享代码）· apple/macOS/ · apple/docs/UI_DESIGN_KNOWLEDGE_BASE.md · apple/docs/design/MACOS_CLIENT_DESIGN.md（局域网优先；自建中继才换网；开源与自编译版禁止内置共享中继，仅官方付费版可用托管中继，见远程知识库开源中继硬规则第 6 条） |
 | 零知识中继与 APNs | relay/ · relay/docs/PROTOCOL_V2.md · 开源自建见 relay/README；个人多租户公网运维只在私有 agentsync（禁止写入公开门面当默认） |
@@ -121,6 +124,8 @@ Read the documents whose described content is relevant before deciding or editin
 - [docs/design/WEB_TASK_BUTLER_DESIGN.md](docs/design/WEB_TASK_BUTLER_DESIGN.md): Local Markdown task planning, coordinator/executor responsibilities, boundaries and validation experiments.
 - [Ideas mixed input](docs/design/IDEAS_MIXED_INPUT_DESIGN.md): Canvas/comment image and file paste, shared editor, browser limits, offline drafts, private assets, synchronization, worker delivery and acceptance design.
 - [Agent session delegation](docs/design/AGENT_SESSION_DELEGATION_DESIGN.md): Verified CLI/control gaps, reference architectures, historical resume and fresh runtime/model creation, prompt delivery, durable monitoring, results, crash recovery and installed acceptance.
+- [Corral workflow orchestration](docs/design/CORRAL_WORKFLOW_DESIGN.md): `corral workflow` Python orchestration, pure-CLI structured output, global capability/routing metadata, circuit breaking/degradation, session-list isolation and Mac-first visual flowchart design.
+- [Plugin architecture & core decoupling](docs/design/PLUGIN_ARCHITECTURE_DESIGN.md): External executable plugin model (`plugin.json` manifest, `corral plugin` lifecycle, Homebrew-safe storage), Core extension contracts (session hiding, host leases, remote events/RPC, per-plugin skills), client management UI (Mac/iOS/TUI) and `plugin.*` remote protocol, layering cleanup and phased migration for `workflow` and `a2a`/`control`.
 - [Bundled agent skills](docs/design/BUNDLED_AGENT_SKILLS_DESIGN.md): Approved corral-* names, runtime skill paths, AgentSync coexistence, default registration, packaging boundaries, protected ownership, implicit selection and discovery/execution acceptance.
 - [docs/design/WINDOWS_COMPATIBILITY_DESIGN.md](docs/design/WINDOWS_COMPATIBILITY_DESIGN.md): Decision against Windows and dedicated WSL product support.
 - [docs/PERFORMANCE_KNOWLEDGE_BASE.md](docs/PERFORMANCE_KNOWLEDGE_BASE.md): Performance, caching, load, offline data and profiling.
@@ -250,6 +255,7 @@ command -v corral
 | 命令拦截（shim） | src/corral/shim.py · src/corral/bootstrap.py · src/corral/runtime/registry.py |
 | 标题补全 | src/corral/titles.py · src/corral/titlegen.py |
 | Agent 只读查询 | src/corral/agent_api.py |
+| 工作流编排 | src/corral/workflow/ · docs/design/CORRAL_WORKFLOW_DESIGN.md · tests/test_workflow.py |
 | 开源发布与一键安装 | scripts/release.py · docs/RELEASE_RUNBOOK.md · install.sh · .github/workflows/ · scripts/publish-release.sh |
 | CI 流水线 | .github/workflows/test.yml · scripts/ci-test.py · .githooks/pre-push · scripts/install-git-hooks.sh |
 | 客户端自动更新 | src/corral/updater.py · src/corral/ui/update_toast.py |

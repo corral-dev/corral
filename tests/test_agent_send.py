@@ -768,6 +768,7 @@ class PeersTests(unittest.TestCase):
             mock.patch.object(agent_api, "_attach_attention", side_effect=attention),
             mock.patch.object(agent_api.titles, "load_cache", return_value={}),
             mock.patch.object(agent_api.titles, "resolve_initial_title", return_value=("T", None)),
+            mock.patch.object(agent_api, "load_events", return_value=[]),
         ):
             data = agent_api.cmd_peers(args, registry)["data"]
         self.assertEqual(data["self"], "claude:me")
@@ -776,4 +777,64 @@ class PeersTests(unittest.TestCase):
         busy, ext = data["peers"]
         self.assertEqual((busy["state"], busy["reachable"], busy["same_project"]), ("working", True, True))
         self.assertEqual(busy["last_user"], "fix the parser")
+        self.assertEqual(busy["touched_files"], [])
         self.assertEqual((ext["state"], ext["reachable"], ext["control"]), ("idle", False, "external"))
+
+    def test_peers_active_filter_and_touched_files_extraction(self):
+        _clean_agent_env(self)
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "me"
+        here = os.path.realpath(os.getcwd())
+        sessions = {
+            "claude": [
+                {"source": "claude", "id": "me", "cwd": here, "live": True, "mtime": 9},
+                {"source": "claude", "id": "busy", "cwd": here, "live": True, "mtime": 8},
+                {"source": "claude", "id": "idle1", "cwd": here, "live": True, "mtime": 7},
+            ],
+            "codex": [
+                {"source": "codex", "id": "patcher", "cwd": here, "live": True, "mtime": 6},
+            ],
+        }
+        registry = [SimpleNamespace(id="claude"), SimpleNamespace(id="codex")]
+
+        def attention(flat):
+            for item in flat:
+                if item["id"] == "busy":
+                    item["attention_kind"] = "working"
+                elif item["id"] == "patcher":
+                    item["attention_kind"] = "waiting"
+                else:
+                    item["attention_kind"] = "none"
+
+        def fake_events(session):
+            if session["id"] == "busy":
+                return [
+                    {"type": "tool_call", "name": "Read", "input": {"file_path": os.path.join(here, "README.md")}},
+                    {"type": "tool_call", "name": "Edit", "input": {"file_path": os.path.join(here, "src/a.py")}},
+                    {"type": "tool_call", "name": "edit_file", "input": {"Path": os.path.join(here, "src/b.py")}},
+                    {"type": "tool_call", "name": "Edit", "input": {"file_path": os.path.join(here, "src/a.py")}},
+                ]
+            if session["id"] == "patcher":
+                return [
+                    {
+                        "type": "tool_call",
+                        "name": "apply_patch",
+                        "input": "*** Begin Patch\n*** Update File: src/c.py\n*** Add File: src/d.py\n*** End Patch",
+                    }
+                ]
+            return [{"type": "tool_call", "name": "Write", "input": {"path": "ignored_when_idle.py"}}]
+
+        args = SimpleNamespace(project=here, recent=None, limit=60, top=None, active=True, files=False)
+        with (
+            mock.patch.object(agent_api, "_list_scan", return_value=(sessions, {}, {})),
+            mock.patch.object(agent_api.liveness, "annotate"),
+            mock.patch.object(agent_api, "_attach_attention", side_effect=attention),
+            mock.patch.object(agent_api.titles, "load_cache", return_value={}),
+            mock.patch.object(agent_api.titles, "resolve_initial_title", return_value=("T", None)),
+            mock.patch.object(agent_api, "load_events", side_effect=fake_events),
+        ):
+            data = agent_api.cmd_peers(args, registry)["data"]
+
+        refs = [p["ref"] for p in data["peers"]]
+        self.assertEqual(refs, ["claude:busy", "codex:patcher"])
+        self.assertEqual(data["peers"][0]["touched_files"], ["src/a.py", "src/b.py"])
+        self.assertEqual(data["peers"][1]["touched_files"], ["src/c.py", "src/d.py"])

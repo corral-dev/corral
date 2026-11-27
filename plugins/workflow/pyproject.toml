@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "corral-plugin-workflow"
+version = "0.1.0"
+description = "Corral workflow plugin: multi-stage Python DAG orchestration, capability routing, and playbooks."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "sesskit>=0.3.16",
+  "agent-session-control>=0.1.4",
+]
+
+[project.scripts]
+corral-workflow = "corral_workflow.cli:entrypoint"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+corral_workflow = ["*.json"]

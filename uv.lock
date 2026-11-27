@@ -135,12 +135,12 @@ wheels = [
 
 [[package]]
 name = "corral"
-version = "1.0.3"
+version = "1.0.5"
 source = { editable = "." }
 dependencies = [
     { name = "agent-session-control" },
-    { name = "sesskit", version = "0.3.15", source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" }, marker = "sys_platform == 'darwin'" },
-    { name = "sesskit", version = "0.3.15", source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-py3-none-any.whl" }, marker = "sys_platform != 'darwin'" },
+    { name = "sesskit", version = "0.3.16", source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" }, marker = "sys_platform == 'darwin'" },
+    { name = "sesskit", version = "0.3.16", source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-py3-none-any.whl" }, marker = "sys_platform != 'darwin'" },
     { name = "textual" },
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -165,8 +165,8 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'remote'", specifier = ">=42" },
     { name = "pillow", marker = "extra == 'remote'", specifier = ">=10" },
     { name = "segno", marker = "extra == 'remote'", specifier = ">=1.6" },
-    { name = "sesskit", marker = "sys_platform != 'darwin'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-py3-none-any.whl" },
-    { name = "sesskit", marker = "sys_platform == 'darwin'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" },
+    { name = "sesskit", marker = "sys_platform != 'darwin'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-py3-none-any.whl" },
+    { name = "sesskit", marker = "sys_platform == 'darwin'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" },
     { name = "textual", specifier = ">=8.0" },
     { name = "websockets", specifier = ">=13" },
     { name = "zeroconf", marker = "extra == 'remote'", specifier = ">=0.131" },
@@ -462,26 +462,26 @@ wheels = [
 
 [[package]]
 name = "sesskit"
-version = "0.3.15"
-source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" }
+version = "0.3.16"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl" }
 resolution-markers = [
     "python_full_version >= '3.11' and sys_platform == 'darwin'",
     "python_full_version < '3.11' and sys_platform == 'darwin'",
 ]
 wheels = [
-    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:081ec59ef51c0eab946b3ef689cac05e314014659e0d599e5ac019ae9fb42b75" },
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:8d467c830b666bfdc32a9724e5e65c123f46862487e4d7ef972cdf93edbbfd79" },
 ]
 
 [[package]]
 name = "sesskit"
-version = "0.3.15"
-source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-py3-none-any.whl" }
+version = "0.3.16"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-py3-none-any.whl" }
 resolution-markers = [
     "python_full_version >= '3.11' and sys_platform != 'darwin'",
     "python_full_version < '3.11' and sys_platform != 'darwin'",
 ]
 wheels = [
-    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.15/sesskit-0.3.15-py3-none-any.whl", hash = "sha256:64badf3eecad7c7a64c3bff1014e5232dd4b201eef72e160f736cd6d550f4cbe" },
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.16/sesskit-0.3.16-py3-none-any.whl", hash = "sha256:9657d4b5ae11bfcf34ec08bea1fe54331483d0d2f67f1bc87cf4ba4057374d55" },
 ]
 
 [[package]]

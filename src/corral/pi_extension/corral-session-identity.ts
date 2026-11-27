@@ -34,7 +34,7 @@ import { createConnection, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
 
 const PROTOCOL_VERSION = 1;
-const EXTENSION_VERSION = "1.3.0";
+const EXTENSION_VERSION = "1.4.1";
 const IDENTITY_DIRNAME = "corral-session-identity";
 /** 心跳间隔；Corral 读取侧按 4 个周期（60s）判定 claim 过期。 */
 const HEARTBEAT_MS = 15_000;

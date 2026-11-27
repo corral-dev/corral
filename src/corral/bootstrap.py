@@ -9,6 +9,11 @@ from corral import __version__
 
 _AGENT_ROOTS = {"list", "search", "show", "export", "share", "context", "plan", "describe", "diagnose"}
 _AGENT_ROOTS |= {"run", "skills", "send", "peers", "a2a"}
+_CORE_OR_RUNTIME_ROOTS = _AGENT_ROOTS | {
+    "cache", "remote", "login", "logout", "whoami", "shim", "observer", "tcc",
+    "update", "plugin", "internal", "flex", "_cursor-hook",
+    "claude", "codex", "opencode", "cursor", "pi", "antigravity", "kimi",
+}
 
 
 def _fast_version() -> None:
@@ -53,6 +58,14 @@ def main() -> None:
         from corral.cache_cli import main as cache_main
 
         raise SystemExit(cache_main(argv[1:]))
+    if argv[:1] == ["plugin"]:
+        from corral.plugins import cli_main as plugin_main
+
+        raise SystemExit(plugin_main(argv[1:]))
+    if argv[:1] == ["internal"]:
+        from corral.plugins import internal_cli_main as internal_main
+
+        raise SystemExit(internal_main(argv[1:]))
     if argv and argv[0] in _AGENT_ROOTS:
         from corral.agent_api import dispatch
 
@@ -94,6 +107,39 @@ def main() -> None:
         from corral.tcc import cli_main as tcc_main
 
         raise SystemExit(tcc_main(argv[1:]))
+    if argv and not argv[0].startswith("-") and argv[0] not in _CORE_OR_RUNTIME_ROOTS:
+        from corral import plugins
+        from corral.cli_contract import EXIT_NOT_FOUND, corral_bin, error_envelope
+
+        plugin = plugins.resolve_command(argv[0])
+        if plugin is not None:
+            raise SystemExit(plugins.exec_plugin(plugin, argv))
+        path_bin = plugins.resolve_path_plugin(argv[0])
+        if path_bin is not None:
+            raise SystemExit(plugins.exec_path_plugin(path_bin, argv[1:]))
+        official = plugins.official_hint_for_command(argv[0])
+        if official is not None:
+            import json
+
+            install_cmd = f"{corral_bin()} plugin install {official}"
+            if "--json" in argv or not sys.stdout.isatty():
+                print(
+                    json.dumps(
+                        error_envelope(
+                            "plugin_not_installed",
+                            f"Plugin '{official}' is not installed (required for 'corral {argv[0]}').",
+                            hint=f"Install it with: {install_cmd}",
+                            next_commands=[install_cmd],
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(
+                    f"Plugin '{official}' is not installed. Install with:\n  {install_cmd}",
+                    file=sys.stderr,
+                )
+            raise SystemExit(EXIT_NOT_FOUND)
     # 命令拦截默认关闭：只有用户显式 `corral shim install` 才写 shell 配置。
     # 交互启动仍可补齐旧 Pi 历史；Agent 只读接口、管道和版本查询不碰迁移。
     if sys.stdin.isatty() and sys.stdout.isatty():
@@ -104,3 +150,7 @@ def main() -> None:
     from corral.cli import main as cli_main
 
     cli_main()
+
+
+if __name__ == "__main__":
+    main()

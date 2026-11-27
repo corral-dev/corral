@@ -233,6 +233,8 @@ CAPABILITY_PROJECT_SHELL = "project_shell"
 CAPABILITY_SESSION_EXPORT = "session_export"
 # Ephemeral live assistant streaming frames (`kind: "stream"`) on `session:<key>`.
 CAPABILITY_CHAT_STREAMING = "chat_streaming"
+# Read-only Subswap quota snapshots & change stream (`quotas.*`).
+CAPABILITY_QUOTAS = "quotas"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -327,10 +329,14 @@ M_SEARCH = "search"
 # ``session`` is the sessions.list summary (absent from hosts before 2026-10-18).
 M_SEARCH_FULLTEXT = "search.fulltext"
 M_RUNTIMES_LIST = "runtimes.list"
+M_QUOTAS_SNAPSHOT = "quotas.snapshot"
+M_QUOTAS_WATCH = "quotas.watch"
+M_QUOTAS_UNWATCH = "quotas.unwatch"
 
 # 订阅通道名前缀
 CH_SESSIONS = "sessions"
 CH_LAYOUT = "layout"
+CH_QUOTAS = "quotas"
 
 
 def screen_channel(session_key: str) -> str:

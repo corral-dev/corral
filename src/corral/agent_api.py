@@ -14,8 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
-import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +23,7 @@ from datetime import datetime
 
 from corral import liveness, titles
 from corral.cache import cache_dir, get_cache, scan_period
+from corral.cli_contract import corral_bin
 from corral.legacy_names import getenv
 from corral.models import (
     corral_id_for_session,
@@ -211,8 +212,10 @@ def _print_tsv(command: str, data: dict) -> None:
         return
 
     if command == "peers":
-        print("ref\tstate\treachable\tsame_project\tproject\ttitle")
+        print("ref\tstate\treachable\tsame_project\tproject\ttitle\tfiles")
         for peer in data.get("peers") or []:
+            touched = peer.get("touched_files") or []
+            files_cell = ",".join(touched[:5]) if touched else "-"
             print("\t".join((
                 _tsv_cell(peer.get("ref")),
                 _tsv_cell(peer.get("state")),
@@ -220,6 +223,7 @@ def _print_tsv(command: str, data: dict) -> None:
                 "true" if peer.get("same_project") else "false",
                 _tsv_cell(peer.get("project") or peer.get("cwd")),
                 _tsv_cell(_trim(peer.get("title"), 80)),
+                _tsv_cell(files_cell),
             )))
         print(f"# self={data.get('self') or 'none'} count={data.get('count', 0)}")
         return
@@ -263,24 +267,8 @@ def _print_tsv(command: str, data: dict) -> None:
 
 
 def _bin() -> str:
-    """当前 CLI 的绝对入口身份：next_commands 必须保持它，而不是裸命令名。
-
-    pipx 与源码树两份 corral 并存是常态（diagnose 的 stale_source_warning 即为此存在）；
-    裸 `corral show …` 可能命中 PATH 上另一份 capabilities 对不上的副本。给人类看的 hint
-    文案仍用短名，只有机器照抄的 next_commands 走绝对身份。
-    """
-    argv0 = sys.argv[0] if sys.argv else ""
-    if argv0.endswith("__main__.py"):
-        # `python -m corral …` 时 argv[0] 是 __main__.py 路径，不能直接执行，拼回 -m 形式。
-        return f"{sys.executable} -m corral"
-    if argv0:
-        candidate = argv0 if os.path.isabs(argv0) else os.path.abspath(argv0)
-        try:
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
-        except OSError:
-            pass
-    return shutil.which("corral") or "corral"
+    """当前 CLI 的绝对入口身份：next_commands 必须保持它，而不是裸命令名。"""
+    return corral_bin()
 
 
 def _resolve_out_path(out: str) -> str:
@@ -706,8 +694,29 @@ def cmd_list(args, registry) -> dict:
     _attach_attention(flat)
 
     candidates = []
+    include_hidden = (
+        getattr(args, "include_hidden", None) is True
+        or getattr(args, "include_workflow", None) is True
+    )
+    hidden_keys = None
+    hidden_prefixes: tuple[str, ...] = ()
+    hidden_sessions = 0
+    if not include_hidden:
+        from corral.state_contracts import (
+            hidden_marker_prefixes,
+            is_hidden_session,
+            known_hidden_session_keys,
+        )
+
+        hidden_keys = known_hidden_session_keys()
+        hidden_prefixes = hidden_marker_prefixes()
     for runtime in runtimes:
         for session in scanned[runtime.id]:
+            if not include_hidden and is_hidden_session(
+                session, known_keys=hidden_keys, prefixes=hidden_prefixes
+            ):
+                hidden_sessions += 1
+                continue
             if not _in_time_range(session.get("mtime"), since, until):
                 continue
             if args.status and STATUS_LABELS.get(session.get("status_tag") or "", "unknown") != args.status:
@@ -736,6 +745,8 @@ def cmd_list(args, registry) -> dict:
         "sessions": sessions,
         "matched": matched,
         "returned": len(sessions),
+        "hidden_sessions": hidden_sessions,
+        "hidden_workflow_sessions": hidden_sessions,
     }
     data.update(coverage)
     data.update(source)
@@ -762,6 +773,77 @@ def _same_project(session: dict, here: str) -> bool:
     return cwd == here or here.startswith(cwd.rstrip(os.sep) + os.sep) or cwd.startswith(here.rstrip(os.sep) + os.sep)
 
 
+_WRITE_TOOL_NAMES = frozenset({
+    "edit", "write", "multiedit", "notebookedit",
+    "edit_file", "write_file", "write_to_file",
+    "replace_file_content", "multi_replace_file_content",
+    "create_file", "delete_file", "patch", "apply_patch",
+    "str_replace_editor", "str_replace_based_edit_tool",
+})
+_PATH_INPUT_KEYS = (
+    "file_path", "path", "Path", "TargetFile", "target_file",
+    "filePath", "notebook_path", "TargetPath",
+)
+_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _normalize_touched_path(raw: str, cwd: str | None) -> str | None:
+    path = raw.strip().strip("\"'")
+    if not path:
+        return None
+    if cwd:
+        try:
+            base = os.path.realpath(str(cwd))
+            candidate = os.path.realpath(path) if os.path.isabs(path) else os.path.realpath(os.path.join(base, path))
+            if candidate == base:
+                return "."
+            prefix = base.rstrip(os.sep) + os.sep
+            if candidate.startswith(prefix):
+                return candidate[len(prefix):]
+        except OSError:
+            pass
+    return path
+
+
+def _extract_touched_files(session: dict, limit: int = 8) -> list[str]:
+    """Extract recently edited file paths from a session's tool_call events."""
+    try:
+        events = load_events(session)
+    except Exception:
+        return []
+    cwd = session.get("cwd")
+    seen: set[str] = set()
+    touched: list[str] = []
+    for ev in reversed(events):
+        if not isinstance(ev, dict) or ev.get("type") != "tool_call":
+            continue
+        name = str(ev.get("name") or "").strip().lower()
+        if name not in _WRITE_TOOL_NAMES:
+            continue
+        inp = ev.get("input")
+        candidates: list[str] = []
+        if isinstance(inp, dict):
+            for key in _PATH_INPUT_KEYS:
+                val = inp.get(key)
+                if isinstance(val, str) and val.strip():
+                    candidates.append(val)
+                    break
+            if not candidates and name == "apply_patch":
+                patch_text = inp.get("patch") or inp.get("input") or inp.get("text")
+                if isinstance(patch_text, str):
+                    candidates.extend(_PATCH_FILE_RE.findall(patch_text))
+        elif isinstance(inp, str) and name == "apply_patch":
+            candidates.extend(_PATCH_FILE_RE.findall(inp))
+        for raw in candidates:
+            norm = _normalize_touched_path(raw, cwd)
+            if norm and norm not in seen:
+                seen.add(norm)
+                touched.append(norm)
+                if len(touched) >= limit:
+                    return touched
+    return touched
+
+
 def cmd_peers(args, registry) -> dict:
     """Other agent sessions this agent can coordinate with, and what each is doing.
 
@@ -777,6 +859,8 @@ def cmd_peers(args, registry) -> dict:
     project = os.path.realpath(os.path.expanduser(args.project)) if getattr(args, "project", None) else None
     hours = getattr(args, "recent", None)
     cutoff = time.time() - float(hours) * 3600 if hours else None
+    active_only = bool(getattr(args, "active", False))
+    include_files_all = bool(getattr(args, "files", False))
     runtimes = list(registry)
     cache = titles.load_cache()
     scanned, failures, source = _list_scan(registry, runtimes, args.limit, fresh=False)
@@ -793,8 +877,16 @@ def cmd_peers(args, registry) -> dict:
                 continue
             if project and not _under_project(session, project):
                 continue
+            state = _peer_state(session)
+            if active_only and state not in ("working", "waiting"):
+                continue
             mode, _reason = control_capability(session)
             title, _ = titles.resolve_initial_title(session, cache)
+            touched_files = (
+                _extract_touched_files(session)
+                if (include_files_all or state in ("working", "waiting"))
+                else []
+            )
             peers.append({
                 "ref": ref,
                 "runtime": runtime.id,
@@ -802,9 +894,10 @@ def cmd_peers(args, registry) -> dict:
                 "project": session.get("cwd_display") or session.get("cwd"),
                 "cwd": session.get("cwd"),
                 "same_project": _same_project(session, here),
-                "state": _peer_state(session),
+                "state": state,
                 "reachable": mode != "external",
                 "control": mode,
+                "touched_files": touched_files,
                 "last_user": _trim(session.get("last_user_msg")),
                 "last_agent": _trim(session.get("last_agent_msg")),
                 "mtime": session.get("mtime"),
@@ -899,8 +992,29 @@ def cmd_search(args, registry) -> dict:
 
     results = []
     history_failures = []
+    include_hidden = (
+        getattr(args, "include_hidden", None) is True
+        or getattr(args, "include_workflow", None) is True
+    )
+    hidden_keys = None
+    hidden_prefixes: tuple[str, ...] = ()
+    hidden_sessions = 0
+    if not include_hidden:
+        from corral.state_contracts import (
+            hidden_marker_prefixes,
+            is_hidden_session,
+            known_hidden_session_keys,
+        )
+
+        hidden_keys = known_hidden_session_keys()
+        hidden_prefixes = hidden_marker_prefixes()
     for runtime in runtimes:
         for session in scanned[runtime.id]:
+            if not include_hidden and is_hidden_session(
+                session, known_keys=hidden_keys, prefixes=hidden_prefixes
+            ):
+                hidden_sessions += 1
+                continue
             if not _in_time_range(session.get("mtime"), since, until):
                 continue
             # 用 `is True` 而不是 truthy：AgentApiTests 里的 args 常是裸 mock.Mock()，
@@ -984,6 +1098,8 @@ def cmd_search(args, registry) -> dict:
         "sessions": sessions,
         "matched": matched,
         "returned": len(sessions),
+        "hidden_sessions": hidden_sessions,
+        "hidden_workflow_sessions": hidden_sessions,
     }
     data.update(coverage)
     data.update(source)
@@ -1487,26 +1603,57 @@ def cmd_plan_continue(args, registry) -> dict:
 
 
 def cmd_describe(args, registry) -> dict:
+    from corral import plugins
+
     if args.target:
         target = args.target if isinstance(args.target, str) else " ".join(args.target)
         spec = next((c for c in COMMANDS if c["name"] == target), None)
-        if spec is None:
-            low = target.lower()
-            next_cmds = [f"{_bin()} describe"]
-            hint = "运行 corral describe 查看全部命令"
-            if "skill" in low:
-                hint = "skill 管理子命令为 skills status / skills install / skills uninstall"
-                next_cmds = [f"{_bin()} describe skills status", f"{_bin()} skills status"]
-            elif "session" in low:
-                hint = "会话查询子命令为 list / search / show / share"
-                next_cmds = [f"{_bin()} describe list", f"{_bin()} describe show"]
-            raise ApiError(
-                "not_found", f"未知命令：{target}", EXIT_NOT_FOUND,
-                hint=hint,
-                next_commands=next_cmds,
-            )
-        return _ok(_describe_command(spec, full=True))
-    return _ok({"commands": [_describe_command(spec, full=False) for spec in COMMANDS]})
+        if spec is not None:
+            return _ok(_describe_command(spec, full=True))
+        plugin_match = plugins.describe_plugin_commands(target)
+        if plugin_match is not None:
+            kind, payload = plugin_match
+            if kind == "group":
+                return _ok({"commands": payload})
+            return _ok(payload)
+
+        low = target.lower()
+        next_cmds = [f"{_bin()} describe"]
+        hint = "运行 corral describe 查看全部命令"
+        official = plugins.official_hint_for_command(target.split()[0]) if target.split() else None
+        if official is not None:
+            hint = f"插件 {official!r} 未安装；安装后可执行 {target}"
+            next_cmds = [f"{_bin()} plugin install {official}", f"{_bin()} describe"]
+        elif "skill" in low:
+            hint = "skill 管理子命令为 skills status / skills install / skills uninstall"
+            next_cmds = [f"{_bin()} describe skills status", f"{_bin()} skills status"]
+        elif "plugin" in low:
+            hint = "插件管理子命令为 plugin list / install / upgrade / remove / enable / disable / doctor"
+            next_cmds = [f"{_bin()} plugin list --format tsv", f"{_bin()} plugin --help"]
+        elif "session" in low:
+            hint = "会话查询子命令为 list / search / show / share"
+            next_cmds = [f"{_bin()} describe list", f"{_bin()} describe show"]
+        raise ApiError(
+            "not_found", f"未知命令：{target}", EXIT_NOT_FOUND,
+            hint=hint,
+            next_commands=next_cmds,
+        )
+
+    index = plugins.load_index()
+    plugin_summaries = [
+        {
+            "name": name,
+            "version": entry.get("version", ""),
+            "commands": list(entry.get("commands") or []),
+            "description": entry.get("description", ""),
+        }
+        for name, entry in sorted((index.get("plugins") or {}).items())
+        if isinstance(entry, dict) and entry.get("enabled", True)
+    ]
+    return _ok({
+        "commands": [_describe_command(spec, full=False) for spec in COMMANDS],
+        "plugins": plugin_summaries,
+    })
 
 
 def _keepalive_server_report() -> dict | None:
@@ -1632,6 +1779,14 @@ COMMANDS = [
                     "help": "跳过跨进程共享扫描索引，强制本机重新扫描（刚建的会话要立刻出现时用）",
                 },
             },
+            {
+                "flags": ["--include-hidden", "--include-workflow"],
+                "kwargs": {
+                    "action": "store_true",
+                    "dest": "include_hidden",
+                    "help": "包含插件或扩展标记为隐藏的子会话（默认隐藏以免污染主会话列表）",
+                },
+            },
         ],
         "fields": {
             "runtime": "运行时标识（claude / codex / opencode / cursor / pi / antigravity）",
@@ -1696,6 +1851,7 @@ COMMANDS = [
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
             {"flags": ["--out"], "kwargs": {"help": "把完整 JSON 结果写入指定文件，stdout 只返回文件引用摘要"}},
             {"flags": ["--fresh"], "kwargs": {"action": "store_true", "help": "跳过共享扫描索引，强制本机重新扫描"}},
+            {"flags": ["--include-hidden", "--include-workflow"], "kwargs": {"action": "store_true", "dest": "include_hidden", "help": "包含插件或扩展标记为隐藏的子会话（默认隐藏）"}},  # noqa: E501 - COMMANDS 数据表
         ],
         "fields": {
             "scope": "conversation or activity (activity also matched normalized tool records)",
@@ -1842,6 +1998,8 @@ COMMANDS = [
         "help": "Discover other agent sessions to coordinate with: exact ref, project, state, latest ask/answer, reachability",  # noqa: E501 - COMMANDS 数据表
         "args": [
             {"flags": ["--project"], "kwargs": {"help": "Only sessions under this directory (e.g. . for the current project)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--active"], "kwargs": {"action": "store_true", "help": "Only sessions actively working or waiting for input (excludes idle and ended)"}},  # noqa: E501 - COMMANDS 数据表
+            {"flags": ["--files"], "kwargs": {"action": "store_true", "help": "Also extract touched_files for idle/ended peers (always included for working/waiting peers)"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--recent"], "kwargs": {"type": float, "help": "Also include stopped sessions active within this many hours"}},  # noqa: E501 - COMMANDS 数据表
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 60, "help": "Sessions scanned per runtime"}},
             {"flags": ["--top", "-n"], "kwargs": {"dest": "top", "type": int, "help": "Return at most this many peers"}},  # noqa: E501 - COMMANDS 数据表
@@ -1855,6 +2013,7 @@ COMMANDS = [
             "peers[].state": "working / waiting (needs an answer) / idle (running, between turns) / ended (stopped; only with --recent)",  # noqa: E501 - COMMANDS 数据表
             "peers[].reachable": "false when a terminal outside Corral owns the session: send is refused (control external)",  # noqa: E501 - COMMANDS 数据表
             "peers[].same_project": "Session works in your current project (sorted first)",
+            "peers[].touched_files": "Recently edited file paths extracted from tool_call events (populated automatically for working/waiting peers, or all peers with --files)",  # noqa: E501 - COMMANDS 数据表
             "peers[].last_user / last_agent": "Latest ask it received and its latest answer, trimmed: what it is doing now",  # noqa: E501 - COMMANDS 数据表
         },
     },
