@@ -383,14 +383,14 @@ def is_updatable(channel: Channel | None = None) -> bool:
 # Linux 更新实踩）。唯一权威是 scripts/sesskit_dep.py；updater 随包发到用户
 # 机器、手边没有 scripts/，只能在这里镜像 pin。升级 SessKit 时两处同步改，
 # 并同步 install.sh 的 curl|bash 硬编码 fallback。
-_SESSKIT_VERSION = "0.3.16"
+_SESSKIT_VERSION = "0.3.17"
 _SESSKIT_PURE_WHEEL_NAME = f"sesskit-{_SESSKIT_VERSION}-py3-none-any.whl"
-_SESSKIT_PURE_WHEEL_SHA256 = "9657d4b5ae11bfcf34ec08bea1fe54331483d0d2f67f1bc87cf4ba4057374d55"
+_SESSKIT_PURE_WHEEL_SHA256 = "0586d528334eaa473ae667ba220b6a5a617505f0c729a8ee4438de4b4644a8f2"
 _SESSKIT_MACOS_WHEEL_NAME = (
     f"sesskit-{_SESSKIT_VERSION}-cp310-abi3-"
     "macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl"
 )
-_SESSKIT_MACOS_WHEEL_SHA256 = "8d467c830b666bfdc32a9724e5e65c123f46862487e4d7ef972cdf93edbbfd79"
+_SESSKIT_MACOS_WHEEL_SHA256 = "17b104e63c0135c006b46db37be90da5917bbd538026b3abc9164a358ec6223a"
 
 
 def _select_sesskit_wheel(platform_name: str | None = None) -> tuple[str, str, str]:
