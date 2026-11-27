@@ -26,7 +26,7 @@ import threading
 import time
 import unittest
 import warnings
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -826,7 +826,7 @@ class SessionListIsolationTests(unittest.TestCase):
 
             hidden_db = resolve_state_dir(self.root) / "hidden-sessions.sqlite3"
             self.assertTrue(hidden_db.is_file())
-            with sqlite3.connect(hidden_db) as conn:
+            with closing(sqlite3.connect(hidden_db)) as conn:
                 rows = {r[0] for r in conn.execute("SELECT session_key FROM hidden_sessions").fetchall()}
             self.assertIn("codex:wf-child-1", rows)
             self.assertIn("corral-wf-child-1", rows)
