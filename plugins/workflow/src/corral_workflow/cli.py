@@ -1125,6 +1125,11 @@ def _dispatch_parsed(
                 argv.extend(["--cwd", args.cwd])
             for kv in args.arg_items:
                 argv.extend(["--arg", kv])
+            # The editable plugin launcher adds its package root only to the parent's sys.path.
+            env = os.environ.copy()
+            package_root = str(Path(__file__).resolve().parents[1])
+            existing = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = os.pathsep.join((package_root, existing)) if existing else package_root
             with open(logs_dir / f"{wf_id}.log", "ab") as log_fp:
                 proc = subprocess.Popen(
                     argv,
@@ -1132,6 +1137,7 @@ def _dispatch_parsed(
                     stdout=log_fp,
                     stderr=subprocess.STDOUT,
                     cwd=args.cwd or os.getcwd(),
+                    env=env,
                     start_new_session=True,
                     close_fds=True,
                 )

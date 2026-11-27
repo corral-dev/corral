@@ -348,7 +348,7 @@ corral workflow playbook unexport-skill <name> [--scope project|global] [--dest 
 ```
 
 - `--dry-run` on `run` parses the script, validates `args` schema, checks referenced profiles/targets against the catalog and current circuit health, and reports a static plan/warnings without launching any runtime or mutating SQLite (including expired `open` circuit-breaker states).
-- `--detach` spawns `sys.executable -m corral workflow --root <root> run ...` in a new session (`start_new_session=True`, logs under `<root>/logs/<wf_id>.log`).
+- `--detach` spawns `sys.executable -m corral_workflow workflow --root <root> run ...` in a new session (`start_new_session=True`, logs under `<root>/logs/<wf_id>.log`). The child uses the same plugin package root as the running launcher; an editable launcher adds that root to its own `sys.path`, which a fresh interpreter does not inherit. Keep the installed-CLI smoke free of preconfigured `PYTHONPATH`.
 
 ### 6.4 Playbook library, iteration loop, and opt-in thin skill export (owner approved 2026-11-27)
 
@@ -365,6 +365,12 @@ To make existing workflows discoverable, reusable, and continuously optimizable 
    - For the small set of mature, high-frequency workflows worth direct natural-language recall across runtimes, users explicitly run `playbook export-skill <name> [--scope project|global]`.
    - Default `--scope project` writes `<cwd>/.agents/skills/corral-wf-<name>/SKILL.md` so project-specific workflows stay scoped to that repository. `--scope global` writes to the shared user skills root (or explicit `--dest`).
    - Generated thin skills (~15–20 lines) contain only routing metadata and pointers to `corral workflow playbook show <name>` and `corral workflow run <name> --dry-run` (requiring explicit user authorization before executing workers) — never duplicating script logic so subsequent script iterations stay fresh. Ownership hashes are recorded in SQLite so `export-skill` / `unexport-skill` refuse to overwrite or delete user-modified files (`EXIT_CONFLICT`).
+
+### Opt-in dual-runtime change review
+
+The [review playbook](../../plugins/workflow/examples/dual-runtime-review.py) adapts the live `dual-runtime-accept` run from §9. It resolves `base` and `head` to immutable commits, supplies only their bounded textual patch to two reviewers on distinct runtimes, and independently checks each proposed finding against that same patch. An empty snapshot needs no workers. A failed or non-distinct review, or a verifier that omits a candidate, cannot produce a completed review. An unconfirmed candidate remains a lead; this patch-only workflow does not establish behavior beyond the supplied diff or replace tests.
+
+Install from a Corral checkout with `corral workflow playbook save dual-runtime-review --file plugins/workflow/examples/dual-runtime-review.py --scope global`. Preview in the target Git repository using `corral workflow run dual-runtime-review --arg base=HEAD^ --dry-run`; omit `--dry-run` only for an authorized review. Set `--arg head=<revision>` to review a specific head. The working tree, untracked files and repository history outside that commit range are not included in the prompt. Review the confidentiality of the selected patch before sending it to model providers. No new Skill or default review hook is installed.
 
 ### 6.5 Cross-runtime agent discovery (owner correction 2026-11-27)
 
